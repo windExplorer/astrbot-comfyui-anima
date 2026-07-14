@@ -1,6 +1,7 @@
 """AstrBot ComfyUI 绘图插件（支持多服务器、多工作流、LoRA 管理、Anima 标签翻译）。"""
 
 import os
+import random
 import re
 import time
 import uuid
@@ -26,6 +27,25 @@ except ImportError:
 
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
+
+# 可爱随机话术：提交绘图后提示用，避免每次都相同
+_QUEUE_HINTS_GENERATING = [
+    "好嘞~ 小画家已经开始动笔啦，请稍候✨",
+    "收到！正在为你努力出图中，马上就好🎨",
+    "嗯嗯，已经在画啦，乖乖等一下下就好~",
+    "任务已提交，图图正在生成中，马上飞到你面前🥰",
+    "已收到！正在悄悄为你画图，稍等片刻哦🌸",
+    "好~ 正在生成中，喝口水的功夫就出来啦🍵",
+]
+
+_QUEUE_HINTS_QUEUED = [
+    "任务已提交，前面还有 {n} 位在排队呢，先喝口水等等吧🍵",
+    "排上号啦~ 前面还有 {n} 位，马上就轮到你😊",
+    "小本本记上了，前面有 {n} 位在排队，稍安勿躁~",
+    "当前前面还有 {n} 位哦，图图不会跑的，等等嘛🌸",
+    "已经排好队啦，前面 {n} 位，马上给你画上🎀",
+    "收到！前面还有 {n} 位在排队，稍等一下下就好💕",
+]
 
 
 @register(
@@ -265,6 +285,12 @@ class ComfyUIDrawPlugin(Star):
         if lst and prompt_id in lst:
             lst.remove(prompt_id)
 
+    def _queue_hint(self, ahead: int) -> str:
+        """提交后的可爱随机提示：无队列时只说在出图，有队列时说明前面几位。"""
+        if ahead <= 0:
+            return random.choice(_QUEUE_HINTS_GENERATING)
+        return random.choice(_QUEUE_HINTS_QUEUED).format(n=ahead)
+
     async def _do_draw(
         self,
         event: AstrMessageEvent,
@@ -388,10 +414,7 @@ class ComfyUIDrawPlugin(Star):
             try:
                 self._local_queue_add(srv_key, prompt_id)
                 if self._cfg("return_queue_position", True):
-                    if ahead <= 0:
-                        await self._send(event, "任务已提交，正在生成中…")
-                    else:
-                        await self._send(event, f"任务已提交，前面还有 {ahead} 位在排队。")
+                    await self._send(event, self._queue_hint(ahead))
 
                 # 等待出图
                 timeout = int(self._cfg("draw_timeout", 300))
