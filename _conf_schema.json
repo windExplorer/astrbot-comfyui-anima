@@ -1,0 +1,321 @@
+{
+  "comfyui_servers": {
+    "description": "ComfyUI 服务器列表",
+    "hint": "可添加多个服务器，但同一时间只能启用一个（enabled=true）。绘图时自动选用启用的那一个；若都未启用则使用第一个。点击右上角“添加”新增条目。",
+    "type": "template_list",
+    "templates": {
+      "default": {
+        "name": "服务器",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "服务器名称",
+            "hint": "自定义标识，用于工作流绑定（server_name 填它）。",
+            "default": "server1"
+          },
+          "url": {
+            "type": "string",
+            "description": "服务地址",
+            "hint": "需包含 http(s)://，例如 http://127.0.0.1:8188",
+            "default": "http://127.0.0.1:8188"
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "是否启用",
+            "hint": "多个服务器只能启用一个，否则绘图会报错。",
+            "default": false
+          },
+          "client_id": {
+            "type": "string",
+            "description": "客户端 ID（可选）",
+            "hint": "用于区分队列中的任务，留空会自动生成。",
+            "default": ""
+          }
+        }
+      }
+    },
+    "default": []
+  },
+  "workflows": {
+    "description": "工作流列表",
+    "hint": "可添加多个工作流，每个工作流绑定一个服务器、配置节点 ID 与 LoRA。点击“添加”新增条目。",
+    "type": "template_list",
+    "templates": {
+      "default": {
+        "name": "工作流",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "工作流名称",
+            "hint": "指令 /draw --wf 和 AI 调用时引用此名。",
+            "default": "default"
+          },
+          "server_name": {
+            "type": "string",
+            "description": "绑定服务器",
+            "hint": "填上面服务器的 name；只有一个服务器时可留空。",
+            "default": ""
+          },
+          "is_anima": {
+            "type": "bool",
+            "description": "是否 Anima 工作流",
+            "hint": "若为 true，提交前会把中文提示词发到 Danbooru 标签服务器翻译为英文标签。",
+            "default": false
+          },
+          "workflow_name": {
+            "type": "string",
+            "description": "工作流文件名",
+            "hint": "插件数据目录 workflow/ 下的文件名（如 sd.json 或 sd）；只需填名字，不用写全路径，缺 .json 会自动补。也可改用最下方文本框直接粘贴 JSON。",
+            "default": ""
+          },
+          "positive_node": {
+            "type": "string",
+            "description": "正向提示词节点 ID",
+            "hint": "在导出的 JSON 里找 class_type 为 CLIPTextEncode 的正向提示词节点，把它的键名（如 6）填这里。",
+            "obvious_hint": true,
+            "default": ""
+          },
+          "positive_input": {
+            "type": "string",
+            "description": "正向下输入框名",
+            "hint": "该节点接收提示词的输入框名称，一般是 text。",
+            "default": "text"
+          },
+          "negative_node": {
+            "type": "string",
+            "description": "负向提示词节点 ID",
+            "hint": "负向 CLIPTextEncode 节点的键名（如 7）。",
+            "obvious_hint": true,
+            "default": ""
+          },
+          "negative_input": {
+            "type": "string",
+            "description": "负向下输入框名",
+            "hint": "一般是 text。",
+            "default": "text"
+          },
+          "width_node": {
+            "type": "string",
+            "description": "宽度节点 ID",
+            "hint": "Empty Latent Image 节点的键名（如 5），它控制出图宽度。",
+            "obvious_hint": true,
+            "default": ""
+          },
+          "width_input": {
+            "type": "string",
+            "description": "宽度输入框名",
+            "hint": "一般是 width。",
+            "default": "width"
+          },
+          "height_node": {
+            "type": "string",
+            "description": "高度节点 ID",
+            "hint": "同上 Empty Latent Image 节点键名，它控制出图高度。",
+            "obvious_hint": true,
+            "default": ""
+          },
+          "height_input": {
+            "type": "string",
+            "description": "高度输入框名",
+            "hint": "一般是 height。",
+            "default": "height"
+          },
+          "output_node": {
+            "type": "string",
+            "description": "输出节点 ID（可选）",
+            "hint": "SaveImage / PreviewImage 节点的键名；留空则自动取最后一个含 images 输出的节点。",
+            "default": ""
+          },
+          "default_width": {
+            "type": "int",
+            "description": "默认宽度",
+            "hint": "指令 / AI 未指定 --w 时使用。",
+            "slider": {
+              "min": 64,
+              "max": 2048,
+              "step": 64
+            },
+            "default": 512
+          },
+          "default_height": {
+            "type": "int",
+            "description": "默认高度",
+            "hint": "指令 / AI 未指定 --h 时使用。",
+            "slider": {
+              "min": 64,
+              "max": 2048,
+              "step": 64
+            },
+            "default": 512
+          },
+          "loras": {
+            "type": "template_list",
+            "description": "LoRA 列表",
+            "hint": "该工作流可用的 LoRA。每个 LoRA 的 load_node 指向工作流里对应的 LoraLoader 节点。可添加多个条目。",
+            "templates": {
+              "default": {
+                "name": "LoRA",
+                "display_item": "name",
+                "items": {
+                  "name": {
+                    "type": "string",
+                    "description": "LoRA 标识名",
+                    "hint": "AI 说“使用 xxx lora”时按此名匹配，也用于 /loraon、/loraoff。",
+                    "default": ""
+                  },
+                  "model_name": {
+                    "type": "string",
+                    "description": "文件名",
+                    "hint": "ComfyUI 中 LoRA 文件名（含扩展名），如 xxxx.safetensors。",
+                    "default": ""
+                  },
+                  "load_node": {
+                    "type": "string",
+                    "description": "加载节点 ID",
+                    "hint": "工作流里 LoraLoader 节点的键名（如 10）。",
+                    "obvious_hint": true,
+                    "default": ""
+                  },
+                  "enabled": {
+                    "type": "bool",
+                    "description": "默认启用",
+                    "hint": "也可在对话 / 指令中临时开启。",
+                    "default": false
+                  },
+                  "weight": {
+                    "type": "float",
+                    "description": "默认权重",
+                    "hint": "一般 0~2，默认 1。",
+                    "slider": {
+                      "min": 0,
+                      "max": 2,
+                      "step": 0.05
+                    },
+                    "default": 1.0
+                  },
+                  "model_input": {
+                    "type": "string",
+                    "description": "文件名输入框",
+                    "hint": "LoRA 文件名输入框名称，一般无需改（lora_name）。",
+                    "default": "lora_name"
+                  },
+                  "strength_model_input": {
+                    "type": "string",
+                    "description": "模型强度框",
+                    "hint": "一般无需改（strength_model）。",
+                    "default": "strength_model"
+                  },
+                  "strength_clip_input": {
+                    "type": "string",
+                    "description": "CLIP 强度框",
+                    "hint": "一般无需改（strength_clip）。",
+                    "default": "strength_clip"
+                  },
+                  "keywords": {
+                    "type": "list",
+                    "description": "触发关键词",
+                    "hint": "提示词里出现列表中的任一关键词时，自动启用该 LoRA。可添加多个，例如 猫娘、catgirl。",
+                    "default": []
+                  }
+                }
+              }
+            },
+            "default": []
+          },
+          "workflow_json": {
+            "type": "text",
+            "description": "直接粘贴 JSON（备选）",
+            "hint": "把 ComfyUI 里导出的 API 格式工作流 JSON 粘到这里（与 workflow_name 二选一）。放在最下方避免影响上方字段。",
+            "default": ""
+          }
+        }
+      }
+    },
+    "default": []
+  },
+  "default_workflow": {
+    "type": "string",
+    "description": "默认工作流名",
+    "hint": "留空则用第一个工作流。",
+    "default": ""
+  },
+  "danbooru": {
+    "type": "object",
+    "description": "Danbooru 标签服务器",
+    "hint": "用于 Anima 工作流翻译中文提示词。只需在用到 Anima 工作流时配置并启用。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用翻译",
+        "default": false
+      },
+      "url": {
+        "type": "string",
+        "description": "标签服务器地址",
+        "hint": "例如 http://127.0.0.1:11111",
+        "default": "http://127.0.0.1:11111"
+      },
+      "api_path": {
+        "type": "string",
+        "description": "搜索接口路径",
+        "default": "/api/search"
+      },
+      "limit": {
+        "type": "int",
+        "description": "标签数量上限",
+        "slider": {
+          "min": 1,
+          "max": 100,
+          "step": 1
+        },
+        "default": 20
+      },
+      "show_nsfw": {
+        "type": "bool",
+        "description": "包含 NSFW 标签",
+        "default": false
+      },
+      "use_segmentation": {
+        "type": "bool",
+        "description": "启用分词",
+        "default": true
+      },
+      "append_original": {
+        "type": "bool",
+        "description": "追加原文",
+        "hint": "翻译后是否在标签后追加用户原始中文描述。",
+        "default": false
+      }
+    }
+  },
+  "draw_timeout": {
+    "type": "int",
+    "description": "出图超时(秒)",
+    "hint": "等待 ComfyUI 出图的超时时间。",
+    "slider": {
+      "min": 30,
+      "max": 600,
+      "step": 10
+    },
+    "default": 120
+  },
+  "queue_poll_interval": {
+    "type": "int",
+    "description": "轮询间隔(秒)",
+    "hint": "查询队列 / 历史记录的轮询间隔。",
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "default": 2
+  },
+  "return_queue_position": {
+    "type": "bool",
+    "description": "返回排队位置",
+    "hint": "提交任务后是否先返回“前面还有多少位”。",
+    "default": true
+  }
+}
