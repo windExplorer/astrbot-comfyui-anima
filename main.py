@@ -8,7 +8,6 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.message_components import Image
 from astrbot.api.star import Context, Star, register
 
 try:
@@ -399,7 +398,7 @@ class ComfyUIDrawPlugin(Star):
                 tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
                 with open(tmp_path, "wb") as f:
                     f.write(data)
-                yield event.chain_result([Image.fromFileSystem(str(tmp_path))])
+                yield event.image_result(str(tmp_path))
         finally:
             await client.close()
 
