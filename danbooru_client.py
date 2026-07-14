@@ -21,6 +21,7 @@ class DanbooruClient:
         self.show_nsfw = show_nsfw
         self.use_segmentation = use_segmentation
         self.popularity = popularity
+        self.top_k = top_k
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
     async def search(self, query: str) -> str:
