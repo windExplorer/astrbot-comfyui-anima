@@ -258,6 +258,11 @@ class ComfyUIDrawPlugin(Star):
             bool(cfg.get("use_segmentation", True)),
         )
 
+    @staticmethod
+    def _has_chinese(text: str) -> bool:
+        """判断文本是否包含中文字符。用于决定是否调用 Danbooru 翻译。"""
+        return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
     # ------------------------------------------------------------------ #
     # 核心：提交并等待出图（异步生成器，yield 消息）
     # ------------------------------------------------------------------ #
@@ -326,8 +331,9 @@ class ComfyUIDrawPlugin(Star):
             return
 
         # Anima 工作流：中文提示词翻译为 Danbooru 标签
+        # 仅当提示词包含中文时才调用（纯英文/无中文时直接作为标签使用，跳过翻译）
         danbooru = self._build_danbooru()
-        if wf.get("is_anima") and danbooru is not None:
+        if wf.get("is_anima") and danbooru is not None and self._has_chinese(positive):
             try:
                 tags = await danbooru.search(positive)
             except Exception as e:
