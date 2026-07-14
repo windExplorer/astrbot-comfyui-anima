@@ -80,10 +80,10 @@ async def test_integration():
     pid = res["prompt_id"]
     print("   提交 prompt_id:", pid)
 
-    pos = await client.get_queue_position(pid)
-    counts = await client.get_queue_counts()
-    print("   队列位置(前面还有):", pos, " running/pending:", counts)
-    assert pos == 2, "mock 预置了 2 个虚拟任务，应返回前面还有 2 位"
+    # 注意：队列位置提示已改为插件内本地队列（见 main.ComfyUIDrawPlugin 的
+    # _server_pending / _local_queue_*），不再依赖 ComfyUI 的 /queue 接口，
+    # 因此这里只验证“提交 -> 等待完成 -> 取图 -> 下载”的全链路。
+    print("   已提交，等待出图（本地队列位置由插件统计，此处不再查询 /queue）")
 
     entry = await client.wait_for_result(pid, timeout=5, interval=0.3)
     assert entry is not None

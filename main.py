@@ -42,6 +42,10 @@ class ComfyUIDrawPlugin(Star):
         self.config = config or {}
         # 记录每个会话最近一次提交的任务，用于 /queuestatus
         self._last_prompt: dict[str, str] = {}
+        # 本地队列：记录本插件向每台 ComfyUI 服务器提交、但尚未完成的任务
+        # （prompt_id 列表，按提交顺序）。不依赖 ComfyUI 的 /queue 接口，
+        # 仅用于提示“前面还有几位”。
+        self._server_pending: dict[str, list] = {}
 
         # 插件数据目录：temp/ 存出图，workflow/ 存工作流文件
         self.data_dir = self._get_data_dir()
@@ -242,6 +246,25 @@ class ComfyUIDrawPlugin(Star):
         yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
         await event.send(MessageChain([Plain(str(text))]))
 
+    # ------------------------------------------------------------------ #
+    # 本地队列：避免依赖 ComfyUI 的 /queue 接口，仅按提交顺序统计待处理任务
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _server_key(server: dict) -> str:
+        return str(server.get("name") or server.get("url") or "default")
+
+    def _local_queue_ahead(self, key: str) -> int:
+        """当前服务器上、本次提交之前已排队的任务数量（即“前面还有几位”）。"""
+        return len(self._server_pending.get(key, []))
+
+    def _local_queue_add(self, key: str, prompt_id: str) -> None:
+        self._server_pending.setdefault(key, []).append(prompt_id)
+
+    def _local_queue_remove(self, key: str, prompt_id: str) -> None:
+        lst = self._server_pending.get(key)
+        if lst and prompt_id in lst:
+            lst.remove(prompt_id)
+
     async def _do_draw(
         self,
         event: AstrMessageEvent,
@@ -340,6 +363,7 @@ class ComfyUIDrawPlugin(Star):
 
         # 提交到 ComfyUI
         client = self._build_client(server)
+        srv_key = self._server_key(server)
         try:
             try:
                 result = await client.queue_prompt(prompt)
@@ -358,53 +382,57 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 pass
 
-            # 返回队列位置（用 send 主动发送进度，避免占用 yield 触发额外的 pipeline 阶段）
-            if self._cfg("return_queue_position", True):
-                pos = await client.get_queue_position(prompt_id)
-                if pos is None:
-                    await self._send(event, "任务已提交，正在排队（无法获取队列位置）。")
-                elif pos == 0:
-                    await self._send(event, "任务已提交，正在生成中…")
-                else:
-                    await self._send(event, f"任务已提交，前面还有 {pos} 位在排队。")
+            # 本地队列：本次提交之前已排队的任务数即为“前面还有几位”（只提示一次，
+            # 不调用 ComfyUI 的 /queue 接口）。
+            ahead = self._local_queue_ahead(srv_key)
+            try:
+                self._local_queue_add(srv_key, prompt_id)
+                if self._cfg("return_queue_position", True):
+                    if ahead <= 0:
+                        await self._send(event, "任务已提交，正在生成中…")
+                    else:
+                        await self._send(event, f"任务已提交，前面还有 {ahead} 位在排队。")
 
-            # 等待出图
-            timeout = int(self._cfg("draw_timeout", 300))
-            interval = max(1, int(self._cfg("queue_poll_interval", 2)))
-            history = await client.wait_for_result(prompt_id, timeout, interval)
-            if not history:
-                # 再做一次兜底（极少数情况下历史在超时边界才写入）
-                try:
-                    final = await client.get_history(prompt_id)
-                    history = final.get(prompt_id) if final else None
-                except Exception:
-                    history = None
-            if not history:
-                await self._send(event, 
-                    f"出图超时（{timeout} 秒），但 ComfyUI 可能仍在生成，请稍后在 ComfyUI 中确认结果。"
-                )
-                return
-
-            images = comfyui_client.extract_images(history, wf.get("output_node"))
-            if not images:
-                await self._send(event, "任务完成，但未找到输出图片节点。")
-                return
-
-            for img in images:
-                try:
-                    data = await client.get_image(
-                        img["filename"],
-                        img.get("subfolder", ""),
-                        img.get("type", ""),
+                # 等待出图
+                timeout = int(self._cfg("draw_timeout", 300))
+                interval = max(1, int(self._cfg("queue_poll_interval", 2)))
+                history = await client.wait_for_result(prompt_id, timeout, interval)
+                if not history:
+                    # 再做一次兜底（极少数情况下历史在超时边界才写入）
+                    try:
+                        final = await client.get_history(prompt_id)
+                        history = final.get(prompt_id) if final else None
+                    except Exception:
+                        history = None
+                if not history:
+                    await self._send(event, 
+                        f"出图超时（{timeout} 秒），但 ComfyUI 可能仍在生成，请稍后在 ComfyUI 中确认结果。"
                     )
-                except Exception as e:
-                    await self._send(event, f"下载图片失败：{e}")
-                    continue
-                suffix = os.path.splitext(img["filename"])[1] or ".png"
-                tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
-                with open(tmp_path, "wb") as f:
-                    f.write(data)
-                yield event.image_result(str(tmp_path))
+                    return
+
+                images = comfyui_client.extract_images(history, wf.get("output_node"))
+                if not images:
+                    await self._send(event, "任务完成，但未找到输出图片节点。")
+                    return
+
+                for img in images:
+                    try:
+                        data = await client.get_image(
+                            img["filename"],
+                            img.get("subfolder", ""),
+                            img.get("type", ""),
+                        )
+                    except Exception as e:
+                        await self._send(event, f"下载图片失败：{e}")
+                        continue
+                    suffix = os.path.splitext(img["filename"])[1] or ".png"
+                    tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
+                    with open(tmp_path, "wb") as f:
+                        f.write(data)
+                    yield event.image_result(str(tmp_path))
+            finally:
+                # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
+                self._local_queue_remove(srv_key, prompt_id)
         finally:
             await client.close()
 
@@ -571,7 +599,7 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("queuestatus")
     async def cmd_queuestatus(self, event: AstrMessageEvent):
-        """查询 ComfyUI 队列状态，以及你最近一次任务前面还有多少位。可用 --wf 指定服务器所在工作流。"""
+        """查询本地队列状态，以及你最近一次任务前面还有多少位。可用 --wf 指定服务器所在工作流。"""
         args = self._strip_command(event.message_str, "queuestatus")
         m = re.search(r"--wf\s+(\S+)", args or "")
         wf_name = m.group(1) if m else None
@@ -581,22 +609,22 @@ class ComfyUIDrawPlugin(Star):
         except ValueError as e:
             await self._send(event, str(e))
             return
-        client = self._build_client(server)
-        try:
-            running, pending = await client.get_queue_counts()
-            lines = [f"ComfyUI「{server.get('name')}」队列：", f"生成中：{running} 个", f"排队中：{pending} 个"]
-            pid = self._last_prompt.get(event.session_id or "global")
-            if pid:
-                pos = await client.get_queue_position(pid)
-                if pos is None:
-                    lines.append("你的最近一次任务已不在队列中（可能已完成）。")
-                elif pos == 0:
-                    lines.append("你的最近一次任务正在生成中。")
-                else:
-                    lines.append(f"你的最近一次任务前面还有 {pos} 位。")
-            await self._send(event, "\n".join(lines))
-        finally:
-            await client.close()
+        srv_key = self._server_key(server)
+        pending = self._server_pending.get(srv_key, [])
+        lines = [
+            f"ComfyUI「{server.get('name')}」本地队列：",
+            f"待处理任务：{len(pending)} 个（含正在生成）",
+        ]
+        pid = self._last_prompt.get(event.session_id or "global")
+        if pid and pid in pending:
+            pos = pending.index(pid)
+            if pos == 0:
+                lines.append("你的最近一次任务正在生成中。")
+            else:
+                lines.append(f"你的最近一次任务前面还有 {pos} 位。")
+        else:
+            lines.append("你的最近一次任务已不在本地队列中（可能已完成）。")
+        await self._send(event, "\n".join(lines))
         event.stop_event()
 
     # ------------------------------------------------------------------ #

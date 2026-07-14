@@ -45,9 +45,6 @@ class ComfyUIClient:
         payload = {"prompt": prompt, "client_id": client_id or self.client_id}
         return await self._post("/prompt", payload)
 
-    async def get_queue(self) -> dict:
-        return await self._get("/queue")
-
     async def get_history(self, prompt_id: str | None = None) -> dict:
         if prompt_id:
             return await self._get(f"/history/{prompt_id}")
@@ -62,31 +59,6 @@ class ComfyUIClient:
         async with session.get(url) as resp:
             resp.raise_for_status()
             return await resp.read()
-
-    async def get_queue_position(self, prompt_id: str) -> int | None:
-        """返回指定任务前面还有多少位在排队；正在生成返回 0；找不到返回 None。"""
-        try:
-            queue = await self.get_queue()
-        except Exception:
-            return None
-        running = queue.get("queue_running", [])
-        pending = queue.get("queue_pending", [])
-        for item in running:
-            if _item_prompt_id(item) == prompt_id:
-                return 0
-        ahead = len(running)
-        for i, item in enumerate(pending):
-            if _item_prompt_id(item) == prompt_id:
-                return ahead + i
-        return None
-
-    async def get_queue_counts(self) -> tuple[int, int]:
-        """返回 (正在生成数量, 排队中数量)。"""
-        try:
-            queue = await self.get_queue()
-        except Exception:
-            return (0, 0)
-        return (len(queue.get("queue_running", [])), len(queue.get("queue_pending", [])))
 
     async def wait_for_result(
         self, prompt_id: str, timeout: int, interval: int
@@ -115,14 +87,6 @@ class ComfyUIClient:
                 return None
             await asyncio.sleep(interval)
             elapsed += interval
-
-
-def _item_prompt_id(item) -> str | None:
-    """queue 列表项结构为 [序号, {prompt_id:...}, [extra]]。"""
-    try:
-        return item[1].get("prompt_id")
-    except Exception:
-        return None
 
 
 def extract_images(history_entry: dict, output_node: str | None = None) -> list[dict]:
