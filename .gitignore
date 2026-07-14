@@ -208,6 +208,8 @@ __marimo__/
 
 # 参考项目（仅本地对照用，不入库）
 astrbot_plugin_GPT_SoVITS-main/
+AstrBot-master/
+astrbot_plugin_comfyui_hub-master/
 
 # 构建产物
 astrbot_plugin_comfyui_anima.zip
