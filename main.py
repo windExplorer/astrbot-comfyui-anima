@@ -387,7 +387,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/draw
     # ------------------------------------------------------------------ #
     @filter.command("draw")
-    async def cmd_draw(self, event: AstrMessageEvent):
+    async def cmd_draw(self, event: AstrMessageEvent, *args):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流名] [--lora 名称[:权重]] [--w 宽] [--h 高]"""
         args = self._strip_command(event.message_str, "draw")
         prompt, lora_map, width, height, wf_name = self._parse_draw_args(args or "")
@@ -445,7 +445,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/loralist 列出可配置 LoRA
     # ------------------------------------------------------------------ #
     @filter.command("loralist")
-    async def cmd_loralist(self, event: AstrMessageEvent):
+    async def cmd_loralist(self, event: AstrMessageEvent, *args):
         """列出当前工作流可配置的 LoRA 及其启用状态。可用 --wf 指定工作流。"""
         args = self._strip_command(event.message_str, "loralist")
         wf_name = None
@@ -482,13 +482,13 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/loraon /loraoff 持久化启用/禁用某个 LoRA
     # ------------------------------------------------------------------ #
     @filter.command("loraon")
-    async def cmd_loraon(self, event: AstrMessageEvent):
+    async def cmd_loraon(self, event: AstrMessageEvent, *args):
         """启用某个 LoRA（持久化）。用法：/loraon 名称 [--wf 工作流名]"""
         args = self._strip_command(event.message_str, "loraon")
         await self._set_lora_enabled(args, True, event)
 
     @filter.command("loraoff")
-    async def cmd_loraoff(self, event: AstrMessageEvent):
+    async def cmd_loraoff(self, event: AstrMessageEvent, *args):
         """禁用某个 LoRA（持久化）。用法：/loraoff 名称 [--wf 工作流名]"""
         args = self._strip_command(event.message_str, "loraoff")
         await self._set_lora_enabled(args, False, event)
@@ -531,7 +531,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/queuestatus 查询队列
     # ------------------------------------------------------------------ #
     @filter.command("queuestatus")
-    async def cmd_queuestatus(self, event: AstrMessageEvent):
+    async def cmd_queuestatus(self, event: AstrMessageEvent, *args):
         """查询 ComfyUI 队列状态，以及你最近一次任务前面还有多少位。可用 --wf 指定服务器所在工作流。"""
         args = self._strip_command(event.message_str, "queuestatus")
         m = re.search(r"--wf\s+(\S+)", args or "")
@@ -563,7 +563,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/workflows 列出/选择默认工作流
     # ------------------------------------------------------------------ #
     @filter.command("workflows")
-    async def cmd_workflows(self, event: AstrMessageEvent):
+    async def cmd_workflows(self, event: AstrMessageEvent, *args):
         """列出工作流，或设置默认工作流：/workflows set 名称"""
         args = self._strip_command(event.message_str, "workflows")
         m = re.match(r"set\s+(\S+)", (args or "").strip())
@@ -594,7 +594,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/drawhelp 帮助
     # ------------------------------------------------------------------ #
     @filter.command("drawhelp")
-    async def cmd_help(self, event: AstrMessageEvent):
+    async def cmd_help(self, event: AstrMessageEvent, *args):
         """显示绘图插件帮助。"""
         text = (
             "ComfyUI 绘图插件使用帮助：\n"
