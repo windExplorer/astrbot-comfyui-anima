@@ -13,9 +13,9 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 
 ## 安装
 
-通过 AstrBot WebUI 的「插件管理 → 上传 zip」安装本插件（选 `astrbot_plugin_comfyui_anima.zip`），或在 `data/plugins/` 下放入本仓库（文件夹名 `astrbot-comfyui-anima`）。安装后 `requirements.txt` 中的依赖会被自动安装。
+通过 AstrBot WebUI 的「插件管理 → 上传 zip」安装本插件（选 `astrbot_plugin_comfyui_anima.zip`），或把整个插件目录放到 AstrBot 的 `data/plugins/` 下。安装后 `requirements.txt` 中的依赖会被自动安装。
 
-插件启动后会在其**数据目录**（由 `StarTools.get_data_dir()` 提供，通常为 `data/plugins/astrbot_plugin_comfyui_anima/`）下自动创建两个子目录：
+插件启动后会在其**数据目录** `data/plugin_data/astrbot_plugin_comfyui_anima/`（AstrBot 数据根下的 `plugin_data/<插件id>/`）下自动创建两个子目录：
 
 - `temp/`：存放 ComfyUI 返回的图片（超过 1 天自动清理）
 - `workflow/`：存放工作流 JSON 文件
@@ -31,14 +31,11 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 - `client_id`：可留空自动生成
 
 ### workflows（工作流列表）
-
-> 这是**可添加多条**的列表：在 WebUI 里点「添加」即可新增一个工作流条目，每条都能展开配置下面的全部字段（含其内部的 LoRA 列表，同样可添加多条）。`comfyui_servers`（服务器）也是同样的可添加多条列表。
-
 每个工作流：
 - `name`：工作流名称（指令 / AI 调用时引用）
 - `server_name`：绑定的服务器名称；留空则自动用唯一启用的那个
 - `is_anima`：是否为 Anima 工作流（是则先翻译中文提示词）
-- `workflow_name`：工作流 JSON 文件名（放在插件数据目录的 `workflow/` 下，如 `sd.json` 或 `sd`；只需填名字，不用写全路径，缺 `.json` 自动补）。优先级高于下一项
+- `workflow_name`：工作流 JSON 文件名（放在 `data/plugin_data/astrbot_plugin_comfyui_anima/workflow/` 下，如 `sd.json` 或 `sd`；只需填名字，不用写全路径，缺 `.json` 自动补）。优先级高于下一项
 - `workflow_json`：直接粘贴 ComfyUI 导出的 **API 格式**工作流 JSON（与 `workflow_name` 二选一）
 - `positive_node` / `positive_input`：正向提示词节点 ID 与输入框名（默认 `text`）
 - `negative_node` / `negative_input`：负向提示词节点 ID 与输入框名（默认 `text`）
@@ -64,8 +61,8 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 ### 其他
 - `default_workflow`：默认工作流名
 - `draw_timeout`：出图等待超时（秒，默认 120）
-- `queue_poll_interval`：轮询间隔（秒，默认 2）
-- `return_queue_position`：提交后是否返回排队位置
+- `queue_poll_interval`：轮询出图结果的间隔（秒，默认 2）
+- `return_queue_position`：提交后是否发送可爱提示（无排队说在出图，有排队说前面几位）
 
 ## 使用
 

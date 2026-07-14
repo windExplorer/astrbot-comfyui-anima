@@ -217,7 +217,7 @@
   "queue_poll_interval": {
     "type": "int",
     "description": "轮询间隔(秒)",
-    "hint": "查询队列 / 历史记录的轮询间隔。",
+    "hint": "轮询出图结果的间隔（等待 ComfyUI 生成完成时使用，不再查询队列）。",
     "slider": {
       "min": 1,
       "max": 10,
@@ -227,8 +227,8 @@
   },
   "return_queue_position": {
     "type": "bool",
-    "description": "返回排队位置",
-    "hint": "提交任务后是否先返回“前面还有多少位”。",
+    "description": "提交后发送提示",
+    "hint": "提交绘图任务后是否发送可爱提示（无排队时提示正在出图，有排队时提示前面还有几位）。",
     "default": true
   }
 }
