@@ -204,7 +204,7 @@
           "max": 1,
           "step": 0.05
         },
-        "default": 0.85
+        "default": 0.15
       },
       "top_k": {
         "type": "int",

@@ -11,7 +11,7 @@ class DanbooruClient:
         limit: int = 20,
         show_nsfw: bool = False,
         use_segmentation: bool = True,
-        popularity: float = 0.85,
+        popularity: float = 0.15,
         top_k: int = 20,
         timeout: int = 120,
     ) -> None:
