@@ -11,6 +11,7 @@ class DanbooruClient:
         limit: int = 20,
         show_nsfw: bool = False,
         use_segmentation: bool = True,
+        popularity: float = 0.85,
         timeout: int = 120,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -18,6 +19,7 @@ class DanbooruClient:
         self.limit = limit
         self.show_nsfw = show_nsfw
         self.use_segmentation = use_segmentation
+        self.popularity = popularity
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
     async def search(self, query: str) -> str:
@@ -29,6 +31,7 @@ class DanbooruClient:
             "limit": self.limit,
             "show_nsfw": self.show_nsfw,
             "use_segmentation": self.use_segmentation,
+            "popularity": self.popularity,
         }
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
