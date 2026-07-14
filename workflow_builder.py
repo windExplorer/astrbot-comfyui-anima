@@ -1,7 +1,8 @@
-"""工作流 JSON 的加载与节点字段注入（提示词 / 宽高 / LoRA）。"""
+"""工作流 JSON 的加载与节点字段注入（提示词 / 宽高 / LoRA / 种子）。"""
 
 import json
 import os
+import random
 
 
 def load_workflow(path: str | None = None, json_text: str | None = None) -> dict:
@@ -58,6 +59,30 @@ def find_node_by_class(prompt: dict, class_type: str):
         if isinstance(node, dict) and (node.get("class_type") or "") == class_type:
             return nid
     return None
+
+
+def randomize_seed(prompt: dict, seed: int | None = None) -> list[int]:
+    """为工作流中所有采样器节点随机化（或固定）种子。
+
+    默认 ComfyUI 工作流会写死一个固定 seed，导致同一提示词每次出图完全一致。
+    本函数在每次提交前随机设置 seed（或按传入的 seed 固定），覆盖 KSampler 的
+    `seed` 与 KSamplerAdvanced 的 `noise_seed` 输入。返回实际被设置的种子列表。
+    """
+    seeds: list[int] = []
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        cls = (node.get("class_type") or "").lower()
+        if "sampler" not in cls:
+            continue
+        inputs = node.setdefault("inputs", {})
+        # 每个采样器节点各自取一个种子（固定时统一使用传入值）
+        s = seed if seed is not None else random.randint(0, 2**63 - 1)
+        for field in ("seed", "noise_seed"):
+            if field in inputs:
+                inputs[field] = s
+                seeds.append(s)
+    return seeds
 
 
 def apply_loras(

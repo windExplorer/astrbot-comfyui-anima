@@ -246,6 +246,7 @@ class ComfyUIDrawPlugin(Star):
         width: int | None,
         height: int | None,
         lora_map: dict[str, float | None] | None,
+        seed: int | None = None,
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
@@ -327,6 +328,11 @@ class ComfyUIDrawPlugin(Star):
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
 
+        # 随机化种子（未指定 --seed 时），避免每次出图完全相同
+        seeds_used = workflow_builder.randomize_seed(prompt, seed)
+        if seeds_used:
+            logger.info(f"本次种子: {seeds_used}")
+
         # 提交到 ComfyUI
         client = self._build_client(server)
         try:
@@ -405,23 +411,24 @@ class ComfyUIDrawPlugin(Star):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流名] [--lora 名称[:权重]] [--w 宽] [--h 高]"""
         event.stop_event()
         args = self._strip_command(event.message_str, "draw")
-        prompt, lora_map, width, height, wf_name = self._parse_draw_args(args or "")
+        prompt, lora_map, width, height, wf_name, seed = self._parse_draw_args(args or "")
         if not prompt.strip():
             yield event.plain_result(
-                "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768"
+                "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
             )
             return
         async for m in self._do_draw(
-            event, wf_name, prompt, "", width, height, lora_map
+            event, wf_name, prompt, "", width, height, lora_map, seed
         ):
             yield m
 
     def _parse_draw_args(self, text: str):
-        """解析绘图指令参数，返回 (prompt, lora_map, width, height, workflow)。"""
+        """解析绘图指令参数，返回 (prompt, lora_map, width, height, workflow, seed)。"""
         lora_map: dict[str, float | None] = {}
         width = None
         height = None
         wf_name = None
+        seed = None
 
         def consume(pattern):
             out = []
@@ -451,10 +458,17 @@ class ComfyUIDrawPlugin(Star):
 
         for m in consume(r"--h\s+(\d+)"):
             height = int(m.group(1))
+            text = text.replace(m.group(0), ")
+
+        for m in consume(r"--seed\s+(\d+)"):
+            try:
+                seed = int(m.group(1))
+            except ValueError:
+                seed = None
             text = text.replace(m.group(0), " ")
 
         prompt = text.strip()
-        return prompt, (lora_map or None), width, height, wf_name
+        return prompt, (lora_map or None), width, height, wf_name, seed
 
     # ------------------------------------------------------------------ #
     # 指令：/loralist 列出可配置 LoRA
@@ -619,7 +633,7 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
         text = (
             "ComfyUI 绘图插件使用帮助：\n"
-            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--w 宽] [--h 高]  绘图\n"
+            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
             "/loralist [--wf 工作流]   列出 LoRA\n"
             "/loraon 名称 [--wf 工作流]  启用 LoRA\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA\n"
@@ -642,6 +656,7 @@ class ComfyUIDrawPlugin(Star):
         width: int = 0,
         height: int = 0,
         loras: list = None,
+        seed: int = 0,
     ):
         """使用 ComfyUI 生成图片。
 
@@ -652,6 +667,7 @@ class ComfyUIDrawPlugin(Star):
             width(number): 图片宽度，0 表示使用工作流默认宽度。
             height(number): 图片高度，0 表示使用工作流默认高度。
             loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
+            seed(number): 随机种子，0 或不填表示每次随机，填具体数字可复现同一张图。
         """
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -675,5 +691,6 @@ class ComfyUIDrawPlugin(Star):
             width or None,
             height or None,
             lora_map,
+            seed or None,
         ):
             yield m
