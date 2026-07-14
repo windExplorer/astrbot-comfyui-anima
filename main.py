@@ -24,6 +24,9 @@ except ImportError:
     import danbooru_client
     import workflow_builder
 
+# 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
+_PLUGIN_INSTANCE = None
+
 
 @register(
     "astrbot_plugin_comfyui_anima",
@@ -34,6 +37,8 @@ except ImportError:
 class ComfyUIDrawPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None) -> None:
         super().__init__(context)
+        global _PLUGIN_INSTANCE
+        _PLUGIN_INSTANCE = self
         self.config = config or {}
         # 记录每个会话最近一次提交的任务，用于 /queuestatus
         self._last_prompt: dict[str, str] = {}
@@ -242,6 +247,8 @@ class ComfyUIDrawPlugin(Star):
         height: int | None,
         lora_map: dict[str, float | None] | None,
     ):
+        # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
+        self._last_event = event
         if not positive or not positive.strip():
             yield event.plain_result("请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
@@ -387,7 +394,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/draw
     # ------------------------------------------------------------------ #
     @filter.command("draw")
-    async def cmd_draw(self, event: AstrMessageEvent, _prompt: str = ""):
+    async def cmd_draw(self, event: AstrMessageEvent):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流名] [--lora 名称[:权重]] [--w 宽] [--h 高]"""
         event.stop_event()
         args = self._strip_command(event.message_str, "draw")
@@ -446,7 +453,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/loralist 列出可配置 LoRA
     # ------------------------------------------------------------------ #
     @filter.command("loralist")
-    async def cmd_loralist(self, event: AstrMessageEvent, _arg: str = ""):
+    async def cmd_loralist(self, event: AstrMessageEvent):
         """列出当前工作流可配置的 LoRA 及其启用状态。可用 --wf 指定工作流。"""
         event.stop_event()
         args = self._strip_command(event.message_str, "loralist")
@@ -484,14 +491,14 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/loraon /loraoff 持久化启用/禁用某个 LoRA
     # ------------------------------------------------------------------ #
     @filter.command("loraon")
-    async def cmd_loraon(self, event: AstrMessageEvent, _name: str = ""):
+    async def cmd_loraon(self, event: AstrMessageEvent):
         """启用某个 LoRA（持久化）。用法：/loraon 名称 [--wf 工作流名]"""
         event.stop_event()
         args = self._strip_command(event.message_str, "loraon")
         await self._set_lora_enabled(args, True, event)
 
     @filter.command("loraoff")
-    async def cmd_loraoff(self, event: AstrMessageEvent, _name: str = ""):
+    async def cmd_loraoff(self, event: AstrMessageEvent):
         """禁用某个 LoRA（持久化）。用法：/loraoff 名称 [--wf 工作流名]"""
         event.stop_event()
         args = self._strip_command(event.message_str, "loraoff")
@@ -535,7 +542,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/queuestatus 查询队列
     # ------------------------------------------------------------------ #
     @filter.command("queuestatus")
-    async def cmd_queuestatus(self, event: AstrMessageEvent, _arg: str = ""):
+    async def cmd_queuestatus(self, event: AstrMessageEvent):
         """查询 ComfyUI 队列状态，以及你最近一次任务前面还有多少位。可用 --wf 指定服务器所在工作流。"""
         event.stop_event()
         args = self._strip_command(event.message_str, "queuestatus")
@@ -568,7 +575,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/workflows 列出/选择默认工作流
     # ------------------------------------------------------------------ #
     @filter.command("workflows")
-    async def cmd_workflows(self, event: AstrMessageEvent, _arg: str = ""):
+    async def cmd_workflows(self, event: AstrMessageEvent):
         """列出工作流，或设置默认工作流：/workflows set 名称"""
         event.stop_event()
         args = self._strip_command(event.message_str, "workflows")
@@ -600,7 +607,7 @@ class ComfyUIDrawPlugin(Star):
     # 指令：/drawhelp 帮助
     # ------------------------------------------------------------------ #
     @filter.command("drawhelp")
-    async def cmd_help(self, event: AstrMessageEvent, _arg: str = ""):
+    async def cmd_help(self, event: AstrMessageEvent):
         """显示绘图插件帮助。"""
         event.stop_event()
         text = (
@@ -639,10 +646,21 @@ class ComfyUIDrawPlugin(Star):
             height(number): 图片高度，0 表示使用工作流默认高度。
             loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
         """
+        # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
+        # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
+        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
+        if plugin is None:
+            plugin = self
+        if not isinstance(event, AstrMessageEvent):
+            event = getattr(plugin, "_last_event", None)
+        if event is None:
+            yield "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
+            return
+
         lora_map = None
         if loras:
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
-        async for m in self._do_draw(
+        async for m in plugin._do_draw(
             event,
             workflow or None,
             prompt,
