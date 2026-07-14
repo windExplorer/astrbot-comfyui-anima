@@ -99,6 +99,68 @@ class ComfyUIDrawPlugin(Star):
     def _workflows(self) -> list[dict]:
         return self._cfg("workflows", []) or []
 
+    def _loras_of(self, wf: dict) -> list[dict]:
+        """从工作流配置解析 LoRA 列表。
+
+        优先使用新版文本格式 loras_text（每行 名称|别名|权重|0/1）；
+        若为空则兼容旧版结构化 loras 列表。
+        """
+        text = (wf.get("loras_text") or "").strip()
+        if text:
+            return self._parse_loras_text(text)
+        return wf.get("loras", []) or []
+
+    @staticmethod
+    def _parse_loras_text(text: str) -> list[dict]:
+        """解析多行 LoRA 文本为配置列表。每行：名称|别名(文件名)|权重|0/1。"""
+        out: list[dict] = []
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if not parts[0]:
+                continue
+            name = parts[0]
+            model_name = parts[1] if len(parts) > 1 else ""
+            try:
+                weight = float(parts[2]) if len(parts) > 2 and parts[2] != "" else 1.0
+            except ValueError:
+                weight = 1.0
+            enabled = True
+            if len(parts) > 3 and parts[3] != "":
+                enabled = parts[3] not in ("0", "0.0", "false", "False", "禁用", "关")
+            out.append(
+                {
+                    "name": name,
+                    "model_name": model_name,
+                    "weight": weight,
+                    "enabled": enabled,
+                    # load_node 留空，apply_loras 时自动探测工作流里的 LoraLoader 节点
+                    "load_node": "",
+                    "model_input": "lora_name",
+                    "strength_model_input": "strength_model",
+                    "strength_clip_input": "strength_clip",
+                    "keywords": [],
+                }
+            )
+        return out
+
+    @staticmethod
+    def _serialize_loras_text(loras: list[dict]) -> str:
+        """将 LoRA 列表序列化回 名称|别名|权重|0/1 文本（用于 loraon/loraoff 持久化）。"""
+        lines = []
+        for l in loras:
+            name = (l.get("name") or "").strip()
+            if not name:
+                continue
+            model = (l.get("model_name") or "").strip()
+            weight = l.get("weight", 1.0)
+            wstr = str(int(weight)) if float(weight) == int(weight) else str(weight)
+            enabled = 1 if l.get("enabled", False) else 0
+            lines.append(f"{name}|{model}|{wstr}|{enabled}")
+        return "\n".join(lines)
+
     @staticmethod
     def _strip_command(message_str: str, cmd: str) -> str:
         """从消息文本中去掉命令触发词（如 /draw），返回剩余参数文本。"""
@@ -215,30 +277,32 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     positive = tags
 
-        # 注入提示词
+        # 注入提示词（正/负下输入框名固定为 text，无需配置）
         workflow_builder.set_text_node(
-            prompt, wf.get("positive_node"), wf.get("positive_input", "text"), positive
+            prompt, wf.get("positive_node"), "text", positive
         )
         if negative:
             workflow_builder.set_text_node(
-                prompt,
-                wf.get("negative_node"),
-                wf.get("negative_input", "text"),
-                negative,
+                prompt, wf.get("negative_node"), "text", negative
             )
 
-        # 注入宽高
+        # 注入宽高（宽高同属一个节点）
         w = width or int(wf.get("default_width", 512) or 512)
         h = height or int(wf.get("default_height", 512) or 512)
-        workflow_builder.set_number_node(
-            prompt, wf.get("width_node"), wf.get("width_input", "width"), w
-        )
-        workflow_builder.set_number_node(
-            prompt, wf.get("height_node"), wf.get("height_input", "height"), h
-        )
+        res_node = wf.get("resolution_node") or ""
+        if not res_node:
+            # 未配置宽高节点时自动探测 EmptyLatentImage
+            res_node = workflow_builder.find_node_by_class(
+                prompt, "EmptyLatentImage"
+            )
+        width_field = wf.get("resolution_width_field", "width") or "width"
+        height_field = wf.get("resolution_height_field", "height") or "height"
+        if res_node:
+            workflow_builder.set_number_node(prompt, res_node, width_field, w)
+            workflow_builder.set_number_node(prompt, res_node, height_field, h)
 
         # 注入 LoRA（合并关键词自动匹配）
-        loras_cfg = wf.get("loras", []) or []
+        loras_cfg = self._loras_of(wf)
         if lora_map is None:
             auto = workflow_builder.collect_keyword_loras(loras_cfg, positive)
             # 默认启用项 + 关键词命中的项
@@ -393,7 +457,7 @@ class ComfyUIDrawPlugin(Star):
         except ValueError as e:
             yield event.plain_result(str(e))
             return
-        loras = wf.get("loras", []) or []
+        loras = self._loras_of(wf)
         if not loras:
             yield event.plain_result(f"工作流「{wf.get('name')}」未配置任何 LoRA。")
             return
@@ -405,9 +469,12 @@ class ComfyUIDrawPlugin(Star):
                 kw_str = ", ".join(k.strip() for k in raw.split(",") if k.strip())
             else:
                 kw_str = ", ".join(str(k).strip() for k in raw)
+            model = l.get("model_name") or ""
             lines.append(
-                f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}）"
+                f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}"
+                + (f"，文件 {model}" if model else "")
                 + (f"，关键词：{kw_str}" if kw_str else "")
+                + "）"
             )
         yield event.plain_result("\n".join(lines))
 
@@ -437,7 +504,7 @@ class ComfyUIDrawPlugin(Star):
             wf = self._resolve_workflow(wf_name)
             workflows = self._workflows()
             wf_index = workflows.index(wf)
-            loras = wf.get("loras", []) or []
+            loras = self._loras_of(wf)
             target = None
             for i, l in enumerate(loras):
                 if (l.get("name") or "").strip() == name:
@@ -447,7 +514,8 @@ class ComfyUIDrawPlugin(Star):
                 yield event.plain_result(f"工作流「{wf.get('name')}」中找不到 LoRA「{name}」。")
                 return
             loras[target]["enabled"] = enabled
-            workflows[wf_index]["loras"] = loras
+            workflows[wf_index]["loras_text"] = self._serialize_loras_text(loras)
+            workflows[wf_index].pop("loras", None)
             self.config["workflows"] = workflows
             self.config.save_config()
         except ValueError as e:

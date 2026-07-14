@@ -52,6 +52,14 @@ def set_number_node(
     return True
 
 
+def find_node_by_class(prompt: dict, class_type: str):
+    """返回工作流中第一个匹配 class_type 的节点 ID（找不到返回 None）。"""
+    for nid, node in prompt.items():
+        if isinstance(node, dict) and (node.get("class_type") or "") == class_type:
+            return nid
+    return None
+
+
 def apply_loras(
     prompt: dict,
     loras_config: list[dict],
@@ -65,11 +73,25 @@ def apply_loras(
     返回实际启用的 LoRA 名称列表。
     """
     enabled_names: list[str] = []
+    # 预收集工作流中的 LoraLoader 节点（按字典顺序），load_node 为空时按顺序自动分配
+    loader_nodes = [
+        nid
+        for nid, node in prompt.items()
+        if isinstance(node, dict) and (node.get("class_type") or "").endswith("LoraLoader")
+    ]
+    auto_idx = 0
     for lora in loras_config or []:
         name = (lora.get("name") or "").strip()
         load_node = lora.get("load_node")
-        if not name or not load_node:
+        if not name:
             continue
+        if not load_node:
+            # 文本配置未指定 load_node：自动分配一个 LoraLoader 节点
+            if auto_idx < len(loader_nodes):
+                load_node = loader_nodes[auto_idx]
+                auto_idx += 1
+            else:
+                continue
         node = _get_node(prompt, load_node)
         if node is None:
             continue
