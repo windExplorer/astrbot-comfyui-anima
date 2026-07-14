@@ -12,6 +12,7 @@ class DanbooruClient:
         show_nsfw: bool = False,
         use_segmentation: bool = True,
         popularity: float = 0.85,
+        top_k: int = 20,
         timeout: int = 120,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -32,6 +33,7 @@ class DanbooruClient:
             "show_nsfw": self.show_nsfw,
             "use_segmentation": self.use_segmentation,
             "popularity": self.popularity,
+            "top_k": self.top_k,
         }
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:

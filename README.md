@@ -58,6 +58,7 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 - `api_path`：`/api/search`
 - `limit` / `show_nsfw` / `use_segmentation` / `append_original`
 - `popularity`：标签流行度阈值（0~1，默认 `0.85`），仅返回流行度不低于该值的标签，值越高过滤掉的生僻标签越多
+- `top_k`：候选标签数量上限（默认 `20`）
 
 ### 其他
 - `default_workflow`：默认工作流名

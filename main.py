@@ -257,6 +257,7 @@ class ComfyUIDrawPlugin(Star):
             bool(cfg.get("show_nsfw", False)),
             bool(cfg.get("use_segmentation", True)),
             float(cfg.get("popularity", 0.85)),
+            int(cfg.get("top_k", 20)),
         )
 
     @staticmethod

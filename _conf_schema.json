@@ -206,6 +206,17 @@
         },
         "default": 0.85
       },
+      "top_k": {
+        "type": "int",
+        "description": "候选标签数量(top_k)",
+        "hint": "接口返回的候选标签数量上限。",
+        "slider": {
+          "min": 1,
+          "max": 100,
+          "step": 1
+        },
+        "default": 20
+      },
       "append_original": {
         "type": "bool",
         "description": "追加原文",
