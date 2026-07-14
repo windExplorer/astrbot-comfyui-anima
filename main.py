@@ -7,7 +7,8 @@ import uuid
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
 try:
@@ -236,6 +237,11 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 核心：提交并等待出图（异步生成器，yield 消息）
     # ------------------------------------------------------------------ #
+    async def _send(self, event: AstrMessageEvent, text: str) -> None:
+        """主动发送一条文本消息（不占用 yield，避免命令 pipeline 在首个
+        yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
+        await event.send(MessageChain([Plain(str(text))]))
+
     async def _do_draw(
         self,
         event: AstrMessageEvent,
@@ -250,14 +256,14 @@ class ComfyUIDrawPlugin(Star):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
         if not positive or not positive.strip():
-            yield event.plain_result("请提供正向提示词，例如：/draw 一只白色水手服少女")
+            await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
 
         try:
             wf = self._resolve_workflow(workflow_name)
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
-            yield event.plain_result(f"配置错误：{e}")
+            await self._send(event, f"配置错误：{e}")
             return
 
         # 加载工作流 JSON
@@ -267,7 +273,7 @@ class ComfyUIDrawPlugin(Star):
                 self._resolve_workflow_path(wf), wf.get("workflow_json")
             )
         except Exception as e:
-            yield event.plain_result(f"工作流加载失败：{e}")
+            await self._send(event, f"工作流加载失败：{e}")
             return
 
         # Anima 工作流：中文提示词翻译为 Danbooru 标签
@@ -339,11 +345,11 @@ class ComfyUIDrawPlugin(Star):
                 result = await client.queue_prompt(prompt)
                 prompt_id = result.get("prompt_id")
             except Exception as e:
-                yield event.plain_result(f"提交到 ComfyUI 失败：{e}")
+                await self._send(event, f"提交到 ComfyUI 失败：{e}")
                 return
 
             if not prompt_id:
-                yield event.plain_result("ComfyUI 未返回任务 ID，提交可能失败。")
+                await self._send(event, "ComfyUI 未返回任务 ID，提交可能失败。")
                 return
 
             # 记录最近任务，供 /queuestatus 使用
@@ -352,15 +358,15 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 pass
 
-            # 返回队列位置
+            # 返回队列位置（用 send 主动发送进度，避免占用 yield 触发额外的 pipeline 阶段）
             if self._cfg("return_queue_position", True):
                 pos = await client.get_queue_position(prompt_id)
                 if pos is None:
-                    yield event.plain_result("任务已提交，正在排队（无法获取队列位置）。")
+                    await self._send(event, "任务已提交，正在排队（无法获取队列位置）。")
                 elif pos == 0:
-                    yield event.plain_result("任务已提交，正在生成中…")
+                    await self._send(event, "任务已提交，正在生成中…")
                 else:
-                    yield event.plain_result(f"任务已提交，前面还有 {pos} 位在排队。")
+                    await self._send(event, f"任务已提交，前面还有 {pos} 位在排队。")
 
             # 等待出图
             timeout = int(self._cfg("draw_timeout", 300))
@@ -374,14 +380,14 @@ class ComfyUIDrawPlugin(Star):
                 except Exception:
                     history = None
             if not history:
-                yield event.plain_result(
+                await self._send(event, 
                     f"出图超时（{timeout} 秒），但 ComfyUI 可能仍在生成，请稍后在 ComfyUI 中确认结果。"
                 )
                 return
 
             images = comfyui_client.extract_images(history, wf.get("output_node"))
             if not images:
-                yield event.plain_result("任务完成，但未找到输出图片节点。")
+                await self._send(event, "任务完成，但未找到输出图片节点。")
                 return
 
             for img in images:
@@ -392,7 +398,7 @@ class ComfyUIDrawPlugin(Star):
                         img.get("type", ""),
                     )
                 except Exception as e:
-                    yield event.plain_result(f"下载图片失败：{e}")
+                    await self._send(event, f"下载图片失败：{e}")
                     continue
                 suffix = os.path.splitext(img["filename"])[1] or ".png"
                 tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
@@ -408,11 +414,10 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("draw")
     async def cmd_draw(self, event: AstrMessageEvent):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流名] [--lora 名称[:权重]] [--w 宽] [--h 高]"""
-        event.stop_event()
         args = self._strip_command(event.message_str, "draw")
         prompt, lora_map, width, height, wf_name, seed = self._parse_draw_args(args or "")
         if not prompt.strip():
-            yield event.plain_result(
+            await self._send(event, 
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
             )
             return
@@ -420,6 +425,9 @@ class ComfyUIDrawPlugin(Star):
             event, wf_name, prompt, "", width, height, lora_map, seed
         ):
             yield m
+        # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
+        # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
+        event.stop_event()
 
     def _parse_draw_args(self, text: str):
         """解析绘图指令参数，返回 (prompt, lora_map, width, height, workflow, seed)。"""
@@ -475,7 +483,6 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("loralist")
     async def cmd_loralist(self, event: AstrMessageEvent):
         """列出当前工作流可配置的 LoRA 及其启用状态。可用 --wf 指定工作流。"""
-        event.stop_event()
         args = self._strip_command(event.message_str, "loralist")
         wf_name = None
         m = re.search(r"--wf\s+(\S+)", args or "")
@@ -484,11 +491,11 @@ class ComfyUIDrawPlugin(Star):
         try:
             wf = self._resolve_workflow(wf_name)
         except ValueError as e:
-            yield event.plain_result(str(e))
+            await self._send(event, str(e))
             return
         loras = self._loras_of(wf)
         if not loras:
-            yield event.plain_result(f"工作流「{wf.get('name')}」未配置任何 LoRA。")
+            await self._send(event, f"工作流「{wf.get('name')}」未配置任何 LoRA。")
             return
         lines = [f"工作流「{wf.get('name')}」的 LoRA 列表："]
         for l in loras:
@@ -505,7 +512,8 @@ class ComfyUIDrawPlugin(Star):
                 + (f"，关键词：{kw_str}" if kw_str else "")
                 + "）"
             )
-        yield event.plain_result("\n".join(lines))
+        await self._send(event, "\n".join(lines))
+        event.stop_event()
 
     # ------------------------------------------------------------------ #
     # 指令：/loraon /loraoff 持久化启用/禁用某个 LoRA
@@ -513,23 +521,23 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("loraon")
     async def cmd_loraon(self, event: AstrMessageEvent):
         """启用某个 LoRA（持久化）。用法：/loraon 名称 [--wf 工作流名]"""
-        event.stop_event()
         args = self._strip_command(event.message_str, "loraon")
         await self._set_lora_enabled(args, True, event)
+        event.stop_event()
 
     @filter.command("loraoff")
     async def cmd_loraoff(self, event: AstrMessageEvent):
         """禁用某个 LoRA（持久化）。用法：/loraoff 名称 [--wf 工作流名]"""
-        event.stop_event()
         args = self._strip_command(event.message_str, "loraoff")
         await self._set_lora_enabled(args, False, event)
+        event.stop_event()
 
     async def _set_lora_enabled(self, args: str, enabled: bool, event):
         m = re.search(r"--wf\s+(\S+)", args or "")
         wf_name = m.group(1) if m else None
         name = (args or "").split("--wf")[0].strip()
         if not name:
-            yield event.plain_result("请指定 LoRA 名称，例如：/loraon catgirl")
+            await self._send(event, "请指定 LoRA 名称，例如：/loraon catgirl")
             return
         try:
             wf = self._resolve_workflow(wf_name)
@@ -542,7 +550,7 @@ class ComfyUIDrawPlugin(Star):
                     target = i
                     break
             if target is None:
-                yield event.plain_result(f"工作流「{wf.get('name')}」中找不到 LoRA「{name}」。")
+                await self._send(event, f"工作流「{wf.get('name')}」中找不到 LoRA「{name}」。")
                 return
             loras[target]["enabled"] = enabled
             workflows[wf_index]["loras_text"] = self._serialize_loras_text(loras)
@@ -550,13 +558,13 @@ class ComfyUIDrawPlugin(Star):
             self.config["workflows"] = workflows
             self.config.save_config()
         except ValueError as e:
-            yield event.plain_result(str(e))
+            await self._send(event, str(e))
             return
         except Exception as e:
-            yield event.plain_result(f"操作失败：{e}")
+            await self._send(event, f"操作失败：{e}")
             return
         state = "启用" if enabled else "禁用"
-        yield event.plain_result(f"已将 LoRA「{name}」{state}（已保存）。")
+        await self._send(event, f"已将 LoRA「{name}」{state}（已保存）。")
 
     # ------------------------------------------------------------------ #
     # 指令：/queuestatus 查询队列
@@ -564,7 +572,6 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("queuestatus")
     async def cmd_queuestatus(self, event: AstrMessageEvent):
         """查询 ComfyUI 队列状态，以及你最近一次任务前面还有多少位。可用 --wf 指定服务器所在工作流。"""
-        event.stop_event()
         args = self._strip_command(event.message_str, "queuestatus")
         m = re.search(r"--wf\s+(\S+)", args or "")
         wf_name = m.group(1) if m else None
@@ -572,7 +579,7 @@ class ComfyUIDrawPlugin(Star):
             wf = self._resolve_workflow(wf_name)
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
-            yield event.plain_result(str(e))
+            await self._send(event, str(e))
             return
         client = self._build_client(server)
         try:
@@ -587,9 +594,10 @@ class ComfyUIDrawPlugin(Star):
                     lines.append("你的最近一次任务正在生成中。")
                 else:
                     lines.append(f"你的最近一次任务前面还有 {pos} 位。")
-            yield event.plain_result("\n".join(lines))
+            await self._send(event, "\n".join(lines))
         finally:
             await client.close()
+        event.stop_event()
 
     # ------------------------------------------------------------------ #
     # 指令：/workflows 列出/选择默认工作流
@@ -597,7 +605,6 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("workflows")
     async def cmd_workflows(self, event: AstrMessageEvent):
         """列出工作流，或设置默认工作流：/workflows set 名称"""
-        event.stop_event()
         args = self._strip_command(event.message_str, "workflows")
         m = re.match(r"set\s+(\S+)", (args or "").strip())
         if m:
@@ -605,23 +612,26 @@ class ComfyUIDrawPlugin(Star):
             try:
                 self._resolve_workflow(name)
             except ValueError as e:
-                yield event.plain_result(str(e))
+                await self._send(event, str(e))
                 return
             self.config["default_workflow"] = name
             self.config.save_config()
-            yield event.plain_result(f"已将默认工作流设为「{name}」。")
+            await self._send(event, f"已将默认工作流设为「{name}」。")
+            event.stop_event()
             return
         workflows = self._workflows()
         default = self._cfg("default_workflow", "")
         if not workflows:
-            yield event.plain_result("尚未配置任何工作流。")
+            await self._send(event, "尚未配置任何工作流。")
+            event.stop_event()
             return
         lines = ["已配置的工作流："]
         for w in workflows:
             tag = "（默认）" if w.get("name") == default else ""
             anima = " [Anima]" if w.get("is_anima") else ""
             lines.append(f"- {w.get('name')}{anima}{tag}")
-        yield event.plain_result("\n".join(lines))
+        await self._send(event, "\n".join(lines))
+        event.stop_event()
 
     # ------------------------------------------------------------------ #
     # 指令：/drawhelp 帮助
@@ -629,7 +639,6 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("drawhelp")
     async def cmd_help(self, event: AstrMessageEvent):
         """显示绘图插件帮助。"""
-        event.stop_event()
         text = (
             "ComfyUI 绘图插件使用帮助：\n"
             "/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
@@ -640,7 +649,8 @@ class ComfyUIDrawPlugin(Star):
             "/workflows [set 名称]   列出/设置默认工作流\n"
             "也可直接对 AI 说“画一只猫，使用 xxx lora”，由 AI 自动调用绘图工具。"
         )
-        yield event.plain_result(text)
+        await self._send(event, text)
+        event.stop_event()
 
     # ------------------------------------------------------------------ #
     # LLM 工具：comfyui_draw（AI 对话触发）
