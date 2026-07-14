@@ -718,7 +718,11 @@ class ComfyUIDrawPlugin(Star):
         loras: list = None,
         seed: int = 0,
     ):
-        """使用 ComfyUI 生成图片。
+        """使用 ComfyUI 根据文本提示词生成图片并返回给用户。
+
+        触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时（如「画一只猫」、
+        「生成一张风景图」、「来张图：穿和服的少女」），务必调用此工具，并把用户的
+        画面描述作为 prompt 传入。即使描述比较口语化也应调用。
 
         Args:
             prompt(string): 图像的正向提示词描述（中文或英文均可）。
