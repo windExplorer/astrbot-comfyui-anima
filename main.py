@@ -358,12 +358,19 @@ class ComfyUIDrawPlugin(Star):
                     yield event.plain_result(f"任务已提交，前面还有 {pos} 位在排队。")
 
             # 等待出图
-            timeout = int(self._cfg("draw_timeout", 120))
+            timeout = int(self._cfg("draw_timeout", 300))
             interval = max(1, int(self._cfg("queue_poll_interval", 2)))
             history = await client.wait_for_result(prompt_id, timeout, interval)
             if not history:
+                # 再做一次兜底（极少数情况下历史在超时边界才写入）
+                try:
+                    final = await client.get_history(prompt_id)
+                    history = final.get(prompt_id) if final else None
+                except Exception:
+                    history = None
+            if not history:
                 yield event.plain_result(
-                    f"出图超时（{timeout} 秒），请稍后在 ComfyUI 中查看结果。"
+                    f"出图超时（{timeout} 秒），但 ComfyUI 可能仍在生成，请稍后在 ComfyUI 中确认结果。"
                 )
                 return
 

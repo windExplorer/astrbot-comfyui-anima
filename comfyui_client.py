@@ -91,18 +91,30 @@ class ComfyUIClient:
     async def wait_for_result(
         self, prompt_id: str, timeout: int, interval: int
     ) -> dict | None:
-        """轮询历史记录，直到该任务完成或超时。返回该 prompt_id 对应的历史条目。"""
+        """轮询历史记录，直到该任务完成或超时。返回该 prompt_id 对应的历史条目。
+
+        ComfyUI 的 /history 会持久保留已完成任务，因此即便任务在超时临界点附近
+        才写入历史，这里在退出前也会再做最后一次查询，避免“刚好错过”导致收不到图。
+        """
         elapsed = 0
-        while elapsed < timeout:
+        while True:
             try:
                 history = await self.get_history(prompt_id)
             except Exception:
                 history = {}
             if prompt_id in history:
                 return history[prompt_id]
+            if elapsed >= timeout:
+                # 超时后兜底再查一次：历史已持久化，可能刚刚才写入
+                try:
+                    final = await self.get_history(prompt_id)
+                except Exception:
+                    final = {}
+                if prompt_id in final:
+                    return final[prompt_id]
+                return None
             await asyncio.sleep(interval)
             elapsed += interval
-        return None
 
 
 def _item_prompt_id(item) -> str | None:
