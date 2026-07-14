@@ -458,7 +458,7 @@ class ComfyUIDrawPlugin(Star):
 
         for m in consume(r"--h\s+(\d+)"):
             height = int(m.group(1))
-            text = text.replace(m.group(0), ")
+            text = text.replace(m.group(0), " ")
 
         for m in consume(r"--seed\s+(\d+)"):
             try:
