@@ -346,12 +346,15 @@ class ComfyUIDrawPlugin(Star):
                     positive = f"{positive}, {tags}"
                 else:
                     positive = tags
+                logger.info(f"Danbooru 翻译结果: {positive}")
 
         # 注入提示词（正/负下输入框名固定为 text，无需配置）
+        logger.info(f"正向提示词: {positive}")
         workflow_builder.set_text_node(
             prompt, wf.get("positive_node"), "text", positive
         )
         if negative:
+            logger.info(f"负向提示词: {negative}")
             workflow_builder.set_text_node(
                 prompt, wf.get("negative_node"), "text", negative
             )
