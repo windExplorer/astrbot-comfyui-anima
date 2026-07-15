@@ -1,0 +1,100 @@
+# 更新日志
+
+本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
+
+## v1.0.41
+
+- **LoRA 配置大重构：抽出「全局 LoRA 库」+「工作流默认启用列表」**。
+  - 新增顶层 `loras` 配置（数组对象，类似工作流列表），每个 LoRA 含：`name`(引用名)、`model_name`(ComfyUI 文件名)、`model_only`(是否仅模型，可逐 LoRA 配置)、`weight`(默认权重)、`keywords`(触发词)、`presets`(多套提示词预设，每套含 `name/positive/negative`)。不再用 `|` 拼字段，配置更直观。
+  - 工作流里的 `loras_text` 简化为 `名称|权重|是否启用` 三字段，仅作「本工作流默认启用/权重」；真正文件名、是否仅模型、预设提示词都去全局库里按名称查。留空则本工作流不默认启用任何 LoRA（仍可用 `/draw --名称` 临时启用）。即使写了、标记为禁用也不生效。
+  - 组装时按名称把「工作流默认」与「全局库」合并成完整配置；库里找不到的名称仅用工作流里的有限信息（文件名缺失，注入时告警）。
+- **LoRA 预设提示词**：`/draw 1girl --安魂曲-预设1` 表示用「安魂曲」的「预设1」预设，把其 positive/negative 追加进工作流的正/负向提示词。预设不存在时记录告警并跳过、不影响出图。
+- **逐 LoRA 独立 `model_only`**：每个 LoRA 可单独决定用「仅模型」(LoraLoaderModelOnly) 还是完整 (LoraLoader) 注入；工作流的 `lora_model_only` 作为缺省回退。
+- **修复多 LoRA 链式接线 / 全模型模式 bug**：旧版多个注入节点都直接接主模、中间节点输出被丢弃（仅最后一个生效）；新版改为正确链式串联（第 n 个接第 n-1 个输出），并把 clip 路改接到链末端最后一个完整 LoraLoader。同时修复了当 `model_src==clip_src`（如 CheckpointLoader 同时出 model 与 clip）时，clip 消费节点误把 KSampler 也算入、导致其 `model` 被错写成 slot1 的问题（旧版全模型模式即存在，因默认仅模型未暴露）。
+- `/loraon`/`/loraoff` 改为直接操作工作流 `loras_text`；若目标 LoRA 不在默认列表但存在于全局库，会自动追加一条默认启用/禁用项。`/loralist` 现展示「仅模型/模型+CLIP」与预设名。`/drawhelp` 同步说明预设语法。
+- `tests/test_logic.py` 的 1c/1d 断言已同步为 `model_only` 默认 True 的行为。
+- **文档与打包完善**：
+  - `README.md` 新增「LoRA 的启用 / 禁用 / 注入」章节，说明启用改写、真禁用（删节点重连）、按配置注入与未覆盖节点保持原样的行为，便于用户理解「为什么配置里开了 LoRA 工作流里却看不到 / 禁用了仍报错」等常见疑问。
+  - `build_zip.ps1` 打包文件清单加入 `CHANGELOG.md`，使发布包自带更新日志。
+
+## v1.0.40
+
+- **`/draw` 指令新增 LoRA 简写语法**：
+  - `--安魂曲` 等价于 `--lora 安魂曲:1`（权重默认 1.0）。
+  - `--安魂曲:0.5` 等价于 `--lora 安魂曲:0.5`。
+  - 名称与权重之间的冒号同时支持半角 `:` 与全角 `：`（已做归一）。
+  - 解析方式由正则改为 token 化遍历：先处理已知取值型参数（`--lora`/`--wf`/`--w`/`--h`/`--seed`，会吃掉其后一个值 token），其余未知 `--xxx` 一律视为 LoRA 简写，因此 `--wf sd` 等不会误判成 LoRA。旧写法 `--lora 名称[:权重]` 完全兼容。
+  - 同步更新了 `cmd_draw` 文档串与 `/drawhelp` 帮助文本。
+
+## v1.0.39
+
+- **修复 `/draw --lora 名称:权重` 解析丢失中文名（只取首字）的 bug**：
+  - 根因：原正则 `--lora\s+(\S+?(?::\d+(?:\.\d+)?)?)` 中 `\S+?` 非贪婪、后接可选组 `(?::\d+...)?`，正则引擎在只吃下第一个汉字（如「安」）后，因后续字符非冒号、可选组匹配空即停止回溯，于是 `--lora 安魂曲:1` 被解析成 `{'安': None}`，与配置里的「安魂曲」匹配不上，导致命令行指定的 LoRA 静默不加载（即使配置里禁用、命令行想强制启用也失效）。
+  - 修复：改为贪婪捕获整个 token `--lora\s+(\S+)`，权重交给已有的 `token.split(":", 1)` 处理（`安魂曲:1` → name=`安魂曲`、weight=`1`；`安魂曲` → name=`安魂曲`）。
+
+## v1.0.38
+
+- **修复完整模式（`lora_model_only=false`）注入时崩溃**：`clip_consumers` 在上一版改为 `(node, field, slot)` 三元组，但重接 clip 路的循环仍按二元组解包，触发 `ValueError: too many values to unpack (expected 2)`。现已修正为该循环解包三个变量（第三个为实际 slot，循环内未使用）。
+
+## v1.0.37
+
+- **修复完整模式（lora_model_only=false）下 LoRA 的 CLIP 没接上的问题**：
+  - 根因 1：锚点探测里 clip 源判定被限制为 `val[1] == 1`，而 CLIPLoader 等节点的 CLIP 输出在 **slot0**，导致 `clip_src` 探测不到、`clip_consumers` 为空，正向/负向提示词都接不上。现已去掉 slot 限制，按实际引用探测。
+  - 根因 2：注入的 `LoraLoader` 其 `clip` 输入被硬编码为 `[clip_src, 1]`，对 CLIPLoader（CLIP 在 slot0）是错的。现改为**从编码器实际引用 clip 源的 slot 推导**，兼容 CheckpointLoader(slot1) 与 CLIPLoader(slot0)。
+  - 新增诊断日志：注入前打印 `模式/model源/clip源`，注入时打印 `clip消费节点` 清单，便于真机核对。
+
+## v1.0.36
+
+- **修复配置项显示问题**：
+  - `lora_model_only` 的 `type` 从 `boolean` 改为 `bool`（AstrBot 仅认 `bool` 渲染成开关，原先被退化成输入框）。现在它是一个正常的 switch 开关。
+  - `lora_anchor` 显示名改为「**主模节点 ID**」（更直观）；提示里把示例数字（如 4）明确标注为「仅举例、非默认值」，避免被误读成默认值。
+  - `lora_clip` 同步改用「主模 CLIP 节点 ID」口径，与上方主模节点保持一致。
+
+## v1.0.35
+
+- **新增 `lora_clip` 配置项（工作流级，可选）**：显式指定 CLIP 模型节点 ID（如 CLIPLoader / CheckpointLoader 的 CLIP 一侧）。
+  - 与已有的 `lora_anchor`（model 源）分离，可分别指定 model 源与 clip 源，兼容「正向 / 负向提示词用不同 CLIPLoader」等分离式工作流，也用于在完整模式（lora_model_only=false）下自动探测失败或接错 clip 源时手动兜底。
+  - 仅模型模式（默认）不需要此项；填了也会被忽略。
+
+## v1.0.34
+
+- **LoRA 注入改用「加载LoRA（仅模型）」节点（LoraLoaderModelOnly）**。此前在没有现成 `LoraLoader` 节点、需要自动注入时，插件会新建完整的 `LoraLoader`（同时接 model 与 clip 两条路），要求工作流既能探测到 model 锚点、又能探测到 clip 锚点。若工作流没有 clip 源（如未配置 `lora_anchor`、或 CLIP 路结构特殊），注入就会失败、LoRA 被静默跳过。
+  - 现在注入默认使用 `LoraLoaderModelOnly`：**只把 LoRA 叠加到去噪网络（MODEL），只需 model 锚点即可**，不再要求 clip 锚点，兼容性最好。
+  - 新增配置项 `lora_model_only`（工作流级，默认 `true`）：关闭后退回完整 `LoraLoader`（同时影响 model + clip），适用于需要文本编码器权重的 LoRA（此时仍需工作流能探测到 model + clip 两个锚点）。
+  - 注入日志现在会标注「（仅模型）」或「（模型+CLIP）」，便于核对。
+
+## v1.0.33
+
+- **LoRA 注入失败告警升级为「可操作诊断」**。此前当工作流既没有 `LoraLoader` 节点、又没有配置 `lora_anchor`（底模加载节点）时，插件只会打一行模糊 warning 然后静默跳过 LoRA（即用户反映的「设置里开了 LoRA，但最终工作流里看不到」）。现在该告警会：
+  - 明确指出本次被跳过的 LoRA 名称；
+  - 给出两种解决办法（填 `lora_anchor` / 在工作流里加 `LoraLoader` 节点）；
+  - **直接列出当前工作流所有节点的「键名 + class_type」**，用户照着把对应键名（如 CheckpointLoader 的键名）抄进工作流配置的 `lora_anchor` 即可，无需再猜。
+
+## v1.0.32
+
+- **新增：LoRA 决策全过程日志**，用于排查「设置里开了 LoRA，但最终工作流里看不到」。现在每次绘图会依次打印：
+  - `LoRA 配置解析`：`loras_text` 解析出的每个 LoRA（名称/别名(文件名)/权重/enabled/load_node）；
+  - `LoRA active_map`：本次实际请求启用的 LoRA 集合；
+  - `[LoRA] ...`：工作流现有 `LoraLoader` 节点、以及每个 LoRA 被判定为「改写已有节点 N / 待注入 / 禁用删除 / 跳过」的结果，注入完成后打印新建节点 ID 与锚点来源，最终打印实际启用列表。
+- **提示**：当 LoRA 未填「别名(文件名)」且被分配到已有 `LoraLoader` 节点时，日志会明确警告「仅改权重、未改文件名」——这是常见的“看起来没生效”的原因之一。
+
+## v1.0.31
+
+- **修复：工作流无 LoRA 节点时注入锚点探测过窄**。旧逻辑只在 `class_type` 含 `checkpointloader` 的节点里找注入锚点，若工作流用 `UNETLoader`+`CLIPLoader`、或自定义底模节点（类名不含 checkpointloader），开启的 LoRA 会被**静默丢弃**。现在改为与节点类名无关的探测：从采样器的 `model` 输入、CLIP 文本编码的 `clip` 输入反推上游，兼容 `UNETLoader+CLIPLoader` 分离式工作流（model 与 clip 可来自不同上游节点）。
+- **新增：注入失败显式告警**。配置了启用 LoRA、但工作流无 LoRA 节点且探测不到任何锚点时，通过 `on_warning` 回调打印告警（提示去配 `lora_anchor` 或检查底模节点），不再无声吞掉配置。
+
+## v1.0.30
+
+- **调试日志**：`_do_draw` 在把工作流提交给 ComfyUI 之前，会用 `logger.info` 打印最终拼接完成的工作流 JSON（含提示词、宽高、LoRA 注入/禁用后的节点、种子）。便于核对「配置组装的工作流是否正常」，日志搜索关键字 `最终工作流（提交给 ComfyUI）` 即可定位。
+
+## v1.0.29
+
+- **LoRA 真禁用**：禁用某个 LoRA 时，不再只是把 `strength_model`/`strength_clip` 置 0，而是把对应的 `LoraLoader` 节点从工作流图中**删除**并接通其上下游（model/clip）。彻底避免「权重 0 但仍加载文件、文件缺失即报错、占用显存」的问题；支持链式 LoRA（A→B→C）的穿透重连。
+- **LoRA 按配置注入**：工作流本身没有 `LoraLoader` 节点时，可在工作流配置中填写 `lora_anchor`（底模 `CheckpointLoader` 节点的键名，如 `4`；留空则自动探测 `CheckpointLoader`），插件会在锚点之后链式新建 `LoraLoader` 节点并接好线，实现「一份干净工作流 + 不同 LoRA 配置 = 不同出图」。禁用项不会被注入。
+- **保留未配置节点**：工作流里存在但未被任何 `loras_text` 配置项覆盖的 `LoraLoader` 节点，保持原样不动。
+- **配置项新增**：`_conf_schema.json` 增加 `lora_anchor` 字段。
+- **测试**：`tests/test_logic.py` 新增真禁用重连、按配置注入、链式多注入三组用例（纯逻辑测试已通过）。
+
+## v1.0.28
+
+- 初始已发布功能（多服务器、多工作流、LoRA 管理、Anima 标签翻译等）。

@@ -36,6 +36,7 @@ $files = @(
     "metadata.yaml",
     "requirements.txt",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
 )
 

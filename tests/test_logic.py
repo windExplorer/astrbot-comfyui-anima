@@ -53,7 +53,8 @@ def test_workflow_logic():
     print("   默认启用:", enabled)
     assert enabled == ["catgirl"]
     assert prompt["10"]["inputs"]["strength_model"] == 1.0
-    assert prompt["11"]["inputs"]["strength_model"] == 0.0  # anime 默认禁用
+    # anime 默认禁用：节点被真删除（不再存在于工作流图中）
+    assert "11" not in prompt
 
     prompt2 = workflow_builder.load_workflow(path=WF_PATH)
     enabled2 = workflow_builder.apply_loras(
@@ -67,6 +68,121 @@ def test_workflow_logic():
     kw = workflow_builder.collect_keyword_loras(LORAS, "画一只猫娘少女")
     print("   关键词匹配:", kw)
     assert kw == {"catgirl"}
+    print("   OK")
+
+
+def test_true_disable_relink():
+    print("== 1b. 真禁用：删除节点并重接上下游 ==")
+    prompt = workflow_builder.load_workflow(path=WF_PATH)
+    # 让 save 节点直接消费 LoRA 链末端 node 11，验证删除后重接到上游
+    prompt["save"]["inputs"]["images"] = ["11", 0]
+    # 全部禁用：node 10、11 都应被删除，链重接到底模 node 4
+    workflow_builder.apply_loras(
+        prompt, LORAS, active_map={}  # 空 map = 全部禁用
+    )
+    assert "10" not in prompt
+    assert "11" not in prompt
+    # save 原来消费 [11,0]，穿过 11->10->4 后应重接到 [4,0]
+    assert prompt["save"]["inputs"]["images"] == ["4", 0]
+    print("   重接结果:", prompt["save"]["inputs"]["images"])
+    print("   OK")
+
+
+def test_lora_inject():
+    print("== 1c. 无 LoraLoader 时按配置注入 ==")
+    prompt = {
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "base.safetensors"},
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "1girl", "clip": ["4", 1]},
+        },
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {"model": ["4", 0], "positive": ["6", 0]},
+        },
+    }
+    loras = [
+        {"name": "catgirl", "model_name": "catgirl.safetensors", "weight": 0.8,
+         "enabled": True, "load_node": ""},
+        {"name": "rain", "model_name": "rain.safetensors", "weight": 1.0,
+         "enabled": False, "load_node": ""},  # 禁用：不注入
+    ]
+    enabled = workflow_builder.apply_loras(prompt, loras)
+    print("   注入启用:", enabled)
+    assert enabled == ["catgirl"]
+    # 默认 model_only=True -> 注入 LoraLoaderModelOnly（无 clip 输入）
+    new_ids = [nid for nid, n in prompt.items() if "LoraLoader" in n["class_type"]]
+    assert len(new_ids) == 1  # 只注入启用的 catgirl，禁用的 rain 不注入
+    nid = new_ids[0]
+    assert prompt[nid]["class_type"] == "LoraLoaderModelOnly"
+    assert prompt[nid]["inputs"]["lora_name"] == "catgirl.safetensors"
+    assert prompt[nid]["inputs"]["strength_model"] == 0.8
+    # 新节点上游接锚点底模；仅模型不改 clip 路（CLIP 编码仍直连底模）
+    assert prompt[nid]["inputs"]["model"] == ["4", 0]
+    assert "clip" not in prompt[nid]["inputs"]
+    assert prompt["3"]["inputs"]["model"] == [nid, 0]
+    assert prompt["6"]["inputs"]["clip"] == ["4", 1]
+    print("   OK")
+
+
+def test_lora_inject_separated():
+    print("== 1d. 分离式底模（UNETLoader + CLIPLoader）按配置注入（完整模式）==")
+    prompt = {
+        "4": {"class_type": "UNETLoader", "inputs": {"ckpt_name": "base.safetensors"}},
+        "5": {"class_type": "CLIPLoader", "inputs": {"ckpt_name": "base.safetensors"}},
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "1girl", "clip": ["5", 1]},
+        },
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {"model": ["4", 0], "positive": ["6", 0]},
+        },
+    }
+    loras = [
+        {"name": "catgirl", "model_name": "catgirl.safetensors", "weight": 0.8,
+         "enabled": True, "load_node": ""},
+    ]
+    # 显式完整模式（model_only=False）以校验 clip 路接线
+    enabled = workflow_builder.apply_loras(prompt, loras, model_only=False)
+    print("   注入启用:", enabled)
+    assert enabled == ["catgirl"]
+    new_ids = [nid for nid, n in prompt.items() if n["class_type"] == "LoraLoader"]
+    assert len(new_ids) == 1
+    nid = new_ids[0]
+    # 新节点 model 接 UNETLoader、clip 接 CLIPLoader（两路来源不同）
+    assert prompt[nid]["inputs"]["model"] == ["4", 0]
+    assert prompt[nid]["inputs"]["clip"] == ["5", 1]
+    # 下游采样器 / CLIP 编码已改接到新节点
+    assert prompt["3"]["inputs"]["model"] == [nid, 0]
+    assert prompt["6"]["inputs"]["clip"] == [nid, 1]
+    print("   OK")
+
+
+def test_lora_inject_no_anchor():
+    print("== 1e. 无 LoraLoader 且探测不到锚点：告警且不注入 ==")
+    # 既没有底模加载节点、也没有采样器/CLIP 编码引用任何上游 -> 无法定位锚点
+    prompt = {
+        "1": {"class_type": "Note", "inputs": {}},
+    }
+    loras = [
+        {"name": "catgirl", "model_name": "catgirl.safetensors", "weight": 0.8,
+         "enabled": True, "load_node": ""},
+    ]
+    warns = []
+    enabled = workflow_builder.apply_loras(
+        prompt, loras, on_warning=lambda m: warns.append(m)
+    )
+    print("   告警数:", len(warns), " 启用:", enabled)
+    assert enabled == []                       # 未注入任何 LoRA
+    assert len(warns) == 1                    # 且产生了告警
+    assert "未生效" in warns[0]
+    assert "LoraLoader" not in str(
+        [n.get("class_type") for n in prompt.values()]
+    )
     print("   OK")
 
 
@@ -113,6 +229,10 @@ async def test_danbooru():
 
 if __name__ == "__main__":
     test_workflow_logic()
+    test_true_disable_relink()
+    test_lora_inject()
+    test_lora_inject_separated()
+    test_lora_inject_no_anchor()
     asyncio.run(test_integration())
     asyncio.run(test_danbooru())
     print("\n全部测试通过 ✅")

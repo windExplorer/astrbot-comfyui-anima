@@ -37,6 +37,82 @@
     },
     "default": []
   },
+  "loras": {
+    "description": "LoRA 库（全局，所有工作流共用）",
+    "hint": "在此集中管理每个 LoRA 的真实文件名、是否「仅模型」、关键词与多套提示词预设。工作流里只需用 名称|权重|是否启用 引用即可。点击“添加”新增 LoRA。",
+    "type": "template_list",
+    "templates": {
+      "default": {
+        "name": "LoRA",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "LoRA 名称（引用键）",
+            "hint": "在工作流与指令里都用这个名字引用，例如 --安魂曲。",
+            "default": ""
+          },
+          "model_name": {
+            "type": "string",
+            "description": "ComfyUI 文件名（别名）",
+            "hint": "工作流 LoraLoader 的 lora_name 实际填这个，例如 anima_lacrimosa.safetensors。",
+            "default": ""
+          },
+          "model_only": {
+            "type": "bool",
+            "description": "使用「仅模型」节点",
+            "hint": "默认开启。开启时只把 LoRA 叠加到去噪网络（MODEL），不需要 CLIP 锚点、兼容性最好；某些需要文本编码器权重的 LoRA（如部分风格 LoRA）若要同时影响 CLIP，请关闭此项。",
+            "default": true
+          },
+          "weight": {
+            "type": "float",
+            "description": "默认权重",
+            "hint": "指令 / 工作流未指定权重时使用。",
+            "default": 1.0
+          },
+          "keywords": {
+            "type": "string",
+            "description": "触发关键词（可选）",
+            "hint": "逗号分隔。用户输入提示词命中这些词时，自动启用该 LoRA（即便工作流默认未启用）。",
+            "default": ""
+          },
+          "presets": {
+            "description": "提示词预设（可多套）",
+            "hint": "每套预设含名称、正向提示词、负向提示词。调用方式：/draw 提示词 --名称-预设名。",
+            "type": "template_list",
+            "templates": {
+              "default": {
+                "name": "预设",
+                "display_item": "name",
+                "items": {
+                  "name": {
+                    "type": "string",
+                    "description": "预设名称",
+                    "hint": "如 预设1；指令里用 --安魂曲-预设1 引用。",
+                    "default": ""
+                  },
+                  "positive": {
+                    "type": "text",
+                    "description": "正向提示词",
+                    "hint": "调用该预设时追加到正向提示词。",
+                    "default": ""
+                  },
+                  "negative": {
+                    "type": "text",
+                    "description": "负向提示词",
+                    "hint": "调用该预设时追加到负向提示词。",
+                    "default": ""
+                  }
+                }
+              }
+            },
+            "default": []
+          }
+        }
+      }
+    },
+    "default": []
+  },
   "workflows": {
     "description": "工作流列表",
     "hint": "可添加多个工作流，每个工作流绑定一个服务器、配置节点 ID 与 LoRA。点击“添加”新增条目。",
@@ -131,10 +207,28 @@
             },
             "default": 512
           },
+          "lora_anchor": {
+            "type": "string",
+            "description": "主模节点 ID（可选）",
+            "hint": "工作流本身没有 LoraLoader 节点、想完全靠下方配置组装 LoRA 时填写：填主模加载节点（CheckpointLoader / UNETLoader）的键名（示例：4，仅举例、非默认值）。插件会在它之后自动新建 LoRA 节点并接线；留空则自动探测主模节点。若工作流已有 LoraLoader 则无需填写。默认「加载LoRA（仅模型）」只需这一路主模锚点即可。",
+            "default": ""
+          },
+          "lora_clip": {
+            "type": "string",
+            "description": "主模 CLIP 节点 ID（可选，仅完整模式用）",
+            "hint": "使用完整 LoraLoader（lora_model_only 关闭，同时影响 model+CLIP）时，若自动探测不到或接错 CLIP 源，在此显式填写 CLIP 模型节点的键名（示例：6，仅举例）。留空则自动探测。配合上方主模节点可分别指定 model 源与 clip 源，兼容「正向/负向提示词用不同 CLIPLoader」等工作流。仅模型模式不需要此项。",
+            "default": ""
+          },
+          "lora_model_only": {
+            "type": "bool",
+            "description": "LoRA 注入使用「仅模型」节点",
+            "hint": "默认开启。开启时注入「加载LoRA（仅模型）」节点（LoraLoaderModelOnly），只把 LoRA 叠加到去噪网络（MODEL），不需要 CLIP 锚点，兼容性最好、也最不容易因缺 clip 源而注入失败。某些需要文本编码器权重的 LoRA（如部分风格 LoRA）若要同时影响 CLIP，请关闭此项（此时需要工作流能探测到 model + clip 两个锚点）。",
+            "default": true
+          },
           "loras_text": {
             "type": "text",
-            "description": "LoRA 列表（每行一个）",
-            "hint": "每行一个 LoRA，用竖线 | 分隔四个字段：名称|别名(ComfyUI 文件名)|权重|0/1（0=禁用，1=启用）。例如：catgirl|catgirl.safetensors|0.8|1  可写多行。工作流里需有 LoraLoader 节点，load_node 等其余参数由插件自动探测，无需填写。",
+            "description": "LoRA 默认启用列表（每行一个，可选）",
+            "hint": "每行一个 LoRA，用竖线 | 分隔三个字段：名称|权重|0/1（0=禁用，1=启用）。例如：安魂曲|1.0|1  可写多行，作用相当于本工作流的“默认启用/权重”。LoRA 的真实文件名、是否仅模型、预设提示词都在上方全局「LoRA 库」里配置，这里只需用名称引用即可；留空则本工作流不默认启用任何 LoRA（仍可用 /draw --名称 临时启用）。即使写了，若标记为 0（禁用）也不会生效。",
             "default": ""
           },
           "workflow_json": {

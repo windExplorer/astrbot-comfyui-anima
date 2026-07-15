@@ -86,6 +86,16 @@ AI 会调用 `comfyui_draw` 工具，并按你提到的 LoRA 名称启用对应 
 ## 工作流 JSON 获取
 在 ComfyUI 界面点「Queue」旁边的菜单 → **Export (API Format)**，把得到的 JSON 放到插件数据目录的 `workflow/` 下（如 `workflow/sd.json`），然后配置里填 `workflow_name: sd` 即可；或直接把 JSON 粘贴到 `workflow_json`。节点 ID 可在该 JSON 的顶层键中找到（如 `"6": {...}`）。
 
+## LoRA 的启用 / 禁用 / 注入
+
+本插件把 LoRA 配置作为「唯一真相源」，在提交前对工作流图做处理：
+
+- **启用**：工作流里已有的 `LoraLoader` 节点会被改写（写入 LoRA 文件名与权重）。
+- **真禁用**：禁用某个 LoRA 时，会把对应的 `LoraLoader` 节点**从工作流中删除**，并把它的上下游（model / clip）直接接通。这样该节点不再执行——**不加载文件、不占显存、也不会因文件缺失而报错**。这与旧版「把权重置 0」不同：置 0 时节点仍会加载文件、仍可能报错，并不是真正禁用。
+- **按配置注入**：如果工作流里**没有** `LoraLoader` 节点，插件可以按配置自动新建。只需在工作流配置里填 `lora_anchor`（底模 `CheckpointLoader` 节点的键名，如 `4`）；留空则自动探测 `CheckpointLoader`。插件会在锚点之后链式新建 `LoraLoader` 节点、接好线，实现「一份干净工作流 + 不同 LoRA 配置 = 不同出图」，无需为每种组合手动导出工作流。
+- 工作流里存在、但**没有被任何配置项覆盖**的 `LoraLoader` 节点，会保持原样不动。
+
+> 注入默认按标准 `LoraLoader`（同时处理 model 与 clip）新建。若你的底模加载器输出插槽不是 slot0=MODEL / slot1=CLIP，或想注入其它变体节点，请提前确认。
+
 ## 说明
-- 被禁用的 LoRA 通过把 `strength_model`/`strength_clip` 置 0 实现“无效果”；若想完全不加载该 LoRA，可不把它接入工作流或在 ComfyUI 中旁路该节点。
 - 多个 ComfyUI 服务器请只把其中一个 `enabled` 设为 true，否则会报错提示。

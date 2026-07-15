@@ -1,6 +1,7 @@
 """AstrBot ComfyUI 绘图插件（支持多服务器、多工作流、LoRA 管理、Anima 标签翻译）。"""
 
 import os
+import json
 import random
 import re
 import time
@@ -128,20 +129,106 @@ class ComfyUIDrawPlugin(Star):
     def _workflows(self) -> list[dict]:
         return self._cfg("workflows", []) or []
 
-    def _loras_of(self, wf: dict) -> list[dict]:
-        """从工作流配置解析 LoRA 列表。
+    def _lora_library(self) -> list[dict]:
+        """全局 LoRA 库（配置顶层 loras）。"""
+        return self._cfg("loras", []) or []
 
-        优先使用新版文本格式 loras_text（每行 名称|别名|权重|0/1）；
-        若为空则兼容旧版结构化 loras 列表。
+    def _loras_of(self, wf: dict) -> list[dict]:
+        """解析本工作流实际生效的 LoRA 列表。
+
+        工作流里的 ``loras_text`` 只写「名称|权重|是否启用」（默认启用/权重），
+        真正的文件名、是否「仅模型」、关键词、预设提示词都来自全局 LoRA 库
+        （按名称匹配）。组装时把两者合并成完整配置；若某名称在库里找不到，
+        则仅用工作流里的有限信息（model_name 空，注入时会告警）。
         """
+        lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
         text = (wf.get("loras_text") or "").strip()
-        if text:
-            return self._parse_loras_text(text)
-        return wf.get("loras", []) or []
+        base = self._parse_loras_text(text) if text else (wf.get("loras", []) or [])
+        merged: list[dict] = []
+        for l in base:
+            name = (l.get("name") or "").strip()
+            if not name:
+                continue
+            lib_l = lib.get(name)
+            if lib_l:
+                merged.append(
+                    {
+                        "name": name,
+                        "model_name": (lib_l.get("model_name") or "").strip(),
+                        "model_only": bool(lib_l.get("model_only", True)),
+                        "weight": float(l.get("weight", 1.0)),
+                        "enabled": bool(l.get("enabled", False)),
+                        "load_node": "",
+                        "model_input": "lora_name",
+                        "strength_model_input": "strength_model",
+                        "strength_clip_input": "strength_clip",
+                        "keywords": (lib_l.get("keywords") or ""),
+                        "presets": lib_l.get("presets", []) or [],
+                    }
+                )
+            else:
+                # 库里没有：仅用工作流里的有限信息（文件名缺失）
+                merged.append(
+                    {
+                        "name": name,
+                        "model_name": (l.get("model_name") or "").strip(),
+                        "model_only": True,
+                        "weight": float(l.get("weight", 1.0)),
+                        "enabled": bool(l.get("enabled", False)),
+                        "load_node": "",
+                        "model_input": "lora_name",
+                        "strength_model_input": "strength_model",
+                        "strength_clip_input": "strength_clip",
+                        "keywords": (l.get("keywords") or ""),
+                        "presets": [],
+                    }
+                )
+        return merged
+
+    def _apply_lora_presets(
+        self, presets: dict[str, str], positive: str, negative: str
+    ):
+        """把 --名称-预设名 引用的预设提示词追加到正/负向提示词。
+
+        presets: {lora_name: preset_name}。每个预设的 positive/negative 分别
+        追加到对应提示词（用英文逗号分隔）。库里找不到 LoRA 或预设名时，
+        记录告警并跳过该项，不影响其它 LoRA。
+        """
+        lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+        pos_parts = [positive] if positive and positive.strip() else []
+        neg_parts = [negative] if negative and negative.strip() else []
+        for lora_name, preset_name in presets.items():
+            l = lib.get((lora_name or "").strip())
+            if not l:
+                logger.warning(f"[LoRA] 预设引用：库里找不到 LoRA「{lora_name}」，跳过预设")
+                continue
+            found = None
+            for p in (l.get("presets") or []):
+                if (p.get("name") or "").strip() == (preset_name or "").strip():
+                    found = p
+                    break
+            if not found:
+                logger.warning(
+                    f"[LoRA] 预设引用：LoRA「{lora_name}」下找不到预设「{preset_name}」，跳过"
+                )
+                continue
+            pp = (found.get("positive") or "").strip()
+            np = (found.get("negative") or "").strip()
+            if pp:
+                pos_parts.append(pp)
+            if np:
+                neg_parts.append(np)
+            logger.info(
+                f"[LoRA] 应用预设：{lora_name}-{preset_name}"
+                f"（追加正向={pp!r} 负向={np!r}）"
+            )
+        positive = ", ".join(p for p in pos_parts if p and p.strip()) if pos_parts else (positive or "")
+        negative = ", ".join(p for p in neg_parts if p and p.strip()) if neg_parts else (negative or "")
+        return positive, negative
 
     @staticmethod
     def _parse_loras_text(text: str) -> list[dict]:
-        """解析多行 LoRA 文本为配置列表。每行：名称|别名(文件名)|权重|0/1。"""
+        """解析多行 LoRA 文本为配置列表。每行：名称|权重|0/1（0=禁用）。"""
         out: list[dict] = []
         for line in (text or "").splitlines():
             line = line.strip()
@@ -151,43 +238,34 @@ class ComfyUIDrawPlugin(Star):
             if not parts[0]:
                 continue
             name = parts[0]
-            model_name = parts[1] if len(parts) > 1 else ""
             try:
-                weight = float(parts[2]) if len(parts) > 2 and parts[2] != "" else 1.0
+                weight = float(parts[1]) if len(parts) > 1 and parts[1] != "" else 1.0
             except ValueError:
                 weight = 1.0
             enabled = True
-            if len(parts) > 3 and parts[3] != "":
-                enabled = parts[3] not in ("0", "0.0", "false", "False", "禁用", "关")
+            if len(parts) > 2 and parts[2] != "":
+                enabled = parts[2] not in ("0", "0.0", "false", "False", "禁用", "关")
             out.append(
                 {
                     "name": name,
-                    "model_name": model_name,
                     "weight": weight,
                     "enabled": enabled,
-                    # load_node 留空，apply_loras 时自动探测工作流里的 LoraLoader 节点
-                    "load_node": "",
-                    "model_input": "lora_name",
-                    "strength_model_input": "strength_model",
-                    "strength_clip_input": "strength_clip",
-                    "keywords": [],
                 }
             )
         return out
 
     @staticmethod
     def _serialize_loras_text(loras: list[dict]) -> str:
-        """将 LoRA 列表序列化回 名称|别名|权重|0/1 文本（用于 loraon/loraoff 持久化）。"""
+        """将 LoRA 列表序列化回 名称|权重|0/1 文本（用于 loraon/loraoff 持久化）。"""
         lines = []
         for l in loras:
             name = (l.get("name") or "").strip()
             if not name:
                 continue
-            model = (l.get("model_name") or "").strip()
             weight = l.get("weight", 1.0)
             wstr = str(int(weight)) if float(weight) == int(weight) else str(weight)
             enabled = 1 if l.get("enabled", False) else 0
-            lines.append(f"{name}|{model}|{wstr}|{enabled}")
+            lines.append(f"{name}|{wstr}|{enabled}")
         return "\n".join(lines)
 
     @staticmethod
@@ -307,6 +385,7 @@ class ComfyUIDrawPlugin(Star):
         width: int | None,
         height: int | None,
         lora_map: dict[str, float | None] | None,
+        lora_presets: dict[str, str] | None = None,
         seed: int | None = None,
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
@@ -348,6 +427,10 @@ class ComfyUIDrawPlugin(Star):
                     positive = tags
                 logger.info(f"Danbooru 翻译结果: {positive}")
 
+        # 注入 LoRA 预设提示词（--名称-预设名）：追加到正/负向提示词
+        if lora_presets:
+            positive, negative = self._apply_lora_presets(lora_presets, positive, negative)
+
         # 注入提示词（正/负下输入框名固定为 text，无需配置）
         logger.info(f"正向提示词: {positive}")
         workflow_builder.set_text_node(
@@ -376,6 +459,22 @@ class ComfyUIDrawPlugin(Star):
 
         # 注入 LoRA（合并关键词自动匹配）
         loras_cfg = self._loras_of(wf)
+        logger.info(
+            f"LoRA 配置解析（工作流「{wf.get('name')}」）: "
+            + json.dumps(
+                [
+                    {
+                        "name": l.get("name"),
+                        "model_name": l.get("model_name"),
+                        "weight": l.get("weight"),
+                        "enabled": l.get("enabled"),
+                        "load_node": l.get("load_node"),
+                    }
+                    for l in (loras_cfg or [])
+                ],
+                ensure_ascii=False,
+            )
+        )
         if lora_map is None:
             auto = workflow_builder.collect_keyword_loras(loras_cfg, positive)
             # 默认启用项 + 关键词命中的项
@@ -389,7 +488,14 @@ class ComfyUIDrawPlugin(Star):
             active_map = merged or None
         else:
             active_map = lora_map
-        enabled = workflow_builder.apply_loras(prompt, loras_cfg, active_map)
+        logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
+        enabled = workflow_builder.apply_loras(
+            prompt, loras_cfg, active_map, anchor=wf.get("lora_anchor") or None,
+            clip_anchor=wf.get("lora_clip") or None,
+            on_warning=lambda m: logger.warning(m),
+            on_info=lambda m: logger.info(m),
+            model_only=bool(wf.get("lora_model_only", True)),
+        )
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
 
@@ -397,6 +503,12 @@ class ComfyUIDrawPlugin(Star):
         seeds_used = workflow_builder.randomize_seed(prompt, seed)
         if seeds_used:
             logger.info(f"本次种子: {seeds_used}")
+
+        # 调试用：打印最终提交给 ComfyUI 的工作流（拼接结果），便于核对 LoRA 注入/禁用是否正确
+        logger.info(
+            "最终工作流（提交给 ComfyUI）:\n"
+            + json.dumps(prompt, ensure_ascii=False, indent=2)
+        )
 
         # 提交到 ComfyUI
         client = self._build_client(server)
@@ -475,7 +587,8 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("draw")
     async def cmd_draw(self, event: AstrMessageEvent):
-        """通过指令绘图。用法：/draw 提示词 [--wf 工作流名] [--lora 名称[:权重]] [--w 宽] [--h 高]"""
+        """通过指令绘图。用法：/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字]
+（--名称[:权重] 为 LoRA 简写，如 --安魂曲=权重1、--安魂曲:0.5=权重0.5，冒号支持 : 与 ：）"""
         args = self._strip_command(event.message_str, "draw")
         prompt, lora_map, width, height, wf_name, seed = self._parse_draw_args(args or "")
         if not prompt.strip():
@@ -484,7 +597,7 @@ class ComfyUIDrawPlugin(Star):
             )
             return
         async for m in self._do_draw(
-            event, wf_name, prompt, "", width, height, lora_map, seed
+            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed
         ):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
@@ -492,52 +605,95 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     def _parse_draw_args(self, text: str):
-        """解析绘图指令参数，返回 (prompt, lora_map, width, height, workflow, seed)。"""
+        """解析绘图指令参数，返回 (prompt, lora_map, lora_presets, width, height, workflow, seed)。
+
+        支持参数：
+          --wf 工作流名                       指定工作流
+          --lora 名称[:权重]                  指定 LoRA（旧写法，兼容）
+          --名称[:权重]                       LoRA 简写：--安魂曲 = --lora 安魂曲:1；
+                                                                --安魂曲:0.5 = --lora 安魂曲:0.5
+          --名称-预设名[:权重]                 LoRA + 预设：--安魂曲-预设1 = 用「安魂曲」的「预设1」提示词
+                                                                （冒号支持半角 : 与全角 ：；预设名与名称之间用 - 分隔）
+          --w 宽 / --h 高                     分辨率
+          --seed 数字                         随机种子
+        权重缺省为 1.0。lora_map 为 {名称: 权重|None}，lora_presets 为 {名称: 预设名}。
+        """
+        # 已知“取值型”参数：后接一个值 token（--wf sd / --w 768 / --lora 名:权）
+        VALUE_FLAGS = {"--lora", "--wf", "--w", "--h", "--seed"}
         lora_map: dict[str, float | None] = {}
-        width = None
-        height = None
-        wf_name = None
-        seed = None
+        lora_presets: dict[str, str] = {}
+        width = height = wf_name = seed = None
 
-        def consume(pattern):
-            out = []
-            for m in re.finditer(pattern, text):
-                out.append(m)
-            return out
-
-        for m in consume(r"--lora\s+(\S+?(?::\d+(?:\.\d+)?)?)"):
-            token = m.group(1)
-            if ":" in token:
-                nm, wt = token.split(":", 1)
-                try:
-                    lora_map[nm.strip()] = float(wt)
-                except ValueError:
-                    lora_map[nm.strip()] = None
+        def add_lora(tok: str) -> None:
+            # tok 形如 "安魂曲" / "安魂曲:0.5" / "安魂曲-预设1" / "安魂曲-预设1:0.5"
+            tok = tok.replace("：", ":")  # 全角冒号归一
+            # 先拆权重（最后一个冒号之后）
+            if ":" in tok:
+                namepart, wt = tok.split(":", 1)
             else:
-                lora_map[token.strip()] = None
-            text = text.replace(m.group(0), " ")
-
-        for m in consume(r"--wf\s+(\S+)"):
-            wf_name = m.group(1)
-            text = text.replace(m.group(0), " ")
-
-        for m in consume(r"--w\s+(\d+)"):
-            width = int(m.group(1))
-            text = text.replace(m.group(0), " ")
-
-        for m in consume(r"--h\s+(\d+)"):
-            height = int(m.group(1))
-            text = text.replace(m.group(0), " ")
-
-        for m in consume(r"--seed\s+(\d+)"):
+                namepart, wt = tok, None
+            # 再拆 名称-预设（第一个短横处）
+            preset = None
+            if "-" in namepart:
+                nm, preset = namepart.split("-", 1)
+            else:
+                nm = namepart
+            nm = nm.strip()
+            if not nm:
+                return
             try:
-                seed = int(m.group(1))
+                weight = float(wt) if wt is not None else None
             except ValueError:
-                seed = None
-            text = text.replace(m.group(0), " ")
+                weight = None
+            lora_map[nm] = weight
+            if preset:
+                lora_presets[nm] = preset.strip()
 
-        prompt = text.strip()
-        return prompt, (lora_map or None), width, height, wf_name, seed
+        tokens = text.split()
+        i = 0
+        prompt_parts: list[str] = []
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.startswith("--"):
+                if tok in VALUE_FLAGS:
+                    if i + 1 < len(tokens):
+                        val = tokens[i + 1]
+                        if tok == "--lora":
+                            add_lora(val)
+                        elif tok == "--wf":
+                            wf_name = val
+                        elif tok == "--w":
+                            try:
+                                width = int(val)
+                            except ValueError:
+                                width = None
+                        elif tok == "--h":
+                            try:
+                                height = int(val)
+                            except ValueError:
+                                height = None
+                        elif tok == "--seed":
+                            try:
+                                seed = int(val)
+                            except ValueError:
+                                seed = None
+                        i += 2
+                        continue
+                    else:
+                        # 取值参数后无值，跳过
+                        i += 1
+                        continue
+                else:
+                    # 未知 --xxx：视为 LoRA 简写（去掉前导 --）
+                    add_lora(tok[2:])
+                    i += 1
+                    continue
+            else:
+                prompt_parts.append(tok)
+                i += 1
+
+        prompt = " ".join(prompt_parts).strip()
+        return prompt, (lora_map or None), (lora_presets or None), width, height, wf_name, seed
 
     # ------------------------------------------------------------------ #
     # 指令：/loralist 列出可配置 LoRA
@@ -562,17 +718,16 @@ class ComfyUIDrawPlugin(Star):
         lines = [f"工作流「{wf.get('name')}」的 LoRA 列表："]
         for l in loras:
             state = "启用" if l.get("enabled") else "禁用"
-            raw = l.get("keywords") or []
-            if isinstance(raw, str):
-                kw_str = ", ".join(k.strip() for k in raw.split(",") if k.strip())
-            else:
-                kw_str = ", ".join(str(k).strip() for k in raw)
             model = l.get("model_name") or ""
+            mo = l.get("model_only", True)
+            presets = l.get("presets") or []
+            preset_names = [ (p.get("name") or "").strip() for p in presets if (p.get("name") or "").strip() ]
             lines.append(
                 f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}"
-                + (f"，文件 {model}" if model else "")
-                + (f"，关键词：{kw_str}" if kw_str else "")
+                + (f"，仅模型" if mo else "，模型+CLIP")
+                + (f"，文件 {model}" if model else "，⚠未配置文件名")
                 + "）"
+                + (f"\n    预设：{', '.join(preset_names)}" if preset_names else "")
             )
         await self._send(event, "\n".join(lines))
         event.stop_event()
@@ -605,17 +760,28 @@ class ComfyUIDrawPlugin(Star):
             wf = self._resolve_workflow(wf_name)
             workflows = self._workflows()
             wf_index = workflows.index(wf)
-            loras = self._loras_of(wf)
+            # 直接操作工作流里的 loras_text（仅 名称|权重|是否启用）
+            entries = self._parse_loras_text((wf.get("loras_text") or "").strip())
             target = None
-            for i, l in enumerate(loras):
+            for i, l in enumerate(entries):
                 if (l.get("name") or "").strip() == name:
                     target = i
                     break
             if target is None:
-                await self._send(event, f"工作流「{wf.get('name')}」中找不到 LoRA「{name}」。")
-                return
-            loras[target]["enabled"] = enabled
-            workflows[wf_index]["loras_text"] = self._serialize_loras_text(loras)
+                # 不在工作流默认列表里：若全局库里有，则追加一条默认（权重 1.0）
+                lib = {(x.get("name") or "").strip(): x for x in self._lora_library()}
+                if name in lib:
+                    entries.append({"name": name, "weight": 1.0, "enabled": enabled})
+                else:
+                    await self._send(
+                        event,
+                        f"找不到 LoRA「{name}」：既不在本工作流的默认列表，也不在全局"
+                        " LoRA 库里。请先到插件配置的「LoRA 库」中添加。",
+                    )
+                    return
+            else:
+                entries[target]["enabled"] = enabled
+            workflows[wf_index]["loras_text"] = self._serialize_loras_text(entries)
             workflows[wf_index].pop("loras", None)
             self.config["workflows"] = workflows
             self.config.save_config()
@@ -703,10 +869,12 @@ class ComfyUIDrawPlugin(Star):
         """显示绘图插件帮助。"""
         text = (
             "ComfyUI 绘图插件使用帮助：\n"
-            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
-            "/loralist [--wf 工作流]   列出 LoRA\n"
-            "/loraon 名称 [--wf 工作流]  启用 LoRA\n"
-            "/loraoff 名称 [--wf 工作流] 禁用 LoRA\n"
+            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称-预设[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
+            "  · LoRA 简写：--安魂曲 等价于 --lora 安魂曲:1；--安魂曲:0.5 等价于 --lora 安魂曲:0.5（冒号支持半角 : 与全角 ：）\n"
+            "  · LoRA 预设：--安魂曲-预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设）。\n"
+            "/loralist [--wf 工作流]   列出 LoRA（含预设）\n"
+            "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
+            "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
             "/queuestatus [--wf 工作流]  查看队列与排队位置\n"
             "/workflows [set 名称]   列出/设置默认工作流\n"
             "也可直接对 AI 说“画一只猫，使用 xxx lora”，由 AI 自动调用绘图工具。"
@@ -773,6 +941,7 @@ class ComfyUIDrawPlugin(Star):
             width or None,
             height or None,
             lora_map,
+            None,
             seed or None,
         ):
             yield m
