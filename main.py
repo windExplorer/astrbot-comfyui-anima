@@ -633,6 +633,25 @@ class ComfyUIDrawPlugin(Star):
         )
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
+            # 回显给用户：本次实际启用了哪些 LoRA、加载了哪个文件，
+            # 便于确认「纯 --名称（不带预设）」是否真的生效。
+            lora_lines = []
+            for nm in enabled:
+                cfg = next(
+                    (l for l in (loras_cfg or []) if (l.get("name") or "").strip() == nm),
+                    None,
+                )
+                mn = (cfg or {}).get("model_name") or "" if cfg else ""
+                if mn:
+                    lora_lines.append(f"· {nm} → {mn}")
+                else:
+                    lora_lines.append(
+                        f"· {nm} → ⚠ 未配置 model_name，节点沿用工作流默认文件（可能不是该 LoRA）"
+                    )
+            await self._send(
+                event,
+                "🎨 本次启用 LoRA：\n" + "\n".join(lora_lines),
+            )
 
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
         seeds_used = workflow_builder.randomize_seed(prompt, seed)
