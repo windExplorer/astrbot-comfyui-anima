@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 
 _logger = logging.getLogger(__name__)
 
@@ -328,6 +329,40 @@ def _inject_loras(
 
 
 
+def _normalize_lora_name(name: str) -> str:
+    """去掉 LoRA 名字末尾的版本 / 数字后缀，便于「安魂曲」「安魂曲-1」互相匹配。
+
+    例：安魂曲-1 -> 安魂曲；安魂曲_v2 -> 安魂曲；安魂曲1 -> 安魂曲；安魂曲 V1.3 -> 安魂曲。
+    """
+    return re.sub(
+        r"[-_ ]*(?:v)?\d+(?:\.\d+)*\)?$", "", (name or "").strip(), flags=re.IGNORECASE
+    ).strip()
+
+
+def _lora_name_matches(config_name: str, cmd_key: str) -> bool:
+    """命令简写 cmd_key 是否命中配置名 config_name。
+
+    支持：
+      - 精确相等；
+      - 对称前缀（带分隔符 - _ 空格 （ ( 【 [），如「安魂曲」<->「安魂曲-1」双向；
+      - 去掉末尾版本后缀后相等，覆盖「安魂曲」「安魂曲1」「安魂曲_v1」「安魂曲 v1」。
+    """
+    if not config_name or not cmd_key:
+        return False
+    if config_name == cmd_key:
+        return True
+    for sep in ("-", "_", " ", "（", "(", "【", "["):
+        if config_name.startswith(cmd_key + sep):
+            return True
+        if cmd_key.startswith(config_name + sep):
+            return True
+    if _normalize_lora_name(config_name) == cmd_key:
+        return True
+    if _normalize_lora_name(cmd_key) == config_name:
+        return True
+    return False
+
+
 def apply_loras(
     prompt: dict,
     loras_config: list[dict],
@@ -403,14 +438,11 @@ def apply_loras(
             active = bool(lora.get("enabled", False))
             weight = float(lora.get("weight", 1.0))
         else:
-            matched = name if name in active_map else None
-            if matched is None:
-                # 前缀匹配：命令简写「安魂曲」也能启用工作流里名为
-                # 「安魂曲-1」「安魂曲_v2」这类带版本/后缀的 LoRA
-                for k in active_map:
-                    if name.startswith(k + "-") or name.startswith(k + "_"):
-                        matched = k
-                        break
+            matched = None
+            for k in active_map:
+                if _lora_name_matches(name, k):
+                    matched = k
+                    break
             if matched is None:
                 active = False
                 weight = 0.0
@@ -449,6 +481,13 @@ def apply_loras(
                     f"（文件={inputs.get(model_input)}, 权重={weight}）"
                     + ("" if model_name else "；⚠ 未填别名(文件名)，仅改权重、未改文件名")
                 )
+                if not model_name and on_warning:
+                    on_warning(
+                        f"【LoRA 提示】「{name}」已启用，但配置里没填 model_name（真实 "
+                        f".safetensors 文件名），节点 {node_id} 只改了权重、文件名仍是工作流"
+                        f"默认值（{inputs.get(model_input)}）。若最终出图不是该 LoRA，请在配置"
+                        f"里补上 model_name。"
+                    )
             elif true_disable:
                 to_disable.append(node_id)
                 _report(f"[LoRA] 「{name}」→ 禁用，待删除节点 {node_id}")
