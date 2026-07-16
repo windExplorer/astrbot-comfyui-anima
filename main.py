@@ -92,6 +92,23 @@ _ERR_HINTS = {
     ],
 }
 
+# 工作流指定相关话术：用 /画<工作流名> 找不到该工作流时，
+# 俏皮提示并改用默认工作流；以及只写了工作流名却没给提示词时的撒娇提醒。
+_WF_HINTS = {
+    # 找不到「xxx」这个工作流名 → 用默认工作流作画
+    "not_found": [
+        "唔…没有「{wf}」这个工作流啦 (´• ω •`)ﾉ 奴家先用默认工作流帮你画咯~",
+        "咦，奴家翻遍图纸也没找到「{wf}」呢 (｡•́︿•̀｡) 那…先用默认的凑合画一张好不好嘛~",
+        "呜，没有叫「{wf}」的工作流啦，要不奴家用默认的给你画一张？乖，先画咯~ (✿◡‿◡)",
+    ],
+    # 只写了工作流名，却没给提示词
+    "no_arg": [
+        "画谁捏~ 给奴家一句提示词嘛 (｡•́︿•̀｡) 例如：/画真人 一个女孩",
+        "唔，工作流是「{wf}」没错，可你还没说画啥呀 (´• ω •`) 快给句提示词嘛~",
+        "奴家画笔都蘸好墨啦，但提示词空空的呢 (｡>﹏<｡) 比如「/画真人 一个女孩」这样告诉人家嘛~",
+    ],
+}
+
 
 @register(
     "astrbot_plugin_comfyui_anima",
@@ -829,6 +846,51 @@ class ComfyUIDrawPlugin(Star):
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
         event.stop_event()
 
+    # 「画」系绘图指令（独立新增指令，非 /draw 别名）：
+    #   /画<工作流名> 提示词   用指定工作流（如 /画真人 一个女孩）
+    #   /画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词   用默认工作流
+    # 与 /draw 并存，互不冲突。
+    _DRAW_DEFAULT_TRIGGERS = {"画", "绘图", "绘画", "画图", "画画"}
+
+    @filter.regex(r"^[/／]画\S*")
+    async def cmd_draw_wf(self, event: AstrMessageEvent):
+        """「画」系绘图指令（新增指令，非 /draw 别名）。
+
+        用法：
+          /画工作流名 提示词 [...]   用指定工作流（如 /画真人 一个女孩）
+          /画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词 [...]   用默认工作流
+        其余参数（--lora / --w / --h / --seed 等）与 /draw 完全一致。
+        找不到指定工作流时，俏皮提示并改用默认工作流。"""
+        text = (event.message_str or "").strip()
+        m = re.match(r"^[/／](\S+)(?:\s+(.+))?$", text, re.S)
+        trigger = m.group(1)
+        rest = (m.group(2) or "").strip()
+        if not rest:
+            await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=trigger))
+            event.stop_event()
+            return
+        # 默认触发词 → 用默认工作流；否则「画」后的部分即工作流名
+        wf_name = None if trigger in self._DRAW_DEFAULT_TRIGGERS else trigger[1:]
+        prompt, lora_map, lora_presets, width, height, wf_arg, seed = self._parse_draw_args(rest)
+        if wf_arg:
+            wf_name = wf_arg  # 若同时写了 --wf，以 --wf 为准
+        if not prompt.strip():
+            await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=wf_name or "默认"))
+            event.stop_event()
+            return
+        # 检查工作流是否存在：不存在则俏皮提示并退回默认工作流
+        try:
+            self._resolve_workflow(wf_name)
+        except ValueError:
+            await self._send(event, random.choice(_WF_HINTS["not_found"]).format(wf=wf_name))
+            wf_name = None
+        async for out in self._do_draw(
+            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed
+        ):
+            yield out
+        # 收尾终止事件：同 /draw，避免 pipeline 在首个 yield 后中断 _do_draw
+        event.stop_event()
+
     def _parse_draw_args(self, text: str):
         """解析绘图指令参数，返回 (prompt, lora_map, lora_presets, width, height, workflow, seed)。
 
@@ -1099,6 +1161,8 @@ class ComfyUIDrawPlugin(Star):
             "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
             "  · LoRA 简写：--安魂曲 等价于 --lora 安魂曲:1；--安魂曲:0.5 等价于 --lora 安魂曲:0.5（冒号支持半角 : 与全角 ：）\n"
             "  · LoRA 预设：--安魂曲/预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设，名称与预设名之间用 / 分隔）。\n"
+            "/画工作流名 提示词 [...]   用指定工作流作画（如 /画真人 一个女孩）；找不到该工作流时用默认工作流\n"
+            "/画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词 [...]   以上均用默认工作流作画（如 /绘图 一个女孩）\n"
             "/loralist [--wf 工作流]   列出 LoRA（含预设）\n"
             "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
