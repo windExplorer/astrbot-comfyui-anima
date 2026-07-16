@@ -723,8 +723,8 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("draw")
     async def cmd_draw(self, event: AstrMessageEvent):
-        """通过指令绘图。用法：/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字]
-（--名称[:权重] 为 LoRA 简写，如 --安魂曲=权重1、--安魂曲:0.5=权重0.5，冒号支持 : 与 ：）"""
+        """通过指令绘图。用法：/draw 提示词 [--wf 工作流] [--名称[:权重]] [--名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]
+（--名称[:权重] 为 LoRA 简写，如 --安魂曲:1、--安魂曲:0.5，冒号支持 : 与 ：；--名称/预设名 引用该 LoRA 的预设提示词，如 --安魂曲/预设1）"""
         args = self._strip_command(event.message_str, "draw")
         prompt, lora_map, lora_presets, width, height, wf_name, seed = self._parse_draw_args(args or "")
         if not prompt.strip():
@@ -748,8 +748,9 @@ class ComfyUIDrawPlugin(Star):
           --lora 名称[:权重]                  指定 LoRA（旧写法，兼容）
           --名称[:权重]                       LoRA 简写：--安魂曲 = --lora 安魂曲:1；
                                                                 --安魂曲:0.5 = --lora 安魂曲:0.5
-          --名称-预设名[:权重]                 LoRA + 预设：--安魂曲-预设1 = 用「安魂曲」的「预设1」提示词
-                                                                （冒号支持半角 : 与全角 ：；预设名与名称之间用 - 分隔）
+          --名称/预设名[:权重]                 LoRA + 预设：--安魂曲/预设1 = 用「安魂曲」的「预设1」提示词
+                                                                （冒号支持半角 : 与全角 ：；预设名与名称之间用 / 分隔，
+                                                                 以免和 LoRA 名字里常见的 - 冲突）
           --w 宽 / --h 高                     分辨率
           --seed 数字                         随机种子
         权重缺省为 1.0。lora_map 为 {名称: 权重|None}，lora_presets 为 {名称: 预设名}。
@@ -761,17 +762,17 @@ class ComfyUIDrawPlugin(Star):
         width = height = wf_name = seed = None
 
         def add_lora(tok: str) -> None:
-            # tok 形如 "安魂曲" / "安魂曲:0.5" / "安魂曲-预设1" / "安魂曲-预设1:0.5"
+            # tok 形如 "安魂曲" / "安魂曲:0.5" / "安魂曲/预设1" / "安魂曲/预设1:0.5"
             tok = tok.replace("：", ":")  # 全角冒号归一
             # 先拆权重（最后一个冒号之后）
             if ":" in tok:
                 namepart, wt = tok.split(":", 1)
             else:
                 namepart, wt = tok, None
-            # 再拆 名称-预设（第一个短横处）
+            # 再拆 名称/预设（用 / 分隔，避免与 LoRA 名字里常见的 - 冲突）
             preset = None
-            if "-" in namepart:
-                nm, preset = namepart.split("-", 1)
+            if "/" in namepart:
+                nm, preset = namepart.split("/", 1)
             else:
                 nm = namepart
             nm = nm.strip()

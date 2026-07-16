@@ -403,12 +403,20 @@ def apply_loras(
             active = bool(lora.get("enabled", False))
             weight = float(lora.get("weight", 1.0))
         else:
-            if name not in active_map:
+            matched = name if name in active_map else None
+            if matched is None:
+                # 前缀匹配：命令简写「安魂曲」也能启用工作流里名为
+                # 「安魂曲-1」「安魂曲_v2」这类带版本/后缀的 LoRA
+                for k in active_map:
+                    if name.startswith(k + "-") or name.startswith(k + "_"):
+                        matched = k
+                        break
+            if matched is None:
                 active = False
                 weight = 0.0
             else:
                 active = True
-                w = active_map[name]
+                w = active_map[matched]
                 weight = float(lora.get("weight", 1.0)) if w is None else float(w)
 
         model_name = (lora.get("model_name") or "").strip()
