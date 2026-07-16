@@ -216,14 +216,8 @@
           "lora_clip": {
             "type": "string",
             "description": "主模 CLIP 节点 ID（可选，仅完整模式用）",
-            "hint": "使用完整 LoraLoader（lora_model_only 关闭，同时影响 model+CLIP）时，若自动探测不到或接错 CLIP 源，在此显式填写 CLIP 模型节点的键名（示例：6，仅举例）。留空则自动探测。配合上方主模节点可分别指定 model 源与 clip 源，兼容「正向/负向提示词用不同 CLIPLoader」等工作流。仅模型模式不需要此项。",
+            "hint": "使用完整 LoraLoader（即该 LoRA 在全局库里关闭「仅模型」，同时影响 model+CLIP）时，若自动探测不到或接错 CLIP 源，在此显式填写 CLIP 模型节点的键名（示例：6，仅举例）。留空则自动探测。配合上方主模节点可分别指定 model 源与 clip 源，兼容「正向/负向提示词用不同 CLIPLoader」等工作流。仅模型模式不需要此项。",
             "default": ""
-          },
-          "lora_model_only": {
-            "type": "bool",
-            "description": "LoRA 注入使用「仅模型」节点",
-            "hint": "默认开启。开启时注入「加载LoRA（仅模型）」节点（LoraLoaderModelOnly），只把 LoRA 叠加到去噪网络（MODEL），不需要 CLIP 锚点，兼容性最好、也最不容易因缺 clip 源而注入失败。某些需要文本编码器权重的 LoRA（如部分风格 LoRA）若要同时影响 CLIP，请关闭此项（此时需要工作流能探测到 model + clip 两个锚点）。",
-            "default": true
           },
           "loras_text": {
             "type": "text",

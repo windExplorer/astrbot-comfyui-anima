@@ -494,7 +494,7 @@ class ComfyUIDrawPlugin(Star):
             clip_anchor=wf.get("lora_clip") or None,
             on_warning=lambda m: logger.warning(m),
             on_info=lambda m: logger.info(m),
-            model_only=bool(wf.get("lora_model_only", True)),
+            model_only=True,
         )
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
