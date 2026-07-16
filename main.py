@@ -674,6 +674,32 @@ class ComfyUIDrawPlugin(Star):
                         f"model_name（真实 .safetensors 文件名），否则无法注入。"
                     )
 
+        # 常驻预设：启用的 LoRA 若配置了名为「0」的预设，则无论用户是否指定其它
+        # 预设（--名称/预设名）都自动带上。先排除用户已显式指定「0」的，避免重复。
+        if active_map:
+            always_pre: dict[str, str] = {}
+            lib_pre = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+            for lora_name in active_map:
+                ln = (lora_name or "").strip()
+                l = lib_pre.get(ln)
+                if not l:
+                    continue
+                for p in self._parse_presets(l.get("presets")):
+                    if (p.get("name") or "").strip() == "0":
+                        if not (lora_presets and (lora_presets.get(ln) or "").strip() == "0"):
+                            always_pre[ln] = "0"
+                        break
+            if always_pre:
+                positive, negative = self._apply_lora_presets(
+                    always_pre, positive, negative
+                )
+                logger.info(f"[LoRA] 已追加常驻预设（名为0）：{list(always_pre.keys())}")
+                # positive 已变更，需重写正向提示词节点（上方 565/570 处已写过一次，此处覆盖）
+                workflow_builder.set_text_node(
+                    prompt, wf.get("positive_node"), "text", positive
+                )
+                logger.info(f"正向提示词（含常驻预设）: {positive}")
+
         enabled = workflow_builder.apply_loras(
             prompt, loras_cfg, active_map, anchor=wf.get("lora_anchor") or None,
             clip_anchor=wf.get("lora_clip") or None,
