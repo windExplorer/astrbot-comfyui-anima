@@ -232,7 +232,7 @@ class ComfyUIDrawPlugin(Star):
     def _apply_lora_presets(
         self, presets: dict[str, str], positive: str, negative: str
     ):
-        """把 --名称-预设名 引用的预设提示词追加到正向提示词。
+        """把 --名称/预设名 引用的预设提示词追加到正向提示词。
 
         presets: {lora_name: preset_name}。每个预设的提示词（textarea 里的
         ``[名称|提示词]`` 内容）追加到正向提示词（用英文逗号分隔）。库里找不到
@@ -562,7 +562,7 @@ class ComfyUIDrawPlugin(Star):
                     positive = tags
                 logger.info(f"Danbooru 翻译结果: {positive}")
 
-        # 注入 LoRA 预设提示词（--名称-预设名）：追加到正/负向提示词
+        # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词
         if lora_presets:
             positive, negative = self._apply_lora_presets(lora_presets, positive, negative)
 
@@ -1096,9 +1096,9 @@ class ComfyUIDrawPlugin(Star):
         """显示绘图插件帮助。"""
         text = (
             "ComfyUI 绘图插件使用帮助：\n"
-            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称-预设[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
+            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
             "  · LoRA 简写：--安魂曲 等价于 --lora 安魂曲:1；--安魂曲:0.5 等价于 --lora 安魂曲:0.5（冒号支持半角 : 与全角 ：）\n"
-            "  · LoRA 预设：--安魂曲-预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设）。\n"
+            "  · LoRA 预设：--安魂曲/预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设，名称与预设名之间用 / 分隔）。\n"
             "/loralist [--wf 工作流]   列出 LoRA（含预设）\n"
             "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
