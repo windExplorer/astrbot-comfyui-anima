@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.44
+
+- **修复 `/draw` 指令解包参数个数不匹配导致的崩溃**：`_parse_draw_args` 自 v1.0.41 起返回 7 元组（含 `lora_presets`），但 `cmd_draw` 的解包仍按 6 个写，导致任意 `/draw` 调用都直接抛 `ValueError: too many values to unpack (expected 6)`。现已补上 `lora_presets`，并把解析出的预设正确传给 `_do_draw`（如 `/draw 1girl --鉴定师-1`）。
+
 ## v1.0.43
 
 - **LoRA 预设提示词改为单个文本框（textarea）**，不再用嵌套的对象数组。

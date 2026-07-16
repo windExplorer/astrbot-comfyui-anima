@@ -622,7 +622,7 @@ class ComfyUIDrawPlugin(Star):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流] [--lora 名称[:权重]] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字]
 （--名称[:权重] 为 LoRA 简写，如 --安魂曲=权重1、--安魂曲:0.5=权重0.5，冒号支持 : 与 ：）"""
         args = self._strip_command(event.message_str, "draw")
-        prompt, lora_map, width, height, wf_name, seed = self._parse_draw_args(args or "")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed = self._parse_draw_args(args or "")
         if not prompt.strip():
             await self._send(event, 
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
