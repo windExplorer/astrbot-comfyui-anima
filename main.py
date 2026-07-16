@@ -48,6 +48,50 @@ _QUEUE_HINTS_QUEUED = [
     "收到！前面还有 {n} 位在排队，稍等一下下就好💕",
 ]
 
+# 面向用户的可爱错误话术：真实报错只写进日志，用户只看到经过包装的萌系提示。
+# 按错误类别分池，每类多条随机取一，避免每次都一样。
+_ERR_HINTS = {
+    # 连不上绘图服务器（连接被拒 / 掉线 / DNS 解析失败等）
+    "connect": [
+        "呜…绘图服务器好像联系不上了呢(´；ω；｀)，可能它正在打盹💤，麻烦联系管理员看看吧～",
+        "咦？我怎么敲不开绘图服务器的小门啦，它八成是掉线睡着了，请通知管理员唤醒一下嘛～",
+        "呜哇，绘图服务器一直没有回应我(>﹏<)，请联系管理员检查一下它还好不好哦！",
+    ],
+    # 超时：连上了但迟迟不出结果
+    "timeout": [
+        "呜…图图画了好久好久还没好，绘图服务器可能有点累啦，晚点再叫我画一次好不好？⏳",
+        "等得我小脚都麻啦，图图迟迟没出现，可能服务器在忙，稍后再试试嘛～🥺",
+        "哎呀，等太久超时啦，说不定服务器还在偷偷画，晚点再来找我看看嘛🌙",
+    ],
+    # 服务器返回了错误状态（HTTP 4xx/5xx 等）
+    "server": [
+        "绘图服务器闹小脾气了(>﹏<)，回了句我听不懂的话，麻烦管理员帮忙瞧瞧吧～",
+        "呜…绘图服务器好像不太舒服，出了点小错，请联系管理员检查一下哦！",
+        "咦，服务器那边返回了奇怪的回应呢，八成是它累坏啦，请找管理员看看嘛～",
+    ],
+    # 兜底：未归类的意外
+    "generic": [
+        "呜…出了一点点小意外，图图没能顺利画出来，请稍后再试或联系管理员嘛(´•̥ω•̥`)",
+        "哎呀，遇到了一个小状况，图图暂时画不了啦，晚点再来找我玩好不好～",
+        "唔…有个我也没料到的小问题冒出来啦，麻烦联系管理员帮忙看看哦(｡•́︿•̀｡)",
+    ],
+    # 任务完成但没找到输出图片（多半是工作流输出节点没配对）
+    "no_image": [
+        "咦…任务明明完成啦，可我怎么没找到图图呢？可能工作流的输出节点没配置对，麻烦联系管理员看看嘛～",
+        "呜，画是画完了，但图图好像躲起来了找不到(・_・;)，请管理员检查下输出节点的配置哦！",
+    ],
+    # 工作流（图纸）加载失败
+    "workflow": [
+        "呜…绘图的小图纸（工作流）没能读出来，可能是文件放错地方或格式坏掉啦，请联系管理员检查一下哦(´•ω•`)",
+        "咦，我翻不开这份绘图图纸呢，八成是文件名或内容有点问题，麻烦管理员瞧瞧嘛～",
+    ],
+    # 服务器没返回任务 ID
+    "no_task_id": [
+        "呜…绘图服务器收下了请求却没给我任务小票，可能它有点迷糊，请联系管理员看看吧～",
+        "咦，提交出去了但没拿到任务编号呢，服务器好像走神啦，麻烦管理员检查一下哦！",
+    ],
+}
+
 
 @register(
     "astrbot_plugin_comfyui_anima",
@@ -383,6 +427,63 @@ class ComfyUIDrawPlugin(Star):
         yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
         await event.send(MessageChain([Plain(str(text))]))
 
+    @staticmethod
+    def _classify_error(exc: Exception) -> str:
+        """把异常粗分类，用于挑选给用户看的可爱话术（connect/timeout/server/generic）。
+
+        真实报错仍会被完整记入日志，这里只决定「对外话术」的类别。
+        """
+        name = type(exc).__name__
+        text = f"{name}: {exc}".lower()
+        connect_names = {
+            "ClientConnectorError", "ClientConnectionError", "ClientOSError",
+            "ServerDisconnectedError", "ServerConnectionError",
+            "ConnectionRefusedError", "ConnectionResetError", "ConnectionError",
+            "ConnectionAbortedError", "ClientConnectorDNSError",
+        }
+        timeout_names = {
+            "TimeoutError", "ServerTimeoutError", "ConnectionTimeoutError",
+            "SocketTimeoutError",
+        }
+        if name in connect_names:
+            return "connect"
+        if name in timeout_names or "timeout" in text or "timed out" in text:
+            return "timeout"
+        if name == "ClientResponseError" or any(
+            k in text for k in ("status code", "http error", "500", "502", "503", "404")
+        ):
+            return "server"
+        if any(
+            k in text for k in (
+                "cannot connect", "connect call failed", "connection refused",
+                "connection reset", "getaddrinfo", "name or service not known",
+                "network is unreachable", "connection", "unreachable",
+            )
+        ):
+            return "connect"
+        return "generic"
+
+    def _friendly_error(
+        self, exc: Exception, scene: str = "", category: str | None = None
+    ) -> str:
+        """把真实异常写入日志（含堆栈），并返回一条给用户看的可爱话术。
+
+        category 不为空时强制使用该话术池（如工作流加载固定用「workflow」），
+        否则按异常类型自动分类。
+        """
+        tag = f"[{scene}]" if scene else ""
+        logger.error(
+            f"[绘图失败]{tag} {type(exc).__name__}: {exc}", exc_info=True
+        )
+        key = category or self._classify_error(exc)
+        pool = _ERR_HINTS.get(key, _ERR_HINTS["generic"])
+        return random.choice(pool)
+
+    @staticmethod
+    def _cute(key: str) -> str:
+        """从对应话术池随机取一条（用于非异常的逻辑分支，如无图/无任务ID）。"""
+        return random.choice(_ERR_HINTS.get(key, _ERR_HINTS["generic"]))
+
     # ------------------------------------------------------------------ #
     # 本地队列：避免依赖 ComfyUI 的 /queue 接口，仅按提交顺序统计待处理任务
     # ------------------------------------------------------------------ #
@@ -430,7 +531,9 @@ class ComfyUIDrawPlugin(Star):
             wf = self._resolve_workflow(workflow_name)
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
-            await self._send(event, f"配置错误：{e}")
+            # 配置类问题：原因是插件自己给出的可读文案，保留原因但用可爱口吻包裹
+            logger.warning(f"[绘图失败][配置] {e}")
+            await self._send(event, f"呜…绘图配置好像有点小问题：{e} 麻烦联系管理员调整一下吧～")
             return
 
         # 加载工作流 JSON
@@ -440,7 +543,7 @@ class ComfyUIDrawPlugin(Star):
                 self._resolve_workflow_path(wf), wf.get("workflow_json")
             )
         except Exception as e:
-            await self._send(event, f"工作流加载失败：{e}")
+            await self._send(event, self._friendly_error(e, "工作流加载", "workflow"))
             return
 
         # Anima 工作流：中文提示词翻译为 Danbooru 标签
@@ -550,11 +653,12 @@ class ComfyUIDrawPlugin(Star):
                 result = await client.queue_prompt(prompt)
                 prompt_id = result.get("prompt_id")
             except Exception as e:
-                await self._send(event, f"提交到 ComfyUI 失败：{e}")
+                await self._send(event, self._friendly_error(e, "提交任务"))
                 return
 
             if not prompt_id:
-                await self._send(event, "ComfyUI 未返回任务 ID，提交可能失败。")
+                logger.warning("[绘图失败][提交] ComfyUI 未返回 prompt_id")
+                await self._send(event, self._cute("no_task_id"))
                 return
 
             # 记录最近任务，供 /queuestatus 使用
@@ -583,14 +687,14 @@ class ComfyUIDrawPlugin(Star):
                     except Exception:
                         history = None
                 if not history:
-                    await self._send(event, 
-                        f"出图超时（{timeout} 秒），但 ComfyUI 可能仍在生成，请稍后在 ComfyUI 中确认结果。"
-                    )
+                    logger.warning(f"[绘图失败][超时] 等待 {timeout} 秒仍无结果，prompt_id={prompt_id}")
+                    await self._send(event, self._cute("timeout"))
                     return
 
                 images = comfyui_client.extract_images(history, wf.get("output_node"))
                 if not images:
-                    await self._send(event, "任务完成，但未找到输出图片节点。")
+                    logger.warning("[绘图失败][无图] 任务完成但未找到输出图片节点")
+                    await self._send(event, self._cute("no_image"))
                     return
 
                 for img in images:
@@ -601,7 +705,7 @@ class ComfyUIDrawPlugin(Star):
                             img.get("type", ""),
                         )
                     except Exception as e:
-                        await self._send(event, f"下载图片失败：{e}")
+                        await self._send(event, self._friendly_error(e, "下载图片"))
                         continue
                     suffix = os.path.splitext(img["filename"])[1] or ".png"
                     tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
@@ -821,7 +925,8 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, str(e))
             return
         except Exception as e:
-            await self._send(event, f"操作失败：{e}")
+            logger.error(f"[LoRA 开关] 操作失败: {type(e).__name__}: {e}", exc_info=True)
+            await self._send(event, "呜…保存 LoRA 设置时出了点小状况，请稍后再试或联系管理员嘛(´•ω•`)")
             return
         state = "启用" if enabled else "禁用"
         await self._send(event, f"已将 LoRA「{name}」{state}（已保存）。")
