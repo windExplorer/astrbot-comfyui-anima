@@ -54,8 +54,8 @@
           },
           "model_name": {
             "type": "string",
-            "description": "ComfyUI 文件名（别名）",
-            "hint": "工作流 LoraLoader 的 lora_name 实际填这个，例如 anima_lacrimosa.safetensors。",
+            "description": "模型文件名",
+            "hint": "LoRA 的模型文件名（.safetensors），例如 anima_lacrimosa.safetensors。/draw --名称 就是按这个名字去 ComfyUI 加载对应的 LoRA 文件。",
             "default": ""
           },
           "model_only": {
