@@ -624,6 +624,56 @@ class ComfyUIDrawPlugin(Star):
         else:
             active_map = lora_map
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
+
+        # 补全：--名称 临时请求的 LoRA，若工作流未预引用（loras_config 里没有该项），
+        # 则从全局 LoRA 库里取完整配置（含真实 model_name）补进 loras_cfg。否则
+        # apply_loras 因无配置项可遍历而不会注入任何节点，表现为「LoraLoader 节点: 无 /
+        # 本次最终启用: 无」——这正是「/draw --安魂曲 没加上」的根因（工作流没引用安魂曲）。
+        if active_map:
+            lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+            for cmd_name in active_map:
+                if any(
+                    workflow_builder._lora_name_matches(
+                        (l.get("name") or "").strip(), cmd_name
+                    )
+                    for l in (loras_cfg or [])
+                ):
+                    continue
+                lib_l = lib.get(cmd_name) or next(
+                    (
+                        v
+                        for k, v in lib.items()
+                        if workflow_builder._lora_name_matches(k, cmd_name)
+                    ),
+                    None,
+                )
+                if lib_l:
+                    w = active_map.get(cmd_name)
+                    loras_cfg = list(loras_cfg or []) + [
+                        {
+                            "name": cmd_name,
+                            "model_name": (lib_l.get("model_name") or "").strip(),
+                            "model_only": bool(lib_l.get("model_only", True)),
+                            "weight": (
+                                float(lib_l.get("weight", 1.0))
+                                if w is None
+                                else float(w)
+                            ),
+                            "enabled": True,
+                            "load_node": "",
+                        }
+                    ]
+                    logger.info(
+                        f"[LoRA] 从全局 LoRA 库补全临时启用的「{cmd_name}」"
+                        f"（工作流未预引用；文件={lib_l.get('model_name')}）"
+                    )
+                else:
+                    logger.warning(
+                        f"【LoRA 提示】本次请求启用「{cmd_name}」，但工作流未引用且全局 LoRA 库"
+                        f"里也找不到该名称。请先在全局「LoRA 库」配置「{cmd_name}」并填好"
+                        f"model_name（真实 .safetensors 文件名），否则无法注入。"
+                    )
+
         enabled = workflow_builder.apply_loras(
             prompt, loras_cfg, active_map, anchor=wf.get("lora_anchor") or None,
             clip_anchor=wf.get("lora_clip") or None,

@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.50
+
+- **修复 `--名称` 临时启用 LoRA 时「节点: 无 / 最终启用: 无」（核心根因修复）**：
+  - 根因：`apply_loras` 只遍历「工作流配置的 `loras_config`」来注入/改写的 LoRA。若工作流没在 `loras_text` 里引用该 LoRA（即 `loras_config` 为空），即便用户 `--安魂曲` 请求了，循环也不执行，节点永远加不进去。之前看起来「`--安魂曲/1` 正常」只是预设文本让图变了样，节点其实同样没加（两种命令日志都是 `LoraLoader 节点: 无`）。
+  - 修复：在调用 `apply_loras` 前，若 `--名称` 请求的 LoRA 不在工作流的 `loras_config` 里，则自动从**全局 LoRA 库**补全完整配置（含真实 `model_name`、权重、`model_only`），使 `apply_loras` 能据此新建节点。这样纯 `--安魂曲`（不带预设）即可直接启用，无需在工作流里预先引用。
+  - 已用真实模块复现验证：工作流无 LoraLoader 节点、`loras_config` 仅含「安魂曲」一项时，`apply_loras` 成功新建 `LoraLoaderModelOnly` 节点并正确接入底模链路（`lora_name=anhunqu.safetensors`、`strength_model=1.0`）。
+  - 兜底提示：若 `--名称` 请求的 LoRA 在全局库也找不到，会明确告警「请先在全局 LoRA 库配置并填好 model_name」。
+  - 注意：注入新节点依赖底模锚点探测（优先 CheckpointLoader 类节点），标准 Anima 工作流一般可自动探测到；若探测失败日志会提示在工作流配置填 `lora_anchor`。
+
 ## v1.0.49
 
 - **`/draw` 增加「本次启用 LoRA」回显**：跑完会直接告诉你启用了哪些 LoRA、加载了哪个 `.safetensors` 文件（未配置 `model_name` 时明确告警「节点沿用工作流默认文件，可能不是该 LoRA」）。这样纯 `--名称`（不带预设）是否真的生效一目了然，不再只能靠看图猜。
