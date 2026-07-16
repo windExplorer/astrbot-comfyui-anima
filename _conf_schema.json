@@ -77,36 +77,10 @@
             "default": ""
           },
           "presets": {
+            "type": "text",
             "description": "提示词预设（可多套）",
-            "hint": "每套预设含名称、正向提示词、负向提示词。调用方式：/draw 提示词 --名称-预设名。",
-            "type": "template_list",
-            "templates": {
-              "default": {
-                "name": "预设",
-                "display_item": "name",
-                "items": {
-                  "name": {
-                    "type": "string",
-                    "description": "预设名称",
-                    "hint": "如 预设1；指令里用 --安魂曲-预设1 引用。",
-                    "default": ""
-                  },
-                  "positive": {
-                    "type": "text",
-                    "description": "正向提示词",
-                    "hint": "调用该预设时追加到正向提示词。",
-                    "default": ""
-                  },
-                  "negative": {
-                    "type": "text",
-                    "description": "负向提示词",
-                    "hint": "调用该预设时追加到负向提示词。",
-                    "default": ""
-                  }
-                }
-              }
-            },
-            "default": []
+            "hint": "每套预设用 [预设名|提示词] 表示，多套之间用空格隔开，例如：[预设1|提示词1] [预设2|solo, 1girl]。提示词里可以包含逗号（中英文均可）。调用方式：/draw 提示词 --名称-预设名。留空则无预设。",
+            "default": ""
           }
         }
       }

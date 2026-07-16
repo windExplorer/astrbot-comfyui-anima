@@ -163,7 +163,7 @@ class ComfyUIDrawPlugin(Star):
                         "strength_model_input": "strength_model",
                         "strength_clip_input": "strength_clip",
                         "keywords": (lib_l.get("keywords") or ""),
-                        "presets": lib_l.get("presets", []) or [],
+                        "presets": self._parse_presets(lib_l.get("presets")),
                     }
                 )
             else:
@@ -188,22 +188,21 @@ class ComfyUIDrawPlugin(Star):
     def _apply_lora_presets(
         self, presets: dict[str, str], positive: str, negative: str
     ):
-        """把 --名称-预设名 引用的预设提示词追加到正/负向提示词。
+        """把 --名称-预设名 引用的预设提示词追加到正向提示词。
 
-        presets: {lora_name: preset_name}。每个预设的 positive/negative 分别
-        追加到对应提示词（用英文逗号分隔）。库里找不到 LoRA 或预设名时，
-        记录告警并跳过该项，不影响其它 LoRA。
+        presets: {lora_name: preset_name}。每个预设的提示词（textarea 里的
+        ``[名称|提示词]`` 内容）追加到正向提示词（用英文逗号分隔）。库里找不到
+        LoRA 或预设名时记录告警并跳过该项，不影响其它 LoRA。
         """
         lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
         pos_parts = [positive] if positive and positive.strip() else []
-        neg_parts = [negative] if negative and negative.strip() else []
         for lora_name, preset_name in presets.items():
             l = lib.get((lora_name or "").strip())
             if not l:
                 logger.warning(f"[LoRA] 预设引用：库里找不到 LoRA「{lora_name}」，跳过预设")
                 continue
             found = None
-            for p in (l.get("presets") or []):
+            for p in self._parse_presets(l.get("presets")):
                 if (p.get("name") or "").strip() == (preset_name or "").strip():
                     found = p
                     break
@@ -212,18 +211,14 @@ class ComfyUIDrawPlugin(Star):
                     f"[LoRA] 预设引用：LoRA「{lora_name}」下找不到预设「{preset_name}」，跳过"
                 )
                 continue
-            pp = (found.get("positive") or "").strip()
-            np = (found.get("negative") or "").strip()
-            if pp:
-                pos_parts.append(pp)
-            if np:
-                neg_parts.append(np)
+            pr = (found.get("prompt") or "").strip()
+            if pr:
+                pos_parts.append(pr)
             logger.info(
                 f"[LoRA] 应用预设：{lora_name}-{preset_name}"
-                f"（追加正向={pp!r} 负向={np!r}）"
+                f"（追加正向={pr!r}）"
             )
         positive = ", ".join(p for p in pos_parts if p and p.strip()) if pos_parts else (positive or "")
-        negative = ", ".join(p for p in neg_parts if p and p.strip()) if neg_parts else (negative or "")
         return positive, negative
 
     @staticmethod
@@ -267,6 +262,43 @@ class ComfyUIDrawPlugin(Star):
             enabled = 1 if l.get("enabled", False) else 0
             lines.append(f"{name}|{wstr}|{enabled}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _parse_presets(raw) -> list[dict]:
+        """把 LoRA 预设配置解析成 [{name, prompt}] 列表。
+
+        两种来源都兼容：
+        - 字符串（textarea，当前格式）：``[名字|提示词] [名字2|提示词, solo, 1girl]``，
+          按 ``[...]`` 切块；块内以第一个 ``|`` 分隔名称与提示词，提示词里可含逗号。
+        - 列表（旧版对象数组，兼容）：每个元素含 ``name`` + ``prompt``/``positive``，
+          统一映射为 ``{name, prompt}``。
+        """
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            out: list[dict] = []
+            for block in re.findall(r"\[([^\[\]]*)\]", raw):
+                block = block.strip()
+                if not block or "|" not in block:
+                    continue
+                name, prompt = block.split("|", 1)
+                name = name.strip()
+                if not name:
+                    continue
+                out.append({"name": name, "prompt": prompt.strip()})
+            return out
+        if isinstance(raw, list):
+            out = []
+            for p in raw:
+                if not isinstance(p, dict):
+                    continue
+                name = (p.get("name") or "").strip()
+                if not name:
+                    continue
+                prompt = (p.get("prompt") or "").strip() or (p.get("positive") or "").strip()
+                out.append({"name": name, "prompt": prompt})
+            return out
+        return []
 
     @staticmethod
     def _strip_command(message_str: str, cmd: str) -> str:
