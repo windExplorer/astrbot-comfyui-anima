@@ -852,7 +852,7 @@ class ComfyUIDrawPlugin(Star):
     # 与 /draw 并存，互不冲突。
     _DRAW_DEFAULT_TRIGGERS = {"画", "绘图", "绘画", "画图", "画画"}
 
-    @filter.regex(r"^[/／]画\S*")
+    @filter.regex(r"^[/／]?画\S*")
     async def cmd_draw_wf(self, event: AstrMessageEvent):
         """「画」系绘图指令（新增指令，非 /draw 别名）。
 
@@ -862,8 +862,8 @@ class ComfyUIDrawPlugin(Star):
         其余参数（--lora / --w / --h / --seed 等）与 /draw 完全一致。
         找不到指定工作流时，俏皮提示并改用默认工作流。"""
         text = (event.message_str or "").strip()
-        m = re.match(r"^[/／](\S+)(?:\s+(.+))?$", text, re.S)
-        trigger = m.group(1)
+        m = re.match(r"^[/／]?(\S+)(?:\s+(.+))?$", text, re.S)
+        trigger = m.group(1).lstrip("/／")  # 去掉可能的前导斜杠，统一为纯触发词
         rest = (m.group(2) or "").strip()
         if not rest:
             await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=trigger))
