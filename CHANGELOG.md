@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.59
+
+- **修复 `comfyui_draw` LLM 工具被第三方插件 `astrbot_plugin_private_companion` 主动生图时崩溃**：原工具是异步生成器（`async def ... yield`），伴侣插件用 `await handler(...)` 调用会报 `object async_generator can't be used in 'await' expression`。现改为普通协程，遍历 `_do_draw` 产出的图片节点并主动 `event.send` 发出，两种调用方（AstrBot 原生工具管线 / 第三方 `await`）均兼容。文本类提示本就由 `_do_draw` 经 `_send` 直发，不受影响。
+- **打包改进**：`build_zip.ps1` 产物文件名带版本号（如 `astrbot_plugin_comfyui_anima_v1.0.59.zip`）并统一放入 `dist/` 目录，不再覆盖历史已打的包，便于归档回滚。
+
 ## v1.0.58
 
 - 移除「画」系指令（`cmd_draw_wf`）的临时诊断日志（`logger.info("[cmd_draw_wf] 收到消息...")`）。功能与 v1.0.57 完全一致，仅清理调试输出。

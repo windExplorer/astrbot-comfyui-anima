@@ -1218,13 +1218,18 @@ class ComfyUIDrawPlugin(Star):
         if not isinstance(event, AstrMessageEvent):
             event = getattr(plugin, "_last_event", None)
         if event is None:
-            yield "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
-            return
+            return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
         lora_map = None
         if loras:
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
-        async for m in plugin._do_draw(
+
+        # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
+        # （如 astrbot_plugin_private_companion 主动生图）。图片节点在 _do_draw 中以
+        # yield 产出，这里取出后主动 event.send 发出；文本类提示本就由 _do_draw 通过
+        # _send 直接发送，无需在此处理。
+        success = False
+        async for out in plugin._do_draw(
             event,
             workflow or None,
             prompt,
@@ -1235,4 +1240,15 @@ class ComfyUIDrawPlugin(Star):
             None,
             seed or None,
         ):
-            yield m
+            try:
+                if isinstance(out, MessageChain):
+                    await event.send(out)
+                else:
+                    await event.send(MessageChain([out]))
+                success = True
+            except Exception as e:
+                logger.warning(f"[llm_draw] 发送图片结果失败: {e}")
+
+        if success:
+            return "图片已经画好啦，快看看喜不喜欢~ (✿◡‿◡)"
+        return "呜…这次画图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
