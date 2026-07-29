@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.60
+
+- **修复 `comfyui_draw` 被 `astrbot_plugin_private_companion` 解析不到图片**：伴侣插件的生图后端（tool_call）会 `await` 调用本工具，并把返回值 `str(result)` 解析为图片路径或图片数据（优先按 JSON 找 `image_path`/`path` 等键，否则正则匹配路径/URL/base64）。此前工具 `return` 的是俏皮文本，故解析失败。
+  - `_do_draw` 现以 `(图片节点, 本地绝对路径)` 元组产出；`/draw` 与「画」系指令解包后只 `yield` 节点，行为不变。
+  - `llm_draw` 取出本地路径，以 `json.dumps({"image_path": <绝对路径>, "status": "ok"})` 返回，显式带 `image_path` 键供伴侣插件按 JSON 解析为图片（直接返回 Windows 路径字符串会被正则只截到文件名，解析失败，故用 JSON）。
+  - 伴侣插件传入的是合成事件（无真实平台），`llm_draw` 内的 `event.send` 会失败，现已忽略该异常，图片仍通过 `return` 交回给它解析；原生对话里图片照常 `event.send` 展示，工具结果文本交给 LLM。
+
 ## v1.0.59
 
 - **修复 `comfyui_draw` LLM 工具被第三方插件 `astrbot_plugin_private_companion` 主动生图时崩溃**：原工具是异步生成器（`async def ... yield`），伴侣插件用 `await handler(...)` 调用会报 `object async_generator can't be used in 'await' expression`。现改为普通协程，遍历 `_do_draw` 产出的图片节点并主动 `event.send` 发出，两种调用方（AstrBot 原生工具管线 / 第三方 `await`）均兼容。文本类提示本就由 `_do_draw` 经 `_send` 直发，不受影响。

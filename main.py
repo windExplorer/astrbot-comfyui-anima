@@ -817,7 +817,10 @@ class ComfyUIDrawPlugin(Star):
                     tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
                     with open(tmp_path, "wb") as f:
                         f.write(data)
-                    yield event.image_result(str(tmp_path))
+                    img_path = str(tmp_path)
+                    # 产出 (图片节点, 本地路径) 元组：指令只取节点 yield 给用户，
+                    # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
+                    yield event.image_result(img_path), img_path
             finally:
                 # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
                 self._local_queue_remove(srv_key, prompt_id)
@@ -838,7 +841,7 @@ class ComfyUIDrawPlugin(Star):
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
             )
             return
-        async for m in self._do_draw(
+        async for m, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed
         ):
             yield m
@@ -884,7 +887,7 @@ class ComfyUIDrawPlugin(Star):
         except ValueError:
             await self._send(event, random.choice(_WF_HINTS["not_found"]).format(wf=wf_name))
             wf_name = None
-        async for out in self._do_draw(
+        async for out, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed
         ):
             yield out
@@ -1225,11 +1228,11 @@ class ComfyUIDrawPlugin(Star):
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
-        # （如 astrbot_plugin_private_companion 主动生图）。图片节点在 _do_draw 中以
-        # yield 产出，这里取出后主动 event.send 发出；文本类提示本就由 _do_draw 通过
-        # _send 直接发送，无需在此处理。
-        success = False
-        async for out in plugin._do_draw(
+        # （如 astrbot_plugin_private_companion 主动生图）。_do_draw 现以
+        # (图片节点, 本地路径) 元组产出：这里主动把图片 event.send 发出（供原生对话
+        # 直接看到图），并把本地路径以 JSON 形式 return（供伴侣插件解析为图片路径）。
+        img_path = ""
+        async for node, p in plugin._do_draw(
             event,
             workflow or None,
             prompt,
@@ -1241,14 +1244,19 @@ class ComfyUIDrawPlugin(Star):
             seed or None,
         ):
             try:
-                if isinstance(out, MessageChain):
-                    await event.send(out)
+                if isinstance(node, MessageChain):
+                    await event.send(node)
                 else:
-                    await event.send(MessageChain([out]))
-                success = True
+                    await event.send(MessageChain([node]))
             except Exception as e:
-                logger.warning(f"[llm_draw] 发送图片结果失败: {e}")
+                # 伴侣插件传入的是合成事件（无真实平台），event.send 会失败，忽略即可；
+                # 图片路径仍通过下方的 return 交回给它解析。
+                logger.debug(f"[llm_draw] event.send 跳过（合成事件）: {e}")
+            if not img_path:
+                img_path = p
 
-        if success:
-            return "图片已经画好啦，快看看喜不喜欢~ (✿◡‿◡)"
+        if img_path:
+            # 返回 JSON 并显式带 image_path 键：伴侣插件优先按 JSON 解析为图片路径，
+            # 再用本地绝对路径定位文件；原生对话里这串文本作为工具结果交给 LLM。
+            return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
         return "呜…这次画图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
