@@ -603,31 +603,10 @@ class ComfyUIDrawPlugin(Star):
             else:
                 logger.warning(f"[取图] 失败 [{src}] 无法解析为本地路径")
 
-        if not paths:
-            # 兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API 不可用时，
-            # 退回使用本插件自己最近生成的图片（典型场景：用户引用本插件刚出的图做图生图）。
-            sid = getattr(event, "session_id", "") or ""
-            fallback = []
-            if sid and sid in g_last_generated:
-                fallback = list(g_last_generated[sid])
-            elif "__global__" in g_last_generated:
-                fallback = list(g_last_generated["__global__"])
-            fallback = [p for p in fallback if p and os.path.exists(p)]
-            if fallback:
-                paths = fallback
-                logger.info(
-                    f"[取图] 引用/消息内未取到图片，启用本插件最近生成图兜底：{paths}"
-                )
-            else:
-                logger.warning("[取图] 未取到任何图片，将提示用户发送参考图")
-                # 打印每个组件的详情，便于定位是「event 里压根没图」还是「图解析失败」
-                for c in comps:
-                    logger.warning(
-                        f"[取图]   组件详情: type={getattr(c, 'type', type(c).__name__)} "
-                        f"repr={repr(c)[:300]}"
-                    )
-        else:
+        if paths:
             logger.info(f"[取图] 完成：共取得 {len(paths)} 张图片")
+        else:
+            logger.info("[取图] 消息/引用/卡片内均未取到图片（本方法不兜底历史生成图）")
         return paths
 
     @staticmethod
@@ -1199,6 +1178,22 @@ class ComfyUIDrawPlugin(Star):
         args = self._strip_command(event.message_str, "img2img")
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         images = await self._extract_images(event)
+        # 图生图专用兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API
+        # 不可用时，退回本插件最近生成的图 / 本会话用户最近发来的图。注意：此兜底
+        # 仅限图生图入口，绝不进入通用 _extract_images，以免污染纯文生图指令。
+        if not images:
+            sid = getattr(event, "session_id", "") or ""
+            for store in (
+                g_last_generated.get(sid) or [],
+                g_last_generated.get("__global__") or [],
+                g_last_received.get(sid) or [],
+            ):
+                for p in store:
+                    if p and os.path.exists(p) and p not in images:
+                        images.append(p)
+                if images:
+                    break
+            logger.info(f"[取图] /img2img 启用兜底图片: {images}")
         if not images:
             await self._send(
                 event,
