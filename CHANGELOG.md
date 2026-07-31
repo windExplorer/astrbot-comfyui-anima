@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.61
+
+- **修复伴侣插件传入提示词「正向/负向混在一起 + 含无效标记」**：`astrbot_plugin_private_companion` 的 tool_call 生图会把整段（含 `Positive prompt:` / `Negative prompt:` 段落、`[section compacted]` 占位符、`[User image request]` 等分节方括号标题）塞进单个 `prompt` 参数。原逻辑把它整体当正向、负向留空，导致负向内容（如 `cropped head, nsfw ...`）混入正向、且方括号被当成 prompt-editing 语法扰乱生成。
+  - 新增 `_split_external_prompt`：按 `Negative prompt:` 拆分正/负，去掉 `Positive prompt:` 标签，清除 `[section compacted]` 与含空格的方括号分节标题，并压缩空白。
+  - `llm_draw` 现先拆分清洗再分别传入 `_do_draw` 的正/负向（负向优先用拆分出的，否则回退到 `negative_prompt` 参数）。未含 `Negative prompt:` 标记的普通提示词原样透传，不影响 `/draw` 与常规 AI 对话。
+
 ## v1.0.60
 
 - **修复 `comfyui_draw` 被 `astrbot_plugin_private_companion` 解析不到图片**：伴侣插件的生图后端（tool_call）会 `await` 调用本工具，并把返回值 `str(result)` 解析为图片路径或图片数据（优先按 JSON 找 `image_path`/`path` 等键，否则正则匹配路径/URL/base64）。此前工具 `return` 的是俏皮文本，故解析失败。

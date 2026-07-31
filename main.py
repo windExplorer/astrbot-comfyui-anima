@@ -436,6 +436,36 @@ class ComfyUIDrawPlugin(Star):
         """判断文本是否包含中文字符。用于决定是否调用 Danbooru 翻译。"""
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
 
+    @staticmethod
+    def _split_external_prompt(text: str) -> tuple[str, str]:
+        """把可能混合「正向/负向」与外部结构化标记的文本拆成 (正向, 负向)。
+
+        用于兼容 astrbot_plugin_private_companion 等调用方：它们把整段提示词
+        （含 'Negative prompt:' 段落、'[section compacted]' 占位符、'[User image
+        request]' 等分节方括号标题）塞进单个 prompt 参数。若不含有 'Negative
+        prompt:' 标记，则视为普通提示词原样返回（不影响常规 /draw 与 AI 对话调用）。
+        """
+        if not text:
+            return "", ""
+        # 1) 按 'Negative prompt:' 拆分正/负（大小写与冒号差异均兼容）
+        m = re.search(r"negative\s*prompt\s*[:：]", text, re.IGNORECASE)
+        if not m:
+            return text.strip(), ""
+        positive = text[: m.start()].strip()
+        negative = text[m.end():].strip()
+        # 2) 去掉开头的 'Positive prompt:' 标签
+        positive = re.sub(
+            r"^\s*positive\s*prompt\s*[:：]\s*", "", positive, flags=re.IGNORECASE
+        ).strip()
+        # 3) 清理伴侣插件注入的占位符与分节方括号标题（含空格的 [...]）
+        positive = re.sub(r"\[\s*section\s*compacted\s*\]", " ", positive, flags=re.IGNORECASE)
+        positive = re.sub(r"\[[^\]]*?\s.+?\]", " ", positive)
+        positive = re.sub(r"\s+", " ", positive).strip()
+        negative = re.sub(r"\[\s*section\s*compacted\s*\]", " ", negative, flags=re.IGNORECASE)
+        negative = re.sub(r"\[[^\]]*?\s.+?\]", " ", negative)
+        negative = re.sub(r"\s+", " ", negative).strip()
+        return positive, negative
+
     # ------------------------------------------------------------------ #
     # 核心：提交并等待出图（异步生成器，yield 消息）
     # ------------------------------------------------------------------ #
@@ -1227,6 +1257,12 @@ class ComfyUIDrawPlugin(Star):
         if loras:
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
+        # 伴侣插件等调用方会把整段（含 'Negative prompt:' 段落与各种标记）塞进单个
+        # prompt 参数。这里拆出正向/负向并清洗标记，避免负向内容混入正向、也避免
+        # [section compacted] 等占位符进入工作流。
+        positive, parsed_neg = plugin._split_external_prompt(prompt)
+        negative = parsed_neg or (negative_prompt or "")
+
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
         # （如 astrbot_plugin_private_companion 主动生图）。_do_draw 现以
         # (图片节点, 本地路径) 元组产出：这里主动把图片 event.send 发出（供原生对话
@@ -1235,8 +1271,8 @@ class ComfyUIDrawPlugin(Star):
         async for node, p in plugin._do_draw(
             event,
             workflow or None,
-            prompt,
-            negative_prompt or "",
+            positive,
+            negative,
             width or None,
             height or None,
             lora_map,
