@@ -1574,16 +1574,16 @@ class ComfyUIDrawPlugin(Star):
 
         工作流选择规则（图生图）：
           插件已配置的工作流中，有些配置了「参考图节点」（image_node），说明该工作流
-          支持图生图；有些没有，说明只能文生图。图生图时务必按以下优先级选择
+          支持图生图；有些没有，说明只能文生图。
+          ⚠️ 重要：在调用本工具前，务必先调用 comfyui_workflows 查询工作流列表，
+          确认有哪些工作流可用、哪些支持图生图，然后按以下优先级选择
           img2img_workflow：
-          1. 优先选配置了 image_node 的工作流（这些才是真正的图生图工作流）。
-          2. 在配置了 image_node 的工作流中，按名称语义匹配：
-             - 用户说"转成真人/真人照片/写实" → 选名称含「真人」的工作流
-             - 用户说"转成动漫/二次元/动漫风" → 选名称含「动漫」或「二次元」的工作流
+          1. 只选列表中标记为「支持图生图」的工作流。
+          2. 在支持图生图的工作流中，按名称语义匹配：
+             - 用户说"转成真人/真人照片/写实" → 选名称含「真人」的
+             - 用户说"转成动漫/二次元/动漫风" → 选名称含「动漫」或「二次元」的
              - 用户明确说了工作流名 → 直接用那个名字
           3. 如果都不匹配，传空让插件自动用图生图默认工作流。
-          注意：不要把工作流「文件名」（如 sd.json）当名称传入，插件会尝试自动纠正但
-          不保证一定对。
 
         Args:
             prompt(string): 图像的正向提示词描述（中文或英文均可）。
@@ -1717,6 +1717,40 @@ class ComfyUIDrawPlugin(Star):
     ):
         self._last_event = event
 
+    # LLM 工具：comfyui_workflows（查询工作流列表）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="comfyui_workflows")
+    async def llm_workflows(self, event: AstrMessageEvent):
+        """查询所有已配置的 ComfyUI 工作流列表，包括名称和是否支持图生图。
+
+        触发时机：在调用 comfyui_draw 或 comfyui_img2img 之前，如果需要确认
+        有哪些可用工作流、哪些支持图生图（配置了 image_node），务必先调用此工具
+        获取列表，再根据用户意图选择正确的工作流名称传入 img2img_workflow 或
+        workflow 参数。
+
+        重要：不要凭记忆或猜测工作流名称！每次都先查列表再选。
+        """
+        workflows = self._workflows()
+        if not workflows:
+            return "暂无已配置的工作流。"
+
+        lines = ["已配置的工作流列表："]
+        for w in workflows:
+            name = w.get("name", "(未命名)")
+            has_image = bool((w.get("image_node") or "").strip())
+            img_tag = " [支持图生图]" if has_image else " [仅文生图]"
+            anima = " [Anima]" if w.get("is_anima") else ""
+            lines.append(f"- {name}{img_tag}{anima}")
+
+        default = self._cfg("default_workflow", "")
+        default_i2i = self._cfg("default_img2img_workflow", "")
+        if default:
+            lines.append(f"\n文生图默认工作流: {default}")
+        if default_i2i:
+            lines.append(f"图生图默认工作流: {default_i2i}")
+
+        return "\n".join(lines)
+
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_img2img")
@@ -1745,11 +1779,14 @@ class ComfyUIDrawPlugin(Star):
 
         工作流选择规则：
           插件已配置的工作流中，有些配置了「参考图节点」（image_node），说明该工作流
-          支持图生图；有些没有，说明只能文生图。请按以下优先级选择 img2img_workflow：
-          1. 优先选配置了 image_node 的工作流（这些才是真正的图生图工作流）。
-          2. 在配置了 image_node 的工作流中，按名称语义匹配：
-             - 用户说"转成真人/真人照片/写实" → 选名称含「真人」的工作流
-             - 用户说"转成动漫/二次元/动漫风" → 选名称含「动漫」或「二次元」的工作流
+          支持图生图；有些没有，说明只能文生图。
+          ⚠️ 重要：在调用本工具前，务必先调用 comfyui_workflows 查询工作流列表，
+          确认有哪些工作流可用、哪些支持图生图，然后按以下优先级选择
+          img2img_workflow：
+          1. 只选列表中标记为「支持图生图」的工作流。
+          2. 在支持图生图的工作流中，按名称语义匹配：
+             - 用户说"转成真人/真人照片/写实" → 选名称含「真人」的
+             - 用户说"转成动漫/二次元/动漫风" → 选名称含「动漫」或「二次元」的
              - 用户明确说了工作流名 → 直接用那个名字
           3. 如果都不匹配，传空让插件自动用图生图默认工作流。
 
