@@ -173,6 +173,12 @@ async def _image_to_local_path(item) -> str | None:
         p = comp.file
     if p and str(p).startswith("file:///"):
         p = str(p)[8:]
+    # 校验解析出的路径真实存在，避免把平台给的「裸文件名」当成本地路径上传导致失败
+    if p and not os.path.exists(p):
+        logger.warning(
+            f"[取图] 解析出的路径不存在（可能是平台文件名而非本地路径）: {p!r}"
+        )
+        p = None
     if not p:
         logger.warning(
             f"[取图] 无法解析为本地路径: "
@@ -557,6 +563,12 @@ class ComfyUIDrawPlugin(Star):
 
         if not paths:
             logger.warning("[取图] 未取到任何图片，将提示用户发送参考图")
+            # 打印每个组件的详情，便于定位是「event 里压根没图」还是「图解析失败」
+            for c in comps:
+                logger.warning(
+                    f"[取图]   组件详情: type={getattr(c, 'type', type(c).__name__)} "
+                    f"repr={repr(c)[:300]}"
+                )
         else:
             logger.info(f"[取图] 完成：共取得 {len(paths)} 张图片")
         return paths
@@ -1076,8 +1088,11 @@ class ComfyUIDrawPlugin(Star):
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
             )
             return
+        # 若消息或引用(回复)里带了图片，则按图生图处理
+        images = await self._extract_images(event)
         async for m, _p in self._do_draw(
-            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed
+            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
+            init_images=images,
         ):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
@@ -1142,8 +1157,12 @@ class ComfyUIDrawPlugin(Star):
         except ValueError:
             await self._send(event, random.choice(_WF_HINTS["not_found"]).format(wf=wf_name))
             wf_name = None
+        # 若消息或引用(回复)里带了图片，则按图生图处理（参考图注入 LoadImage 节点）。
+        # 否则走普通文生图。这样「画真人图 + 引用图片」也能自动图生图，不必强写 /img2img。
+        images = await self._extract_images(event)
         async for out, _p in self._do_draw(
-            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed
+            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
+            init_images=images,
         ):
             yield out
         # 收尾终止事件：同 /draw，避免 pipeline 在首个 yield 后中断 _do_draw
@@ -1533,6 +1552,15 @@ class ComfyUIDrawPlugin(Star):
             return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
         return "呜…这次画图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
 
+    # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
+    # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，
+    # 这里提前存一份，供图生图取图兜底使用。
+    @filter.on_using_llm_tool()
+    async def _capture_llm_event(
+        self, event: AstrMessageEvent, tool=None, tool_args: dict | None = None
+    ):
+        self._last_event = event
+
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_img2img")
@@ -1572,6 +1600,12 @@ class ComfyUIDrawPlugin(Star):
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
         images = await plugin._extract_images(event)
+        # 兜底：工具收到的 event 可能不含图片（图片已被 LLM 消费/剥离），
+        # 用 LLM 工具调用前捕获到的完整原始事件再试一次。
+        last_ev = getattr(plugin, "_last_event", None)
+        if not images and last_ev is not None and last_ev is not event:
+            logger.info("[取图] 工具 event 未取到图，回退到 LLM 工具调用前捕获的原始事件再取一次")
+            images = await plugin._extract_images(last_ev)
         if not images:
             return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
