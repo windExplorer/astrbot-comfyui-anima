@@ -13,20 +13,16 @@ if (-not (Test-Path $distDir)) {
     New-Item -ItemType Directory -Path $distDir | Out-Null
 }
 
-# Auto-bump the patch version in metadata.yaml and use it in the filename
+# Read the version from metadata.yaml (version is managed manually in metadata.yaml,
+# kept in sync with CHANGELOG.md). No auto-bump to avoid version drift.
 # Use .NET IO to avoid PowerShell default encoding/BOM issues
 $metaPath = Join-Path $root "metadata.yaml"
 $newVer = ""
 if (Test-Path $metaPath) {
     $metaContent = [System.IO.File]::ReadAllText($metaPath)
-    if ($metaContent -match 'version:\s*v(\d+)\.(\d+)\.(\d+)') {
-        $maj = [int]$Matches[1]
-        $min = [int]$Matches[2]
-        $pat = [int]$Matches[3] + 1
-        $newVer = "v$maj.$min.$pat"
-        $metaContent = $metaContent -replace 'version:\s*v\d+\.\d+\.\d+', "version: $newVer"
-        [System.IO.File]::WriteAllText($metaPath, $metaContent)
-        Write-Host "Version bumped to $newVer"
+    if ($metaContent -match 'version:\s*(v\d+\.\d+\.\d+)') {
+        $newVer = $Matches[1]
+        Write-Host "Using version $newVer from metadata.yaml"
     } else {
         Write-Warning "version field not found in metadata.yaml, using 'unknown' suffix"
         $newVer = "unknown"
@@ -67,7 +63,8 @@ if ($missing.Count -gt 0) {
 }
 
 # Package (files at root, no outer folder)
-Compress-Archive -Path $files -DestinationPath $zipPath
+# -Force: 若目标 zip 已存在则直接覆盖，避免手动删除旧包（保留历史版本包不被误删）。
+Compress-Archive -Path $files -DestinationPath $zipPath -Force
 
 if (Test-Path $zipPath) {
     $size = (Get-Item $zipPath).Length

@@ -191,6 +191,34 @@ async def _image_to_local_path(item) -> str | None:
             f"[取图] 解析出的路径不存在（可能是平台文件名而非本地路径）: {p!r}"
         )
         p = None
+    # 进一步校验文件有效（非空、常见图片扩展名或魔数）。
+    # 防止 convert_to_file_path 把"下载失败/下载到错误页"当成成功返回了一个路径，
+    # 导致上层误判 got_explicit_image=True 而丢弃当前消息里真正可用的图。
+    if p:
+        try:
+            sz = os.path.getsize(p)
+        except OSError:
+            sz = 0
+        ok_ext = p.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+        try:
+            with open(p, "rb") as _f:
+                head = _f.read(12)
+        except OSError:
+            head = b""
+        # 常见图片文件头魔数
+        magic = (
+            head[:8] == b"\x89PNG\r\n\x1a\n"      # PNG
+            or head[:3] == b"\xff\xd8\xff"          # JPEG
+            or head[:4] == b"RIFF" and head[8:12] == b"WEBP"  # WEBP
+            or head[:6] in (b"GIF87a", b"GIF89a")   # GIF
+            or head[:2] == b"BM"                    # BMP
+        )
+        if sz == 0 or (not ok_ext and not magic):
+            logger.warning(
+                f"[取图] 解析出的文件无效（size={sz}, ext_ok={ok_ext}, magic_ok={magic}），"
+                f"视为下载/解析失败: {p!r}"
+            )
+            p = None
     if not p:
         logger.warning(
             f"[取图] 无法解析为本地路径: "
@@ -1867,6 +1895,10 @@ class ComfyUIDrawPlugin(Star):
         - 必须确保用户消息里附带了参考图；若没有图，请提示用户先发一张图再描述变换。
         - 即便对话历史里做过类似变换，只要用户再次附带图片并表达意图，就重新调用。
         - 传入 image 参数（消息中图片的 URL）或插件自动从消息中提取图片均可。
+        - ⚠️ 若用户已在当前消息里附带了图片，请直接把该图片（或其在消息中的引用）
+          传入即可，**不要**调用 get_message_detail 之类接口去回拉"原始消息"再重新下载图片：
+          回拉到的原始图片 URL 通常无法在本机直接下载（带签名时效/内网地址），既耗时又必然失败，
+          而当前消息里的图已可被插件直接使用。
         - ⚠️ 图生图不需要你（大模型）去"理解"或"描述"参考图的内容：
           参考图会直接作为像素喂给 ComfyUI 的 LoadImage 节点，你只需把用户的变换意图
           翻译成英文提示词（prompt）即可，不要浪费步骤去调用视觉转述/读取图片内容。
