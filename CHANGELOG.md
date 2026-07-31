@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.1.4
+
+- **修复图生图取不到引用图片（平台临时图被清理）**：Agent 做图生图时常传入平台压缩后的临时图路径（如 `/AstrBot/data/temp/compressed_xxx.jpg`），但工具执行时该临时文件已被平台清理删除，导致取图失败、提示"请先发送参考图"。
+  - 新增「本插件最近生成的图」兜底（`g_last_generated`）：本插件每次生图成功都记录真实大图路径，引用本插件生成的图做图生图时直接回退到真实路径。
+  - 新增「会话最近收到的图」兜底（`g_last_received`）：在 LLM 工具调用前（`_capture_llm_event`）趁图片尚未被剥离/清理时提前缓存用户发来的图路径，引用自己发的图做图生图时回退使用。
+  - `comfyui_draw` / `comfyui_img2img` 在事件与参数均未取到图时，依次回退 `g_last_generated` → `g_last_received`。
+
 ## v1.1.3
 
 - **根治与伴侣插件共存时的重复发图**：`comfyui_draw` / `comfyui_img2img` 工具不再在工具内部调用 `event.send` 自发生图。改为统一返回结果，由调用方（或 AstrBot 框架）负责发送：

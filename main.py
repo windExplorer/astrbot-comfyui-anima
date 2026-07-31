@@ -35,6 +35,18 @@ except ImportError:
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
 
+# 记录本插件最近生成成功的图片本地路径（按会话），用于图生图兜底：
+# 当引用消息的图片因平台未回填 Reply.chain、且引用解析 API 不可用时，
+# 退回使用本插件自己最近生成的图（典型场景：用户引用本插件刚出的图做图生图）。
+# 键为 session_id（或 "__global__"），值为最近生成的本地图片路径列表（最多 5 张）。
+g_last_generated: dict[str, list[str]] = {}
+
+# 记录每个会话「用户最近发来的图片」本地路径，用于图生图兜底：
+# 在 LLM 工具调用前（图片尚未被平台压缩临时文件清理/剥离）提前缓存，
+# 当用户引用自己发的图做图生图、而工具执行时图片已不可达时回退使用。
+# 键为 session_id，值为最近收到的本地图片路径列表（最多 5 张）。
+g_last_received: dict[str, list[str]] = {}
+
 # 「我会永远陪着你」伴侣插件的来源标识：llm_draw 的 source 参数命中此值时，
 # 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
 # 事实与元指令、清除 [section compacted] 等标记）。
@@ -592,13 +604,28 @@ class ComfyUIDrawPlugin(Star):
                 logger.warning(f"[取图] 失败 [{src}] 无法解析为本地路径")
 
         if not paths:
-            logger.warning("[取图] 未取到任何图片，将提示用户发送参考图")
-            # 打印每个组件的详情，便于定位是「event 里压根没图」还是「图解析失败」
-            for c in comps:
-                logger.warning(
-                    f"[取图]   组件详情: type={getattr(c, 'type', type(c).__name__)} "
-                    f"repr={repr(c)[:300]}"
+            # 兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API 不可用时，
+            # 退回使用本插件自己最近生成的图片（典型场景：用户引用本插件刚出的图做图生图）。
+            sid = getattr(event, "session_id", "") or ""
+            fallback = []
+            if sid and sid in g_last_generated:
+                fallback = list(g_last_generated[sid])
+            elif "__global__" in g_last_generated:
+                fallback = list(g_last_generated["__global__"])
+            fallback = [p for p in fallback if p and os.path.exists(p)]
+            if fallback:
+                paths = fallback
+                logger.info(
+                    f"[取图] 引用/消息内未取到图片，启用本插件最近生成图兜底：{paths}"
                 )
+            else:
+                logger.warning("[取图] 未取到任何图片，将提示用户发送参考图")
+                # 打印每个组件的详情，便于定位是「event 里压根没图」还是「图解析失败」
+                for c in comps:
+                    logger.warning(
+                        f"[取图]   组件详情: type={getattr(c, 'type', type(c).__name__)} "
+                        f"repr={repr(c)[:300]}"
+                    )
         else:
             logger.info(f"[取图] 完成：共取得 {len(paths)} 张图片")
         return paths
@@ -1116,6 +1143,21 @@ class ComfyUIDrawPlugin(Star):
                         f.write(data)
                     img_path = str(tmp_path)
                     # 产出 (图片节点, 本地路径) 元组：指令只取节点 yield 给用户，
+                    # 记下本插件最近生成的图片本地路径（按会话），供图生图兜底使用
+                    sid = getattr(event, "session_id", "") or ""
+                    bucket = g_last_generated.setdefault(sid, [])
+                    if img_path not in bucket:
+                        bucket.append(img_path)
+                    # 仅保留最近 5 张，避免无限增长
+                    if len(bucket) > 5:
+                        g_last_generated[sid] = bucket[-5:]
+                    # 全局兜底（session 为空时也存一份，便于跨会话引用场景）
+                    if not sid:
+                        gbucket = g_last_generated.setdefault("__global__", [])
+                        if img_path not in gbucket:
+                            gbucket.append(img_path)
+                        if len(gbucket) > 5:
+                            g_last_generated["__global__"] = gbucket[-5:]
                     # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
                     yield event.image_result(img_path), img_path
             finally:
@@ -1655,6 +1697,24 @@ class ComfyUIDrawPlugin(Star):
                     seen.add(ep)
                     init_images.append(ep)
 
+        # 兜底：事件/参数均未取到图时，退回本插件最近生成的图、或本会话用户最近发来的图。
+        # 用于图生图场景（用户引用本插件生成的图、或引用自己发的图，但工具执行时平台
+        # 压缩临时图已被清理、event 只剩文本）。仅当 LLM 明确要求图生图时才启用兜底。
+        if not init_images and want_img2img:
+            sid = getattr(event, "session_id", "") or ""
+            for store in (
+                g_last_generated.get(sid) or [],
+                g_last_generated.get("__global__") or [],
+                g_last_received.get(sid) or [],
+            ):
+                for p in store:
+                    if p and os.path.exists(p) and p not in init_images:
+                        init_images.append(p)
+                if init_images:
+                    break
+            if init_images:
+                logger.info(f"[取图] 启用兜底图片（本插件生成/会话最近收到）: {init_images}")
+
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
         #   image + img2img_workflow → 用 img2img_workflow
@@ -1722,12 +1782,30 @@ class ComfyUIDrawPlugin(Star):
 
     # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
     # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，
-    # 这里提前存一份，供图生图取图兜底使用。
+    # 这里提前存一份，并趁图片还在时把路径缓存下来，供图生图取图兜底使用。
     @filter.on_using_llm_tool()
     async def _capture_llm_event(
         self, event: AstrMessageEvent, tool=None, tool_args: dict | None = None
     ):
         self._last_event = event
+        # 趁事件里图片组件尚未被剥离，提前把图片本地路径缓存到「会话最近收到图片」，
+        # 用于图生图兜底：当工具执行时图片已被平台压缩临时文件清理、event 只剩文本时，
+        # 仍可退回使用本次对话用户实际发来的图。
+        try:
+            sid = getattr(event, "session_id", "") or ""
+            if sid:
+                cached = await self._extract_images(event)
+                cached = [p for p in cached if p and os.path.exists(p)]
+                if cached:
+                    bucket = g_last_received.setdefault(sid, [])
+                    for p in cached:
+                        if p not in bucket:
+                            bucket.append(p)
+                    if len(bucket) > 5:
+                        g_last_received[sid] = bucket[-5:]
+                    logger.debug(f"[取图] 已缓存会话最近收到图片 {len(bucket)} 张: {bucket}")
+        except Exception as e:
+            logger.debug(f"[取图] 缓存会话图片失败（忽略）: {e}")
 
     # LLM 工具：comfyui_workflows（查询工作流列表）
     # ------------------------------------------------------------------ #
@@ -1857,7 +1935,24 @@ class ComfyUIDrawPlugin(Star):
                 init_images.append(ep)
 
         if not init_images:
-            return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
+            # 兜底：事件/参数均未取到图时，退回本插件最近生成的图、或本会话用户最近发来的图。
+            # 典型场景：用户引用本插件生成的图、或引用自己发的图做图生图，但工具执行时
+            # 平台压缩临时图已被清理、event 只剩文本，导致直接取图失败。
+            sid = getattr(event, "session_id", "") or ""
+            for store in (
+                g_last_generated.get(sid) or [],
+                g_last_generated.get("__global__") or [],
+                g_last_received.get(sid) or [],
+            ):
+                for p in store:
+                    if p and os.path.exists(p) and p not in init_images:
+                        init_images.append(p)
+                if init_images:
+                    break
+            if init_images:
+                logger.info(f"[取图] 启用兜底图片（本插件生成/会话最近收到）: {init_images}")
+            else:
+                return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
         # ── 决定工作流 ─────────────────────────────────────────────
         # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图
