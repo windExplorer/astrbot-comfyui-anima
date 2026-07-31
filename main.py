@@ -1768,6 +1768,7 @@ class ComfyUIDrawPlugin(Star):
         seed: int = 0,
         image: str = "",
         denoise: float = -1,
+        source: str = "",
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
 
@@ -1876,13 +1877,15 @@ class ComfyUIDrawPlugin(Star):
             is_img2img=True,
             denoise=denoise if denoise >= 0 else None,
         ):
-            try:
-                if isinstance(node, MessageChain):
-                    await event.send(node)
-                else:
-                    await event.send(MessageChain([node]))
-            except Exception as e:
-                logger.debug(f"[llm_img2img] event.send 跳过（合成事件）: {e}")
+            # 外部插件调用时（如伴侣插件），由调用方负责发图，本插件不再重复发送
+            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+                try:
+                    if isinstance(node, MessageChain):
+                        await event.send(node)
+                    else:
+                        await event.send(MessageChain([node]))
+                except Exception as e:
+                    logger.debug(f"[llm_img2img] event.send 跳过（合成事件）: {e}")
             if not img_path:
                 img_path = p
 
