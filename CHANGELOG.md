@@ -2,7 +2,7 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
-## v1.1.3
+## v1.1.2
 
 - **新增 `enable_llm_tools` 配置开关**：关闭后 LLM 对话不再自动调用画图工具（`comfyui_draw` / `comfyui_img2img`），仅支持指令画图（`/draw`、`/img2img`、`/画xxx` 等）。适用于与伴侣插件等第三方插件共存时，避免双重大模型触发导致重复出图。
 
