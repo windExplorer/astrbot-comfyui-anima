@@ -1725,23 +1725,12 @@ class ComfyUIDrawPlugin(Star):
                     seen.add(ep)
                     init_images.append(ep)
 
-        # 兜底：事件/参数均未取到图时，退回本插件最近生成的图、或本会话用户最近发来的图。
-        # 用于图生图场景（用户引用本插件生成的图、或引用自己发的图，但工具执行时平台
-        # 压缩临时图已被清理、event 只剩文本）。仅当 LLM 明确要求图生图时才启用兜底。
-        if not init_images and want_img2img:
-            sid = getattr(event, "session_id", "") or ""
-            for store in (
-                g_last_generated.get(sid) or [],
-                g_last_generated.get("__global__") or [],
-                g_last_received.get(sid) or [],
-            ):
-                for p in store:
-                    if p and os.path.exists(p) and p not in init_images:
-                        init_images.append(p)
-                if init_images:
-                    break
-            if init_images:
-                logger.info(f"[取图] 启用兜底图片（本插件生成/会话最近收到）: {init_images}")
+        # 注意：除非用户明确要求图生图（即 LLM 传入 image 参数、或本次消息/引用里带了图），
+        # 否则一律按文生图处理，绝不去翻历史消息缓存（g_last_received / g_last_generated），
+        # 避免把本插件之前生成的图、或会话中途残留的图片误当成参考图，导致：
+        #   1) 纯续画（"再来一张"）被误判为图生图而找用户要图；
+        #   2) 工作流被错误切到 default_img2img_workflow（如"动漫"突然变"真人"）。
+        # 因此此处刻意不启用任何基于历史缓存的兜底取图。
 
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
