@@ -11,6 +11,12 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
 from astrbot.api.message_components import Plain, Image
+try:
+    # 引用消息(Reply)与卡片图片(CardImage)在部分 AstrBot 版本/平台才有
+    from astrbot.api.message_components import Reply, CardImage
+except ImportError:  # pragma: no cover - 兼容旧版本
+    Reply = None
+    CardImage = None
 from astrbot.api.star import Context, Star, register
 
 try:
@@ -113,6 +119,68 @@ _WF_HINTS = {
         "奴家画笔都蘸好墨啦，但提示词空空的呢 (｡>﹏<｡) 比如「/画真人 一个女孩」这样告诉人家嘛~",
     ],
 }
+
+
+# ------------------------------------------------------------------ #
+# 图生图取图辅助：从多种来源提取图片本地路径并打详细日志
+# ------------------------------------------------------------------ #
+async def _extract_quoted_images(event: "AstrMessageEvent") -> list:
+    """尝试用 AstrBot 内置的引用消息解析器获取被引用消息里的图片引用
+    （url / base64 / 本地路径）。该 API 在较新版本可用，旧版本静默返回空。"""
+    try:
+        from astrbot.core.utils.quoted_message_parser import (
+            extract_quoted_message_images,
+        )
+    except ImportError:
+        return []
+    try:
+        res = extract_quoted_message_images(event)
+        if hasattr(res, "__await__"):
+            res = await res
+        return list(res or [])
+    except Exception as e:
+        logger.debug(f"[取图] 引用消息API回退异常（忽略）: {e}")
+        return []
+
+
+async def _image_to_local_path(item) -> str | None:
+    """把一个 Image/CardImage 组件或图片引用字符串解析为本地文件路径。
+    优先用 convert_to_file_path（兼容 url/file/base64/本地路径），
+    失败时回退到 path/file 字段，并剥离 file:/// 前缀。"""
+    try:
+        if isinstance(item, str):
+            if item.startswith("http"):
+                comp = Image(url=item)
+            elif item.startswith("data:"):
+                # data:image/png;base64,xxxx -> base64://xxxx
+                b64 = item.split(",", 1)[1] if "," in item else item
+                comp = Image(file="base64://" + b64)
+            else:
+                comp = Image(file=item)
+        else:
+            comp = item
+    except Exception as e:
+        logger.debug(f"[取图] 构造图片组件失败: {e}")
+        return None
+    p = None
+    try:
+        p = await comp.convert_to_file_path()
+    except Exception as e:
+        logger.debug(f"[取图] convert_to_file_path 失败: {e}")
+    if not p and getattr(comp, "path", None):
+        p = comp.path
+    if not p and getattr(comp, "file", None):
+        p = comp.file
+    if p and str(p).startswith("file:///"):
+        p = str(p)[8:]
+    if not p:
+        logger.warning(
+            f"[取图] 无法解析为本地路径: "
+            f"url={getattr(comp, 'url', None)!r} "
+            f"file={getattr(comp, 'file', None)!r} "
+            f"path={getattr(comp, 'path', None)!r}"
+        )
+    return p
 
 
 @register(
@@ -443,18 +511,54 @@ class ComfyUIDrawPlugin(Star):
 
     @staticmethod
     async def _extract_images(event: AstrMessageEvent) -> list[str]:
-        """从消息事件中提取所有图片的本地路径（自动下载远程 URL）。用于图生图。"""
+        """从消息事件中提取所有图片的本地路径，用于图生图。支持多种来源：
+        - 消息中直接附带的图片（含「文字 + 图片」混合、纯图片、指令 + 图片）
+        - 引用/回复消息里带的图片（Reply.chain 内嵌，或平台 API 回退）
+        - 卡片图片（CardImage）
+        每张图都会打印来源与最终路径；单张失败不影响其它图。
+        """
+        comps = list(getattr(event, "message_components", None) or [])
+        logger.info(
+            f"[取图] 开始：消息组件共 {len(comps)} 个 -> "
+            + ", ".join(getattr(c, "type", type(c).__name__) for c in comps)
+        )
+
+        candidates: list = []  # (组件/引用, 来源描述)
+        for comp in comps:
+            if isinstance(comp, Image):
+                candidates.append((comp, "消息内图片"))
+            elif CardImage is not None and isinstance(comp, CardImage):
+                candidates.append((comp, "卡片图片"))
+            elif Reply is not None and isinstance(comp, Reply):
+                chain = getattr(comp, "chain", None) or []
+                logger.info(
+                    f"[取图] 发现引用消息 Reply(id={getattr(comp, 'id', None)})，"
+                    f"链内组件 {len(chain)} 个"
+                )
+                for sub in chain:
+                    if isinstance(sub, Image):
+                        candidates.append((sub, "引用消息内嵌图片"))
+                # 平台 API 回退：引用只含占位符时，用 reply.id 去拉原消息图片
+                for ref in await _extract_quoted_images(event):
+                    candidates.append((ref, "引用消息API回退"))
+
         paths: list[str] = []
-        comps = getattr(event, "message_components", None)
-        if comps:
-            for comp in comps:
-                if isinstance(comp, Image):
-                    try:
-                        p = await comp.convert_to_file_path()
-                        if p:
-                            paths.append(p)
-                    except Exception as e:
-                        logger.warning(f"提取图片失败，已跳过: {e}")
+        seen: set = set()
+        for item, src in candidates:
+            p = await _image_to_local_path(item)
+            if p and p not in seen:
+                seen.add(p)
+                paths.append(p)
+                logger.info(f"[取图] 成功 [{src}] -> {p}")
+            elif p:
+                logger.info(f"[取图] 跳过重复 [{src}] -> {p}")
+            else:
+                logger.warning(f"[取图] 失败 [{src}] 无法解析为本地路径")
+
+        if not paths:
+            logger.warning("[取图] 未取到任何图片，将提示用户发送参考图")
+        else:
+            logger.info(f"[取图] 完成：共取得 {len(paths)} 张图片")
         return paths
 
     @staticmethod

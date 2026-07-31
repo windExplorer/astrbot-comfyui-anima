@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.65
+
+- **图生图取图改为多来源 + 详细日志**：`_extract_images` 现在支持从多种渠道获取参考图，不再是单一的「消息内直接附带图片」。
+  - 来源覆盖：① 消息中直接附带的图片（含「文字 + 图片」混合、`/img2img 描述 + 图片`）；② 引用/回复消息里的图片（先读 `Reply.chain` 内嵌的 `Image`，若引用只含占位符再用 AstrBot 内置 `quoted_message_parser.extract_quoted_message_images(event)` 按 `reply.id` 走平台 API 回退拉原图）；③ 卡片图片 `CardImage`。
+  - 单张图 `convert_to_file_path` 失败或无 `url`/`file` 时，回退到 `path` 字段；兼容 `data:image/...;base64,` 形式并剥离 `file:///` 前缀；多来源自动去重。
+  - 取图全程打日志：打印消息组件清单、引用消息 id 与链内组件数、每张图的成功来源与本地路径、失败时的 `url/file/path` 实际值，以及最终取得数量；取不到任何图时明确提示，便于排查「发了图却说没收到」的问题。该内置 API 在旧版本缺失时自动降级为空，不影响主流程。
+
 ## v1.0.62
 
 - **`comfyui_draw` 新增 `source` 来源参数，支持伴侣插件专属格式化**：`source` 命中「我会永远陪着你」时，对传入的整段提示词启用专属处理（`_format_companion_prompt`）——按 `Negative prompt:` 拆分正/负向后，正向只抽取「用户原始诉求(user request)」与「构图连续性([Composition and continuity])」两块标准内容，负向保留标签并去除 `Do not ...` 元指令，同时过滤掉时间/日程/位置/情绪等无关事实、分节标题、`[section compacted]` 与 `dup` 等截断占位符；其它来源或留空仍走通用拆分清洗(`_split_external_prompt`)。
