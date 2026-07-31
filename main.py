@@ -1606,11 +1606,12 @@ class ComfyUIDrawPlugin(Star):
                 图生图常用 0.55~0.8，值越高输出越偏离原图、越接近纯文生图。
                 用户说"微调/小改"用低值(0.4~0.6)，"大改/风格转换"用高值(0.7~0.9)。
         """
-        # LLM 工具开关：关闭时直接拒绝，避免与伴侣插件等第三方插件重复触发
+        # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
+        # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
             plugin = self
-        if not plugin._cfg("enable_llm_tools", True):
+        if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
@@ -1810,11 +1811,12 @@ class ComfyUIDrawPlugin(Star):
                 1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。
                 用户说"微调/小改"用低值(0.4~0.6)，"大改/风格转换"用高值(0.7~0.9)。
         """
-        # LLM 工具开关：关闭时直接拒绝
+        # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
+        # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
             plugin = self
-        if not plugin._cfg("enable_llm_tools", True):
+        if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
         # 与 llm_draw 同样的兜底处理

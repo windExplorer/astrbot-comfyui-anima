@@ -2,7 +2,9 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
-## v1.1.2
+## v1.1.3
+
+- **修复 `enable_llm_tools` 开关误伤伴侣插件**：关闭 LLM 工具后，伴侣插件等第三方通过 tool_call 主动调用（带 `source: "我会永远陪着你"` 标记）不再被拦截，仅拒绝本插件 LLM 的自动触发。
 
 - **新增 `enable_llm_tools` 配置开关**：关闭后 LLM 对话不再自动调用画图工具（`comfyui_draw` / `comfyui_img2img`），仅支持指令画图（`/draw`、`/img2img`、`/画xxx` 等）。适用于与伴侣插件等第三方插件共存时，避免双重大模型触发导致重复出图。
 
