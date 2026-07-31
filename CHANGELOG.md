@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.73
+
+- **新增 denoise（降噪幅度/重绘强度）支持**：图生图时控制输出偏离原图的程度。
+  - **工作流配置**：新增 `default_denoise` 字段（0~1，默认 -1 表示不注入/沿用工作流原始值）。
+  - **指令参数**：`/draw`、`/img2img`、`/画xxx` 均支持 `--denoise 0.7`。
+  - **LLM 工具**：`comfyui_draw` 和 `comfyui_img2img` 均新增 `denoise` 参数，大模型可根据用户意图自动调整：说"微调"用低值（0.4~0.6），说"大改/风格转换"用高值（0.7~0.9）。
+  - **实现**：`workflow_builder.set_denoise` 遍历所有采样器节点注入 denoise 值。
+
 ## v1.0.72
 
 - **修复引用图片（Reply）取不到的致命 Bug**：`_extract_images` 用 `isinstance(comp, Reply)` 判断 Reply 组件，但生产环境中 `from astrbot.api.message_components import Reply` 可能导入失败（`Reply = None`），导致即便日志显示 `ComponentType.Reply` 且有内嵌 Image，也永远进不了 Reply 分支。改为用 `comp.type` 属性（字符串 `"Reply"`）判断，不依赖类引用。

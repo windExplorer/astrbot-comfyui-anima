@@ -787,6 +787,7 @@ class ComfyUIDrawPlugin(Star):
         seed: int | None = None,
         init_images: list[str] | None = None,
         is_img2img: bool = False,
+        denoise: float | None = None,
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
@@ -1028,6 +1029,20 @@ class ComfyUIDrawPlugin(Star):
         if seeds_used:
             logger.info(f"本次种子: {seeds_used}")
 
+        # 注入 denoise（降噪幅度/重绘强度）
+        # -1 = 不注入（沿用工作流原始值）；未传则用工作流配置的 default_denoise
+        if denoise is None:
+            cfg_denoise = wf.get("default_denoise")
+            if cfg_denoise is not None:
+                try:
+                    cfg_denoise = float(cfg_denoise)
+                except (ValueError, TypeError):
+                    cfg_denoise = None
+            denoise = cfg_denoise
+        if denoise is not None and denoise >= 0:
+            if workflow_builder.set_denoise(prompt, denoise):
+                logger.info(f"本次 denoise: {denoise}")
+
         # 调试用：打印最终提交给 ComfyUI 的工作流（拼接结果），便于核对 LoRA 注入/禁用是否正确
         logger.info(
             "最终工作流（提交给 ComfyUI）:\n"
@@ -1117,7 +1132,7 @@ class ComfyUIDrawPlugin(Star):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流] [--名称[:权重]] [--名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]
 （--名称[:权重] 为 LoRA 简写，如 --安魂曲:1、--安魂曲:0.5，冒号支持 : 与 ：；--名称/预设名 引用该 LoRA 的预设提示词，如 --安魂曲/预设1）"""
         args = self._strip_command(event.message_str, "draw")
-        prompt, lora_map, lora_presets, width, height, wf_name, seed = self._parse_draw_args(args or "")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         if not prompt.strip():
             await self._send(event, 
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
@@ -1129,6 +1144,7 @@ class ComfyUIDrawPlugin(Star):
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
             is_img2img=bool(images),
+            denoise=denoise,
         ):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
@@ -1139,7 +1155,7 @@ class ComfyUIDrawPlugin(Star):
     async def cmd_img2img(self, event: AstrMessageEvent):
         """图生图：用附带的一张图片作为参考图重绘。用法：/img2img 描述 [--wf 工作流] [...]"""
         args = self._strip_command(event.message_str, "img2img")
-        prompt, lora_map, lora_presets, width, height, wf_name, seed = self._parse_draw_args(args or "")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         images = await self._extract_images(event)
         if not images:
             await self._send(
@@ -1152,6 +1168,7 @@ class ComfyUIDrawPlugin(Star):
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
             is_img2img=True,
+            denoise=denoise,
         ):
             yield m
         event.stop_event()
@@ -1181,7 +1198,7 @@ class ComfyUIDrawPlugin(Star):
             return
         # 默认触发词 → 用默认工作流；否则「画」后的部分即工作流名
         wf_name = None if trigger in self._DRAW_DEFAULT_TRIGGERS else trigger[1:]
-        prompt, lora_map, lora_presets, width, height, wf_arg, seed = self._parse_draw_args(rest)
+        prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest)
         if wf_arg:
             wf_name = wf_arg  # 若同时写了 --wf，以 --wf 为准
         if not prompt.strip():
@@ -1203,31 +1220,33 @@ class ComfyUIDrawPlugin(Star):
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
             is_img2img=is_img,
+            denoise=denoise,
         ):
             yield out
         # 收尾终止事件：同 /draw，避免 pipeline 在首个 yield 后中断 _do_draw
         event.stop_event()
 
     def _parse_draw_args(self, text: str):
-        """解析绘图指令参数，返回 (prompt, lora_map, lora_presets, width, height, workflow, seed)。
+        """解析绘图指令参数，返回 (prompt, lora_map, lora_presets, width, height, workflow, seed, denoise)。
 
         支持参数：
           --wf 工作流名                       指定工作流
           --lora 名称[:权重]                  指定 LoRA（旧写法，兼容）
           --名称[:权重]                       LoRA 简写：--安魂曲 = --lora 安魂曲:1；
-                                                                --安魂曲:0.5 = --lora 安魂曲:0.5
+                                                               --安魂曲:0.5 = --lora 安魂曲:0.5
           --名称/预设名[:权重]                 LoRA + 预设：--安魂曲/预设1 = 用「安魂曲」的「预设1」提示词
-                                                                （冒号支持半角 : 与全角 ：；预设名与名称之间用 / 分隔，
-                                                                 以免和 LoRA 名字里常见的 - 冲突）
+                                                               （冒号支持半角 : 与全角 ：；预设名与名称之间用 / 分隔，
+                                                                以免和 LoRA 名字里常见的 - 冲突）
           --w 宽 / --h 高                     分辨率
           --seed 数字                         随机种子
+          --denoise 数字                      降噪幅度（0~1），图生图时控制重绘强度
         权重缺省为 1.0。lora_map 为 {名称: 权重|None}，lora_presets 为 {名称: 预设名}。
         """
         # 已知"取值型"参数：后接一个值 token（--wf sd / --w 768 / --lora 名:权）
-        VALUE_FLAGS = {"--lora", "--wf", "--w", "--h", "--seed"}
+        VALUE_FLAGS = {"--lora", "--wf", "--w", "--h", "--seed", "--denoise"}
         lora_map: dict[str, float | None] = {}
         lora_presets: dict[str, str] = {}
-        width = height = wf_name = seed = None
+        width = height = wf_name = seed = denoise = None
 
         def add_lora(tok: str) -> None:
             # tok 形如 "安魂曲" / "安魂曲:0.5" / "安魂曲/预设1" / "安魂曲/预设1:0.5"
@@ -1282,6 +1301,11 @@ class ComfyUIDrawPlugin(Star):
                                 seed = int(val)
                             except ValueError:
                                 seed = None
+                        elif tok == "--denoise":
+                            try:
+                                denoise = float(val)
+                            except ValueError:
+                                denoise = None
                         i += 2
                         continue
                     else:
@@ -1298,7 +1322,7 @@ class ComfyUIDrawPlugin(Star):
                 i += 1
 
         prompt = " ".join(prompt_parts).strip()
-        return prompt, (lora_map or None), (lora_presets or None), width, height, wf_name, seed
+        return prompt, (lora_map or None), (lora_presets or None), width, height, wf_name, seed, denoise
 
     # ------------------------------------------------------------------ #
     # 指令：/loralist 列出可配置 LoRA
@@ -1496,7 +1520,7 @@ class ComfyUIDrawPlugin(Star):
         """显示绘图插件帮助。"""
         text = (
             "ComfyUI 绘图插件使用帮助：\n"
-            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
+            "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字] [--denoise 0~1]  绘图\n"
             "  · LoRA 简写：--安魂曲 等价于 --lora 安魂曲:1；--安魂曲:0.5 等价于 --lora 安魂曲:0.5（冒号支持半角 : 与全角 ：）\n"
             "  · LoRA 预设：--安魂曲/预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设，名称与预设名之间用 / 分隔）。\n"
             "  · 若消息带了图片，自动切换为图生图模式并使用图生图默认工作流。\n"
@@ -1530,6 +1554,7 @@ class ComfyUIDrawPlugin(Star):
         seed: int = 0,
         source: str = "",
         image: str = "",
+        denoise: float = -1,
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
@@ -1565,6 +1590,10 @@ class ComfyUIDrawPlugin(Star):
                 由伴侣插件在 extra_params 中传入，普通 AI 对话无需填写。
             image(string): 图生图的参考图URL（可选）。传入此参数即启用图生图模式。
                 也可不传此参数——插件会自动从用户消息中提取图片。
+            denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。
+                1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。
+                图生图常用 0.55~0.8，值越高输出越偏离原图、越接近纯文生图。
+                用户说"微调/小改"用低值(0.4~0.6)，"大改/风格转换"用高值(0.7~0.9)。
         """
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -1648,6 +1677,7 @@ class ComfyUIDrawPlugin(Star):
             seed or None,
             init_images=init_images or None,
             is_img2img=is_img2img,
+            denoise=denoise if denoise >= 0 else None,
         ):
             try:
                 if isinstance(node, MessageChain):
@@ -1689,6 +1719,7 @@ class ComfyUIDrawPlugin(Star):
         loras: list = None,
         seed: int = 0,
         image: str = "",
+        denoise: float = -1,
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
 
@@ -1710,6 +1741,9 @@ class ComfyUIDrawPlugin(Star):
             loras(array[string]): 需要启用的 LoRA 名称列表，可选，如 ["catgirl"]。
             seed(number): 随机种子，0 或不填表示每次随机。
             image(string): 参考图 URL（可选）。不传则自动从消息中提取图片。
+            denoise(number): 降噪幅度/重绘强度（0~1），不传或 -1 则用工作流配置默认值。
+                1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。
+                用户说"微调/小改"用低值(0.4~0.6)，"大改/风格转换"用高值(0.7~0.9)。
         """
         # 与 llm_draw 同样的兜底处理
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
@@ -1780,6 +1814,7 @@ class ComfyUIDrawPlugin(Star):
             seed or None,
             init_images=init_images,
             is_img2img=True,
+            denoise=denoise if denoise >= 0 else None,
         ):
             try:
                 if isinstance(node, MessageChain):

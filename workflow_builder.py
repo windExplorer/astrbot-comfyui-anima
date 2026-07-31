@@ -102,6 +102,27 @@ def randomize_seed(prompt: dict, seed: int | None = None) -> list[int]:
     return seeds
 
 
+def set_denoise(prompt: dict, denoise: float) -> bool:
+    """为工作流中所有采样器节点设置 denoise（降噪幅度/重绘强度）。
+
+    只修改 inputs 中已存在 denoise 字段的采样器节点（如 KSampler）；
+    若节点没有 denoise 字段（如某些定制采样器），则跳过不报错。
+    返回是否至少修改了一个节点。
+    """
+    changed = False
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        cls = (node.get("class_type") or "").lower()
+        if "sampler" not in cls:
+            continue
+        inputs = node.setdefault("inputs", {})
+        if "denoise" in inputs:
+            inputs["denoise"] = float(denoise)
+            changed = True
+    return changed
+
+
 def _next_free_id(prompt: dict) -> str:
     """返回一个未被占用的整数字符串节点 ID（当前最大整数键 + 1）。"""
     mx = 0

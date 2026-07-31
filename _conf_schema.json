@@ -188,6 +188,17 @@
             },
             "default": 512
           },
+          "default_denoise": {
+            "type": "float",
+            "description": "默认降噪幅度（denoise）",
+            "hint": "图生图时控制重绘强度：1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。文生图建议 1.0，图生图建议 0.55~0.8。填 -1 表示不注入（沿用工作流原始值）。",
+            "slider": {
+              "min": 0,
+              "max": 1,
+              "step": 0.05
+            },
+            "default": -1
+          },
           "lora_anchor": {
             "type": "string",
             "description": "主模节点 ID（可选）",
