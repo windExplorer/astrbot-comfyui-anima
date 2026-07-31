@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.62
+
+- **`comfyui_draw` 新增 `source` 来源参数，支持伴侣插件专属格式化**：`source` 命中「我会永远陪着你」时，对传入的整段提示词启用专属处理（`_format_companion_prompt`）——按 `Negative prompt:` 拆分正/负向后，正向只抽取「用户原始诉求(user request)」与「构图连续性([Composition and continuity])」两块标准内容，负向保留标签并去除 `Do not ...` 元指令，同时过滤掉时间/日程/位置/情绪等无关事实、分节标题、`[section compacted]` 与 `dup` 等截断占位符；其它来源或留空仍走通用拆分清洗(`_split_external_prompt`)。
+  - 伴侣插件侧需在「自定义生图工具额外参数(extra_params)」配置 `{"source": "我会永远陪着你"}` 即可触发。
+
 ## v1.0.61
 
 - **修复伴侣插件传入提示词「正向/负向混在一起 + 含无效标记」**：`astrbot_plugin_private_companion` 的 tool_call 生图会把整段（含 `Positive prompt:` / `Negative prompt:` 段落、`[section compacted]` 占位符、`[User image request]` 等分节方括号标题）塞进单个 `prompt` 参数。原逻辑把它整体当正向、负向留空，导致负向内容（如 `cropped head, nsfw ...`）混入正向、且方括号被当成 prompt-editing 语法扰乱生成。

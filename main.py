@@ -29,6 +29,11 @@ except ImportError:
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
 
+# 「我会永远陪着你」伴侣插件的来源标识：llm_draw 的 source 参数命中此值时，
+# 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
+# 事实与元指令、清除 [section compacted] 等标记）。
+SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
+
 # 可爱随机话术：提交绘图后提示用，避免每次都相同
 _QUEUE_HINTS_GENERATING = [
     "好嘞~ 小画家已经开始动笔啦，请稍候✨",
@@ -464,6 +469,57 @@ class ComfyUIDrawPlugin(Star):
         negative = re.sub(r"\[\s*section\s*compacted\s*\]", " ", negative, flags=re.IGNORECASE)
         negative = re.sub(r"\[[^\]]*?\s.+?\]", " ", negative)
         negative = re.sub(r"\s+", " ", negative).strip()
+        return positive, negative
+
+    @staticmethod
+    def _format_companion_prompt(raw: str) -> tuple[str, str]:
+        """针对「我会永远陪着你」伴侣插件的生图提示词做专属格式化与过滤。
+
+        伴侣传来的整段含 Positive/Negative 分段、分节标题、'[section compacted]' 占位符，
+        以及大量与出图无关的事实描述（时间/日程/位置/情绪等）和元指令。这里只抽取对
+        出图真正有用的部分：
+        - 用户原始诉求（紧接 'user request:' 的内容）
+        - 构图连续性段落（[Composition and continuity] 区块，标准 SD 风格标签）
+        - 负向段落（Negative prompt: 区块，去掉其中的 'Do not ...' 元指令）
+        其余噪声（场景事实、分节标题、元指令、截断占位符）一律丢弃。
+        """
+        if not raw:
+            return "", ""
+        # 1) 先按 Negative prompt: 切分正/负原始段
+        m = re.search(r"negative\s*prompt\s*[:：]", raw, re.IGNORECASE)
+        pos_raw = raw[: m.start()].strip() if m else raw.strip()
+        neg_raw = raw[m.end():].strip() if m else ""
+
+        # 2) 正向：抽取 user request 与 Composition and continuity 两块
+        parts: list[str] = []
+        um = re.search(r"user\s*request\s*[:：]\s*(.+)", pos_raw, re.IGNORECASE)
+        if um:
+            chunk = um.group(1).split("\n")[0].strip()
+            chunk = re.sub(r"\[\s*section\s*compacted\s*\]", " ", chunk, flags=re.IGNORECASE)
+            chunk = re.sub(r"\s+", " ", chunk).strip()
+            if chunk:
+                parts.append(chunk)
+        cm = re.search(
+            r"\[Composition and continuity\](.+?)(?:\n\[|$)",
+            pos_raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if cm:
+            block = cm.group(1).strip()
+            block = re.sub(r"\[\s*section\s*compacted\s*\]", " ", block, flags=re.IGNORECASE)
+            block = re.sub(r"\s+", " ", block).strip()
+            if block:
+                parts.append(block)
+        positive = ", ".join(p for p in parts if p)
+
+        # 3) 负向：取 Negative prompt 区块，去掉元指令与占位符
+        neg = neg_raw
+        neg = re.sub(r"\[\s*section\s*compacted\s*\]", " ", neg, flags=re.IGNORECASE)
+        neg = re.sub(r"do\s+not\s+[^\n;；]*", " ", neg, flags=re.IGNORECASE)
+        neg = re.sub(r"\bdup\b", " ", neg, flags=re.IGNORECASE)
+        neg = re.sub(r"\[[^\]]*?\s.+?\]", " ", neg)
+        negative = re.sub(r"\s+", " ", neg).strip()
+
         return positive, negative
 
     # ------------------------------------------------------------------ #
@@ -1220,6 +1276,7 @@ class ComfyUIDrawPlugin(Star):
         height: int = 0,
         loras: list = None,
         seed: int = 0,
+        source: str = "",
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。
 
@@ -1242,6 +1299,10 @@ class ComfyUIDrawPlugin(Star):
             height(number): 图片高度，0 表示使用工作流默认高度。
             loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
             seed(number): 随机种子，0 或不填表示每次随机，填具体数字可复现同一张图。
+            source(string): 调用来源插件名。当值为「我会永远陪着你」时，对传入的整段
+                提示词做专属格式化处理（拆分正/负向、过滤时间/日程/位置/情绪等无关事实
+                与元指令、清除 [section compacted] 等标记）；其它值或留空按通用规则处理。
+                由伴侣插件在 extra_params 中传入，普通 AI 对话无需填写。
         """
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -1258,9 +1319,15 @@ class ComfyUIDrawPlugin(Star):
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
         # 伴侣插件等调用方会把整段（含 'Negative prompt:' 段落与各种标记）塞进单个
-        # prompt 参数。这里拆出正向/负向并清洗标记，避免负向内容混入正向、也避免
-        # [section compacted] 等占位符进入工作流。
+        # prompt 参数。先按通用规则拆出正/负向并清洗标记；若来源标识命中「我会永远陪着你」
+        # 伴侣插件，则启用其专属格式化（进一步过滤时间/日程/位置/情绪等无关事实与元指令）。
         positive, parsed_neg = plugin._split_external_prompt(prompt)
+        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+            cpos, cneg = plugin._format_companion_prompt(prompt)
+            if cpos:
+                positive = cpos
+            if cneg:
+                parsed_neg = cneg
         negative = parsed_neg or (negative_prompt or "")
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
