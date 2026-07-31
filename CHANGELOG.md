@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.68
+
+- **修复取图永远为空的致命 Bug**：`_extract_images` 一直用 `getattr(event, "message_components", None)` 来读消息组件链，但 `message_components` **不是** `AstrMessageEvent` 的属性（正确属性是 `event.get_messages()` 返回的 `message_obj.message`），导致 `comps` 永远是空列表 `[]`，无论用户发的是直接图片、引用图片还是卡片图片，取图都返回空。改为 `event.get_messages()` 后，aiocqhttp 适配器正确解析的 `Image`/`Reply` 组件链会被正确读到。
+
 ## v1.0.67
 
 - **修复「画真人图 + 引用图片」不触发图生图**：根因是 `画` 系指令（`cmd_draw_wf`，正则 `^[/／]?画\S*`）与 `/draw` 指令调用 `_do_draw` 时根本没传 `init_images`，只有 `/img2img` 才会取图，导致用户用「画真人图 + 引用图片」这种自然语言方式时被当作文生图直接画出、参考图节点丝毫未改。

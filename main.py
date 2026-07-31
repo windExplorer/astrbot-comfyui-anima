@@ -523,10 +523,10 @@ class ComfyUIDrawPlugin(Star):
         - 卡片图片（CardImage）
         每张图都会打印来源与最终路径；单张失败不影响其它图。
         """
-        comps = list(getattr(event, "message_components", None) or [])
+        comps = list(event.get_messages())
         logger.info(
             f"[取图] 开始：消息组件共 {len(comps)} 个 -> "
-            + ", ".join(getattr(c, "type", type(c).__name__) for c in comps)
+            + ", ".join(str(getattr(c, "type", type(c).__name__)) for c in comps)
         )
 
         candidates: list = []  # (组件/引用, 来源描述)
