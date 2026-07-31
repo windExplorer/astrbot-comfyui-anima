@@ -1673,18 +1673,23 @@ class ComfyUIDrawPlugin(Star):
         init_images: list[str] = []
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
+        got_explicit_image = False
         if want_img2img:
             img_url = image.strip()
             logger.info(f"[取图] llm_draw image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
             if p:
                 init_images.append(p)
+                got_explicit_image = True
                 logger.info(f"[取图] image 参数下载成功: {p}")
             else:
                 logger.warning(f"[取图] image 参数下载失败: {img_url}")
 
-        # ② 从事件中自动提取图片（仅图生图场景：传了 image 参数或消息自带图片）
-        if want_img2img:
+        # ② 从事件中自动提取图片（仅图生图场景）。
+        #    图生图不需要大模型"看懂"图片——参考图直接喂给 ComfyUI 的 LoadImage 节点。
+        #    因此当 image 参数已成功取到图时，不再去 event / last_event 做无谓兜底探测，
+        #    也避免把本插件历史生成图混进本次重绘。
+        if want_img2img and not got_explicit_image:
             event_images = await plugin._extract_images(event)
             last_ev = getattr(plugin, "_last_event", None)
             if not event_images and last_ev is not None and last_ev is not event:
@@ -1867,6 +1872,9 @@ class ComfyUIDrawPlugin(Star):
         - 必须确保用户消息里附带了参考图；若没有图，请提示用户先发一张图再描述变换。
         - 即便对话历史里做过类似变换，只要用户再次附带图片并表达意图，就重新调用。
         - 传入 image 参数（消息中图片的 URL）或插件自动从消息中提取图片均可。
+        - ⚠️ 图生图不需要你（大模型）去"理解"或"描述"参考图的内容：
+          参考图会直接作为像素喂给 ComfyUI 的 LoadImage 节点，你只需把用户的变换意图
+          翻译成英文提示词（prompt）即可，不要浪费步骤去调用视觉转述/读取图片内容。
 
         工作流选择规则：
           插件已配置的工作流中，有些配置了「参考图节点」（image_node），说明该工作流
@@ -1923,18 +1931,22 @@ class ComfyUIDrawPlugin(Star):
             else:
                 logger.warning(f"[取图] image 参数下载失败: {img_url}")
 
-        # ② 从事件中自动提取图片
-        event_images = await plugin._extract_images(event)
-        last_ev = getattr(plugin, "_last_event", None)
-        if not event_images and last_ev is not None and last_ev is not event:
-            logger.info("[取图] llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
-            event_images = await plugin._extract_images(last_ev)
-        # 去重合并
-        seen = set(init_images)
-        for ep in event_images:
-            if ep not in seen:
-                seen.add(ep)
-                init_images.append(ep)
+        if not got_explicit_image:
+            # ② 从事件中自动提取图片（仅在未通过 image 参数显式拿到图时才探测）。
+            #    图生图不需要大模型"看懂"图片，参考图直接喂给 ComfyUI 的 LoadImage 节点；
+            #    因此若 image 参数已成功取到图，就绝不再去 event / last_event 里做无谓的
+            #    兜底探测（避免把上几次生成的旧图也混进来、也少打噪音日志）。
+            event_images = await plugin._extract_images(event)
+            last_ev = getattr(plugin, "_last_event", None)
+            if not event_images and last_ev is not None and last_ev is not event:
+                logger.info("[取图] llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+                event_images = await plugin._extract_images(last_ev)
+            # 去重合并
+            seen = set(init_images)
+            for ep in event_images:
+                if ep not in seen:
+                    seen.add(ep)
+                    init_images.append(ep)
 
         if not init_images:
             # 兜底：事件/参数均未取到图时，退回本插件最近生成的图、或本会话用户最近发来的图。
@@ -1955,14 +1967,6 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"[取图] 启用兜底图片（本插件生成/会话最近收到）: {init_images}")
             else:
                 return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
-        elif got_explicit_image:
-            # 已通过 image 参数明确拿到用户本次的参考图：绝不再混入本插件历史生成图
-            # （g_last_generated），避免把用户上几次生成的图也一起塞进图生图，造成结果污染。
-            # 仅静默跳过，不打印噪音日志。
-            pass
-        else:
-            # 图来自事件提取（event 里有图）：同样不混入本插件历史生成图，仅允许事件/用户发图。
-            pass
 
         # ── 决定工作流 ─────────────────────────────────────────────
         # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图
