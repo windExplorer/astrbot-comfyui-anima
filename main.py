@@ -1693,15 +1693,15 @@ class ComfyUIDrawPlugin(Star):
             is_img2img=is_img2img,
             denoise=denoise if denoise >= 0 else None,
         ):
-            try:
-                if isinstance(node, MessageChain):
-                    await event.send(node)
-                else:
-                    await event.send(MessageChain([node]))
-            except Exception as e:
-                # 伴侣插件传入的是合成事件（无真实平台），event.send 会失败，忽略即可；
-                # 图片路径仍通过下方的 return 交回给它解析。
-                logger.debug(f"[llm_draw] event.send 跳过（合成事件）: {e}")
+            # 外部插件调用时（如伴侣插件），由调用方负责发图，本插件不再重复发送
+            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+                try:
+                    if isinstance(node, MessageChain):
+                        await event.send(node)
+                    else:
+                        await event.send(MessageChain([node]))
+                except Exception as e:
+                    logger.debug(f"[llm_draw] event.send 跳过（合成事件）: {e}")
             if not img_path:
                 img_path = p
 
