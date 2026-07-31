@@ -1911,12 +1911,14 @@ class ComfyUIDrawPlugin(Star):
         init_images: list[str] = []
 
         # ① image 参数：LLM 传入的参考图 URL
+        got_explicit_image = False
         if image and image.strip():
             img_url = image.strip()
             logger.info(f"[取图] llm_img2img image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
             if p:
                 init_images.append(p)
+                got_explicit_image = True
                 logger.info(f"[取图] image 参数下载成功: {p}")
             else:
                 logger.warning(f"[取图] image 参数下载失败: {img_url}")
@@ -1953,6 +1955,14 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"[取图] 启用兜底图片（本插件生成/会话最近收到）: {init_images}")
             else:
                 return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
+        elif got_explicit_image:
+            # 已通过 image 参数明确拿到用户本次的参考图：绝不再混入本插件历史生成图
+            # （g_last_generated），避免把用户上几次生成的图也一起塞进图生图，造成结果污染。
+            # 仅静默跳过，不打印噪音日志。
+            pass
+        else:
+            # 图来自事件提取（event 里有图）：同样不混入本插件历史生成图，仅允许事件/用户发图。
+            pass
 
         # ── 决定工作流 ─────────────────────────────────────────────
         # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图
