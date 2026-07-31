@@ -219,8 +219,14 @@
   },
   "default_workflow": {
     "type": "string",
-    "description": "默认工作流名",
-    "hint": "留空则用第一个工作流。",
+    "description": "默认工作流名（文生图）",
+    "hint": "文生图时使用的默认工作流。留空则用第一个工作流。",
+    "default": ""
+  },
+  "default_img2img_workflow": {
+    "type": "string",
+    "description": "默认工作流名（图生图）",
+    "hint": "图生图时使用的默认工作流。留空则回退到上方「默认工作流名（文生图）」。",
     "default": ""
   },
   "danbooru": {

@@ -205,7 +205,7 @@ class ComfyUIDrawPlugin(Star):
         self._last_prompt: dict[str, str] = {}
         # 本地队列：记录本插件向每台 ComfyUI 服务器提交、但尚未完成的任务
         # （prompt_id 列表，按提交顺序）。不依赖 ComfyUI 的 /queue 接口，
-        # 仅用于提示“前面还有几位”。
+        # 仅用于提示"前面还有几位"。
         self._server_pending: dict[str, list] = {}
 
         # 插件数据目录：temp/ 存出图，workflow/ 存工作流文件
@@ -472,15 +472,41 @@ class ComfyUIDrawPlugin(Star):
         # 未显式启用则使用第一个
         return servers[0]
 
-    def _resolve_workflow(self, name: str | None = None) -> dict:
+    def _resolve_workflow(self, name: str | None = None, is_img2img: bool = False) -> dict:
+        """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
+
+        匹配优先级：
+          1) 精确匹配工作流名称（name 字段）
+          2) 回退：按文件名匹配（workflow_name 字段，兼容带/不带 .json 后缀）
+          3) 上述都失败 → 找不到报错
+        """
         workflows = self._workflows()
         if not workflows:
             raise ValueError("未配置任何工作流，请先在插件配置中添加。")
         if not name:
-            name = self._cfg("default_workflow", "")
+            if is_img2img:
+                name = self._cfg("default_img2img_workflow", "") or self._cfg("default_workflow", "")
+            else:
+                name = self._cfg("default_workflow", "")
         if name:
+            # 1) 精确匹配工作流名称
             for w in workflows:
                 if w.get("name") == name:
+                    return w
+            # 2) 回退：按文件名匹配（解决 LLM 把文件名当工作流名的问题）
+            name_lower = name.lower()
+            for w in workflows:
+                fn = (w.get("workflow_name") or "").strip().lower()
+                if not fn:
+                    continue
+                # 精确文件名（如 "sd.json"）
+                if fn == name_lower:
+                    return w
+                # 去掉 .json 后缀匹配（如 "sd" 匹配 "sd.json"）
+                if fn.endswith(".json") and fn[:-5] == name_lower:
+                    return w
+                # 加上 .json 后缀匹配（如 "sd.json" 匹配 "sd"）
+                if not fn.endswith(".json") and fn + ".json" == name_lower:
                     return w
             raise ValueError(f"找不到名为「{name}」的工作流。")
         return workflows[0]
@@ -531,18 +557,22 @@ class ComfyUIDrawPlugin(Star):
 
         candidates: list = []  # (组件/引用, 来源描述)
         for comp in comps:
-            if isinstance(comp, Image):
+            # 用 type 属性判断组件类型，不依赖 isinstance（Reply/CardImage
+            # 可能因不同 AstrBot 版本导入失败为 None，但 comp.type 始终可用）
+            ct = str(getattr(comp, "type", ""))
+            if isinstance(comp, Image) or ct == "Image":
                 candidates.append((comp, "消息内图片"))
-            elif CardImage is not None and isinstance(comp, CardImage):
+            elif (CardImage is not None and isinstance(comp, CardImage)) or ct == "CardImage":
                 candidates.append((comp, "卡片图片"))
-            elif Reply is not None and isinstance(comp, Reply):
+            elif (Reply is not None and isinstance(comp, Reply)) or ct == "Reply":
                 chain = getattr(comp, "chain", None) or []
                 logger.info(
                     f"[取图] 发现引用消息 Reply(id={getattr(comp, 'id', None)})，"
                     f"链内组件 {len(chain)} 个"
                 )
                 for sub in chain:
-                    if isinstance(sub, Image):
+                    st = str(getattr(sub, "type", ""))
+                    if isinstance(sub, Image) or st == "Image":
                         candidates.append((sub, "引用消息内嵌图片"))
                 # 平台 API 回退：引用只含占位符时，用 reply.id 去拉原消息图片
                 for ref in await _extract_quoted_images(event):
@@ -727,7 +757,7 @@ class ComfyUIDrawPlugin(Star):
         return str(server.get("name") or server.get("url") or "default")
 
     def _local_queue_ahead(self, key: str) -> int:
-        """当前服务器上、本次提交之前已排队的任务数量（即“前面还有几位”）。"""
+        """当前服务器上、本次提交之前已排队的任务数量（即"前面还有几位"）。"""
         return len(self._server_pending.get(key, []))
 
     def _local_queue_add(self, key: str, prompt_id: str) -> None:
@@ -756,6 +786,7 @@ class ComfyUIDrawPlugin(Star):
         lora_presets: dict[str, str] | None = None,
         seed: int | None = None,
         init_images: list[str] | None = None,
+        is_img2img: bool = False,
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
@@ -764,7 +795,7 @@ class ComfyUIDrawPlugin(Star):
             return
 
         try:
-            wf = self._resolve_workflow(workflow_name)
+            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img)
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
             # 配置类问题：原因是插件自己给出的可读文案，保留原因但用可爱口吻包裹
@@ -1024,7 +1055,7 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 pass
 
-            # 本地队列：本次提交之前已排队的任务数即为“前面还有几位”（只提示一次，
+            # 本地队列：本次提交之前已排队的任务数即为"前面还有几位"（只提示一次，
             # 不调用 ComfyUI 的 /queue 接口）。
             ahead = self._local_queue_ahead(srv_key)
             try:
@@ -1097,6 +1128,7 @@ class ComfyUIDrawPlugin(Star):
         async for m, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
+            is_img2img=bool(images),
         ):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
@@ -1119,6 +1151,7 @@ class ComfyUIDrawPlugin(Star):
         async for m, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
+            is_img2img=True,
         ):
             yield m
         event.stop_event()
@@ -1155,18 +1188,21 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=wf_name or "默认"))
             event.stop_event()
             return
+        # 提前取图：决定是否走图生图默认工作流
+        images = await self._extract_images(event)
+        is_img = bool(images)
         # 检查工作流是否存在：不存在则俏皮提示并退回默认工作流
         try:
-            self._resolve_workflow(wf_name)
+            self._resolve_workflow(wf_name, is_img2img=is_img)
         except ValueError:
             await self._send(event, random.choice(_WF_HINTS["not_found"]).format(wf=wf_name))
             wf_name = None
         # 若消息或引用(回复)里带了图片，则按图生图处理（参考图注入 LoadImage 节点）。
         # 否则走普通文生图。这样「画真人图 + 引用图片」也能自动图生图，不必强写 /img2img。
-        images = await self._extract_images(event)
         async for out, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
+            is_img2img=is_img,
         ):
             yield out
         # 收尾终止事件：同 /draw，避免 pipeline 在首个 yield 后中断 _do_draw
@@ -1187,7 +1223,7 @@ class ComfyUIDrawPlugin(Star):
           --seed 数字                         随机种子
         权重缺省为 1.0。lora_map 为 {名称: 权重|None}，lora_presets 为 {名称: 预设名}。
         """
-        # 已知“取值型”参数：后接一个值 token（--wf sd / --w 768 / --lora 名:权）
+        # 已知"取值型"参数：后接一个值 token（--wf sd / --w 768 / --lora 名:权）
         VALUE_FLAGS = {"--lora", "--wf", "--w", "--h", "--seed"}
         lora_map: dict[str, float | None] = {}
         lora_presets: dict[str, str] = {}
@@ -1402,10 +1438,24 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("workflows")
     async def cmd_workflows(self, event: AstrMessageEvent):
-        """列出工作流，或设置默认工作流：/workflows set 名称"""
+        """列出工作流，或设置默认工作流：/workflows set 名称 | /workflows set_img2img 名称"""
         args = self._strip_command(event.message_str, "workflows")
+        # set_img2img 优先匹配（防止被 set 正则吞掉后缀）
+        m_i2i = re.match(r"set_img2img\s+(\S+)", (args or "").strip())
         m = re.match(r"set\s+(\S+)", (args or "").strip())
-        if m:
+        if m_i2i:
+            name = m_i2i.group(1)
+            try:
+                self._resolve_workflow(name)
+            except ValueError as e:
+                await self._send(event, str(e))
+                return
+            self.config["default_img2img_workflow"] = name
+            self.config.save_config()
+            await self._send(event, f"已将图生图默认工作流设为「{name}」。")
+            event.stop_event()
+            return
+        if m and not m_i2i:
             name = m.group(1)
             try:
                 self._resolve_workflow(name)
@@ -1414,20 +1464,27 @@ class ComfyUIDrawPlugin(Star):
                 return
             self.config["default_workflow"] = name
             self.config.save_config()
-            await self._send(event, f"已将默认工作流设为「{name}」。")
+            await self._send(event, f"已将文生图默认工作流设为「{name}」。")
             event.stop_event()
             return
         workflows = self._workflows()
         default = self._cfg("default_workflow", "")
+        default_i2i = self._cfg("default_img2img_workflow", "")
         if not workflows:
             await self._send(event, "尚未配置任何工作流。")
             event.stop_event()
             return
         lines = ["已配置的工作流："]
         for w in workflows:
-            tag = "（默认）" if w.get("name") == default else ""
+            wname = w.get("name")
+            tags = []
+            if wname == default:
+                tags.append("文生图默认")
+            if wname == default_i2i:
+                tags.append("图生图默认")
+            tag = f"（{'，'.join(tags)}）" if tags else ""
             anima = " [Anima]" if w.get("is_anima") else ""
-            lines.append(f"- {w.get('name')}{anima}{tag}")
+            lines.append(f"- {wname}{anima}{tag}")
         await self._send(event, "\n".join(lines))
         event.stop_event()
 
@@ -1442,14 +1499,16 @@ class ComfyUIDrawPlugin(Star):
             "/draw 提示词 [--wf 工作流] [--lora 名称[:权重] | --名称[:权重] | --名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]  绘图\n"
             "  · LoRA 简写：--安魂曲 等价于 --lora 安魂曲:1；--安魂曲:0.5 等价于 --lora 安魂曲:0.5（冒号支持半角 : 与全角 ：）\n"
             "  · LoRA 预设：--安魂曲/预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设，名称与预设名之间用 / 分隔）。\n"
+            "  · 若消息带了图片，自动切换为图生图模式并使用图生图默认工作流。\n"
+            "/img2img 描述 [--wf 工作流] [...]  图生图（必须附带参考图）\n"
             "/画工作流名 提示词 [...]   用指定工作流作画（如 /画真人 一个女孩）；找不到该工作流时用默认工作流\n"
             "/画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词 [...]   以上均用默认工作流作画（如 /绘图 一个女孩）\n"
             "/loralist [--wf 工作流]   列出 LoRA（含预设）\n"
             "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
             "/queuestatus [--wf 工作流]  查看队列与排队位置\n"
-            "/workflows [set 名称]   列出/设置默认工作流\n"
-            "也可直接对 AI 说“画一只猫，使用 xxx lora”，由 AI 自动调用绘图工具。"
+            "/workflows [set 名称 | set_img2img 名称]   列出/设置默认工作流（set 设置文生图默认，set_img2img 设置图生图默认）\n"
+            '也可直接对 AI 说"画一只猫，使用 xxx lora"，由 AI 自动调用绘图工具。'
         )
         await self._send(event, text)
         event.stop_event()
@@ -1464,13 +1523,15 @@ class ComfyUIDrawPlugin(Star):
         prompt: str,
         negative_prompt: str = "",
         workflow: str = "",
+        img2img_workflow: str = "",
         width: int = 0,
         height: int = 0,
         loras: list = None,
         seed: int = 0,
         source: str = "",
+        image: str = "",
     ):
-        """使用 ComfyUI 根据文本提示词生成图片并返回给用户。
+        """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
         触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时（如「画一只猫」、
         「生成一张风景图」、「来张图：穿和服的少女」），务必调用此工具，并把用户的
@@ -1482,11 +1543,18 @@ class ComfyUIDrawPlugin(Star):
           为由拒绝调用或直接复述旧结果。
         - 为让同一句描述也能产生不同的画面，请在 prompt 中自然地加入一些随机变化
           （如不同的姿势、光影、构图、背景细节、服饰点缀等），避免每次都生成雷同的图。
+        - 本工具自动从消息中提取图片进行图生图，无需切换到其他工具。
+        - 若用户明确提到"根据这张图/参考这张图/把这张图变成…"，必须传入 image 参数
+          （消息中的图片URL）。若用户额外指定了图生图用的工作流，同时传入
+          img2img_workflow。
 
         Args:
             prompt(string): 图像的正向提示词描述（中文或英文均可）。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 要使用的工作流名称，留空使用默认工作流。
+            workflow(string): 文生图时的工作流名称，留空使用文生图默认工作流。
+                填工作流的「名称」而非文件名（如「真人图」而非「sd.json」）。
+            img2img_workflow(string): 图生图时的工作流名称。仅当传入 image 参数时生效；
+                留空则回退到 workflow 参数，再回退到图生图默认工作流。
             width(number): 图片宽度，0 表示使用工作流默认宽度。
             height(number): 图片高度，0 表示使用工作流默认高度。
             loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
@@ -1495,6 +1563,8 @@ class ComfyUIDrawPlugin(Star):
                 提示词做专属格式化处理（拆分正/负向、过滤时间/日程/位置/情绪等无关事实
                 与元指令、清除 [section compacted] 等标记）；其它值或留空按通用规则处理。
                 由伴侣插件在 extra_params 中传入，普通 AI 对话无需填写。
+            image(string): 图生图的参考图URL（可选）。传入此参数即启用图生图模式。
+                也可不传此参数——插件会自动从用户消息中提取图片。
         """
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -1510,9 +1580,48 @@ class ComfyUIDrawPlugin(Star):
         if loras:
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
-        # 伴侣插件等调用方会把整段（含 'Negative prompt:' 段落与各种标记）塞进单个
-        # prompt 参数。先按通用规则拆出正/负向并清洗标记；若来源标识命中「我会永远陪着你」
-        # 伴侣插件，则启用其专属格式化（进一步过滤时间/日程/位置/情绪等无关事实与元指令）。
+        # ── 收集图片（3 个来源）─────────────────────────────────────
+        init_images: list[str] = []
+
+        # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
+        if image and image.strip():
+            img_url = image.strip()
+            logger.info(f"[取图] llm_draw image 参数: {img_url}")
+            p = await _image_to_local_path(img_url)
+            if p:
+                init_images.append(p)
+                logger.info(f"[取图] image 参数下载成功: {p}")
+            else:
+                logger.warning(f"[取图] image 参数下载失败: {img_url}")
+
+        # ② 从事件中自动提取图片（用户消息附带 / 引用回复中的图）
+        event_images = await plugin._extract_images(event)
+        last_ev = getattr(plugin, "_last_event", None)
+        if not event_images and last_ev is not None and last_ev is not event:
+            logger.info("[取图] llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+            event_images = await plugin._extract_images(last_ev)
+        # 去重合并（避免 image 参数 URL 和事件里是同一张图）
+        seen = set(init_images)
+        for ep in event_images:
+            if ep not in seen:
+                seen.add(ep)
+                init_images.append(ep)
+
+        # ── 决定工作流与模式 ─────────────────────────────────────────
+        # 优先级：
+        #   image + img2img_workflow → 用 img2img_workflow
+        #   image + workflow          → 用 workflow（语义匹配）
+        #   image + 都没传            → 默认图生图工作流
+        #   无 image                  → workflow 或默认文生图工作流
+        is_img2img = bool(init_images)
+        if is_img2img and img2img_workflow and img2img_workflow.strip():
+            resolved_wf = img2img_workflow.strip()
+        elif is_img2img and workflow and workflow.strip():
+            resolved_wf = workflow.strip()
+        else:
+            resolved_wf = (workflow or "").strip() or None
+
+        # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
         positive, parsed_neg = plugin._split_external_prompt(prompt)
         if source and source.strip() == SOURCE_COMPANION_PLUGIN:
             cpos, cneg = plugin._format_companion_prompt(prompt)
@@ -1529,7 +1638,7 @@ class ComfyUIDrawPlugin(Star):
         img_path = ""
         async for node, p in plugin._do_draw(
             event,
-            workflow or None,
+            resolved_wf,
             positive,
             negative,
             width or None,
@@ -1537,6 +1646,8 @@ class ComfyUIDrawPlugin(Star):
             lora_map,
             None,
             seed or None,
+            init_images=init_images or None,
+            is_img2img=is_img2img,
         ):
             try:
                 if isinstance(node, MessageChain):
@@ -1574,8 +1685,10 @@ class ComfyUIDrawPlugin(Star):
         prompt: str,
         negative_prompt: str = "",
         workflow: str = "",
+        img2img_workflow: str = "",
         loras: list = None,
         seed: int = 0,
+        image: str = "",
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
 
@@ -1586,13 +1699,17 @@ class ComfyUIDrawPlugin(Star):
         重要约束：
         - 必须确保用户消息里附带了参考图；若没有图，请提示用户先发一张图再描述变换。
         - 即便对话历史里做过类似变换，只要用户再次附带图片并表达意图，就重新调用。
+        - 传入 image 参数（消息中图片的 URL）或插件自动从消息中提取图片均可。
 
         Args:
             prompt(string): 基于参考图的变换 / 生成描述（中文或英文均可）。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 要使用的工作流名称，留空使用默认工作流。
+            workflow(string): 要使用的工作流名称，留空使用图生图默认工作流。
+                填工作流的「名称」而非文件名（如「真人图」而非「sd.json」）。
+            img2img_workflow(string): 图生图专用工作流名称。优先级高于 workflow。
             loras(array[string]): 需要启用的 LoRA 名称列表，可选，如 ["catgirl"]。
             seed(number): 随机种子，0 或不填表示每次随机。
+            image(string): 参考图 URL（可选）。不传则自动从消息中提取图片。
         """
         # 与 llm_draw 同样的兜底处理
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
@@ -1603,15 +1720,44 @@ class ComfyUIDrawPlugin(Star):
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
-        images = await plugin._extract_images(event)
-        # 兜底：工具收到的 event 可能不含图片（图片已被 LLM 消费/剥离），
-        # 用 LLM 工具调用前捕获到的完整原始事件再试一次。
+        # ── 收集图片（与 llm_draw 共用同一逻辑）─────────────────────
+        init_images: list[str] = []
+
+        # ① image 参数：LLM 传入的参考图 URL
+        if image and image.strip():
+            img_url = image.strip()
+            logger.info(f"[取图] llm_img2img image 参数: {img_url}")
+            p = await _image_to_local_path(img_url)
+            if p:
+                init_images.append(p)
+                logger.info(f"[取图] image 参数下载成功: {p}")
+            else:
+                logger.warning(f"[取图] image 参数下载失败: {img_url}")
+
+        # ② 从事件中自动提取图片
+        event_images = await plugin._extract_images(event)
         last_ev = getattr(plugin, "_last_event", None)
-        if not images and last_ev is not None and last_ev is not event:
-            logger.info("[取图] 工具 event 未取到图，回退到 LLM 工具调用前捕获的原始事件再取一次")
-            images = await plugin._extract_images(last_ev)
-        if not images:
+        if not event_images and last_ev is not None and last_ev is not event:
+            logger.info("[取图] llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+            event_images = await plugin._extract_images(last_ev)
+        # 去重合并
+        seen = set(init_images)
+        for ep in event_images:
+            if ep not in seen:
+                seen.add(ep)
+                init_images.append(ep)
+
+        if not init_images:
             return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
+
+        # ── 决定工作流 ─────────────────────────────────────────────
+        # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图
+        if img2img_workflow and img2img_workflow.strip():
+            resolved_wf = img2img_workflow.strip()
+        elif workflow and workflow.strip():
+            resolved_wf = workflow.strip()
+        else:
+            resolved_wf = None
 
         lora_map = None
         if loras:
@@ -1624,7 +1770,7 @@ class ComfyUIDrawPlugin(Star):
         img_path = ""
         async for node, p in plugin._do_draw(
             event,
-            workflow or None,
+            resolved_wf,
             positive,
             negative,
             None,
@@ -1632,7 +1778,8 @@ class ComfyUIDrawPlugin(Star):
             lora_map,
             None,
             seed or None,
-            init_images=images,
+            init_images=init_images,
+            is_img2img=True,
         ):
             try:
                 if isinstance(node, MessageChain):

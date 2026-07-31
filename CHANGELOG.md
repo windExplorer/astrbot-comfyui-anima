@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.72
+
+- **修复引用图片（Reply）取不到的致命 Bug**：`_extract_images` 用 `isinstance(comp, Reply)` 判断 Reply 组件，但生产环境中 `from astrbot.api.message_components import Reply` 可能导入失败（`Reply = None`），导致即便日志显示 `ComponentType.Reply` 且有内嵌 Image，也永远进不了 Reply 分支。改为用 `comp.type` 属性（字符串 `"Reply"`）判断，不依赖类引用。
+  - 同时修复了 `Image` 和 `CardImage` 的同类隐患：`isinstance` 失败时以 `comp.type` 兜底。
+- **`llm_img2img` 工具补齐 `image` / `img2img_workflow` 参数**：此前只给 `comfyui_draw` 加了这两个参数，`comfyui_img2img` 漏了，导致 LLM 传 `image` 时直接报 `unexpected keyword argument`。现在两个工具的接口一致，LLM 调哪个都能正常工作。
+
+## v1.0.71
+
+- **修复 `/drawhelp` 文本中的中文弯引号导致加载报错**：字符串内嵌的 `"` `"` 被解析器误识别为 Python 定界符，改为单引号包裹。
+
+## v1.0.70
+
+- **LLM 工具 `comfyui_draw` 全面支持图生图**：新增 `image` 参数（参考图 URL）和 `img2img_workflow` 参数（图生图专用工作流名）。LLM 调用时传入 `image` 即可触发图生图模式，无需切换 `comfyui_img2img` 工具。图片来源同时支持：`image` 参数 URL 下载、事件自动提取（消息附带/引用回复图片）、兜底原始事件回退，三者合并并自动去重。
+  - 工作流选择优先级：`image` + `img2img_workflow` 双指定 → 走对应图生图工作流；只传 `image` → 语义匹配 `workflow` 参数，未指定则走图生图默认工作流；不传 `image` → 纯文生图。
+- **分离默认工作流**：新增配置项 `default_img2img_workflow`，图生图时独立指定默认工作流。文生图仍用 `default_workflow`。所有绘图入口（`/draw`、`/img2img`、`/画xxx`、`llm_draw`、`llm_img2img`）均正确传递 `is_img2img` 标志。
+- **工作流名匹配增强**：`_resolve_workflow` 新增按文件名（`workflow_name`）回退匹配，支持精确文件名、带/不带 `.json` 后缀三种情况。解决 LLM 把工作流文件名（如 `sd.json`）误当工作流名称（如 `默认` 或 `真人图`）传入的问题。LLM 工具描述也增加了提示说明。
+- **`/workflows` 命令增强**：新增 `set_img2img 名称` 子命令，可在聊天窗口设置图生图默认工作流；列表视图同时显示文生图/图生图两个默认标记。
+- **修复 `_resolve_workflow` 错误信息**：工作流未配置时的报错文案从「未配置任何 ComfyUI 服务器」修正为「未配置任何工作流」。
+
 ## v1.0.69
 
 - **修复 ComfyUI 提交 prompt 返回 400 错误**：图生图注入 LoadImage 节点时，错误地把图片引用设为 `[name, subfolder, type]` 列表格式——这是 ComfyUI 节点连线的内部引用格式，不是 LoadImage `image` 输入的正确值。LoadImage 的 `image` 输入应为**字符串（文件名）**。列表格式导致 ComfyUI 在验证工作流时拒绝接受（400 Bad Request）。改为直接传入 `upload_image` 返回的 `name` 字符串。
