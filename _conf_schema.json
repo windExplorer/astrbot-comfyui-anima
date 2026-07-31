@@ -311,6 +311,12 @@
       }
     }
   },
+  "enable_llm_tools": {
+    "type": "bool",
+    "description": "启用 LLM 画图工具",
+    "hint": "开启后 AI 对话中可自动调用画图工具（comfyui_draw / comfyui_img2img）。关闭后仅支持指令画图（/draw、/img2img、/画xxx 等），避免与伴侣插件等第三方插件重复触发。",
+    "default": true
+  },
   "draw_timeout": {
     "type": "int",
     "description": "出图超时(秒)",
