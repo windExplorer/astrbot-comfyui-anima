@@ -1620,11 +1620,13 @@ class ComfyUIDrawPlugin(Star):
         if loras:
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
-        # ── 收集图片（3 个来源）─────────────────────────────────────
+        # ── 收集图片 ─────────────────────────────────────────────────
+        # 先判断是否为图生图场景（传了 image 参数），再决定是否从事件取图
+        want_img2img = bool(image and image.strip())
         init_images: list[str] = []
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
-        if image and image.strip():
+        if want_img2img:
             img_url = image.strip()
             logger.info(f"[取图] llm_draw image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
@@ -1634,18 +1636,19 @@ class ComfyUIDrawPlugin(Star):
             else:
                 logger.warning(f"[取图] image 参数下载失败: {img_url}")
 
-        # ② 从事件中自动提取图片（用户消息附带 / 引用回复中的图）
-        event_images = await plugin._extract_images(event)
-        last_ev = getattr(plugin, "_last_event", None)
-        if not event_images and last_ev is not None and last_ev is not event:
-            logger.info("[取图] llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
-            event_images = await plugin._extract_images(last_ev)
-        # 去重合并（避免 image 参数 URL 和事件里是同一张图）
-        seen = set(init_images)
-        for ep in event_images:
-            if ep not in seen:
-                seen.add(ep)
-                init_images.append(ep)
+        # ② 从事件中自动提取图片（仅图生图场景：传了 image 参数或消息自带图片）
+        if want_img2img:
+            event_images = await plugin._extract_images(event)
+            last_ev = getattr(plugin, "_last_event", None)
+            if not event_images and last_ev is not None and last_ev is not event:
+                logger.info("[取图] llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+                event_images = await plugin._extract_images(last_ev)
+            # 去重合并（避免 image 参数 URL 和事件里是同一张图）
+            seen = set(init_images)
+            for ep in event_images:
+                if ep not in seen:
+                    seen.add(ep)
+                    init_images.append(ep)
 
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
