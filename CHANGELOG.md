@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.0.69
+
+- **修复 ComfyUI 提交 prompt 返回 400 错误**：图生图注入 LoadImage 节点时，错误地把图片引用设为 `[name, subfolder, type]` 列表格式——这是 ComfyUI 节点连线的内部引用格式，不是 LoadImage `image` 输入的正确值。LoadImage 的 `image` 输入应为**字符串（文件名）**。列表格式导致 ComfyUI 在验证工作流时拒绝接受（400 Bad Request）。改为直接传入 `upload_image` 返回的 `name` 字符串。
+
 ## v1.0.68
 
 - **修复取图永远为空的致命 Bug**：`_extract_images` 一直用 `getattr(event, "message_components", None)` 来读消息组件链，但 `message_components` **不是** `AstrMessageEvent` 的属性（正确属性是 `event.get_messages()` 返回的 `message_obj.message`），导致 `comps` 永远是空列表 `[]`，无论用户发的是直接图片、引用图片还是卡片图片，取图都返回空。改为 `event.get_messages()` 后，aiocqhttp 适配器正确解析的 `Image`/`Reply` 组件链会被正确读到。
