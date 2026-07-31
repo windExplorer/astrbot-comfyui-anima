@@ -47,6 +47,18 @@ def set_text_node(
     return True
 
 
+def set_image_node(
+    prompt: dict, node_id, image_tuple: list, input_name: str = "image"
+) -> bool:
+    """把上传到 ComfyUI 后的图片引用（[filename, subfolder, type]）注入到
+    LoadImage 节点的 image 输入，用于图生图（img2img）。"""
+    node = _get_node(prompt, node_id)
+    if node is None:
+        return False
+    node.setdefault("inputs", {})[input_name] = image_tuple
+    return True
+
+
 def set_number_node(
     prompt: dict, node_id, input_name: str, value: int
 ) -> bool:

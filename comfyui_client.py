@@ -1,6 +1,7 @@
 """ComfyUI HTTP 客户端：提交工作流、查询队列与历史、下载图片。"""
 
 import asyncio
+import os
 import uuid
 
 import aiohttp
@@ -44,6 +45,26 @@ class ComfyUIClient:
         """提交工作流，返回 {"prompt_id": "...", ...}。"""
         payload = {"prompt": prompt, "client_id": client_id or self.client_id}
         return await self._post("/prompt", payload)
+
+    async def upload_image(self, path: str, image_type: str = "input") -> dict:
+        """上传一张本地图片到 ComfyUI 的 /upload/image，返回接口 JSON 中的图片引用信息。
+
+        返回形如 {"name": "abc.png", "subfolder": "", "type": "input"}，可直接作为
+        LoadImage 节点的 image 输入（[name, subfolder, type]），用于图生图（img2img）。
+        """
+        session = await self._session_get()
+        try:
+            with open(path, "rb") as f:
+                data = aiohttp.FormData()
+                data.add_field("image", f, filename=os.path.basename(path))
+                data.add_field("type", image_type)
+                async with session.post(
+                    self.base_url + "/upload/image", data=data
+                ) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
+        except aiohttp.ClientResponseError as e:
+            raise RuntimeError(f"上传图片到 ComfyUI 失败（HTTP {e.status}）") from e
 
     async def get_history(self, prompt_id: str | None = None) -> dict:
         if prompt_id:

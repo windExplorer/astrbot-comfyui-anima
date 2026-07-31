@@ -141,6 +141,13 @@
             "obvious_hint": true,
             "default": ""
           },
+          "image_node": {
+            "type": "string",
+            "description": "参考图节点 ID（图生图）",
+            "hint": "图生图时，把参考图注入到这个 LoadImage 节点的 image 输入。填 LoadImage 节点的键名（如 12）。留空则自动查找工作流里的 LoadImage 节点。",
+            "obvious_hint": true,
+            "default": ""
+          },
           "resolution_width_field": {
             "type": "string",
             "description": "宽度输入框名",

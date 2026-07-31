@@ -43,6 +43,7 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 - `height_node` / `height_input`：高度节点 ID 与输入框名（默认 `height`）
 - `output_node`：输出图片节点 ID（SaveImage/PreviewImage）；留空自动取最后一个含图片的节点
 - `default_width` / `default_height`：默认尺寸
+- `image_node`（可选）：图生图时参考图注入的 LoadImage 节点 ID；留空则自动查找工作流里的 LoadImage 节点
 - `loras`：LoRA 列表，每项含：
   - `name`：标识名（AI 说“使用 xxx lora”时按此名匹配）
   - `keywords`：触发关键词，逗号分隔（如 `猫娘,catgirl`），出现在提示词里会自动启用
@@ -79,12 +80,15 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 - `/queuestatus [--wf 名称]` — 查看队列和你前面的排队位数
 - `/workflows [set 名称]` — 列出/设置默认工作流
 - `/drawhelp` — 帮助
+- `/img2img 描述 [--wf 工作流] [--lora 名称[:权重]] [--w 宽] [--h 高] [--seed 数字]` — 图生图：先在消息里附带一张参考图，再写变换描述，如 `/img2img 把背景换成星空`
 
 ### AI 对话
 直接对机器人说，例如：
 > 画一只在雨中奔跑的白色水手服少女，使用 catgirl lora
 
 AI 会调用 `comfyui_draw` 工具，并按你提到的 LoRA 名称启用对应 LoRA。Anima 工作流下，中文描述会先被翻译成 Danbooru 标签。
+
+**图生图**：在消息里附带一张图片并对机器人说变换需求（如「把这张图变成油画风格」「图生图：转绘成动漫风」），AI 会调用 `comfyui_img2img` 工具，把图片作为参考图重绘；若只发文字则走普通 `comfyui_draw`。
 
 ## 工作流 JSON 获取
 在 ComfyUI 界面点「Queue」旁边的菜单 → **Export (API Format)**，把得到的 JSON 放到插件数据目录的 `workflow/` 下（如 `workflow/sd.json`），然后配置里填 `workflow_name: sd` 即可；或直接把 JSON 粘贴到 `workflow_json`。节点 ID 可在该 JSON 的顶层键中找到（如 `"6": {...}`）。

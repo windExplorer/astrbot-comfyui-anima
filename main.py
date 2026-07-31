@@ -10,7 +10,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Plain, Image
 from astrbot.api.star import Context, Star, register
 
 try:
@@ -442,6 +442,22 @@ class ComfyUIDrawPlugin(Star):
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
 
     @staticmethod
+    async def _extract_images(event: AstrMessageEvent) -> list[str]:
+        """从消息事件中提取所有图片的本地路径（自动下载远程 URL）。用于图生图。"""
+        paths: list[str] = []
+        comps = getattr(event, "message_components", None)
+        if comps:
+            for comp in comps:
+                if isinstance(comp, Image):
+                    try:
+                        p = await comp.convert_to_file_path()
+                        if p:
+                            paths.append(p)
+                    except Exception as e:
+                        logger.warning(f"提取图片失败，已跳过: {e}")
+        return paths
+
+    @staticmethod
     def _split_external_prompt(text: str) -> tuple[str, str]:
         """把可能混合「正向/负向」与外部结构化标记的文本拆成 (正向, 负向)。
 
@@ -623,6 +639,7 @@ class ComfyUIDrawPlugin(Star):
         lora_map: dict[str, float | None] | None,
         lora_presets: dict[str, str] | None = None,
         seed: int | None = None,
+        init_images: list[str] | None = None,
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
@@ -641,6 +658,7 @@ class ComfyUIDrawPlugin(Star):
 
         # 加载工作流 JSON
         self._cleanup_temp()
+        client = self._build_client(server)
         try:
             prompt = workflow_builder.load_workflow(
                 self._resolve_workflow_path(wf), wf.get("workflow_json")
@@ -648,6 +666,31 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             await self._send(event, self._friendly_error(e, "工作流加载", "workflow"))
             return
+
+        # 图生图：把参考图注入到工作流的 LoadImage 节点
+        if init_images:
+            load_node = wf.get("image_node") or workflow_builder.find_node_by_class(
+                prompt, "LoadImage"
+            )
+            if not load_node:
+                await self._send(
+                    event, "呜…这个工作流没有 LoadImage 节点，没法做图生图呢～"
+                )
+                return
+            try:
+                for img_path in init_images:
+                    info = await client.upload_image(img_path)
+                    img_tuple = [
+                        info.get("name") or info.get("filename") or os.path.basename(img_path),
+                        info.get("subfolder", ""),
+                        info.get("type", "input"),
+                    ]
+                    workflow_builder.set_image_node(prompt, load_node, img_tuple)
+                    logger.info(f"已注入参考图到节点 {load_node}: {img_path}")
+            except Exception as e:
+                await self._send(event, self._friendly_error(e, "上传参考图"))
+                return
+            logger.info(f"图生图：已注入 {len(init_images)} 张参考图")
 
         # Anima 工作流：中文提示词翻译为 Danbooru 标签
         # 仅当提示词包含中文时才调用（纯英文/无中文时直接作为标签使用，跳过翻译）
@@ -680,15 +723,18 @@ class ComfyUIDrawPlugin(Star):
                 prompt, wf.get("negative_node"), "text", negative
             )
 
-        # 注入宽高（宽高同属一个节点）
+        # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入
         w = width or int(wf.get("default_width", 512) or 512)
         h = height or int(wf.get("default_height", 512) or 512)
-        res_node = wf.get("resolution_node") or ""
-        if not res_node:
-            # 未配置宽高节点时自动探测 EmptyLatentImage
-            res_node = workflow_builder.find_node_by_class(
-                prompt, "EmptyLatentImage"
-            )
+        if init_images:
+            res_node = None
+        else:
+            res_node = wf.get("resolution_node") or ""
+            if not res_node:
+                # 未配置宽高节点时自动探测 EmptyLatentImage
+                res_node = workflow_builder.find_node_by_class(
+                    prompt, "EmptyLatentImage"
+                )
         width_field = wf.get("resolution_width_field", "width") or "width"
         height_field = wf.get("resolution_height_field", "height") or "height"
         if res_node:
@@ -837,8 +883,7 @@ class ComfyUIDrawPlugin(Star):
             + json.dumps(prompt, ensure_ascii=False, indent=2)
         )
 
-        # 提交到 ComfyUI
-        client = self._build_client(server)
+        # 提交到 ComfyUI（client 已在工作流加载时创建）
         srv_key = self._server_key(server)
         try:
             try:
@@ -933,6 +978,26 @@ class ComfyUIDrawPlugin(Star):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
+        event.stop_event()
+
+    @filter.command("img2img")
+    async def cmd_img2img(self, event: AstrMessageEvent):
+        """图生图：用附带的一张图片作为参考图重绘。用法：/img2img 描述 [--wf 工作流] [...]"""
+        args = self._strip_command(event.message_str, "img2img")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed = self._parse_draw_args(args or "")
+        images = await self._extract_images(event)
+        if not images:
+            await self._send(
+                event,
+                "图生图需要附带一张参考图哦～ 请在消息里发一张图片，再加上你的描述，例如：/img2img 把背景换成星空",
+            )
+            event.stop_event()
+            return
+        async for m, _p in self._do_draw(
+            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
+            init_images=images,
+        ):
+            yield m
         event.stop_event()
 
     # 「画」系绘图指令（独立新增指令，非 /draw 别名）：
@@ -1363,3 +1428,80 @@ class ComfyUIDrawPlugin(Star):
             # 再用本地绝对路径定位文件；原生对话里这串文本作为工具结果交给 LLM。
             return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
         return "呜…这次画图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
+
+    # LLM 工具：comfyui_img2img（AI 对话图生图触发）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="comfyui_img2img")
+    async def llm_img2img(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        negative_prompt: str = "",
+        workflow: str = "",
+        loras: list = None,
+        seed: int = 0,
+    ):
+        """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
+
+        触发时机：当用户附带一张图片，并希望基于该图生成新图或做变换时（如「把这张图
+        变成油画风格」「以这张图为参考画一个类似场景」「图生图：转绘成动漫风」），务必
+        调用此工具，并把图片附在消息里、把变换描述作为 prompt 传入。
+
+        重要约束：
+        - 必须确保用户消息里附带了参考图；若没有图，请提示用户先发一张图再描述变换。
+        - 即便对话历史里做过类似变换，只要用户再次附带图片并表达意图，就重新调用。
+
+        Args:
+            prompt(string): 基于参考图的变换 / 生成描述（中文或英文均可）。
+            negative_prompt(string): 负向提示词，可选，不填则留空。
+            workflow(string): 要使用的工作流名称，留空使用默认工作流。
+            loras(array[string]): 需要启用的 LoRA 名称列表，可选，如 ["catgirl"]。
+            seed(number): 随机种子，0 或不填表示每次随机。
+        """
+        # 与 llm_draw 同样的兜底处理
+        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
+        if plugin is None:
+            plugin = self
+        if not isinstance(event, AstrMessageEvent):
+            event = getattr(plugin, "_last_event", None)
+        if event is None:
+            return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
+
+        images = await plugin._extract_images(event)
+        if not images:
+            return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
+
+        lora_map = None
+        if loras:
+            lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
+
+        # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
+        positive, parsed_neg = plugin._split_external_prompt(prompt)
+        negative = parsed_neg or (negative_prompt or "")
+
+        img_path = ""
+        async for node, p in plugin._do_draw(
+            event,
+            workflow or None,
+            positive,
+            negative,
+            None,
+            None,
+            lora_map,
+            None,
+            seed or None,
+            init_images=images,
+        ):
+            try:
+                if isinstance(node, MessageChain):
+                    await event.send(node)
+                else:
+                    await event.send(MessageChain([node]))
+            except Exception as e:
+                logger.debug(f"[llm_img2img] event.send 跳过（合成事件）: {e}")
+            if not img_path:
+                img_path = p
+
+        if img_path:
+            return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+        return "呜…这次图生图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
