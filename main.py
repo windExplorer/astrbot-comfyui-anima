@@ -20,6 +20,11 @@ except ImportError:  # pragma: no cover - 兼容旧版本
 from astrbot.api.star import Context, Star, register
 
 try:
+    from PIL import Image as _PILImage
+except ImportError:  # pragma: no cover - 环境无 Pillow 时降级（不读像素尺寸）
+    _PILImage = None
+
+try:
     from astrbot.api.star import StarTools
 except ImportError:
     StarTools = None
@@ -114,6 +119,21 @@ _ERR_HINTS = {
         "咦，提交出去了但没拿到任务编号呢，服务器好像走神啦，麻烦管理员检查一下哦！",
     ],
 }
+
+# 出图完成后的「贴心小报告」：随口报一下文件时间、尺寸、耗时，用可爱口吻，
+# 多条随机取一，避免每次都一样。占位符：
+#   {ftime} 文件生成时间（如 08-01 14:23:05）
+#   {wh}    像素尺寸（如 768×768）
+#   {size}  文件大小（如 1.2 MB）
+#   {cost}  生图耗时（秒，保留 1 位小数）
+_DRAW_DONE_HINTS = [
+    "好啦好啦，画好咯ฅ՞•ﻌ•՞ฅ 尺寸 {wh}、文件 {size}，耗时 {cost} 秒～ 文件时间 {ftime}，请慢用！",
+    "哒哒~ 图图出炉啦(◕‿◕✿) 这张是 {wh} 大小，占 {size}，奴家用了 {cost} 秒才磨出来呢，落盘于 {ftime}。",
+    "喵呜～ 交付完成！{wh} 像素、{size} 的体积，总共耗了 {cost} 秒哦。文件时间是 {ftime}，收好啦～",
+    "叮咚！您的画作已送达(｡･ω･｡)ﾉ♡ 尺寸 {wh}、{size} 大，画了 {cost} 秒，存好啦：{ftime}。",
+    "锵锵~ 画完啦！这一张 {wh}、{size}，跑了 {cost} 秒才蹦出来，生成时间 {ftime}，快看看喜不喜欢～",
+    "完成完成ヾ(◍°∇°◍)ﾉﾞ 尺寸 {wh}、文件 {size}，耗时 {cost} 秒，落盘时间 {ftime}。要改哪儿随时吩咐哦！",
+]
 
 # 工作流指定相关话术：用 /画<工作流名> 找不到该工作流时，
 # 俏皮提示并改用默认工作流；以及只写了工作流名却没给提示词时的撒娇提醒。
@@ -825,6 +845,8 @@ class ComfyUIDrawPlugin(Star):
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
+        # 出图计时起点（用于生成完成后的耗时报告）
+        _draw_start = time.time()
         if not positive or not positive.strip():
             await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
@@ -1167,6 +1189,34 @@ class ComfyUIDrawPlugin(Star):
                             g_last_generated["__global__"] = gbucket[-5:]
                     # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
                     yield event.image_result(img_path), img_path
+
+                    # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
+                    try:
+                        _st = os.stat(img_path)
+                        _ftime = time.strftime(
+                            "%m-%d %H:%M:%S", time.localtime(_st.st_mtime)
+                        )
+                        _kb = _st.st_size / 1024.0
+                        _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
+                        # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
+                        if _PILImage is not None:
+                            try:
+                                with _PILImage.open(img_path) as _im:
+                                    _wh = f"{_im.width}×{_im.height}"
+                            except Exception:
+                                _wh = f"{w}×{h}"
+                        else:
+                            _wh = f"{w}×{h}"
+                        _cost = time.time() - _draw_start
+                        await self._send(
+                            event,
+                            random.choice(_DRAW_DONE_HINTS).format(
+                                ftime=_ftime, wh=_wh, size=_size,
+                                cost=f"{_cost:.1f}",
+                            ),
+                        )
+                    except Exception as _e:
+                        logger.warning(f"[出图报告] 发送小报告失败（不影响出图）: {_e}")
             finally:
                 # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
                 self._local_queue_remove(srv_key, prompt_id)
