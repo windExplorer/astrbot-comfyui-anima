@@ -1683,7 +1683,13 @@ class ComfyUIDrawPlugin(Star):
         # （如 astrbot_plugin_private_companion 主动生图）。_do_draw 现以
         # (图片节点, 本地路径) 元组产出：这里主动把图片 event.send 发出（供原生对话
         # 直接看到图），并把本地路径以 JSON 形式 return（供伴侣插件解析为图片路径）。
+        # 本插件只负责生图与返回，不再主动 event.send（避免与调用方重复发图）：
+        # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
+        #   image_path 后自己发图；
+        # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，直接 return
+        #   图片节点，由 AstrBot 框架把工具结果里的图片渲染给用户。
         img_path = ""
+        img_node = None
         async for node, p in plugin._do_draw(
             event,
             resolved_wf,
@@ -1698,22 +1704,20 @@ class ComfyUIDrawPlugin(Star):
             is_img2img=is_img2img,
             denoise=denoise if denoise >= 0 else None,
         ):
-            # 外部插件调用时（如伴侣插件），由调用方负责发图，本插件不再重复发送
-            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-                try:
-                    if isinstance(node, MessageChain):
-                        await event.send(node)
-                    else:
-                        await event.send(MessageChain([node]))
-                except Exception as e:
-                    logger.debug(f"[llm_draw] event.send 跳过（合成事件）: {e}")
+            if not img_node:
+                img_node = node
             if not img_path:
                 img_path = p
 
+        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
         if img_path:
-            # 返回 JSON 并显式带 image_path 键：伴侣插件优先按 JSON 解析为图片路径，
-            # 再用本地绝对路径定位文件；原生对话里这串文本作为工具结果交给 LLM。
-            return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+            if is_companion:
+                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
+                return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+            # 原生 / Agent 调用：直接返回图片节点，框架自动渲染给用户
+            if isinstance(img_node, MessageChain):
+                return img_node
+            return MessageChain([img_node])
         return "呜…这次画图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
 
     # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
@@ -1873,6 +1877,7 @@ class ComfyUIDrawPlugin(Star):
         negative = parsed_neg or (negative_prompt or "")
 
         img_path = ""
+        img_node = None
         async for node, p in plugin._do_draw(
             event,
             resolved_wf,
@@ -1887,18 +1892,23 @@ class ComfyUIDrawPlugin(Star):
             is_img2img=True,
             denoise=denoise if denoise >= 0 else None,
         ):
-            # 外部插件调用时（如伴侣插件），由调用方负责发图，本插件不再重复发送
-            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-                try:
-                    if isinstance(node, MessageChain):
-                        await event.send(node)
-                    else:
-                        await event.send(MessageChain([node]))
-                except Exception as e:
-                    logger.debug(f"[llm_img2img] event.send 跳过（合成事件）: {e}")
+            # 本插件只负责生图与返回，不再主动 event.send（避免与调用方重复发图）：
+            # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
+            #   image_path 后自己发图；
+            # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，直接 return
+            #   图片节点，由 AstrBot 框架把工具结果里的图片渲染给用户。
+            if not img_node:
+                img_node = node
             if not img_path:
                 img_path = p
 
+        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
         if img_path:
-            return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+            if is_companion:
+                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
+                return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+            # 原生 / Agent 调用：直接返回图片节点，框架自动渲染给用户
+            if isinstance(img_node, MessageChain):
+                return img_node
+            return MessageChain([img_node])
         return "呜…这次图生图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
