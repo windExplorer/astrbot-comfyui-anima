@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.2.2
+
+- **修复 LLM 工具 `comfyui_draw` / `comfyui_img2img` 因 `prompt` 无默认值而报错 `missing 1 required positional argument: 'prompt'`**：AstrBot 的 LLM 工具框架在按位置/JSON schema 绑定参数时未能正确传入 `prompt`，导致 AI 对话触发绘图直接失败。现给两个工具的 `prompt` 补上默认值 `""`，并在函数体开头校验为空时返回明确的友好提示（而非崩溃）。`comfyui_img2img` 同样存在该隐患，一并修复。
+
 ## v1.2.1
 
 - **修复 LLM 工具（AI 对话）出图后用户看不到图**：`comfyui_draw` / `comfyui_img2img` 原本在原生对话下仅把图片节点 `return` 给 LLM 工具框架，而 LLM 工具的返回值只会作为文本结果回传给模型、不会被框架渲染成图片发给用户，导致生图成功但聊天里没有图。`/draw` 指令因走命令管线 yield 节点能正常出图，暴露出两条路径的不一致。修复：原生对话（不带 `source`）时改为主动 `await event.send(...)` 把图真正发到聊天，再回一句中性文本给模型。带 `source` 的伴侣插件场景维持 JSON 返回路径由调用方发图，不重复发送。

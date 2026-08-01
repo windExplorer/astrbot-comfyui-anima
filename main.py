@@ -1659,7 +1659,7 @@ class ComfyUIDrawPlugin(Star):
     async def llm_draw(
         self,
         event: AstrMessageEvent,
-        prompt: str,
+        prompt: str = "",
         negative_prompt: str = "",
         workflow: str = "",
         img2img_workflow: str = "",
@@ -1735,6 +1735,9 @@ class ComfyUIDrawPlugin(Star):
             event = getattr(plugin, "_last_event", None)
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
+
+        if not prompt or not prompt.strip():
+            return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
 
         lora_map = None
         if loras:
@@ -1920,7 +1923,7 @@ class ComfyUIDrawPlugin(Star):
     async def llm_img2img(
         self,
         event: AstrMessageEvent,
-        prompt: str,
+        prompt: str = "",
         negative_prompt: str = "",
         workflow: str = "",
         img2img_workflow: str = "",
@@ -1986,6 +1989,9 @@ class ComfyUIDrawPlugin(Star):
             event = getattr(plugin, "_last_event", None)
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
+
+        if not prompt or not prompt.strip():
+            return "⚠️ 调用 comfyui_img2img 失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。请补充画面描述后再试。"
 
         # ── 收集图片（与 llm_draw 共用同一逻辑）─────────────────────
         init_images: list[str] = []
