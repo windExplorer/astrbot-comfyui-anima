@@ -289,6 +289,7 @@ class ComfyUIDrawPlugin(Star):
                 "comfyui_img2img": ["prompt"],
                 # comfyui_workflows 无参数，无需 required
             }
+            patched = []
             for tool in llm_tools.func_list:
                 if tool.name in required_map:
                     params = getattr(tool, "parameters", None) or {}
@@ -296,6 +297,11 @@ class ComfyUIDrawPlugin(Star):
                         params.setdefault("properties", {})
                         params["required"] = required_map[tool.name]
                         tool.parameters = params
+                        patched.append(tool.name)
+            if patched:
+                logger.info(f"[init] 已为工具补充 required: {patched}")
+            else:
+                logger.warning("[init] 未找到本插件工具，补充 required 跳过（工具可能尚未注册）")
         except Exception as e:  # 框架内部结构变动时不致命
             logger.warning(f"[init] 补充工具 required 失败（可忽略）: {e}")
 
@@ -1722,25 +1728,14 @@ class ComfyUIDrawPlugin(Star):
           3. 如果都不匹配，传空让插件自动用图生图默认工作流。
 
         Args:
-            prompt(string): 图像的正向提示词描述（中文或英文均可）。
+            prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
+                不要留空，也不要用自然语言包裹，直接给出画面描述文本。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 文生图时的工作流名称，留空使用文生图默认工作流。
-            img2img_workflow(string): 图生图时的工作流名称。按上述「工作流选择规则」选择。
-                仅当传入 image 参数时生效。
-            width(number): 图片宽度，0 表示使用工作流默认宽度。
-            height(number): 图片高度，0 表示使用工作流默认高度。
-            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
-            seed(number): 随机种子，0 或不填表示每次随机，填具体数字可复现同一张图。
-            source(string): 调用来源插件名。当值为「我会永远陪着你」时，对传入的整段
-                提示词做专属格式化处理（拆分正/负向、过滤时间/日程/位置/情绪等无关事实
-                与元指令、清除 [section compacted] 等标记）；其它值或留空按通用规则处理。
-                由伴侣插件在 extra_params 中传入，普通 AI 对话无需填写。
-            image(string): 图生图的参考图URL（可选）。传入此参数即启用图生图模式。
-                也可不传此参数——插件会自动从用户消息中提取图片。
-            denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。
-                1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。
-                图生图常用 0.55~0.8，值越高输出越偏离原图、越接近纯文生图。
-                用户说"微调/小改"用低值(0.4~0.6)，"大改/风格转换"用高值(0.7~0.9)。
+            workflow(string): 文生图时的工作流名称，可选，留空使用文生图默认工作流。
+            img2img_workflow(string): 图生图时的工作流名称，可选。仅当消息附带参考图时生效。
+
+        注意：width/height/loras/seed/denoise 等高级参数已内置默认值，无需在工具参数中填写；
+        若消息带了图片，插件会自动切换为图生图模式，无需手动指定 image 参数。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
@@ -1996,16 +1991,14 @@ class ComfyUIDrawPlugin(Star):
           3. 如果都不匹配，传空让插件自动用图生图默认工作流。
 
         Args:
-            prompt(string): 基于参考图的变换 / 生成描述（中文或英文均可）。
+            prompt(string): 【必填】基于参考图的变换 / 生成描述（中文或英文均可）。这是唯一必须填写的参数，
+                直接给出变换意图文本，不要留空，不要包裹自然语言或 markdown。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 工作流名称，会被 img2img_workflow 覆盖，可不传。
-            img2img_workflow(string): 图生图专用工作流名称。按上述「工作流选择规则」选择。
-            loras(array[string]): 需要启用的 LoRA 名称列表，可选，如 ["catgirl"]。
-            seed(number): 随机种子，0 或不填表示每次随机。
-            image(string): 参考图 URL（可选）。不传则自动从消息中提取图片。
-            denoise(number): 降噪幅度/重绘强度（0~1），不传或 -1 则用工作流配置默认值。
-                1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。
-                用户说"微调/小改"用低值(0.4~0.6)，"大改/风格转换"用高值(0.7~0.9)。
+            img2img_workflow(string): 图生图专用工作流名称，可选。按上文「工作流选择规则」选择；
+                不传则自动用图生图默认工作流（建议先调用 comfyui_workflows 确认可用工作流）。
+
+        注意：loras/seed/denoise 等高级参数已内置默认值，无需在工具参数中填写；
+        参考图请直接附在用户消息里，插件会自动提取，无需手动指定 image 参数。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。

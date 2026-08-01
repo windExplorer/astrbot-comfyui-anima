@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.2.5
+
+- **精简 LLM 绘图工具的可见参数，降低模型吐畸形/空 JSON 概率**：`llm_tool` 的 JSON schema 完全由 docstring 的 `Args:` 段生成，而 deepseek 等模型在参数较多（尤其 `loras` 数组、`image` URL）时极易产出空串或非法 JSON，被 `openai_source` 兜底成 `{}` 并报「解析参数失败」。现从 docstring 中移除非核心参数（width/height/loras/seed/source/image/denoise），仅保留 prompt/negative_prompt/workflow/img2img_workflow，这些高级项改由函数默认值与内部逻辑处理。同时给 `prompt` 加上「必填、不要包裹自然语言」的强约束措辞。配合 v1.2.3 的 `event.message_str` 兜底与 v1.2.4 的 schema `required` 补丁，三重保障。
+- 注意：函数签名保持不变（参数均带默认值），仅收缩了暴露给模型的 schema，内部逻辑不受影响。
+
 ## v1.2.4
 
 - **根治 LLM 工具「参数传不进去」问题（核心修复）**：顺着 AstrBot 源码定位到根因——`llm_tool` 装饰器仅靠 docstring 生成 schema，不会标记 `required`，导致 `comfyui_draw`/`comfyui_img2img` 的全部参数对模型都是可选的；模型常以空 `{}` 调用工具，且模型返回的非合法 JSON arguments 被 `openai_source` 兜底成 `{}`，最终 `prompt` 永远为空、反复失败。现于插件 `initialize()` 中遍历全局 `llm_tools`，手动给 `comfyui_draw`/`comfyui_img2img` 的 schema 补 `required: ["prompt"]`，强制模型必填 prompt。配合 v1.2.3 的消息文本兜底，双层保障。
