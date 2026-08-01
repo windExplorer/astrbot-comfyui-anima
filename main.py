@@ -1808,13 +1808,13 @@ class ComfyUIDrawPlugin(Star):
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
         # （如 astrbot_plugin_private_companion 主动生图）。_do_draw 现以
-        # (图片节点, 本地路径) 元组产出：这里主动把图片 event.send 发出（供原生对话
-        # 直接看到图），并把本地路径以 JSON 形式 return（供伴侣插件解析为图片路径）。
-        # 本插件只负责生图与返回，不再主动 event.send（避免与调用方重复发图）：
+        # (图片节点, 本地路径) 元组产出。注意：LLM 工具的 return 值只会作为工具
+        # 结果文本回传给模型，框架不会自动渲染图片，所以原生对话下必须在这里主动
+        # event.send 把图发到聊天里。
         # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
-        #   image_path 后自己发图；
-        # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，直接 return
-        #   图片节点，由 AstrBot 框架把工具结果里的图片渲染给用户。
+        #   image_path 后自己发图，本函数不重复发图；
+        # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，主动 event.send
+        #   图片，再 return 简短文本告知模型已处理。
         img_path = ""
         img_node = None
         async for node, p in plugin._do_draw(
@@ -1841,11 +1841,17 @@ class ComfyUIDrawPlugin(Star):
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：直接返回图片节点，框架自动渲染给用户
-            if isinstance(img_node, MessageChain):
-                return img_node
-            return MessageChain([img_node])
-        return "呜…这次画图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
+            # 原生 / Agent 调用：LLM 工具的 return 值只会作为工具结果文本回传给
+            # 模型，框架并不会自动把 MessageChain 渲染成图片发给用户。因此这里必须
+            # 主动 event.send 把图真正发出去，再 return 一句简短文本让模型知道已处理。
+            try:
+                await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
+            except Exception as _e:
+                logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
+            # 不替模型说话：只回中性事实，让模型依据自身人设自然回复用户。
+            # 注意不要回本地路径等内部信息（那会经模型转述泄露给用户）。
+            return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
+        return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
 
     # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
     # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，
@@ -2082,8 +2088,13 @@ class ComfyUIDrawPlugin(Star):
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：直接返回图片节点，框架自动渲染给用户
-            if isinstance(img_node, MessageChain):
-                return img_node
-            return MessageChain([img_node])
-        return "呜…这次图生图好像出了点小状况，具体原因奴家记在日志里啦，可以再试一次嘛~"
+            # 原生 / Agent 调用：LLM 工具的 return 值只会作为工具结果文本回传给模型，
+            # 框架不会自动渲染图片，必须主动 event.send 把图发到聊天里。
+            try:
+                await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
+            except Exception as _e:
+                logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
+            # 不替模型说话：只回中性事实，让模型依据自身人设自然回复用户。
+            # 注意不要回本地路径等内部信息（那会经模型转述泄露给用户）。
+            return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
+        return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
