@@ -1736,8 +1736,18 @@ class ComfyUIDrawPlugin(Star):
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
+        # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
+        # 此时退回从用户原始消息文本取描述，避免「空参数→报错→重试→空参数」死循环。
         if not prompt or not prompt.strip():
-            return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
+            user_text = ""
+            try:
+                user_text = (getattr(event, "message_str", "") or "").strip()
+            except Exception:
+                user_text = ""
+            if user_text:
+                prompt = self._strip_command(user_text, "draw")
+            if not prompt or not prompt.strip():
+                return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
 
         lora_map = None
         if loras:
@@ -1990,8 +2000,18 @@ class ComfyUIDrawPlugin(Star):
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
+        # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
+        # 此时退回从用户原始消息文本取描述，避免「空参数→报错→重试→空参数」死循环。
         if not prompt or not prompt.strip():
-            return "⚠️ 调用 comfyui_img2img 失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。请补充画面描述后再试。"
+            user_text = ""
+            try:
+                user_text = (getattr(event, "message_str", "") or "").strip()
+            except Exception:
+                user_text = ""
+            if user_text:
+                prompt = self._strip_command(user_text, "img2img")
+            if not prompt or not prompt.strip():
+                return "⚠️ 调用 comfyui_img2img 失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。请补充画面描述后再试。"
 
         # ── 收集图片（与 llm_draw 共用同一逻辑）─────────────────────
         init_images: list[str] = []

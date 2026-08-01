@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.2.3
+
+- **`comfyui_draw` / `comfyui_img2img` 增加 prompt「参数空洞」兜底**：日志发现模型有时把画面描述写进思考链却未填入 tool_call 参数，导致 LLM 反复以空 `{}` 调用工具、陷入「空参数→报错→重试→空参数」死循环。现当 `prompt` 为空时，自动从用户原始消息文本（`event.message_str`）兜底取描述（剥离 `/draw`、`/img2img` 等触发词），仅在消息也无内容时才返回友好提示。真人自然语言对话（如「画一只猫」）即使模型忘记填参数也能正常出图。
+
 ## v1.2.2
 
 - **修复 LLM 工具 `comfyui_draw` / `comfyui_img2img` 因 `prompt` 无默认值而报错 `missing 1 required positional argument: 'prompt'`**：AstrBot 的 LLM 工具框架在按位置/JSON schema 绑定参数时未能正确传入 `prompt`，导致 AI 对话触发绘图直接失败。现给两个工具的 `prompt` 补上默认值 `""`，并在函数体开头校验为空时返回明确的友好提示（而非崩溃）。`comfyui_img2img` 同样存在该隐患，一并修复。
