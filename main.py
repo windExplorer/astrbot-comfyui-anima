@@ -276,7 +276,28 @@ class ComfyUIDrawPlugin(Star):
         self.workflow_dir.mkdir(parents=True, exist_ok=True)
 
     async def initialize(self) -> None:
-        pass
+        # 给 LLM 工具的 JSON schema 补 `required`。
+        # AstrBot 的 llm_tool 装饰器仅靠 docstring 生成 schema，不会标记 required，
+        # 导致模型把所有参数都视为可选、经常以空 {} 调用工具（表现为
+        # 「解析参数失败: Expecting value」→ 参数被框架兜底成 {} → prompt 永远为空）。
+        # 这里在工具注册完成后手动把核心必填参数标记为 required，强制模型填值。
+        try:
+            from astrbot.core.provider.register import llm_tools
+
+            required_map = {
+                "comfyui_draw": ["prompt"],
+                "comfyui_img2img": ["prompt"],
+                # comfyui_workflows 无参数，无需 required
+            }
+            for tool in llm_tools.func_list:
+                if tool.name in required_map:
+                    params = getattr(tool, "parameters", None) or {}
+                    if isinstance(params, dict):
+                        params.setdefault("properties", {})
+                        params["required"] = required_map[tool.name]
+                        tool.parameters = params
+        except Exception as e:  # 框架内部结构变动时不致命
+            logger.warning(f"[init] 补充工具 required 失败（可忽略）: {e}")
 
     async def terminate(self) -> None:
         pass

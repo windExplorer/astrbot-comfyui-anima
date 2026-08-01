@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v1.2.4
+
+- **根治 LLM 工具「参数传不进去」问题（核心修复）**：顺着 AstrBot 源码定位到根因——`llm_tool` 装饰器仅靠 docstring 生成 schema，不会标记 `required`，导致 `comfyui_draw`/`comfyui_img2img` 的全部参数对模型都是可选的；模型常以空 `{}` 调用工具，且模型返回的非合法 JSON arguments 被 `openai_source` 兜底成 `{}`，最终 `prompt` 永远为空、反复失败。现于插件 `initialize()` 中遍历全局 `llm_tools`，手动给 `comfyui_draw`/`comfyui_img2img` 的 schema 补 `required: ["prompt"]`，强制模型必填 prompt。配合 v1.2.3 的消息文本兜底，双层保障。
+- 注：此前 v1.2.2 给 `prompt` 加默认值无效，正是因为 schema 由 docstring 生成、不读签名默认值；本版从 schema 层修复。
+
 ## v1.2.3
 
 - **`comfyui_draw` / `comfyui_img2img` 增加 prompt「参数空洞」兜底**：日志发现模型有时把画面描述写进思考链却未填入 tool_call 参数，导致 LLM 反复以空 `{}` 调用工具、陷入「空参数→报错→重试→空参数」死循环。现当 `prompt` 为空时，自动从用户原始消息文本（`event.message_str`）兜底取描述（剥离 `/draw`、`/img2img` 等触发词），仅在消息也无内容时才返回友好提示。真人自然语言对话（如「画一只猫」）即使模型忘记填参数也能正常出图。
