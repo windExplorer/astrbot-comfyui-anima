@@ -29,7 +29,8 @@ if (Test-Path $zipPath) {
     Write-Host $errMsg -ForegroundColor Red
     exit 1
 }
-$relativeFiles = @(
+# Files and directories to include (relative to plugin root)
+$includeList = @(
     "_conf_schema.json",
     "main.py",
     "webui_api.py",
@@ -41,23 +42,45 @@ $relativeFiles = @(
     "requirements.txt",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
-)
-$dirFiles = @(
+    "LICENSE",
     "pages",
     "workflow"
 )
-$files = @()
-foreach ($f in $relativeFiles) {
-    $p = Join-Path $root $f
-    if (Test-Path $p) { $files += $p } else { Write-Host "Missing file: $p" -ForegroundColor Red; exit 1 }
+
+# Build zip with forward-slash paths so that Python zipfile on Linux
+# sees proper directory entries instead of backslash-in-filename.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::Open($zipPath, 1)  # 1 = Create
+
+function Add-ItemToZip($fsPath, $zipEntryPath) {
+    if (Test-Path -PathType Container $fsPath) {
+        # directory entry must end with /
+        $null = $zip.CreateEntry($zipEntryPath + "/")
+        # recurse
+        Get-ChildItem $fsPath | ForEach-Object {
+            Add-ItemToZip $_.FullName ($zipEntryPath + "/" + $_.Name)
+        }
+    } else {
+        $entry = $zip.CreateEntry($zipEntryPath)
+        $stream = $entry.Open()
+        $bytes = [System.IO.File]::ReadAllBytes($fsPath)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Dispose()
+    }
 }
-foreach ($d in $dirFiles) {
-    $p = Join-Path $root $d
-    if (Test-Path $p) { $files += $p } else { Write-Host "Missing dir: $p" -ForegroundColor Red; exit 1 }
+
+foreach ($name in $includeList) {
+    $fsPath = Join-Path $root $name
+    if (Test-Path $fsPath) {
+        Add-ItemToZip $fsPath $name
+    } else {
+        Write-Host "Missing: $name" -ForegroundColor Red
+        $zip.Dispose()
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
 }
-# Use -LiteralPath with absolute paths to avoid CWD-dependent resolution
-Compress-Archive -LiteralPath $files -DestinationPath $zipPath -Force
+$zip.Dispose()
 if (Test-Path $zipPath) {
     $size = (Get-Item $zipPath).Length
     $kb = [math]::Round($size / 1024, 1)

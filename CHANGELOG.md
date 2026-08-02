@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.7
+
+- **修复 zip 包路径分隔符导致 Linux/Docker 下目录变文件名的严重 bug**。`Compress-Archive` 在 Windows 上打包时使用反斜杠 `\` 作为 zip 内部路径分隔符，而 AstrBot 运行在 Linux 上时，Python 的 `zipfile.extractall()` 原样保留 `\`，导致 `pages\anima-console\index.html` 被解压为单个文件而非目录层级。本版重写 `build_zip.ps1`，弃用 `Compress-Archive`，改用 `.NET ZipFile` 手动构建 zip，强制所有路径使用正斜杠 `/`，确保跨平台兼容。
+- 此前因此 bug 导致 `pages/` 目录在 Linux 部署时完全不可用，Dashboard 自然无法发现 WebUI 入口。
+
 ## v2.1.6
 
 - **修复 `ModuleNotFoundError: No module named 'image_store'/'webui_api'`**。AstrBot 以 package 方式加载插件时，`sys.path` 不包含插件目录，导致 `from image_store import ImageStore` 这种绝对导入失败。改为优先使用 `from .image_store import ImageStore` 相对导入，回退兼容绝对导入。受影响的导入：`ImageStore`、`SRC_REF`、`SRC_USER`、`SRC_GEN`、`LOG_BUFFER`、`register_web_api`。
