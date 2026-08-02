@@ -179,130 +179,55 @@
 
 <script>
 const PLUGIN = "astrbot_plugin_comfyui_anima";
-const API_BASE = "/" + PLUGIN + "/page";
 
-// ---- 兼容 AstrBot 页面 bridge ----
-// 正确方式：window.AstrBotPluginPage.apiGet(endpoint, params) / apiPost(endpoint, body)
-// endpoint 为相对路径（如 /astrbot_plugin_comfyui_anima/page/config），
-// 父窗口（AstrBot dashboard）会自动拼 /api/plugins/extensions 前缀并携带鉴权。
-// 回退：裸 fetch('/api/plugins/extensions' + endpoint) 并带上 token。
-const PLUGIN_API_PREFIX = "/api/plugins/extensions";
+// ---- AstrBot 页面 bridge（官方标准用法）----
+// 文档：https://astrbot.app/dev/star/guides/plugin-pages.html
+// bridge 由 AstrBot 自动注入，无需手动引入 SDK。
+// 通过 bridge.ready() 等待初始化，再用 bridge.apiGet / apiPost 调用后端。
+// endpoint 使用插件内相对路径（不含插件名前缀，也不以 / 开头），
+// bridge 会自动转发到 /api/v1/plugins/extensions/<plugin_name>/<endpoint> 并携带鉴权。
+const bridge = window.AstrBotPluginPage;
 
-// 与伴侣插件一致：优先 window.AstrBotPluginPage，回退到父窗口（iframe 场景）
-function getBridge() {
-  if (window.AstrBotPluginPage) return window.AstrBotPluginPage;
-  try {
-    if (window.parent && window.parent !== window && window.parent.AstrBotPluginPage) {
-      return window.parent.AstrBotPluginPage;
-    }
-  } catch (e) { return null; }
-  return null;
-}
-
-function isUsableBridge(b) {
-  return Boolean(b && typeof b.apiGet === "function" && typeof b.apiPost === "function");
-}
-
-// dashboard 异步注入 bridge，需轮询等待避免页面加载时 bridge 尚未就绪
-let _bridgeProbe = null;
-async function waitForBridge(timeoutMs = 2500) {
-  if (isUsableBridge(getBridge())) return getBridge();
-  if (_bridgeProbe) return _bridgeProbe;
-  _bridgeProbe = (async () => {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (isUsableBridge(getBridge())) return getBridge();
-      await new Promise(r => setTimeout(r, 80));
-    }
-    return getBridge();
-  })();
-  return _bridgeProbe;
-}
-
-function getToken() {
-  try {
-    return localStorage.getItem("astrbot_token") || "";
-  } catch (e) { return ""; }
-}
-
-async function apiGet(endpoint, params) {
-  const bridge = await waitForBridge();
-  if (bridge && typeof bridge.apiGet === "function") {
-    return await bridge.apiGet(endpoint, params || {});
-  }
-  let url = PLUGIN_API_PREFIX + endpoint;
-  const qs = params ? new URLSearchParams(params).toString() : "";
-  if (qs) url += (url.includes("?") ? "&" : "?") + qs;
-  const headers = {};
-  const t = getToken();
-  if (t) headers["Authorization"] = "Bearer " + t;
-  const r = await fetch(url, { method: "GET", headers });
-  return await r.json();
-}
-
-async function apiPost(endpoint, body) {
-  const bridge = await waitForBridge();
-  if (bridge && typeof bridge.apiPost === "function") {
-    return await bridge.apiPost(endpoint, body || {});
-  }
-  const url = PLUGIN_API_PREFIX + endpoint;
-  const headers = { "Content-Type": "application/json" };
-  const t = getToken();
-  if (t) headers["Authorization"] = "Bearer " + t;
-  const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body || {}) });
-  return await r.json();
-}
-
-// 统一入口：自动按 method 选择 apiGet / apiPost
+// 统一入口：自动按 method 选择 apiGet / apiPost。
+// 注意：bridge 对 {status:'ok',data} 会解包为 data；对 {status:'error'} 或 HTTP 失败会 reject。
 async function api(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
+  // 把 query string 从 path 中拆出，作为 apiGet 的 params
+  let params = {};
+  let endpoint = path;
+  if (path.includes("?")) {
+    const qs = path.split("?", 2)[1];
+    params = Object.fromEntries(new URLSearchParams(qs));
+    endpoint = path.split("?")[0];
+  }
+  // 去掉可能多余的起始 /
+  endpoint = endpoint.replace(/^\//, "");
   if (method === "POST") {
     let body = opts.body;
     if (typeof body === "string") {
       try { body = JSON.parse(body); } catch (e) { body = {}; }
     }
-    return await apiPost(path, body);
+    return await bridge.apiPost(endpoint, body || {});
   }
-  // GET：把 query string 解析成 params
-  let params = {};
-  if (path.includes("?")) {
-    const qs = path.split("?", 2)[1];
-    params = Object.fromEntries(new URLSearchParams(qs));
-    path = path.split("?")[0];
-  }
-  return await apiGet(path, params);
+  return await bridge.apiGet(endpoint, params);
 }
 
-// 获取二进制图片为 blob URL（用于 <img>，绕过无法带 header 的限制）
-async function apiImageBlobUrl(endpoint) {
-  const bridge = await waitForBridge();
-  if (bridge && typeof bridge.apiGet === "function") {
-    // bridge 返回的可能直接是二进制；尝试拿 arrayBuffer
-    try {
-      const resp = await bridge.apiGet(endpoint, {});
-      if (resp instanceof Response) return URL.createObjectURL(await resp.blob());
-      if (resp && resp.arrayBuffer) return URL.createObjectURL(new Blob([resp]));
-    } catch (e) { /* fallthrough */ }
-  }
-  const url = PLUGIN_API_PREFIX + endpoint;
-  const headers = {};
-  const t = getToken();
-  if (t) headers["Authorization"] = "Bearer " + t;
-  const r = await fetch(url, { method: "GET", headers });
-  if (!r.ok) return "";
-  const blob = await r.blob();
-  return URL.createObjectURL(blob);
+// 图片接口：返回 data_url（base64）JSON，由 bridge 解包为 {data_url}
+async function apiImageDataUrl(endpoint) {
+  const resp = await bridge.apiGet(endpoint.replace(/^\//, ""), {});
+  if (resp && resp.data_url) return resp.data_url;
+  if (typeof resp === "string" && resp.startsWith("data:")) return resp;
+  return "";
 }
 
+// bridge 已按 {status:'ok',data} 解包为 data；失败时 reject 到 catch。
+// 这里把业务响应包装成统一的 {success, msg, data} 供 UI 判断。
 async function getJSON(path, opts) {
   try {
     const data = await api(path, opts);
-    if (typeof data === "string") {
-      try { return JSON.parse(data); } catch (e) { return { success: false, msg: data }; }
-    }
-    return data || {};
+    return { success: true, msg: "", data };
   } catch (e) {
-    return { success: false, msg: "请求失败: " + e.message };
+    return { success: false, msg: e && e.message ? e.message : String(e) };
   }
 }
 
@@ -431,7 +356,7 @@ async function galSearch() {
       const sha = r.sha256 || "";
       const img = grid.querySelector(`img[data-sha="${cssEsc(sha)}"]`);
       if (img) {
-        apiImageBlobUrl("/gallery/image?sha=" + encodeURIComponent(sha))
+        apiImageDataUrl("/gallery/image?sha=" + encodeURIComponent(sha))
           .then(url => { if (url) img.src = url; })
           .catch(() => {});
       }
@@ -460,19 +385,19 @@ function gitem(r) {
   </div>`;
 }
 window.toggleStar = async (sha, cur) => {
-  const d = await apiPost("/gallery/star", { sha, on: !cur });
+  const d = await api("/gallery/star", { method: "POST", body: { sha, on: !cur } });
   toast(d.success ? "已更新收藏" : "失败: " + (d.msg || ""), d.success ? "ok" : "err");
   galSearch();
 };
 window.delImg = async (sha) => {
   if (!confirm("确定删除该图？此操作不可恢复。")) return;
-  const d = await apiPost("/gallery/delete", { sha });
+  const d = await api("/gallery/delete", { method: "POST", body: { sha } });
   toast(d.success ? "已删除" : "失败: " + (d.msg || ""), d.success ? "ok" : "err");
   galSearch();
   loadGalStats();
 };
 window.zoom = (sha) => {
-  apiImageBlobUrl("/gallery/image?sha=" + encodeURIComponent(sha))
+  apiImageDataUrl("/gallery/image?sha=" + encodeURIComponent(sha))
     .then(url => { if (url) window.open(url, "_blank"); });
 };
 document.getElementById("btnGalSearch").onclick = galSearch;
@@ -488,9 +413,9 @@ function esc(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-// ---- 初始化：等待 AstrBot 页面桥接注入后再发请求（避免 iframe 中首屏 401/404）----
+// ---- 初始化：先等待 bridge 就绪，再加载数据（官方推荐用法）----
 (async () => {
-  await waitForBridge(2500);
+  try { await bridge.ready(); } catch (e) { /* bridge 已就绪则忽略 */ }
   loadCfg();
   loadLogs();
   loadGalStats();

@@ -20,13 +20,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import mimetypes
 import time
 from collections import deque
 from pathlib import Path
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, FileResponse
+from starlette.responses import JSONResponse, Response
 
 try:
     import aiohttp
@@ -39,11 +41,11 @@ LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
 
 
 def _ok(data=None, msg="ok"):
-    return JSONResponse({"success": True, "msg": msg, "data": data})
+    return JSONResponse({"status": "ok", "msg": msg, "data": data})
 
 
 def _err(msg="error", code=400, data=None):
-    return JSONResponse({"success": False, "msg": msg, "data": data}, status_code=code)
+    return JSONResponse({"status": "error", "msg": msg, "data": data}, status_code=code)
 
 
 class WebUIApi:
@@ -206,7 +208,15 @@ class WebUIApi:
             return _err(f"路径解析失败: {e}")
         if not path or not Path(path).exists():
             return _err("图片不存在", code=404)
-        return FileResponse(path)
+        # 对齐伴侣插件：图片以 data_url（base64）形式放入 JSON 返回，
+        # 由 AstrBot bridge 正常解包，前端 img.src = data_url 直接渲染。
+        try:
+            raw = await asyncio.to_thread(Path(path).read_bytes)
+        except Exception as e:
+            return _err(f"读取图片失败: {e}")
+        mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+        encoded = base64.b64encode(raw).decode("ascii")
+        return _ok({"data_url": f"data:{mime};base64,{encoded}", "mime": mime})
 
     async def gallery_star(self, request: Request) -> Response:
         g = self._gallery()

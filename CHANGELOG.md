@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.3
+
+- **严格对齐 AstrBot 官方插件页面文档与伴侣插件**，重写 Dashboard WebUI 的桥接与接口协议：
+  - 前端改用官方标准用法 `window.AstrBotPluginPage`（无需手动引入 SDK），初始化先 `await bridge.ready()` 再发请求；`apiGet`/`apiPost` 的 endpoint 使用插件内相对路径，由 bridge 自动拼 `/api/plugins/extensions/<plugin_name>/` 前缀并携带鉴权。移除自造的 `window.parent` 回退与裸 `fetch` 回退。
+  - 后端返回值统一为 bridge 协议格式 `{"status":"ok","msg","data"}` / `{"status":"error","msg"}`（原自定义 `success` 字段已废弃）。bridge 对 `ok` 自动解包为 `data`，对 `error` 自动 reject。
+  - 图库图片接口由二进制 `FileResponse` 改为返回 `data_url`（base64 内嵌 JSON），前端 `img.src = data_url` 直接渲染。原因：bridge 下的 `apiGet` 按 JSON 解包，二进制响应无法被正确处理，伴侣插件同样采用 `data_url` 方案。
+  - 详见官方文档：https://astrbot.app/dev/star/guides/plugin-pages.html
+
 ## v2.1.2
 
 - **修复 WebUI 在 Dashboard iframe 中打不开/空白的问题**。根因是页面加载时 `AstrBotPluginPage` 桥接对象尚未注入，且 iframe 场景下桥接挂在父窗口。本版对齐伴侣插件 `astrbot_plugin_private_companion` 的做法：
