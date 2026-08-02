@@ -1,4 +1,5 @@
 /* ===== Anima 控制台 - 完整样式 ===== */
+[hidden] { display: none !important; }
 :root {
   --bg: #f8f6f9;
   --bg-card: #ffffff;
