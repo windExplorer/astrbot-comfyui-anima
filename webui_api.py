@@ -105,14 +105,28 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     async def get_logs(self):
         try:
+            # 优先用内存环形缓冲；若为空（刚重载/尚未产生日志），回退读取落盘日志文件
+            # data_dir/webui.log 的尾部，保证页面始终能展示历史日志。
             lines = list(LOG_BUFFER)
             try:
                 n = request.query.get("n", 2000, type=int)
             except Exception:
                 n = 2000
+            if not lines:
+                try:
+                    plugin = self.plugin
+                    log_path = getattr(plugin, "data_dir", None)
+                    if log_path is not None:
+                        log_file = Path(log_path) / "webui.log"
+                        if log_file.exists():
+                            raw = log_file.read_text(encoding="utf-8", errors="ignore")
+                            file_lines = [ln for ln in raw.splitlines() if ln.strip()]
+                            lines = file_lines[-n:]
+                except Exception:
+                    pass
             if n > 0:
                 lines = lines[-n:]
-            return json_response({"lines": lines, "total": len(LOG_BUFFER)})
+            return json_response({"lines": lines, "total": len(lines)})
         except Exception as e:
             return error_response(f"读取日志失败: {e}")
 

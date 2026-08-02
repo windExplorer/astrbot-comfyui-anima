@@ -585,15 +585,20 @@
 
   // ====== LOGS ======
   async function loadLogs() {
+    var data;
     try {
-      var data = await apiGet("logs");
-      // 后端 apiGet 已被桥接解包为 data 本身：{ lines:[...], total:n }
-      state.logs = (data && Array.isArray(data.lines)) ? data.lines : (Array.isArray(data) ? data : []);
-      renderLogs();
-      setStatus("日志已加载");
+      data = await apiGet("logs");
     } catch (e) {
       els.logContent.innerHTML = '<div class="empty error">读取日志失败：' + escapeHtml(e.message) + '</div>';
+      throw e; // 让刷新逻辑能正确记录“日志”失败项
     }
+    // 后端 apiGet 已被桥接解包为 data 本身：{ lines:[...], total:n }
+    state.logs = (data && Array.isArray(data.lines)) ? data.lines : (Array.isArray(data) ? data : []);
+    if (!state.logs.length) {
+      els.logContent.innerHTML = '<div class="empty">暂无日志（产生绘图或其它运行日志后会自动出现）。</div>';
+    }
+    renderLogs();
+    setStatus("日志已加载");
   }
 
   function renderLogs() {
