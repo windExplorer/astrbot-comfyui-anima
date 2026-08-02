@@ -654,7 +654,9 @@
       var prompt = (r.prompt_raw || r.prompt || "").slice(0, 60);
       var status = isFail
         ? '<span class="badge fail">失败</span>'
-        : '<span class="badge ok">成功</span>';
+        : (Number(r.deleted) === 1
+            ? '<span class="badge warn">已删(回收站)</span>'
+            : '<span class="badge ok">成功</span>');
       var msg = (r.trigger_msg || "").slice(0, 40);
       return '<tr>' +
         '<td>' + thumb + '</td>' +

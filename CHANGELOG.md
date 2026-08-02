@@ -2,9 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.19
+
+- **修复图库（非回收站）永远空白的真 bug：`search()` 参数绑定数量不匹配**。`search(trash=False)` 时 SQL 拼成 `AND deleted=0`（硬编码，无占位符 `?`），但代码仍向参数列表 `append(0)`，导致实际占位符数（仅 `LIMIT ? OFFSET ?` 共 2 个）比传入参数（多出一个 `0` 共 3 个）少一个，SQLite 抛 `Incorrect number of bindings supplied` 异常，被 `search` 的 try/except 吞掉返回空数组——于是图库主视图永远空、且日志里出现 `检索失败`。回收站（`trash=True`）用了 `?` 并正确 append，所以反而能查到，这也解释了「出图记录有图、图库空白」的表象。改为仅 `trash=True` 时使用 `AND deleted=?` 并 append 参数，否则硬编码 `deleted=0` 不 append。
+
 ## v2.2.18
 
-- **根治「统计显示有图、图库/回收站却空白或点不动」：给前端静态资源加版本化缓存破坏**。根因不是数据，而是浏览器缓存了旧版 `app.js`——旧版用 `data.results` 解析响应（后端实际返回 `data` 数组），导致图库永远解析成空数组；而统计 `gallery/stats` 在旧版是独立解析 `s.total`，所以仍显示「N 张图片」。这会让用户看到「统计有 3 张、图库空白、回收站点了没反应」的假象。现在 `build_zip.ps1` 打包时会自动给 `pages/anima-console/index.html` 里的 `./app.js` / `./styles.css` 追加 `?v=<版本号>` 查询参数（仅写入 zip，不改动仓库源码），每次发布都强制浏览器拉取新文件，不再需要手动清缓存。
+- **给前端静态资源加版本化缓存破坏**。`build_zip.ps1` 打包时自动给 `pages/anima-console/index.html` 里的 `./app.js` / `./styles.css` 追加 `?v=<版本号>` 查询参数（仅写入 zip，不改动仓库源码），每次发布强制浏览器拉取新文件，避免旧缓存导致「统计有数但图库空白」等假象。
 
 ## v2.2.17
 

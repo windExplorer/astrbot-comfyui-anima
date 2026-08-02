@@ -513,9 +513,12 @@ class ImageStore:
             return []
         conn = self._conn_get()
         sql = "SELECT * FROM images WHERE 1=1"
-        sql += " AND deleted=?" if trash else " AND deleted=0"
         args: list = []
-        args.append(1 if trash else 0)
+        if trash:
+            sql += " AND deleted=?"
+            args.append(1)
+        else:
+            sql += " AND deleted=0"
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
