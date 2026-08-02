@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.22
+
+- **新增「指定大模型调用工具」配置（`llm_model`）**：部分默认对话模型不支持 Function Calling，导致 AI 调用 `comfyui_draw` / `comfyui_gallery` 等工具时传参全空、出图失败。新增配置项 `llm_model`（可选，填 LLM 服务提供商的名称/ID），插件在工具参数空洞时，会用该指定模型重新理解用户原始指令并补全参数（prompt/keyword 等）。留空则沿用 AstrBot 默认对话模型，行为不变。接入位置：`llm_draw` / `llm_img2img` 的 prompt 兜底分支与 `llm_gallery` 的 search 模式 keyword 兜底分支，统一走新增的 `_llm_extract_args()`（基于 `context.llm_generate(chat_provider_id=...)` 提取 JSON）。
+
 ## v2.2.21
 
 - **大图弹窗体验优化**：

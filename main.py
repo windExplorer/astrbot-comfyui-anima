@@ -406,6 +406,41 @@ class ComfyUIDrawPlugin(Star):
             val = default
         return val if val is not None else default
 
+    async def _llm_extract_args(self, user_text: str, param_spec: str) -> dict | None:
+        """当默认模型不支持 Function Calling 导致工具参数空洞时，用「指定模型」(llm_model)
+        重新理解用户原话并提取工具参数。返回解析出的参数字典；失败/未配置则返回 None。"""
+        model = self._cfg("llm_model", "").strip()
+        if not model or not user_text:
+            return None
+        prompt = (
+            "你是一个参数提取器。下面用户想调用一个绘图/图库插件工具。"
+            "请只输出一个 JSON 对象（不要任何解释、不要 markdown 代码块、不要反引号），"
+            "字段名与下方参数说明一致。\n\n"
+            f"工具参数说明：\n{param_spec}\n\n"
+            f"用户原话：\n{user_text}\n\n"
+            "只输出 JSON 对象："
+        )
+        try:
+            llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
+            text = getattr(llm_resp, "completion_text", "") or ""
+        except Exception as e:
+            logger.warning(f"[llm_model] 指定模型({model}) 参数提取失败，退回默认逻辑: {e}")
+            return None
+        text = text.strip()
+        # 容忍 ```json ... ``` 包裹
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text, flags=re.DOTALL)
+        try:
+            return json.loads(text)
+        except Exception:
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group(0))
+                except Exception:
+                    return None
+            return None
+
     def _get_data_dir(self) -> Path:
         """获取插件专属数据目录（兼容新旧 AstrBot 版本）。"""
         plugin_name = "astrbot_plugin_comfyui_anima"
@@ -2198,7 +2233,8 @@ class ComfyUIDrawPlugin(Star):
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
         # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
-        # 此时退回从用户原始消息文本取描述，避免「空参数→报错→重试→空参数」死循环。
+        # 此时优先用「指定模型」(llm_model) 重新从用户原话提取参数；再退回从原始消息文本取描述，
+        # 避免「空参数→报错→重试→空参数」死循环。
         if not prompt or not prompt.strip():
             user_text = ""
             try:
@@ -2206,9 +2242,31 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 user_text = ""
             if user_text:
-                prompt = self._strip_command(user_text, "draw")
+                extracted = await self._llm_extract_args(
+                    user_text,
+                    "prompt(string): 图像正向提示词描述（必填）。\n"
+                    "negative_prompt(string): 负向提示词，可选。\n"
+                    "workflow(string): 文生图工作流名，可选。\n"
+                    "img2img_workflow(string): 图生图工作流名，可选。\n"
+                    "loras(string): LoRA 名称列表，可选。\n"
+                    "width(int): 宽度，可选。height(int): 高度，可选。",
+                )
+                if extracted and extracted.get("prompt"):
+                    prompt = str(extracted["prompt"]).strip()
+                    # 用指定模型补全的其他可选参数（仅当原参数为空时）
+                    if extracted.get("negative_prompt") and not negative_prompt:
+                        negative_prompt = str(extracted["negative_prompt"])
+                    if extracted.get("workflow") and not workflow:
+                        workflow = str(extracted["workflow"])
+                    if extracted.get("img2img_workflow") and not img2img_workflow:
+                        img2img_workflow = str(extracted["img2img_workflow"])
+                    if extracted.get("loras") and not loras:
+                        loras = extracted["loras"]
             if not prompt or not prompt.strip():
-                return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
+                if user_text:
+                    prompt = self._strip_command(user_text, "draw")
+                if not prompt or not prompt.strip():
+                    return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
 
         lora_map = None
         if loras:
@@ -2423,7 +2481,19 @@ class ComfyUIDrawPlugin(Star):
 
         elif mode == "search":
             if not keyword or not keyword.strip():
-                return "search 模式需要 keyword 参数（提示词关键词）。"
+                # 默认模型未填 keyword 时，用「指定模型」(llm_model) 从用户原话提取
+                user_text = (getattr(event, "message_str", "") or "").strip()
+                if user_text:
+                    extracted = await plugin._llm_extract_args(
+                        user_text,
+                        "mode(string): 固定为 search。\n"
+                        "keyword(string): 提示词关键词（必填，如「猫」「海边」）。\n"
+                        "limit(int): 返回数量上限，可选。",
+                    )
+                    if extracted and extracted.get("keyword"):
+                        keyword = str(extracted["keyword"]).strip()
+                if not keyword or not keyword.strip():
+                    return "search 模式需要 keyword 参数（提示词关键词）。"
             rows = g.search(keyword=keyword.strip(), limit=limit, session=session)
             if not rows:
                 return f"没找到含「{keyword.strip()}」的图。"
@@ -2586,7 +2656,7 @@ class ComfyUIDrawPlugin(Star):
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
         # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
-        # 此时退回从用户原始消息文本取描述，避免「空参数→报错→重试→空参数」死循环。
+        # 优先用「指定模型」(llm_model) 重新提取；再退回原始消息文本，避免死循环。
         if not prompt or not prompt.strip():
             user_text = ""
             try:
@@ -2594,9 +2664,26 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 user_text = ""
             if user_text:
-                prompt = self._strip_command(user_text, "img2img")
+                extracted = await self._llm_extract_args(
+                    user_text,
+                    "prompt(string): 基于参考图的变换/生成描述（必填）。\n"
+                    "negative_prompt(string): 负向提示词，可选。\n"
+                    "img2img_workflow(string): 图生图工作流名，可选。\n"
+                    "loras(string): LoRA 名称列表，可选。",
+                )
+                if extracted and extracted.get("prompt"):
+                    prompt = str(extracted["prompt"]).strip()
+                    if extracted.get("negative_prompt") and not negative_prompt:
+                        negative_prompt = str(extracted["negative_prompt"])
+                    if extracted.get("img2img_workflow") and not img2img_workflow:
+                        img2img_workflow = str(extracted["img2img_workflow"])
+                    if extracted.get("loras") and not loras:
+                        loras = extracted["loras"]
             if not prompt or not prompt.strip():
-                return "⚠️ 调用 comfyui_img2img 失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。请补充画面描述后再试。"
+                if user_text:
+                    prompt = self._strip_command(user_text, "img2img")
+                if not prompt or not prompt.strip():
+                    return "⚠️ 调用 comfyui_img2img 失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。请补充画面描述后再试。"
 
         # ── 收集图片（与 llm_draw 共用同一逻辑）─────────────────────
         init_images: list[str] = []
