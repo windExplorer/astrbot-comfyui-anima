@@ -3,28 +3,25 @@
 通过 AstrBot 的 context.register_web_api 注册路由，配合 pages/anima-console/
 下的前端页面使用。
 
-重要（已踩坑）：AstrBot 在调用 web_api handler 时，只通过 path_params（路由
-占位符）传参，并把 Quart 全局 request 绑定到当前上下文（见 AstrBot 源码
-astrbot/dashboard/asgi_runtime.py 的 call_request_view / bind_quart_request_context）。
-因此：
-1) handler 签名里**不能**声明 request 参数——否则会 TypeError 导致接口 500；
-   需要请求信息时用 `from quart import request` 的全局对象（request.args / get_json）。
-2) 路由前缀必须含插件名：/<plugin_name>/page/...。前端 API_PREFIX 为 "page/"，
-   宿主会拼成 /api/plugins/extensions/<plugin_name>/page/<endpoint>，而 AstrBot 的
-   路由注册（asgi_runtime.FastAPIAppAdapter.add_url_rule）也是按「含插件名的完整路径」
-   注册的。参考伴侣插件 astrbot_plugin_private_companion 即 PAGE_API_PREFIX =
-   f"/{PLUGIN_NAME}/page"，前端 HTTP_API 同样含插件名。前缀写错（少了插件名）会导致
-   全部 404 / 前端永远加载中。
+严格遵循 AstrBot 官方文档（docs/zh/dev/star/guides/plugin-pages.md）：
+1) 使用 astrbot.api.web 提供的 request / json_response / error_response，
+   不暴露 Starlette / Quart / FastAPI 的原始请求对象。
+2) handler 不声明 request 参数，需要请求信息时直接用模块级 `request`。
+3) 返回值用 json_response(value)（value 可为 dict/list/scalar），或 error_response(msg)。
+   前端桥接 apiGet/apiPost 会直接 resolve 为 value 本身（无需再解包 status/data）。
+4) 路由前缀含插件名 /<plugin_name>/page/...（与前端 API_PREFIX="page/" 拼接后
+   形成 /api/plugins/extensions/<plugin_name>/page/<endpoint>）。
 
 功能：
 - /schema          读取插件配置 schema（_conf_schema.json），用于前端结构化渲染
-- /config          读取/保存插件配置
-- /logs            读取内存日志环形缓冲（由 main.py 安装的 handler 填充）
-- /gallery/stats   图库统计
-- /gallery/search  图库检索（每条返回 data_url 缩略图）
-- /gallery/star    收藏/取消收藏
-- /gallery/delete  删除
-- /gallery/tags    为某图添加标签
+- /config          GET 读取 / POST 保存插件配置
+- /logs           读取内存日志环形缓冲（由 main.py 安装的 handler 填充）
+- /gallery/stats  图库统计
+- /gallery/search 图库检索（每条返回 data_url 缩略图）
+- /gallery/image  单图（data_url 形式）
+- /gallery/star   收藏/取消收藏
+- /gallery/delete 删除
+- /gallery/tags   添加标签
 """
 
 from __future__ import annotations
@@ -37,28 +34,14 @@ import time
 from collections import deque
 from pathlib import Path
 
+from astrbot.api.web import error_response, json_response, request
+
 # 插件名（与 metadata.yaml 的 name 一致）。路由前缀必须含它，否则 AstrBot
 # 的插件页面桥接会把请求发到错误路径（全部 404 / 前端永远加载中）。
 PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 
-from starlette.responses import JSONResponse, Response
-
-# AstrBot 在 Quart test_request_context 中执行 handler，全局 request 可用。
-try:
-    from quart import request as qrequest
-except Exception:  # pragma: no cover
-    qrequest = None
-
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
-
-
-def _ok(data=None, msg="ok"):
-    return JSONResponse({"status": "ok", "msg": msg, "data": data})
-
-
-def _err(msg="error", code=400, data=None):
-    return JSONResponse({"status": "error", "msg": msg, "data": data}, status_code=code)
 
 
 class WebUIApi:
@@ -71,68 +54,67 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     # 配置
     # -------------------------------------------------------------- #
-    async def get_config(self) -> Response:
+    async def get_config(self):
         try:
             cfg = self.plugin.config
-            # AstrBot 的 Config 对象本身是可映射的，转 dict 后序列化
+            # AstrBot 的 Config 对象本身是可映射的，直接转 dict 后序列化
             try:
                 safe = dict(cfg)
             except Exception:
                 safe = json.loads(json.dumps(cfg, default=lambda o: str(o)))
-            return _ok(safe)
+            return json_response(safe)
         except Exception as e:
-            return _err(f"读取配置失败: {e}")
+            return error_response(f"读取配置失败: {e}")
 
-    async def get_schema(self) -> Response:
+    async def get_schema(self):
         try:
             schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
             if not schema_path.exists():
-                return _err("找不到 _conf_schema.json")
+                return error_response("找不到 _conf_schema.json")
             raw = schema_path.read_text(encoding="utf-8")
             schema = json.loads(raw)
-            return _ok(schema)
+            return json_response(schema)
         except Exception as e:
-            return _err(f"读取配置 schema 失败: {e}")
+            return error_response(f"读取配置 schema 失败: {e}")
 
-    async def save_config(self) -> Response:
+    async def save_config(self):
         try:
-            body = await qrequest.get_json(silent=True) if qrequest else {}
+            body = await request.json(default={}) or {}
             if not isinstance(body, dict):
                 body = {}
             new_cfg = body.get("config")
             if not isinstance(new_cfg, dict):
-                return _err("config 必须是对象")
+                return error_response("config 必须是对象")
             # 安全合并：仅覆盖顶层键，保留未提交键
             cfg = self.plugin.config
             for k, v in new_cfg.items():
                 try:
                     cfg[k] = v
                 except Exception as e:
-                    return _err(f"写入配置键 {k} 失败: {e}")
+                    return error_response(f"写入配置键 {k} 失败: {e}")
             try:
                 cfg.save_config()
             except Exception as e:
-                return _err(f"保存配置失败（已写入内存）: {e}")
-            return _ok(msg="配置已保存")
+                return error_response(f"保存配置失败（已写入内存）: {e}")
+            return json_response({"msg": "配置已保存"})
         except Exception as e:
-            return _err(f"保存配置失败: {e}")
+            return error_response(f"保存配置失败: {e}")
 
     # -------------------------------------------------------------- #
     # 日志
     # -------------------------------------------------------------- #
-    async def get_logs(self) -> Response:
+    async def get_logs(self):
         try:
             lines = list(LOG_BUFFER)
-            # 支持前端按行数截取（默认全部 2000 行）
             try:
-                n = int(qrequest.args.get("n", "2000")) if qrequest else 2000
+                n = request.query.get("n", 2000, type=int)
             except Exception:
                 n = 2000
             if n > 0:
                 lines = lines[-n:]
-            return _ok({"lines": lines, "total": len(LOG_BUFFER)})
+            return json_response({"lines": lines, "total": len(LOG_BUFFER)})
         except Exception as e:
-            return _err(f"读取日志失败: {e}")
+            return error_response(f"读取日志失败: {e}")
 
     # -------------------------------------------------------------- #
     # 图库
@@ -140,31 +122,31 @@ class WebUIApi:
     def _gallery(self):
         return getattr(self.plugin, "gallery", None)
 
-    async def gallery_stats(self) -> Response:
+    async def gallery_stats(self):
         g = self._gallery()
         if g is None:
-            return _err("图库未启用或初始化失败")
+            return error_response("图库未启用或初始化失败")
         try:
-            return _ok(g.stats())
+            return json_response(g.stats())
         except Exception as e:
-            return _err(f"统计失败: {e}")
+            return error_response(f"统计失败: {e}")
 
-    async def gallery_search(self) -> Response:
+    async def gallery_search(self):
         g = self._gallery()
         if g is None:
-            return _err("图库未启用或初始化失败")
+            return error_response("图库未启用或初始化失败")
         try:
-            kw = (qrequest.args.get("keyword", "") if qrequest else "")
-            stype = (qrequest.args.get("type", "") or None) if qrequest else None
+            kw = request.query.get("keyword", "")
+            stype = request.query.get("type", "") or None
             if stype in ("", "all"):
                 stype = None
-            starred = (qrequest.args.get("starred", "0") == "1") if qrequest else False
+            starred = request.query.get("starred", "0") == "1"
             try:
-                limit = int(qrequest.args.get("limit", "40")) if qrequest else 40
+                limit = request.query.get("limit", 40, type=int)
             except Exception:
                 limit = 40
             try:
-                offset = int(qrequest.args.get("offset", "0")) if qrequest else 0
+                offset = request.query.get("offset", 0, type=int)
             except Exception:
                 offset = 0
             rows = g.search(keyword=kw, type=stype, starred_only=starred, limit=limit, offset=offset)
@@ -181,86 +163,76 @@ class WebUIApi:
                         r["thumb"] = ""
                 except Exception:
                     r["thumb"] = ""
-            return _ok(rows)
+            return json_response(rows)
         except Exception as e:
-            return _err(f"检索失败: {e}")
+            return error_response(f"检索失败: {e}")
 
-    async def gallery_image(self) -> Response:
+    async def gallery_image(self):
         g = self._gallery()
         if g is None:
-            return _err("图库未启用或初始化失败")
-        sha = (qrequest.args.get("sha", "") if qrequest else "")
+            return error_response("图库未启用或初始化失败")
+        sha = request.query.get("sha", "")
         if not sha:
-            return _err("缺少 sha 参数")
+            return error_response("缺少 sha 参数")
         try:
             path = g.path_of(sha)
         except Exception as e:
-            return _err(f"路径解析失败: {e}")
+            return error_response(f"路径解析失败: {e}")
         if not path or not Path(path).exists():
-            return _err("图片不存在", code=404)
-        # 对齐伴侣插件：图片以 data_url（base64）形式放入 JSON 返回，
+            return error_response("图片不存在", status_code=404)
+        # 对齐文档：图片以 data_url（base64）形式放入 JSON 返回，
         # 由 AstrBot bridge 正常解包，前端 img.src = data_url 直接渲染。
         try:
             raw = await asyncio.to_thread(Path(path).read_bytes)
         except Exception as e:
-            return _err(f"读取图片失败: {e}")
+            return error_response(f"读取图片失败: {e}")
         mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
         encoded = base64.b64encode(raw).decode("ascii")
-        return _ok({"data_url": f"data:{mime};base64,{encoded}", "mime": mime})
+        return json_response({"data_url": f"data:{mime};base64,{encoded}", "mime": mime})
 
-    async def gallery_star(self) -> Response:
+    async def gallery_star(self):
         g = self._gallery()
         if g is None:
-            return _err("图库未启用或初始化失败")
+            return error_response("图库未启用或初始化失败")
         try:
-            payload = await _read_json()
+            payload = await request.json(default={}) or {}
             sha = payload.get("sha", "")
             on = 1 if payload.get("on", True) else 0
             if not sha:
-                return _err("缺少 sha")
+                return error_response("缺少 sha")
             ok = g.star(sha, on=on)
-            return _ok(msg="已更新收藏" if ok else "未找到该图")
+            return json_response({"msg": "已更新收藏" if ok else "未找到该图"})
         except Exception as e:
-            return _err(f"操作失败: {e}")
+            return error_response(f"操作失败: {e}")
 
-    async def gallery_delete(self) -> Response:
+    async def gallery_delete(self):
         g = self._gallery()
         if g is None:
-            return _err("图库未启用或初始化失败")
+            return error_response("图库未启用或初始化失败")
         try:
-            payload = await _read_json()
+            payload = await request.json(default={}) or {}
             sha = payload.get("sha", "")
             if not sha:
-                return _err("缺少 sha")
+                return error_response("缺少 sha")
             ok = g.delete(sha)
-            return _ok(msg="已删除" if ok else "未找到该图")
+            return json_response({"msg": "已删除" if ok else "未找到该图"})
         except Exception as e:
-            return _err(f"删除失败: {e}")
+            return error_response(f"删除失败: {e}")
 
-    async def gallery_tags(self) -> Response:
+    async def gallery_tags(self):
         g = self._gallery()
         if g is None:
-            return _err("图库未启用或初始化失败")
+            return error_response("图库未启用或初始化失败")
         try:
-            payload = await _read_json()
+            payload = await request.json(default={}) or {}
             sha = payload.get("sha", "")
             tags = payload.get("tags", [])
             if not sha or not tags:
-                return _err("缺少 sha 或 tags")
+                return error_response("缺少 sha 或 tags")
             g.add_tags(sha, tags if isinstance(tags, list) else [tags])
-            return _ok(msg="标签已添加")
+            return json_response({"msg": "标签已添加"})
         except Exception as e:
-            return _err(f"打标签失败: {e}")
-
-
-async def _read_json():
-    """从全局 quart request 读取 JSON body（AstrBot 不向 handler 传 request 参数）。"""
-    if not qrequest:
-        return {}
-    try:
-        return await qrequest.get_json(silent=True) or {}
-    except Exception:
-        return {}
+            return error_response(f"打标签失败: {e}")
 
 
 def register_web_api(plugin) -> None:
@@ -272,8 +244,7 @@ def register_web_api(plugin) -> None:
     # 配套前端 app.js 的 API_PREFIX = "page/"，宿主（AstrBot dashboard 的
     # PluginPagePage.vue / plugin_page_bridge.js）会拼成
     #   /api/plugins/extensions/<plugin_name>/page/<endpoint>
-    # 而 register_web_api 在 AstrBot 内部就是按「含插件名的完整路径」注册的
-    # （见伴侣插件 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"）。
+    # 而 register_web_api 在 AstrBot 内部按「含插件名的完整路径」注册。
     # 前缀少了插件名会导致全部 404，前端永远加载中。
     prefix = f"/{PLUGIN_NAME}/page"
 

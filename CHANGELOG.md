@@ -2,6 +2,19 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.8
+
+- **彻底按 AstrBot 官方文档（docs/zh/dev/star/guides/plugin-pages.md）重写 `webui_api.py`，纠正此前所有猜测式写法**：
+  - 后端改用 `from astrbot.api.web import request, json_response, error_response`，不再暴露 Starlette / Quart / FastAPI 原始请求对象（文档明确要求）。
+  - handler 不再声明 `request` 参数，请求数据统一用模块级 `request`（如 `request.query.get("x", 20, type=int)`、`await request.json(default={})`）。
+  - handler 返回 `json_response(value)` / `error_response(msg)`，不再返回 `JSONResponse`/`Response`。bridge 的 `apiGet/apiPost` 会把响应体原样 resolve 为 value 本身，前端无需再解包 `{status,data}`。
+  - 路由前缀保持含插件名 `/<plugin_name>/page`（v2.2.7 已确认，本轮沿用并补充文档佐证）。
+- **前端 `app.js` 同步修正桥接调用**：
+  - `apiGet/apiPost` 增加 `_unwrap`，把后端 `error_response` 返回的 `{status:"error",message}` 形态转为异常，调用处统一走 catch。
+  - `loadLogs` 取值由错误的 `data.logs` 改为 `data.lines`（后端返回 `{lines,total}`）。
+  - 配置/图库/schema 等接口现在直接拿到解包后的数据本身，不再误判 `data.results/data.images`。
+- 文档关键结论：插件 WebUI 路由必须由 `context.register_web_api(path, handler, methods, desc)` 注册；路径是相对插件页面的路径；请求/响应统一走 `astrbot.api.web`，不要混用框架原生对象。
+
 ## v2.2.7
 
 - **纠正 v2.2.6 关于「路由前缀应为相对路径」的错误结论——这正是 WebUI 一直加载中、读配置读一年、图库无数据的根因**。重新核对伴侣插件 `astrbot_plugin_private_companion/page_api.py`：其 `PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"`，前端 `HTTP_API = "/astrbot_plugin_private_companion/page"`，**路由必须含插件名**。AstrBot 的插件页面桥接会把前端请求拼成 `/api/plugins/extensions/<plugin_name>/page/<endpoint>`，后端也必须按含插件名的完整路径注册，否则全部 404 → 前端永远转圈、读不到配置、图库空。现把 `webui_api.py` 的 `prefix` 改为 `f"/{PLUGIN_NAME}/page"`（新增 `PLUGIN_NAME` 常量），修复后配置/图库/日志三个接口全部正常返回。

@@ -96,15 +96,25 @@
   // 完整路径，即最终请求为
   // /api/plugins/extensions/<plugin_name>/page/<endpoint>。
   // bridge 对 {status:"ok",data} 自动解包为 data；
-  // 对 {status:"error"} 或 HTTP 失败自动 reject。
+  // AstrBot bridge 的 apiGet/apiPost 会把后端 json_response(value) 的响应体原样
+  // resolve 出来。成功时 value 就是数据本身（config 对象 / 数组 / {lines,...} 等，
+  // 没有 status 字段）；失败时响应体为 {status:"error", message:...}。这里统一
+  // 把 error 形态的返回值转成 throw，使调用处能走 catch 分支。
   var API_PREFIX = "page/";
 
+  function _unwrap(res) {
+    if (res && typeof res === "object" && res.status === "error") {
+      throw new Error(res.message || "请求失败");
+    }
+    return res;
+  }
+
   async function apiGet(endpoint, params) {
-    return await bridge.apiGet(API_PREFIX + endpoint, params || {});
+    return _unwrap(await bridge.apiGet(API_PREFIX + endpoint, params || {}));
   }
 
   async function apiPost(endpoint, body) {
-    return await bridge.apiPost(API_PREFIX + endpoint, body || {});
+    return _unwrap(await bridge.apiPost(API_PREFIX + endpoint, body || {}));
   }
 
   // ---- confirm dialog ----
@@ -390,7 +400,8 @@
   async function loadLogs() {
     try {
       var data = await apiGet("logs");
-      state.logs = Array.isArray(data) ? data : (data.logs || []);
+      // 后端 apiGet 已被桥接解包为 data 本身：{ lines:[...], total:n }
+      state.logs = (data && Array.isArray(data.lines)) ? data.lines : (Array.isArray(data) ? data : []);
       renderLogs();
       setStatus("日志已加载");
     } catch (e) {
