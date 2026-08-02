@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.12
+
+- **修复出图后收不到图片（temp 文件被归档移动后指向失效）**：
+  - 根因：`ImageStore.archive_image` 会把成品图从 `temp/` **移动**到 `gallery/`（移动转正），但 `_do_draw` 仍用旧的 `temp/` 路径去 `event.send` / 上报 / 加入会话图列表，导致 `[Errno 2] No such file or directory: '.../temp/....webp'` 与「主动发送图片失败」。
+  - 改动：`archive_image` 现返回**归档后的最终路径**（去重命中返回已存在文件真实路径）；`_do_draw` 在归档后用返回值覆盖 `img_path`，使发送、报告、会话最近图均指向真实文件。`archive_user_image` 仍返回 sha（从最终路径反算）以保持 `/gallery save` 等指令兼容；参考图归档处同样反算 sha 回填 `ref_sha256`。
+
 ## v2.2.11
 
 - **修复日志界面空白 + “部分数据加载失败”提示**：

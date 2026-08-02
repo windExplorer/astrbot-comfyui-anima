@@ -1030,18 +1030,20 @@ class ComfyUIDrawPlugin(Star):
             if self.gallery is not None:
                 try:
                     try:
-                        from .image_store import SRC_REF, SRC_USER
+                        from .image_store import SRC_REF, SRC_USER, _sha256_of
                     except ImportError:
-                        from image_store import SRC_REF, SRC_USER
+                        from image_store import SRC_REF, SRC_USER, _sha256_of
 
                     for _ri in init_images:
                         if not _ri or not os.path.exists(_ri):
                             continue
                         # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回
-                        _sha = self.gallery.archive_image(_ri, source=SRC_USER)
+                        _final = self.gallery.archive_image(_ri, source=SRC_USER)
+                        # archive_image 现返回归档后路径，反算 sha 作为 ref_sha256（入库/回填用）
+                        _sha = _sha256_of(_final) if _final else None
                         if _sha and ref_sha256 is None:
                             ref_sha256 = _sha
-                        logger.info(f"[图库] 已归档参考图: {_ri} -> {_sha}")
+                        logger.info(f"[图库] 已归档参考图: {_ri} -> {_final}")
                 except Exception as _re:
                     logger.warning(f"[图库] 参考图归档失败（不影响出图）: {_re}")
 
@@ -1331,7 +1333,7 @@ class ComfyUIDrawPlugin(Star):
                                         _real_w, _real_h = _im.width, _im.height
                                 except Exception:
                                     pass
-                            self.gallery.archive_image(
+                            _final = self.gallery.archive_image(
                                 img_path,
                                 source=SRC_GEN,
                                 prompt=positive,
@@ -1345,6 +1347,10 @@ class ComfyUIDrawPlugin(Star):
                                 is_img2img=bool(is_img2img),
                                 ref_sha256=(ref_sha256 or ""),
                             )
+                            # archive_image 会把文件从 temp/ 移动到 gallery/，必须用
+                            # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。
+                            if _final:
+                                img_path = _final
                         except Exception as _ge:
                             logger.warning(f"[图库] 归档失败（不影响出图）: {_ge}")
 

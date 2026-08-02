@@ -190,11 +190,12 @@ class ImageStore:
         is_img2img: bool = False,
         ref_sha256: str = "",
     ) -> str | None:
-        """归档一张图（移动转正，内容寻址去重）。返回 sha256 或 None。
+        """归档一张图（移动转正，内容寻址去重）。
 
-        - 先算 sha256，已存在则只补元数据 / 计数，不重复落盘；
-        - 不存在则把 src_path 移动（os.replace）到 gallery/ 或 refs/ 永久目录；
-          跨盘移动失败则回退为复制。
+        返回**归档后文件的最终绝对路径**（落盘后的 gallery/refs 路径，或命中去重时
+        已存在文件的路径）；归档不可用/失败时返回 None。注意：本方法会把 src_path
+        **移动**到永久目录，因此调用方必须用返回值作为后续发送/上报所用的路径，
+        不要再使用已被移动的旧 src_path。
         """
         if not self.enabled():
             return None
@@ -210,6 +211,15 @@ class ImageStore:
         conn = self._conn_get()
         cur = conn.execute("SELECT * FROM images WHERE sha256=?", (sha,))
         row = cur.fetchone()
+
+        # 去重命中：返回已存在文件的真实路径（它才是可被发送/读取的成品）
+        if row is not None:
+            try:
+                _existing = self.path_of(sha)
+                if _existing:
+                    return _existing
+            except Exception:
+                pass
 
         loras_json = ""
         if loras:
@@ -240,7 +250,14 @@ class ImageStore:
                 conn.commit()
             except Exception as e:
                 logger.warning(f"[图库] 更新已存在记录失败: {e}")
-            return sha
+            # 去重：文件已在永久目录，返回其真实路径
+            try:
+                _existing = self.path_of(sha)
+                if _existing:
+                    return _existing
+            except Exception:
+                pass
+            return src_path
 
         # 新图：落盘（移动转正）
         ext = _ext_of(src_path)
@@ -278,11 +295,15 @@ class ImageStore:
             logger.error(f"[图库] 写库失败: {e}", exc_info=True)
             return None
         logger.info(f"[图库] 已归档 {source} 图: {dest.name}")
-        return sha
+        return str(dest)
 
     def archive_user_image(self, src_path: str, tags=None) -> str | None:
-        """方案 B：收藏用户在聊天里发来的图（或任意来源图）到 refs/。"""
-        sha = self.archive_image(src_path, source=SRC_USER)
+        """方案 B：收藏用户在聊天里发来的图（或任意来源图）到 refs/。返回 sha256。"""
+        _final = self.archive_image(src_path, source=SRC_USER)
+        if not _final:
+            return None
+        # 从最终路径反算 sha（与归档时一致），供调用方做收藏/召回标识。
+        sha = _sha256_of(_final)
         if sha and tags:
             self.add_tags(sha, tags)
         return sha
