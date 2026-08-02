@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Anima 控制台</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #181b24; --panel2: #20242f; --line: #2a2f3a;
+    --txt: #e6e9ef; --muted: #9aa3b2; --accent: #7c6cff; --accent2: #4dd0e1;
+    --ok: #3ddc84; --warn: #ffb74d; --err: #ff6b6b; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--txt);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px;
+    background: linear-gradient(90deg, #181b24, #1d1f2b);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .badge { font-size: 12px; color: var(--muted); }
+  .tabs { display: flex; gap: 6px; padding: 10px 20px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .tab {
+    padding: 8px 16px; cursor: pointer; border: 1px solid transparent; border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0; color: var(--muted);
+  }
+  .tab.active { background: var(--panel); color: var(--txt); border-color: var(--line); }
+  .content { padding: 20px; max-width: 1100px; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--accent2); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  label.field { display: block; margin-bottom: 12px; }
+  label.field > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input, select, textarea {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--txt);
+    border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  button {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 16px; cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  button.sec { background: var(--panel2); border: 1px solid var(--line); color: var(--txt); }
+  button.danger { background: transparent; border: 1px solid var(--err); color: var(--err); }
+  button:hover { opacity: .9; }
+  .status { font-size: 12px; padding: 3px 10px; border-radius: 20px; background: var(--panel2); color: var(--muted); }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+  pre.log {
+    background: #0a0c10; border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    max-height: 460px; overflow: auto; font-size: 12px; color: #b9c2d0;
+    font-family: "SF Mono", Consolas, monospace; white-space: pre-wrap;
+  }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+  .gitem { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .gitem img { width: 100%; height: 150px; object-fit: cover; display: block; background: #000; cursor: pointer; }
+  .gmeta { padding: 8px; font-size: 11px; color: var(--muted); }
+  .gmeta .star { color: var(--warn); cursor: pointer; }
+  .gactions { display: flex; gap: 6px; padding: 0 8px 8px; }
+  .gactions button { font-size: 11px; padding: 4px 8px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin: -6px 0 10px; }
+  table.kv { width: 100%; border-collapse: collapse; }
+  table.kv td { padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  table.kv td:first-child { color: var(--muted); width: 40%; }
+  .pill { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--panel2); color: var(--muted); margin-left: 6px; }
+  .pill.gen { color: var(--accent2); }
+  .pill.ref { color: var(--warn); }
+  .pill.user { color: var(--ok); }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--line); padding: 10px 18px;
+    border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .toast.err { border-color: var(--err); color: var(--err); }
+  .toast.ok { border-color: var(--ok); color: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Anima 控制台</h1>
+  <span class="badge" id="verBadge">ComfyUI 生图插件</span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-pane="config">配置</div>
+  <div class="tab" data-pane="logs">日志</div>
+  <div class="tab" data-pane="debug">调试</div>
+  <div class="tab" data-pane="gallery">图库</div>
+</div>
+
+<div class="content">
+  <!-- 配置 -->
+  <div class="pane active" id="pane-config">
+    <div class="card">
+      <h2>插件配置</h2>
+      <p class="hint">直接编辑 JSON 配置（与 _conf_schema.json 对应），保存后即时生效。敏感字段（如 token）请谨慎。</p>
+      <textarea id="cfgEditor" style="min-height:340px;font-family:monospace"></textarea>
+      <div class="row" style="margin-top:12px">
+        <button id="btnSaveCfg">保存配置</button>
+        <button class="sec" id="btnReloadCfg">重新加载</button>
+        <span class="status" id="cfgStatus">未加载</span>
+      </div>
+      <p class="muted" id="cfgSchemaTip"></p>
+    </div>
+  </div>
+
+  <!-- 日志 -->
+  <div class="pane" id="pane-logs">
+    <div class="card">
+      <h2>运行日志</h2>
+      <div class="row">
+        <button id="btnRefreshLog">刷新</button>
+        <button class="sec" id="btnAutoLog">自动刷新：关</button>
+        <label class="muted">行数
+          <select id="logLines" style="width:auto;display:inline;margin-left:6px">
+            <option value="200">200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+            <option value="2000" selected>2000</option>
+          </select>
+        </label>
+        <span class="status" id="logStatus"></span>
+      </div>
+      <pre class="log" id="logView">（暂无日志）</pre>
+    </div>
+  </div>
+
+  <!-- 调试 -->
+  <div class="pane" id="pane-debug">
+    <div class="card">
+      <h2>ComfyUI 服务器</h2>
+      <div class="row">
+        <button id="btnListServers">列出服务器</button>
+        <span class="status" id="srvStatus"></span>
+      </div>
+      <table class="kv" id="srvTable"><tr><td colspan="3" class="muted">点击「列出服务器」获取已配置实例</td></tr></table>
+    </div>
+  </div>
+
+  <!-- 图库 -->
+  <div class="pane" id="pane-gallery">
+    <div class="card">
+      <h2>图库概览</h2>
+      <div class="row">
+        <button id="btnGalleryStats">刷新统计</button>
+        <span class="muted" id="galStats"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>检索</h2>
+      <div class="row">
+        <input id="galKw" placeholder="关键词（提示词 / 标签，留空=全部）" style="max-width:320px" />
+        <select id="galType" style="max-width:160px">
+          <option value="">全部类型</option>
+          <option value="gen">成品图</option>
+          <option value="ref">参考图</option>
+          <option value="user">用户图</option>
+        </select>
+        <label class="muted"><input type="checkbox" id="galStar" style="width:auto" /> 仅收藏</label>
+        <button id="btnGalSearch">搜索</button>
+      </div>
+      <div class="gallery" id="galGrid"><span class="muted">暂无结果</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const PLUGIN = "astrbot_plugin_comfyui_anima";
+const API_BASE = "/" + PLUGIN + "/page";
+
+// ---- 兼容 AstrBot 页面 bridge：优先 getPageBridge，回退裸 fetch ----
+async function api(path, opts = {}) {
+  const url = API_BASE + path;
+  let bridge = null;
+  if (window.getPageBridge) {
+    try { bridge = await window.getPageBridge(); } catch (e) { bridge = null; }
+  }
+  if (bridge && typeof bridge.fetch === "function") {
+    const full = (bridge.apiBase || API_BASE) + path;
+    return await bridge.fetch(full, opts);
+  }
+  return await fetch(url, opts);
+}
+
+async function getJSON(path, opts) {
+  try {
+    const r = await api(path, opts);
+    const text = await r.text();
+    return text ? JSON.parse(text) : {};
+  } catch (e) {
+    return { success: false, msg: "请求失败: " + e.message };
+  }
+}
+
+function toast(msg, kind) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show " + (kind || "");
+  setTimeout(() => { t.className = "toast"; }, 2200);
+}
+
+// ---- Tab 切换 ----
+document.querySelectorAll(".tab").forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".pane").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    document.getElementById("pane-" + t.dataset.pane).classList.add("active");
+  };
+});
+
+// ---- 配置 ----
+async function loadCfg() {
+  const d = await getJSON("/config");
+  if (d.success) {
+    document.getElementById("cfgEditor").value = JSON.stringify(d.data, null, 2);
+    document.getElementById("cfgStatus").textContent = "已加载 " + new Date().toLocaleTimeString();
+    document.getElementById("cfgStatus").className = "status ok";
+  } else {
+    document.getElementById("cfgStatus").textContent = d.msg || "加载失败";
+    document.getElementById("cfgStatus").className = "status err";
+  }
+}
+document.getElementById("btnReloadCfg").onclick = loadCfg;
+document.getElementById("btnSaveCfg").onclick = async () => {
+  let cfg;
+  try { cfg = JSON.parse(document.getElementById("cfgEditor").value); }
+  catch (e) { toast("JSON 格式错误: " + e.message, "err"); return; }
+  const d = await getJSON("/config", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config: cfg })
+  });
+  if (d.success) { toast("配置已保存", "ok"); loadCfg(); }
+  else toast("保存失败: " + d.msg, "err");
+};
+
+// ---- 日志 ----
+let autoTimer = null;
+async function loadLogs() {
+  const n = document.getElementById("logLines").value;
+  const d = await getJSON("/logs?n=" + n);
+  if (d.success && d.data) {
+    const lines = d.data.lines || [];
+    document.getElementById("logView").textContent = lines.length ? lines.join("\n") : "（暂无日志）";
+    document.getElementById("logStatus").textContent = "共 " + d.data.total + " 行";
+    const view = document.getElementById("logView");
+    view.scrollTop = view.scrollHeight;
+  } else {
+    document.getElementById("logStatus").textContent = d.msg || "失败";
+  }
+}
+document.getElementById("btnRefreshLog").onclick = loadLogs;
+document.getElementById("btnAutoLog").onclick = () => {
+  const b = document.getElementById("btnAutoLog");
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; b.textContent = "自动刷新：关"; }
+  else { autoTimer = setInterval(loadLogs, 3000); b.textContent = "自动刷新：开"; }
+};
+document.getElementById("logLines").onchange = loadLogs;
+
+// ---- 调试 ----
+document.getElementById("btnListServers").onclick = async () => {
+  const d = await getJSON("/servers");
+  const tbl = document.getElementById("srvTable");
+  if (d.success && Array.isArray(d.data) && d.data.length) {
+    let html = "<tr><td>名称</td><td>地址</td><td>操作</td></tr>";
+    d.data.forEach(s => {
+      html += `<tr><td>${esc(s.name)}${s.enabled ? "" : ' <span class="pill">禁用</span>'}</td>` +
+              `<td>${esc(s.url)}</td>` +
+              `<td><button class="sec" onclick="testSrv('${esc(s.name)}')">测试连接</button></td></tr>`;
+    });
+    tbl.innerHTML = html;
+    document.getElementById("srvStatus").textContent = "共 " + d.data.length + " 台";
+  } else {
+    tbl.innerHTML = `<tr><td colspan="3" class="muted">${esc(d.msg || "未配置服务器")}</td></tr>`;
+  }
+};
+window.testSrv = async (name) => {
+  const d = await getJSON("/test_server?name=" + encodeURIComponent(name));
+  if (d.success) {
+    const st = d.data.system_stats || {};
+    toast(`连接成功 ✓ 节点数=${d.data.node_types}`, "ok");
+  } else {
+    toast("连接失败: " + d.msg, "err");
+  }
+};
+
+// ---- 图库 ----
+async function loadGalStats() {
+  const d = await getJSON("/gallery/stats");
+  if (d.success) {
+    const s = d.data || {};
+    const parts = [];
+    for (const k of ["total", "gen", "ref", "user", "starred", "tagged", "size_mb"]) {
+      if (s[k] !== undefined) parts.push(`${k}=${s[k]}`);
+    }
+    document.getElementById("galStats").textContent = parts.join("  ");
+  } else {
+    document.getElementById("galStats").textContent = d.msg || "统计失败";
+  }
+}
+document.getElementById("btnGalleryStats").onclick = loadGalStats;
+
+const IMG_BASE = API_BASE + "/gallery/image?sha=";
+async function galSearch() {
+  const kw = document.getElementById("galKw").value.trim();
+  const type = document.getElementById("galType").value;
+  const starred = document.getElementById("galStar").checked ? "1" : "0";
+  let q = "/gallery/search?limit=60";
+  if (kw) q += "&keyword=" + encodeURIComponent(kw);
+  if (type) q += "&type=" + encodeURIComponent(type);
+  if (starred === "1") q += "&starred=1";
+  const d = await getJSON(q);
+  const grid = document.getElementById("galGrid");
+  if (d.success && Array.isArray(d.data) && d.data.length) {
+    grid.innerHTML = d.data.map(r => gitem(r)).join("");
+  } else {
+    grid.innerHTML = `<span class="muted">${esc(d.msg || "无结果")}</span>`;
+  }
+}
+function gitem(r) {
+  const sha = r.sha256 || "";
+  const src = IMG_BASE + encodeURIComponent(sha);
+  const typ = r.source || "";
+  const pill = typ === "ref" ? '<span class="pill ref">参考图</span>'
+             : typ === "user" ? '<span class="pill user">用户图</span>'
+             : '<span class="pill gen">成品图</span>';
+  const star = r.starred ? "★" : "☆";
+  const w = r.width || "?", h = r.height || "?";
+  return `<div class="gitem" data-sha="${esc(sha)}">
+    <img src="${src}" loading="lazy" onclick="zoom('${esc(src)}')" />
+    <div class="gmeta">${pill} ${w}x${h}${r.starred ? ' <span class="star">'+star+'</span>' : ''}
+      <div style="margin-top:4px">${(r.prompt_raw||r.prompt||"").slice(0,40)}${(r.prompt_raw||r.prompt||"").length>40?"…":""}</div>
+    </div>
+    <div class="gactions">
+      <button class="sec" onclick="toggleStar('${esc(sha)}',${r.starred?1:0})">${r.starred?"取消收藏":"收藏"}</button>
+      <button class="danger" onclick="delImg('${esc(sha)}')">删除</button>
+    </div>
+  </div>`;
+}
+window.toggleStar = async (sha, cur) => {
+  const d = await getJSON("/gallery/star", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sha, on: !cur })
+  });
+  toast(d.success ? "已更新收藏" : "失败: " + d.msg, d.success ? "ok" : "err");
+  galSearch();
+};
+window.delImg = async (sha) => {
+  if (!confirm("确定删除该图？此操作不可恢复。")) return;
+  const d = await getJSON("/gallery/delete", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sha })
+  });
+  toast(d.success ? "已删除" : "失败: " + d.msg, d.success ? "ok" : "err");
+  galSearch();
+  loadGalStats();
+};
+window.zoom = (src) => { window.open(src, "_blank"); };
+document.getElementById("btnGalSearch").onclick = galSearch;
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// ---- 初始化 ----
+loadCfg();
+loadLogs();
+loadGalStats();
+galSearch();
+</script>
+</body>
+</html>

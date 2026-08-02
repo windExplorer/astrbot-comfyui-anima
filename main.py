@@ -284,6 +284,52 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"[init] 图库初始化失败（功能不可用）: {e}")
 
+        # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
+        try:
+            from webui_api import LOG_BUFFER
+
+            self._webui_log_buffer = LOG_BUFFER
+            self._install_webui_log_handler()
+        except Exception as e:
+            logger.warning(f"[init] WebUI 日志缓冲初始化失败（可忽略）: {e}")
+
+    def _install_webui_log_handler(self) -> None:
+        """安装一个 logging handler，把日志副本写入内存环形缓冲 + data_dir/webui.log。"""
+        if not getattr(self, "_webui_log_buffer", None):
+            return
+        import logging
+
+        buffer = self._webui_log_buffer
+
+        class _RingHandler(logging.Handler):
+            def emit(self, record):
+                try:
+                    buffer.append(self.format(record))
+                except Exception:
+                    pass
+
+        h = _RingHandler()
+        h.setLevel(logging.DEBUG)
+        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S")
+        h.setFormatter(fmt)
+        # 挂到 root logger，捕获插件及依赖（ComfyUI client 等）全部日志
+        logging.root.addHandler(h)
+        self._webui_log_handler = h
+
+        # 同时落盘，方便排查（文件保留最近 1MB 滚动）
+        try:
+            from logging.handlers import RotatingFileHandler
+
+            fh = RotatingFileHandler(
+                self.data_dir / "webui.log", maxBytes=1024 * 1024, backupCount=1, encoding="utf-8"
+            )
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(fmt)
+            logging.root.addHandler(fh)
+            self._webui_file_handler = fh
+        except Exception:
+            self._webui_file_handler = None
+
     async def initialize(self) -> None:
         # 给 LLM 工具的 JSON schema 补 `required`。
         # AstrBot 的 llm_tool 装饰器仅靠 docstring 生成 schema，不会标记 required，
@@ -315,8 +361,26 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:  # 框架内部结构变动时不致命
             logger.warning(f"[init] 补充工具 required 失败（可忽略）: {e}")
 
+        # 注册 WebUI 控制台路由（/api/<插件名>/page/...）
+        try:
+            from webui_api import register_web_api
+
+            register_web_api(self)
+        except Exception as e:
+            logger.warning(f"[init] 注册 WebUI 路由失败（控制台不可用）: {e}")
+
     async def terminate(self) -> None:
-        pass
+        # 移除 WebUI 日志 handler，避免重复安装/内存泄漏
+        try:
+            import logging
+
+            for h in ("_webui_log_handler", "_webui_file_handler"):
+                handler = getattr(self, h, None)
+                if handler is not None:
+                    logging.root.removeHandler(handler)
+                    handler.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # 配置辅助

@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.0.2
+
+- **新增 Anima 控制台 WebUI**。参考 `astrbot_plugin_private_companion` 的页面机制，在 `metadata.yaml` 的 `pages:` 声明 `anima-console` 页面（AstrBot 自动挂载到 `/pages/astrbot_plugin_comfyui_anima/anima-console/`），并新增后端 `webui_api.py` 与前端点 `pages/anima-console/index.html`。控制台包含四个模块：
+  - **配置**：在线读取/编辑/保存 `_conf_schema.json` 对应的插件配置（JSON 编辑器，保存即生效）。
+  - **日志**：实时读取插件运行日志（内存环形缓冲 + `data_dir/webui.log`，支持自动刷新、行数选择）。
+  - **调试**：列出已配置的 ComfyUI 服务器并一键测试连通性（调用 `/system_stats`，附带节点数）。
+  - **图库**：图库统计（成品/参考/用户/收藏/带标签数量与体积）、关键词+类型+仅收藏检索、缩略图预览、点击放大、收藏/取消收藏、删除。
+- 在 `main.py` 安装日志镜像 handler（环形缓冲 + 滚动文件），并在 `initialize` 注册、`terminate` 卸载 WebUI 路由。
+- 打包脚本新增 `pages/` 与 `webui_api.py`、`image_store.py` 进包（之前 zip 漏打包 `image_store.py`）。
+
 ## v2.0.1
 
 - **打包流程加固：禁止撞版发布**。在 `build_zip.ps1` 中新增版本重复检测——若 `dist/` 下已存在同一版本号的 zip（如本次的 `astrbot_plugin_comfyui_anima_v2.0.1.zip`），脚本直接报错退出，强制开发者先升版本号再打包，避免"改了配置/代码却用旧版本号重打、与已发版本撞版"的问题（此问题曾在 v2.0.0 配置样式修正时复现）。规则：任何改动在打包前都必须先在 `metadata.yaml` 升版本号、并在 `CHANGELOG.md` 追加对应条目。

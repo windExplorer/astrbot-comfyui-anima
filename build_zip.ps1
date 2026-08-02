@@ -32,14 +32,17 @@ if (Test-Path $zipPath) {
 $files = @(
     "_conf_schema.json",
     "main.py",
+    "webui_api.py",
     "comfyui_client.py",
     "danbooru_client.py",
     "workflow_builder.py",
+    "image_store.py",
     "metadata.yaml",
     "requirements.txt",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "pages"
 )
 $missing = @()
 foreach ($f in $files) {

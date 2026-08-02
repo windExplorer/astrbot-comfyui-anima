@@ -1,6 +1,12 @@
 name: astrbot_plugin_comfyui_anima # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
 display_name: ComfyUI 绘图 (Anima) # 用于展示的名字
 desc: 通过指令或 AI 对话调用 ComfyUI 绘图，支持多服务器、多工作流、LoRA 管理与 Anima 标签翻译。 # 插件简短描述
-version: v2.0.1 # 插件版本号
+version: v2.0.2 # 插件版本号
 author: astrbot-comfyui-anima # 作者
 repo: https://github.com/your-name/astrbot-comfyui-anima # 插件的仓库地址
+
+# 插件 WebUI 页面：AstrBot 自动把 pages/<name>/index.html 挂载到
+# /pages/<插件名>/<name>/，后端 API 通过 context.register_web_api 注册。
+pages:
+  - name: anima-console
+    title: Anima 控制台
