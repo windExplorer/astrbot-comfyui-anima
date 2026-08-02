@@ -109,12 +109,27 @@
     return res;
   }
 
+  // 给桥接请求加超时，避免接口 hang 时前端永远停在「正在读取…」的空壳状态。
+  async function withTimeout(promise, ms, label) {
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label + " 超时（" + ms / 1000 + "s 无响应，可能后端路由未注册或插件未重载）")), ms);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function apiGet(endpoint, params) {
-    return _unwrap(await bridge.apiGet(API_PREFIX + endpoint, params || {}));
+    const p = bridge.apiGet(API_PREFIX + endpoint, params || {});
+    return _unwrap(await withTimeout(p, 10000, "GET " + endpoint));
   }
 
   async function apiPost(endpoint, body) {
-    return _unwrap(await bridge.apiPost(API_PREFIX + endpoint, body || {}));
+    const p = bridge.apiPost(API_PREFIX + endpoint, body || {});
+    return _unwrap(await withTimeout(p, 10000, "POST " + endpoint));
   }
 
   // ---- confirm dialog ----

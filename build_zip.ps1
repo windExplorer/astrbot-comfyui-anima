@@ -43,8 +43,11 @@ $includeList = @(
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "pages",
-    "workflow"
+    "pages"
+    # 注意：不要打包 workflow/ 目录。
+    # 仓库根 workflow/*.json 只是默认/参考工作流样例；插件运行时工作流来自
+    # data_dir/workflow/（main.py 的 self.workflow_dir.mkdir 自建），从 data_dir 读取，
+    # 不应把仓库样例打进插件包，避免污染用户 data_dir/workflow 或造成路径混淆。
 )
 
 # Build zip with forward-slash paths so that Python zipfile on Linux

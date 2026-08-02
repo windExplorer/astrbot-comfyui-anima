@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.9
+
+- **打包修复：从 build_zip.ps1 的 `includeList` 中移除 `workflow` 目录**。仓库根 `workflow/*.json` 只是默认/参考工作流样例，插件运行时工作流来自 `data_dir/workflow/`（main.py 的 `self.workflow_dir.mkdir` 自建），不应把样例打进插件包，避免污染用户 data_dir 或造成路径混淆。
+- **前端诊断增强**：给 `apiGet/apiPost` 加 10s 超时（`Promise.race`），接口 hang（路由未注册/插件未重载）时不再永远停在「正在读取…」空壳，而是抛出明确错误（如「GET config 超时…可能后端路由未注册或插件未重载」），便于定位。
+- 说明：webui_api.py 维持按官方文档 plugin-pages.md 的 `astrbot.api.web` 写法（v2.2.8）。若刷新后页面显示「超时」红字，说明当前运行的插件实例未重载到新版本（请重载/重装插件）；若显示「读取配置失败：xxx」，则 xxx 即为后端真实报错，可据此定位。
+
 ## v2.2.8
 
 - **彻底按 AstrBot 官方文档（docs/zh/dev/star/guides/plugin-pages.md）重写 `webui_api.py`，纠正此前所有猜测式写法**：
