@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.10
+
+- **彻底对齐参考插件 astrbot_plugin_private_companion 的前端桥接层（这是空壳/读不到配置项的真正根因，此前一直漏看它的前端写法）**：
+  - `getBridge()` 同时查找 `window.AstrBotPluginPage` **和 `window.parent.AstrBotPluginPage`**：插件页面在 AstrBot 后台以 iframe 嵌入，桥接对象挂在 parent 上。旧实现只查 `window`，导致 iframe 内 bridge 为 null → 配置/日志/画廊全部加载失败。
+  - 移植 `bridgeRequest` + `bridgeEndpointCandidates`：对同一 endpoint 依次尝试 6 种路径风格（page/bare/slash/full/fullSlash/cached 含与不含插件名），命中 404/「未找到路由」自动换下一个候选，不再依赖单一前缀写法。
+  - 移植 `normalizeResponse`：把后端返回值统一为 `{success, data, error}`，前端只取 `data`，彻底消除此前私有 `{status,data}` 协议与框架解包不一致的问题。
+  - 删除旧的重复 `getBridge`（只查 window、最多 8s 轮询）与全局 `bridge` 变量，统一走 `getPageBridge()`。
+  - 后端 webui_api.py（v2.2.8 起的 `astrbot.api.web` + `json_response(value)` 写法）与这套前端完全兼容：json_response(value) → normalizeResponse 包成 {success:true,data:value}。
+
 ## v2.2.9
 
 - **打包修复：从 build_zip.ps1 的 `includeList` 中移除 `workflow` 目录**。仓库根 `workflow/*.json` 只是默认/参考工作流样例，插件运行时工作流来自 `data_dir/workflow/`（main.py 的 `self.workflow_dir.mkdir` 自建），不应把样例打进插件包，避免污染用户 data_dir 或造成路径混淆。

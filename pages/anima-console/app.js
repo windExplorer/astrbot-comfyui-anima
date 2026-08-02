@@ -1,9 +1,6 @@
 (function () {
   "use strict";
 
-  // bridge 在 start() 中通过 getBridge() 异步获取，不要在此处提前固定取值。
-  let bridge = null;
-
   const state = {
     config: {},
     configDirty: false,
@@ -91,45 +88,220 @@
   }
 
   // ---- bridge API ----
-  // AstrBot 的 bridge 会自动拼接 /api/plugins/extensions/<plugin_name>/ 前缀，
-  // 后端路由注册在 /<plugin_name>/page/... 下，因此 endpoint 需包含 "page/" 来匹配
-  // 完整路径，即最终请求为
-  // /api/plugins/extensions/<plugin_name>/page/<endpoint>。
-  // bridge 对 {status:"ok",data} 自动解包为 data；
-  // AstrBot bridge 的 apiGet/apiPost 会把后端 json_response(value) 的响应体原样
-  // resolve 出来。成功时 value 就是数据本身（config 对象 / 数组 / {lines,...} 等，
-  // 没有 status 字段）；失败时响应体为 {status:"error", message:...}。这里统一
-  // 把 error 形态的返回值转成 throw，使调用处能走 catch 分支。
-  var API_PREFIX = "page/";
+  // 移植自伴侣插件 astrbot_plugin_private_companion（已被验证可正常展示配置/日志/画廊）。
+  // 关键差异（之前空壳的根因）：
+  //   1) getBridge 既查 window.AstrBotPluginPage 也查 window.parent.AstrBotPluginPage，
+  //      因为插件页面在 AstrBot 后台以 iframe 嵌入，bridge 挂在 parent 上。
+  //   2) bridgeRequest 对同一个 endpoint 尝试多种路径风格（含/不含插件名）自动重试，
+  //      命中 404/未找到路由则换下一个候选，不再依赖单一前缀写法。
+  //   3) normalizeResponse 把后端返回统一成 {success, data, error} 形态，前端只取 data。
+  var PAGE_PLUGIN_NAME = "astrbot_plugin_comfyui_anima";
+  var PAGE_ENDPOINT_PREFIX = "page";
+  var HTTP_API = "/" + PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX; // fetch 兜底用，含插件名
 
-  function _unwrap(res) {
-    if (res && typeof res === "object" && res.status === "error") {
-      throw new Error(res.message || "请求失败");
+  let cachedPageBridge = null;
+  let cachedPageEndpointStyle = "";
+  let pageBridgeProbePromise = null;
+
+  function getBridge() {
+    if (window.AstrBotPluginPage) return window.AstrBotPluginPage;
+    try {
+      if (window.parent && window.parent !== window && window.parent.AstrBotPluginPage) {
+        return window.parent.AstrBotPluginPage;
+      }
+    } catch (error) {
+      return null;
     }
-    return res;
+    return null;
   }
 
-  // 给桥接请求加超时，避免接口 hang 时前端永远停在「正在读取…」的空壳状态。
-  async function withTimeout(promise, ms, label) {
-    let timer = null;
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(label + " 超时（" + ms / 1000 + "s 无响应，可能后端路由未注册或插件未重载）")), ms);
-    });
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      clearTimeout(timer);
+  function isUsableBridge(b) {
+    return Boolean(b && typeof b.apiGet === "function" && typeof b.apiPost === "function");
+  }
+
+  async function getPageBridge(timeoutMs) {
+    timeoutMs = timeoutMs || 2500;
+    if (isUsableBridge(cachedPageBridge)) return cachedPageBridge;
+    var b = getBridge();
+    if (isUsableBridge(b)) {
+      cachedPageBridge = b;
+      return cachedPageBridge;
     }
+    if (!pageBridgeProbePromise) {
+      pageBridgeProbePromise = waitForBridge(timeoutMs)
+        .then(function (resolved) {
+          if (isUsableBridge(resolved)) {
+            cachedPageBridge = resolved;
+            return cachedPageBridge;
+          }
+          throw new Error("未检测到 AstrBot 官方插件 Page 桥接，请从 AstrBot 后台的插件拓展页打开");
+        })
+        .catch(function (e) { pageBridgeProbePromise = null; throw e; });
+    }
+    return pageBridgeProbePromise;
+  }
+
+  function waitForBridge(timeoutMs) {
+    timeoutMs = timeoutMs || 2500;
+    return new Promise(function (resolve) {
+      var start = Date.now();
+      var timer = setInterval(function () {
+        var b = getBridge();
+        if (isUsableBridge(b)) {
+          clearInterval(timer);
+          resolve(b);
+        } else if (Date.now() - start > timeoutMs) {
+          clearInterval(timer);
+          resolve(null);
+        }
+      }, 100);
+    });
+  }
+
+  function bridgeEndpointCandidates(routePath) {
+    var cleanRoute = String(routePath || "").replace(/^\/+/, "");
+    var byStyle = {
+      cached: cachedPageEndpointStyle ? endpointForStyle(cachedPageEndpointStyle, cleanRoute) : "",
+      page: PAGE_ENDPOINT_PREFIX + "/" + cleanRoute,
+      bare: cleanRoute,
+      slash: "/" + cleanRoute,
+      full: PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute,
+      fullSlash: "/" + PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute,
+    };
+    var ordered = [
+      ["cached", byStyle.cached],
+      ["page", byStyle.page],
+      ["bare", byStyle.bare],
+      ["slash", byStyle.slash],
+      ["full", byStyle.full],
+      ["fullSlash", byStyle.fullSlash],
+    ];
+    var seen = new Set();
+    return ordered
+      .map(function (it) {
+        return {
+          style: it[0] === "cached" ? cachedPageEndpointStyle : it[0],
+          endpoint: String(it[1] || "").replace(/\/+/g, "/"),
+        };
+      })
+      .filter(function (item) {
+        return item.style && item.endpoint && !seen.has(item.endpoint) && seen.add(item.endpoint);
+      });
+  }
+
+  function endpointForStyle(style, routePath) {
+    var cleanRoute = String(routePath || "").replace(/^\/+/, "");
+    switch (style) {
+      case "page": return PAGE_ENDPOINT_PREFIX + "/" + cleanRoute;
+      case "bare": return cleanRoute;
+      case "slash": return "/" + cleanRoute;
+      case "full": return PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute;
+      case "fullSlash": return "/" + PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute;
+      default: return "";
+    }
+  }
+
+  function isRouteMissingPayload(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    var text = String((payload.error || "") + " " + (payload.message || "") + " " + (payload.detail || "")).toLowerCase();
+    return /未找到.*路由|route.*not.*found|not.*found.*route|404/.test(text);
+  }
+
+  function isRouteMissingError(error) {
+    var text = String((error && error.message) || error || "").toLowerCase();
+    return /未找到.*路由|route.*not.*found|not.*found.*route|http\s*404|\b404\b/.test(text);
+  }
+
+  function normalizeResponse(payload) {
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "success")) {
+      return payload;
+    }
+    if (payload && typeof payload === "object") {
+      var status = String(payload.status || "").trim().toLowerCase();
+      if (["error", "fail", "failed"].includes(status) || payload.ok === false) {
+        return { success: false, error: payload.message || payload.error || "请求失败", data: payload.data || {} };
+      }
+    }
+    return { success: true, data: payload };
+  }
+
+  // 带超时包装，避免接口 hang 时永远停在「正在读取…」
+  function withTimeout(promise, ms, label) {
+    var timer = null;
+    var timeout = new Promise(function (_, reject) {
+      timer = setTimeout(function () {
+        reject(new Error(label + " 超时（" + (ms / 1000) + "s 无响应，可能后端路由未注册或插件未重载）"));
+      }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function () { clearTimeout(timer); });
+  }
+
+  async function bridgeRequest(br, path, method, body) {
+    var url = new URL(path, "https://astrbot-plugin-page.local/");
+    var routePath = url.pathname.replace(/^\/+/, "");
+    var candidates = bridgeEndpointCandidates(routePath);
+    var errors = [];
+    if (method === "GET") {
+      var params = Object.fromEntries(url.searchParams.entries());
+      for (var i = 0; i < candidates.length; i++) {
+        try {
+          var p = await withTimeout(br.apiGet(candidates[i].endpoint, Object.keys(params).length ? params : undefined), 10000, "GET " + candidates[i].endpoint);
+          if (isRouteMissingPayload(p)) { errors.push((p.message || p.error || "未找到该路由")); continue; }
+          cachedPageEndpointStyle = candidates[i].style;
+          return p;
+        } catch (error) {
+          if (isRouteMissingError(error)) { errors.push(error.message || String(error)); continue; }
+          throw error;
+        }
+      }
+      throw new Error(errors[0] || "未找到可用的页面 API 路由");
+    }
+    var payload = body || {};
+    if (typeof payload === "string") {
+      try { payload = JSON.parse(payload); } catch (e) { payload = {}; }
+    }
+    for (var j = 0; j < candidates.length; j++) {
+      try {
+        var r = await withTimeout(br.apiPost(candidates[j].endpoint, payload), 10000, "POST " + candidates[j].endpoint);
+        if (isRouteMissingPayload(r)) { errors.push((r.message || r.error || "未找到该路由")); continue; }
+        cachedPageEndpointStyle = candidates[j].style;
+        return r;
+      } catch (error) {
+        if (isRouteMissingError(error)) { errors.push(error.message || String(error)); continue; }
+        throw error;
+      }
+    }
+    throw new Error(errors[0] || "未找到可用的页面 API 路由");
+  }
+
+  async function apiRaw(path, options) {
+    options = options || {};
+    var br = await getPageBridge();
+    var method = (options.method || "GET").toUpperCase();
+    var payload;
+    if (br && isUsableBridge(br)) {
+      payload = await bridgeRequest(br, path, method, options.body);
+    } else {
+      // fetch 兜底（仅 debug_http=1 时伴侣插件才走；这里直接抛，引导用后台打开）
+      throw new Error("未检测到 AstrBot 官方插件 Page 桥接，请从 AstrBot 后台的插件拓展页打开");
+    }
+    payload = normalizeResponse(payload);
+    if (!payload.success) throw new Error(payload.error || "请求失败");
+    return payload.data;
   }
 
   async function apiGet(endpoint, params) {
-    const p = bridge.apiGet(API_PREFIX + endpoint, params || {});
-    return _unwrap(await withTimeout(p, 10000, "GET " + endpoint));
+    var path = endpoint;
+    if (params && Object.keys(params).length) {
+      var qs = new URLSearchParams();
+      Object.keys(params).forEach(function (k) { qs.set(k, params[k]); });
+      path = endpoint + "?" + qs.toString();
+    }
+    return apiRaw(path, { method: "GET" });
   }
 
   async function apiPost(endpoint, body) {
-    const p = bridge.apiPost(API_PREFIX + endpoint, body || {});
-    return _unwrap(await withTimeout(p, 10000, "POST " + endpoint));
+    return apiRaw(endpoint, { method: "POST", body: body || {} });
   }
 
   // ---- confirm dialog ----
@@ -581,36 +753,20 @@
   }
 
   // ====== START ======
-  // AstrBot 的桥接对象由宿主在页面加载后异步注入，可能晚于本脚本执行，
-  // 因此不要在一开始就固定取值，而是轮询等待（最多约 8 秒）。
-  let bridge = null;
-
-  async function getBridge() {
-    for (let i = 0; i < 80; i += 1) {
-      const candidate = window.AstrBotPluginPage;
-      if (candidate && typeof candidate.apiGet === "function") {
-        try {
-          if (candidate.ready) {
-            // 防止 ready() 在某些环境下永不 resolve 导致一直"正在连接…"
-            await Promise.race([
-              candidate.ready(),
-              new Promise((resolve) => setTimeout(resolve, 3000)),
-            ]);
-          }
-        } catch (e) { /* already ready */ }
-        return candidate;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return null;
-  }
-
+  // 桥接对象由宿主异步注入；在 AstrBot 后台以 iframe 嵌入时 bridge 挂在 parent 上
+  // （见上面移植的 getBridge，会同时查找 window 与 window.parent）。用 getPageBridge
+  // （含超时探测 + parent 回退）获取，不再依赖单一 window 上的对象。
   async function start() {
-    bridge = await getBridge();
-    if (!bridge) {
-      els.cfgContent.innerHTML = '<div class="empty error">AstrBot 页面桥接不可用，请在 AstrBot 内置环境中打开此页面。</div>';
+    var br = null;
+    try {
+      br = await getPageBridge(8000);
+    } catch (e) {
+      br = null;
+    }
+    if (!br) {
+      els.cfgContent.innerHTML = '<div class="empty error">AstrBot 页面桥接不可用，请在 AstrBot 内置环境中（插件拓展页）打开此页面。</div>';
       els.globalError.hidden = false;
-      els.globalErrorMessage.textContent = "未能获取 AstrBot 页面桥接，请确认在 AstrBot Dashboard 的插件 WebUI 中打开。";
+      els.globalErrorMessage.textContent = "未能获取 AstrBot 页面桥接：请在 AstrBot Dashboard 的插件拓展页打开 WebUI。";
       setStatus("桥接不可用", true);
       return;
     }
