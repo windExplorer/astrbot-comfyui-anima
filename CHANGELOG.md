@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.1
+
+- **修复 WebUI 所有按钮无响应、数据不加载的问题**。根因是 `app.js` 中 `apiGet`/`apiPost` 的 endpoint 缺少 `page/` 前缀。后端 `webui_api.py` 的路由注册在 `/{plugin_name}/page/` 下，但前端直接调用 `bridge.apiGet("config")` 时，AstrBot bridge 拼出的完整路径是 `/api/plugins/extensions/<plugin_name>/config`，与实际路由 `/api/plugins/extensions/<plugin_name>/page/config` 不匹配。本版在 `apiGet`/`apiPost` 中自动补齐 `page/` 前缀，对齐后端路由。
+- 同时简化了 bridge 返回值的解包逻辑，去掉冗余的 `status` 字段判断（bridge 已自动对 `{status:"ok",data}` 解包为 `data`，对错误自动 reject）。
+
 ## v2.2.0
 
 - **WebUI 控制台全面重写**，对齐 `astrbot_plugin_get_px`（画境拾珍）的专业风格：

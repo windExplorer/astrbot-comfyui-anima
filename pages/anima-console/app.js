@@ -93,21 +93,19 @@
   }
 
   // ---- bridge API ----
+  // webui_api.py 注册的路由前缀是 /astrbot_plugin_comfyui_anima/page，
+  // bridge 自动拼 /api/plugins/extensions/<plugin_name>/ 前缀，
+  // 因此 endpoint 需包含 "page/" 来匹配完整路径。
+  // bridge 对 {status:"ok",data} 自动解包为 data；
+  // 对 {status:"error"} 或 HTTP 失败自动 reject。
+  var API_PREFIX = "page/";
+
   async function apiGet(endpoint, params) {
-    var resp = await bridge.apiGet(endpoint, params || {});
-    if (resp && typeof resp === "object" && resp.status === "error") {
-      throw new Error(resp.msg || resp.message || "请求失败");
-    }
-    // bridge 对 {status:"ok",data} 自动解包为 data
-    return resp && typeof resp === "object" && resp.status === "ok" ? resp.data : resp;
+    return await bridge.apiGet(API_PREFIX + endpoint, params || {});
   }
 
   async function apiPost(endpoint, body) {
-    var resp = await bridge.apiPost(endpoint, body || {});
-    if (resp && typeof resp === "object" && resp.status === "error") {
-      throw new Error(resp.msg || resp.message || "请求失败");
-    }
-    return resp && typeof resp === "object" && resp.status === "ok" ? resp.data : resp;
+    return await bridge.apiPost(API_PREFIX + endpoint, body || {});
   }
 
   // ---- confirm dialog ----
