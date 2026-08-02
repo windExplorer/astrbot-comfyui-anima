@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.2
+
+- **修复 WebUI 在 Dashboard iframe 中打不开/空白的问题**。根因是页面加载时 `AstrBotPluginPage` 桥接对象尚未注入，且 iframe 场景下桥接挂在父窗口。本版对齐伴侣插件 `astrbot_plugin_private_companion` 的做法：
+  - `getBridge()` 增加 `window.parent.AstrBotPluginPage` 回退（iframe 中 bridge 在父窗口）。
+  - 新增 `waitForBridge()` 轮询等待（最多 2.5s），所有 `apiGet`/`apiPost`/`apiImageBlobUrl` 调用前先等待桥接就绪，避免首屏请求直接走裸 `fetch` 导致 401/404。
+  - 初始化流程改为 `await waitForBridge()` 后再 `loadCfg/loadLogs/loadGalStats/galSearch`，确保从 AstrBot 后台打开时能正常携带鉴权加载数据。
+- 入口位置不变：AstrBot Dashboard → 「插件」列表 → 点开本插件 → 页面 Tab（即 `/pages/astrbot_plugin_comfyui_anima/anima-console/`）。重装后若仍未出现，请重启 AstrBot 重载插件。
+
 ## v2.1.1
 
 - **修复 WebUI 前端无法调用后端 API 的问题**。上一版（v2.1.0）前端错误地使用了 `bridge.fetch()` 接口，而 AstrBot 页面 bridge 实际提供的是 `window.AstrBotPluginPage.apiGet(endpoint, params)` / `apiPost(endpoint, body)`（父窗口自动拼 `/api/plugins/extensions` 前缀并携带 Dashboard 鉴权）。本版重写为正确的 bridge 调用方式，并针对图片 `<img>` 无法携带鉴权头的问题，改用 `apiGet` 拉取二进制再转 `blob:` URL 渲染缩略图。若 bridge 不可用则回退到裸 `fetch('/api/plugins/extensions' + endpoint)` + `localStorage` 中的 `astrbot_token`。

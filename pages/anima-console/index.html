@@ -188,8 +188,35 @@ const API_BASE = "/" + PLUGIN + "/page";
 // 回退：裸 fetch('/api/plugins/extensions' + endpoint) 并带上 token。
 const PLUGIN_API_PREFIX = "/api/plugins/extensions";
 
+// 与伴侣插件一致：优先 window.AstrBotPluginPage，回退到父窗口（iframe 场景）
 function getBridge() {
-  return (typeof window.AstrBotPluginPage !== "undefined") ? window.AstrBotPluginPage : null;
+  if (window.AstrBotPluginPage) return window.AstrBotPluginPage;
+  try {
+    if (window.parent && window.parent !== window && window.parent.AstrBotPluginPage) {
+      return window.parent.AstrBotPluginPage;
+    }
+  } catch (e) { return null; }
+  return null;
+}
+
+function isUsableBridge(b) {
+  return Boolean(b && typeof b.apiGet === "function" && typeof b.apiPost === "function");
+}
+
+// dashboard 异步注入 bridge，需轮询等待避免页面加载时 bridge 尚未就绪
+let _bridgeProbe = null;
+async function waitForBridge(timeoutMs = 2500) {
+  if (isUsableBridge(getBridge())) return getBridge();
+  if (_bridgeProbe) return _bridgeProbe;
+  _bridgeProbe = (async () => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (isUsableBridge(getBridge())) return getBridge();
+      await new Promise(r => setTimeout(r, 80));
+    }
+    return getBridge();
+  })();
+  return _bridgeProbe;
 }
 
 function getToken() {
@@ -199,7 +226,7 @@ function getToken() {
 }
 
 async function apiGet(endpoint, params) {
-  const bridge = getBridge();
+  const bridge = await waitForBridge();
   if (bridge && typeof bridge.apiGet === "function") {
     return await bridge.apiGet(endpoint, params || {});
   }
@@ -214,7 +241,7 @@ async function apiGet(endpoint, params) {
 }
 
 async function apiPost(endpoint, body) {
-  const bridge = getBridge();
+  const bridge = await waitForBridge();
   if (bridge && typeof bridge.apiPost === "function") {
     return await bridge.apiPost(endpoint, body || {});
   }
@@ -248,7 +275,7 @@ async function api(path, opts = {}) {
 
 // 获取二进制图片为 blob URL（用于 <img>，绕过无法带 header 的限制）
 async function apiImageBlobUrl(endpoint) {
-  const bridge = getBridge();
+  const bridge = await waitForBridge();
   if (bridge && typeof bridge.apiGet === "function") {
     // bridge 返回的可能直接是二进制；尝试拿 arrayBuffer
     try {
@@ -461,11 +488,14 @@ function esc(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-// ---- 初始化 ----
-loadCfg();
-loadLogs();
-loadGalStats();
-galSearch();
+// ---- 初始化：等待 AstrBot 页面桥接注入后再发请求（避免 iframe 中首屏 401/404）----
+(async () => {
+  await waitForBridge(2500);
+  loadCfg();
+  loadLogs();
+  loadGalStats();
+  galSearch();
+})();
 </script>
 </body>
 </html>
