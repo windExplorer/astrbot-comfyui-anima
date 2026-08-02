@@ -221,7 +221,12 @@ class WebUIApi:
             return error_response(f"读取图片失败: {e}")
         mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
         encoded = base64.b64encode(raw).decode("ascii")
-        return json_response({"data_url": f"data:{mime};base64,{encoded}", "mime": mime})
+        meta = None
+        try:
+            meta = g.get_by_sha(sha)
+        except Exception:
+            meta = None
+        return json_response({"data_url": f"data:{mime};base64,{encoded}", "mime": mime, "meta": meta})
 
     async def gallery_star(self):
         g = self._gallery()

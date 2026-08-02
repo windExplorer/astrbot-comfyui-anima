@@ -302,6 +302,7 @@ body{
 /* image big-view dialog with info panel */
 .image-dialog{
   border:none;border-radius:var(--radius);max-width:min(960px,94vw);width:auto;padding:0;
+  margin:auto;
   background:var(--bg-raised);box-shadow:0 24px 60px rgba(0,0,0,.45);color:var(--text)
 }
 .image-dialog::backdrop{background:rgba(0,0,0,.55);backdrop-filter:blur(2px)}

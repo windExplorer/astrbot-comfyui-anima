@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.20
+
+- **大图弹窗三项体验修复**：
+  1. 弹窗在屏幕中居中：`.image-dialog` 增加 `margin:auto`。
+  2. 大图信息面板不再空白：后端 `gallery/image` 接口除 `data_url` 外，新增返回该图的完整元数据 `meta`（提示词/尺寸/耗时/用户/触发消息/Seed/状态/收藏等），前端 `openImage` 改用 `data.meta` 填充信息面板。
+  3. 出图记录列表的缩略图支持点击查看大图：缩略图加 `data-open` 属性并绑定点击，调 `openImage(sha)`（失败图无真实图片则不绑定）。
+
 ## v2.2.19
 
 - **修复图库（非回收站）永远空白的真 bug：`search()` 参数绑定数量不匹配**。`search(trash=False)` 时 SQL 拼成 `AND deleted=0`（硬编码，无占位符 `?`），但代码仍向参数列表 `append(0)`，导致实际占位符数（仅 `LIMIT ? OFFSET ?` 共 2 个）比传入参数（多出一个 `0` 共 3 个）少一个，SQLite 抛 `Incorrect number of bindings supplied` 异常，被 `search` 的 try/except 吞掉返回空数组——于是图库主视图永远空、且日志里出现 `检索失败`。回收站（`trash=True`）用了 `?` 并正确 append，所以反而能查到，这也解释了「出图记录有图、图库空白」的表象。改为仅 `trash=True` 时使用 `AND deleted=?` 并 append 参数，否则硬编码 `deleted=0` 不 append。

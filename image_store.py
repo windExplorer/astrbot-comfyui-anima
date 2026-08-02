@@ -630,6 +630,22 @@ class ImageStore:
                     return str(cand)
         return None
 
+    def get_by_sha(self, sha256_or_prefix: str) -> dict | None:
+        """根据完整 sha256 或前 16 位前缀，返回记录的完整元数据（含提示词/尺寸等）。"""
+        if not sha256_or_prefix:
+            return None
+        conn = self._conn_get()
+        try:
+            row = conn.execute(
+                "SELECT * FROM images WHERE sha256 LIKE ? ORDER BY created_at DESC LIMIT 1",
+                (sha256_or_prefix + "%",),
+            ).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        return self._row_to_dict(row)
+
     def data_url(self, sha256_prefix: str, ext: str) -> str | None:
         """返回缩略用 base64 data URL（行内展示，避免额外接口）。失败返回 None。"""
         p = self.path_of(sha256_prefix)

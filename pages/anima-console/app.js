@@ -642,8 +642,9 @@
     }
     els.recBody.innerHTML = rows.map(function (r) {
       var isFail = Number(r.status) === 1;
-      var thumb = (r.data_url && r.ext !== "fail")
-        ? '<img class="rec-thumb" src="' + escapeHtml(r.data_url) + '" alt="预览" />'
+      var canOpen = (r.data_url && r.ext !== "fail" && r.sha256);
+      var thumb = canOpen
+        ? '<img class="rec-thumb" src="' + escapeHtml(r.data_url) + '" alt="预览" data-open="' + escapeHtml(r.sha256) + '" title="点击查看大图" />'
         : '<div class="rec-thumb empty-thumb">' + (isFail ? "失败" : "—") + '</div>';
       var t = (r.created_at ? new Date(Number(r.created_at) * 1000) : null);
       var time = t ? t.toLocaleString("zh-CN", { hour12: false }) : "—";
@@ -670,6 +671,9 @@
         '<td class="rec-prompt">' + escapeHtml(prompt) + '</td>' +
         '</tr>';
     }).join("");
+    Array.prototype.forEach.call(els.recBody.querySelectorAll("[data-open]"), function (img) {
+      img.addEventListener("click", function () { openImage(img.getAttribute("data-open")); });
+    });
   }
 
   function fmtSize(bytes) {
@@ -892,8 +896,8 @@
   async function openImage(sha) {
     try {
       var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha));
-      var img = data || {};
-      els.imageDialogImg.src = img.data_url || "";
+      var img = data && data.meta ? data.meta : (data || {});
+      els.imageDialogImg.src = (data && data.data_url) || "";
       var info = [];
       var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
       add("SHA", (img.sha256 || sha).slice(0, 20) + "…");
