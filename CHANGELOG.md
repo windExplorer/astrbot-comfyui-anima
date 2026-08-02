@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.5
+
+- **修复 v2.2.2 引入的致命回归：WebUI 所有接口 404（一直没数据）**。
+  通过阅读 AstrBot 源码（`dashboard/src/views/PluginPagePage.vue` 的 `buildPluginApiPath` 与 `astrbot/dashboard/api/plugins.py` 的 `_match_registered_web_api`）确认：宿主用**完整 plugin_path（含插件名，如 `<plugin_name>/page/config`）** 与注册路由做正则 fullmatch，且官方文档明确"注册路由需包含插件名前缀"。v2.2.2 把路由前缀从 `/{plugin_name}/page` 误改成 `/page`，导致请求路径 `/<plugin_name>/page/config` 与注册的 `/page/config` 不匹配、全部 404，页面一直无数据。现已恢复为 `/{plugin_name}/page`，前端 endpoint 仍用 `page/...`（宿主自动拼插件名前缀）。
+
 ## v2.2.4
 
 - **重写 WebUI 两大核心功能，使其真正可用**：

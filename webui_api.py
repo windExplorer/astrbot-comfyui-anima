@@ -1,10 +1,11 @@
 """Anima 控制台 WebUI 后端 API。
 
 通过 AstrBot 的 context.register_web_api 注册路由，配合 pages/anima-console/
-下的前端页面使用。register_web_api 的路径会自动挂载在
-/api/plugins/extensions/{plugin_name}/ 之下（前缀由 AstrBot 决定），
-因此此处只需写相对部分，例如 /page/config 最终对应
-/api/plugins/extensions/astrbot_plugin_comfyui_anima/page/config。
+下的前端页面使用。宿主 _call_plugin_extension 会用完整 plugin_path
+（形如 "<plugin_name>/page/config"，含插件名）与注册路由做正则 fullmatch，
+因此此处注册的路径必须包含插件名前缀（参考 AstrBot 文档：路由形如
+/{PLUGIN_NAME}/stats）。前端 bridge 的 endpoint 只传 "page/config"，
+由宿主自动拼 /api/v1/plugins/extensions/<plugin_name>/ 前缀。
 
 功能：
 - /schema          读取插件配置 schema（_conf_schema.json），用于前端结构化渲染
@@ -230,9 +231,13 @@ def register_web_api(plugin) -> None:
     from astrbot.api import logger as _log
     api = WebUIApi(plugin)
     ctx = plugin.context
-    # register_web_api 的 path 会自动挂载在
-    # /api/plugins/extensions/{plugin_name}/ 之下，因此这里只需写相对部分。
-    prefix = "/page"
+    # 关键：宿主 _call_plugin_extension 用完整 plugin_path（含插件名，形如
+    # "<plugin_name>/page/config"）与注册路由做正则 fullmatch，因此注册的 route
+    # 必须包含插件名前缀（参考 AstrBot 文档：注册路由形如 /{PLUGIN_NAME}/stats）。
+    # 前端 bridge 的 endpoint 只需传 "page/config"，宿主会自动拼
+    # /api/v1/plugins/extensions/<plugin_name>/ 前缀。
+    plugin_name = getattr(plugin, "name", "astrbot_plugin_comfyui_anima")
+    prefix = f"/{plugin_name}/page"
 
     routes = [
         (f"{prefix}/schema", api.get_schema, ["GET"], "读取配置 schema"),
