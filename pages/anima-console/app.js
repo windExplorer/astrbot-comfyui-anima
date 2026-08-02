@@ -1,7 +1,8 @@
 (function () {
   "use strict";
 
-  const bridge = window.AstrBotPluginPage;
+  // bridge 在 start() 中通过 getBridge() 异步获取，不要在此处提前固定取值。
+  let bridge = null;
 
   const state = {
     config: {},
@@ -93,9 +94,9 @@
   }
 
   // ---- bridge API ----
-  // webui_api.py 注册的路由前缀是 /astrbot_plugin_comfyui_anima/page，
-  // bridge 自动拼 /api/plugins/extensions/<plugin_name>/ 前缀，
-  // 因此 endpoint 需包含 "page/" 来匹配完整路径。
+  // AstrBot 的 bridge 会自动拼接 /api/plugins/extensions/<plugin_name>/ 前缀，
+  // 后端路由注册在 /page/... 下，因此 endpoint 需包含 "page/" 来匹配完整路径，
+  // 即最终请求为 /api/plugins/extensions/<plugin_name>/page/<endpoint>。
   // bridge 对 {status:"ok",data} 自动解包为 data；
   // 对 {status:"error"} 或 HTTP 失败自动 reject。
   var API_PREFIX = "page/";
@@ -482,13 +483,33 @@
   }
 
   // ====== START ======
+  // AstrBot 的桥接对象由宿主在页面加载后异步注入，可能晚于本脚本执行，
+  // 因此不要在一开始就固定取值，而是轮询等待（最多约 8 秒）。
+  let bridge = null;
+
+  async function getBridge() {
+    for (let i = 0; i < 80; i += 1) {
+      const candidate = window.AstrBotPluginPage;
+      if (candidate && typeof candidate.apiGet === "function") {
+        try { if (candidate.ready) await candidate.ready(); } catch (e) { /* already ready */ }
+        return candidate;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
+  }
+
   async function start() {
-    if (!bridge || typeof bridge.apiGet !== "function") {
+    bridge = await getBridge();
+    if (!bridge) {
       els.cfgContent.innerHTML = '<div class="empty error">AstrBot 页面桥接不可用，请在 AstrBot 内置环境中打开此页面。</div>';
+      els.globalError.hidden = false;
+      els.globalErrorMessage.textContent = "未能获取 AstrBot 页面桥接，请确认在 AstrBot Dashboard 的插件 WebUI 中打开。";
+      setStatus("桥接不可用", true);
       return;
     }
-    try { await bridge.ready(); } catch (e) { /* bridge may already be ready */ }
     bindEvents();
+    setStatus("正在连接…");
     var initialView = (location.hash || "#config").slice(1);
     switchView(initialView);
     try { await loadConfig(); setStatus("已就绪"); } catch (e) { setStatus("初始化失败", true); }

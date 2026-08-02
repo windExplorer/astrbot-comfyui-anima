@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.2
+
+- **修复 WebUI「正在连接…/桥接不可用/部分数据加载失败/按钮全部点不了」的根因**。
+  - 后端路由前缀错误：`webui_api.py` 的 `register_web_api` 路径里多写了插件名（`/{plugin_name}/page`），而 AstrBot 的 bridge 会自动拼接 `/api/plugins/extensions/<plugin_name>/` 前缀，导致最终请求变成 `/api/.../<plugin_name>/<plugin_name>/page/...` 双重插件名而 404。现改为相对路径 `/page`，前端 `page/config` 即可正确命中。
+  - 前端 bridge 获取时机错误：原代码在脚本顶层 `const bridge = window.AstrBotPluginPage` 立即取值，但 AstrBot 的桥接对象由宿主异步注入，若脚本先于注入执行，`bridge` 即为 `undefined`，直接走进"桥接不可用"死路、所有按钮绑不上事件。现改为 `getBridge()` 轮询等待（最多约 8 秒），对齐伴侣插件 / get_px 的标准写法。
+  - 加载过程中状态栏明确显示"正在连接…"，就绪后切换为"已就绪"。
+
 ## v2.2.1
 
 - **修复 WebUI 所有按钮无响应、数据不加载的问题**。根因是 `app.js` 中 `apiGet`/`apiPost` 的 endpoint 缺少 `page/` 前缀。后端 `webui_api.py` 的路由注册在 `/{plugin_name}/page/` 下，但前端直接调用 `bridge.apiGet("config")` 时，AstrBot bridge 拼出的完整路径是 `/api/plugins/extensions/<plugin_name>/config`，与实际路由 `/api/plugins/extensions/<plugin_name>/page/config` 不匹配。本版在 `apiGet`/`apiPost` 中自动补齐 `page/` 前缀，对齐后端路由。

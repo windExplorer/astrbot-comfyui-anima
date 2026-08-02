@@ -1,8 +1,10 @@
 """Anima 控制台 WebUI 后端 API。
 
 通过 AstrBot 的 context.register_web_api 注册路由，配合 pages/anima-console/
-下的前端页面使用。所有路由自动挂载在 /api/astrbot_plugin_comfyui_anima/page/...
-（具体前缀由 AstrBot 决定）。
+下的前端页面使用。register_web_api 的路径会自动挂载在
+/api/plugins/extensions/{plugin_name}/ 之下（前缀由 AstrBot 决定），
+因此此处只需写相对部分，例如 /page/config 最终对应
+/api/plugins/extensions/astrbot_plugin_comfyui_anima/page/config。
 
 功能：
 - /config          读取/保存插件配置
@@ -271,8 +273,9 @@ def register_web_api(plugin) -> None:
     from astrbot.api import logger as _log
     api = WebUIApi(plugin)
     ctx = plugin.context
-    plugin_name = getattr(plugin, "name", "astrbot_plugin_comfyui_anima")
-    prefix = f"/{plugin_name}/page"
+    # register_web_api 的 path 会自动挂载在
+    # /api/plugins/extensions/{plugin_name}/ 之下，因此这里只需写相对部分。
+    prefix = "/page"
 
     routes = [
         (f"{prefix}/config", api.get_config, ["GET"], "读取控制台配置"),
