@@ -344,7 +344,15 @@
       if (!state.records.length) loadRecords();
       if (!state.logs.length) loadLogs();
     }
-    if (name === "gallery" && !state.galResults.length) galSearch();
+    if (name === "gallery") {
+      if (galTabState !== "normal") {
+        galTabState = "normal";
+        if (els.galTabs) els.galTabs.querySelectorAll(".tab").forEach(function (x) {
+          x.classList.toggle("active", x.dataset.galtab === "normal");
+        });
+      }
+      if (!state.galResults.length) galSearch();
+    }
   }
 
   // ====== CONFIG ======
@@ -752,8 +760,19 @@
       "<span><strong>" + (s.total || 0) + "</strong> 张图片</span>",
       "<span><strong>" + (s.starred || 0) + "</strong> 收藏</span>",
       s.size_mb != null ? "<span>占用 <strong>" + (typeof s.size_mb === "number" ? s.size_mb.toFixed(1) : s.size_mb) + "</strong> MB</span>" : "",
+      (s.trash_count || 0) ? "<span class='trash-stat'>回收站 <strong>" + s.trash_count + "</strong> 张</span>" : "",
     ].join("");
+    if (els.galTrashBadge) {
+      if (s.trash_count) {
+        els.galTrashBadge.textContent = s.trash_count;
+        els.galTrashBadge.hidden = false;
+      } else {
+        els.galTrashBadge.hidden = true;
+      }
+    }
   }
+
+  var galTabState = "normal"; // normal | trash
 
   async function galSearch() {
     if (state.galSearching) return;
@@ -765,6 +784,7 @@
       if (q) params.keyword = q;
       if (els.galType.value) params.type = els.galType.value;
       if (els.galStarred.checked) params.starred = "1";
+      if (galTabState === "trash") params.trash = "1";
       var data = await apiGet("gallery/search", params);
       state.galResults = Array.isArray(data) ? data : (data.results || data.images || []);
       renderGalResults();
@@ -779,9 +799,12 @@
 
   function renderGalResults() {
     if (!state.galResults.length) {
-      els.galGrid.innerHTML = '<div class="empty">没有找到匹配的图片</div>';
+      els.galGrid.innerHTML = galTabState === "trash"
+        ? '<div class="empty">回收站是空的。</div>'
+        : '<div class="empty">没有找到匹配的图片</div>';
       return;
     }
+    var isTrash = galTabState === "trash";
     els.galGrid.innerHTML = state.galResults.map(function (img) {
       var sha = img.sha256 || "";
       var prompt = img.prompt || img.prompt_raw || "";
@@ -790,20 +813,25 @@
       var size = w && h ? w + "x" + h : "";
       var starred = img.starred;
       var thumb = img.thumb || "";
-      return '<div class="gal-card">' +
-        '<img src="' + escapeHtml(thumb) + '" data-sha="' + escapeHtml(sha) + '" alt="' + escapeHtml(prompt.slice(0, 80)) + '" loading="lazy" />' +
+      var actions = isTrash
+        ? '<button data-restore="' + escapeHtml(sha) + '">恢复</button>' +
+          '<button data-purge="' + escapeHtml(sha) + '" class="danger">彻底删除</button>'
+        : '<button data-star="' + escapeHtml(sha) + '" class="' + (starred ? "starred" : "") + '">' + (starred ? "★" : "☆") + '</button>' +
+          '<button data-del="' + escapeHtml(sha) + '" class="danger">移入回收站</button>';
+      return '<div class="gal-card' + (isTrash ? " in-trash" : "") + '">' +
+        '<img class="gal-img" src="' + escapeHtml(thumb) + '" data-open="' + escapeHtml(sha) + '" alt="' + escapeHtml(prompt.slice(0, 80)) + '" loading="lazy" />' +
         '<div class="gal-meta">' +
           '<div class="gal-prompt">' + escapeHtml(prompt.slice(0, 60) || "(无描述)") + '</div>' +
-          '<div>' + escapeHtml(size) + (img.is_img2img ? " · 图生图" : "") + '</div>' +
+          '<div>' + escapeHtml(size) + (img.is_img2img ? " · 图生图" : "") + (img.deleted ? " · 回收站" : "") + '</div>' +
         '</div>' +
-        '<div class="gal-actions">' +
-          '<button data-star="' + escapeHtml(sha) + '" class="' + (starred ? "starred" : "") + '">' + (starred ? "★" : "☆") + '</button>' +
-          '<button data-zoom="' + escapeHtml(sha) + '">放大</button>' +
-          '<button data-del="' + escapeHtml(sha) + '" class="danger">删除</button>' +
-        '</div>' +
+        '<div class="gal-actions">' + actions + '</div>' +
       '</div>';
     }).join("");
-    // events
+
+    // 点击图片直接看大图
+    els.galGrid.querySelectorAll("[data-open]").forEach(function (img) {
+      img.addEventListener("click", function () { openImage(img.dataset.open); });
+    });
     els.galGrid.querySelectorAll("[data-star]").forEach(function (btn) {
       btn.addEventListener("click", async function () {
         var sha = btn.dataset.star;
@@ -817,25 +845,36 @@
         } catch (e) { showToast(e.message || "操作失败", "error"); }
       });
     });
-    els.galGrid.querySelectorAll("[data-zoom]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        var sha = btn.dataset.zoom;
-        apiGet("gallery/image?sha=" + encodeURIComponent(sha)).then(function (data) {
-          if (data && data.data_url) {
-            els.imageDialogImg.src = data.data_url;
-            els.imageDialogInfo.textContent = "SHA: " + sha.slice(0, 16) + "…";
-            els.imageDialog.showModal();
-          }
-        }).catch(function () {});
-      });
-    });
     els.galGrid.querySelectorAll("[data-del]").forEach(function (btn) {
       btn.addEventListener("click", async function () {
         var sha = btn.dataset.del;
-        if (!await confirmAction("删除图片", "确定要删除该图片吗？此操作不可恢复。")) return;
+        if (!await confirmAction("移入回收站", "确定要把该图移入回收站吗？回收站内可恢复，彻底删除才不可逆。")) return;
         try {
           await apiPost("gallery/delete", { sha: sha });
-          showToast("已删除");
+          showToast("已移入回收站");
+          galSearch();
+          loadGalStats();
+        } catch (e) { showToast(e.message || "操作失败", "error"); }
+      });
+    });
+    els.galGrid.querySelectorAll("[data-restore]").forEach(function (btn) {
+      btn.addEventListener("click", async function () {
+        var sha = btn.dataset.restore;
+        try {
+          await apiPost("gallery/restore", { sha: sha });
+          showToast("已恢复");
+          galSearch();
+          loadGalStats();
+        } catch (e) { showToast(e.message || "恢复失败", "error"); }
+      });
+    });
+    els.galGrid.querySelectorAll("[data-purge]").forEach(function (btn) {
+      btn.addEventListener("click", async function () {
+        var sha = btn.dataset.purge;
+        if (!await confirmAction("彻底删除", "确定要永久删除该图吗？此操作不可恢复！")) return;
+        try {
+          await apiPost("gallery/purge", { sha: sha });
+          showToast("已彻底删除");
           galSearch();
           loadGalStats();
         } catch (e) { showToast(e.message || "删除失败", "error"); }
@@ -843,8 +882,49 @@
     });
   }
 
+  async function openImage(sha) {
+    try {
+      var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha));
+      var img = data || {};
+      els.imageDialogImg.src = img.data_url || "";
+      var info = [];
+      var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
+      add("SHA", (img.sha256 || sha).slice(0, 20) + "…");
+      add("类型", img.is_img2img ? "图生图" : (img.source === "ref" ? "参考图" : (img.source === "user" ? "用户收藏" : "文生图")));
+      if (img.w && img.h) add("尺寸", img.w + " × " + img.h);
+      if (img.size_bytes != null) add("大小", fmtSize(img.size_bytes));
+      if (img.cost_sec != null) add("耗时", Number(img.cost_sec).toFixed(1) + " 秒");
+      if (img.created_at) {
+        var t = new Date(Number(img.created_at) * 1000);
+        add("出图时间", t.toLocaleString("zh-CN", { hour12: false }));
+      }
+      if (img.user_name || img.user_id) add("用户", [img.user_name, img.user_id].filter(Boolean).join(" · "));
+      if (img.trigger_msg) add("触发消息", img.trigger_msg);
+      if (img.status === 1) add("状态", "失败");
+      else if (img.status === 0) add("状态", "成功");
+      if (img.starred) add("收藏", "★ 已收藏");
+      if (img.positive_seed != null) add("Seed", img.positive_seed);
+      add("提示词", img.prompt_raw || img.prompt || "（无）");
+      els.imageDialogInfo.innerHTML = info.join("");
+      els.imageDialog.showModal();
+    } catch (e) {
+      showToast("打开图片失败：" + (e.message || ""), "error");
+    }
+  }
+
   els.galSearchBtn.addEventListener("click", galSearch);
   els.galSearch.addEventListener("keydown", function (e) { if (e.key === "Enter") galSearch(); });
+  if (els.galTabs) {
+    els.galTabs.querySelectorAll(".tab").forEach(function (b) {
+      b.addEventListener("click", function () {
+        galTabState = b.dataset.galtab;
+        els.galTabs.querySelectorAll(".tab").forEach(function (x) {
+          x.classList.toggle("active", x === b);
+        });
+        galSearch();
+      });
+    });
+  }
 
   // ====== BIND EVENTS ======
   function bindEvents() {

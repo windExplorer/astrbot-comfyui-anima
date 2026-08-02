@@ -20,7 +20,10 @@
 - /gallery/search 图库检索（每条返回 data_url 缩略图）
 - /gallery/image  单图（data_url 形式）
 - /gallery/star   收藏/取消收藏
-- /gallery/delete 删除
+- /gallery/delete 删除(移入回收站)
+- /gallery/trash  回收站列表
+- /gallery/restore 从回收站恢复
+- /gallery/purge  彻底删除(回收站内)
 - /gallery/tags   添加标签
 """
 
@@ -169,6 +172,7 @@ class WebUIApi:
             if stype in ("", "all"):
                 stype = None
             starred = request.query.get("starred", "0") == "1"
+            trash = request.query.get("trash", "0") == "1"
             try:
                 limit = request.query.get("limit", 40, type=int)
             except Exception:
@@ -177,7 +181,8 @@ class WebUIApi:
                 offset = request.query.get("offset", 0, type=int)
             except Exception:
                 offset = 0
-            rows = g.search(keyword=kw, type=stype, starred_only=starred, limit=limit, offset=offset)
+            rows = g.search(keyword=kw, type=stype, starred_only=starred,
+                            trash=trash, limit=limit, offset=offset)
             # 列表中直接返回 data_url 缩略图（前端 img.src 用），避免依赖外部路径
             for r in rows:
                 sha = r.get("sha256", "")
@@ -243,9 +248,61 @@ class WebUIApi:
             if not sha:
                 return error_response("缺少 sha")
             ok = g.delete(sha)
-            return json_response({"msg": "已删除" if ok else "未找到该图"})
+            if not ok:
+                return error_response("未找到该图（收藏图不可删除）")
+            return json_response({"msg": "已移入回收站"})
         except Exception as e:
             return error_response(f"删除失败: {e}")
+
+    async def gallery_trash(self):
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            rows = g.search(trash=True, limit=200, offset=0)
+            for r in rows:
+                sha = r.get("sha256", "")
+                try:
+                    p = g.path_of(sha)
+                    if p and Path(p).exists():
+                        raw = await asyncio.to_thread(Path(p).read_bytes)
+                        mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+                        r["thumb"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                    else:
+                        r["thumb"] = ""
+                except Exception:
+                    r["thumb"] = ""
+            return json_response(rows)
+        except Exception as e:
+            return error_response(f"读取回收站失败: {e}")
+
+    async def gallery_restore(self):
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            sha = payload.get("sha", "")
+            if not sha:
+                return error_response("缺少 sha")
+            ok = g.restore(sha)
+            return json_response({"msg": "已恢复" if ok else "恢复失败"})
+        except Exception as e:
+            return error_response(f"恢复失败: {e}")
+
+    async def gallery_purge(self):
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            sha = payload.get("sha", "")
+            if not sha:
+                return error_response("缺少 sha")
+            ok = g.purge(sha)
+            return json_response({"msg": "已彻底删除" if ok else "未找到该图"})
+        except Exception as e:
+            return error_response(f"彻底删除失败: {e}")
 
     async def gallery_tags(self):
         g = self._gallery()
@@ -286,7 +343,10 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/search", api.gallery_search, ["GET"], "图库检索"),
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
         (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
-        (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除"),
+        (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除(移入回收站)"),
+        (f"{prefix}/gallery/trash", api.gallery_trash, ["GET"], "图库回收站"),
+        (f"{prefix}/gallery/restore", api.gallery_restore, ["POST"], "图库恢复"),
+        (f"{prefix}/gallery/purge", api.gallery_purge, ["POST"], "图库彻底删除"),
         (f"{prefix}/gallery/tags", api.gallery_tags, ["POST"], "图库打标签"),
     ]
     registered = []

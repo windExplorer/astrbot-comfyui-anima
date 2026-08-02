@@ -2054,10 +2054,34 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "del":
             if not rest:
-                await self._send(event, "用法：/gallery del <sha前几位>")
+                await self._send(event, "用法：/gallery del <sha前几位>  （移入回收站，可在 /gallery trash 查看，purge 才真删）")
             else:
                 ok = self.gallery.delete(rest[0])
-                await self._send(event, "已删除。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
+                await self._send(event, "已移入回收站（用 /gallery purge 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
+
+        elif sub == "trash":
+            rows = self.gallery.search(trash=True, limit=100)
+            if not rows:
+                await self._send(event, "回收站是空的。")
+            else:
+                lines = [f"回收站（{len(rows)} 张，purge 才真删）："]
+                for i, r in enumerate(rows, 1):
+                    lines.append(f"{i}. {r['sha256'][:16]} 「{(r.get('prompt') or '')[:24]}」")
+                await self._send(event, "\n".join(lines))
+
+        elif sub == "restore":
+            if not rest:
+                await self._send(event, "用法：/gallery restore <sha前几位>")
+            else:
+                ok = self.gallery.restore(rest[0])
+                await self._send(event, "已恢复。" if ok else "恢复失败（不在回收站或不存在）。")
+
+        elif sub == "purge":
+            if not rest:
+                await self._send(event, "用法：/gallery purge <sha前几位>  （彻底删除，不可恢复）")
+            else:
+                ok = self.gallery.purge(rest[0])
+                await self._send(event, "已彻底删除。" if ok else "删除失败（不在回收站或不存在）。")
 
         elif sub == "save":
             # /gallery save [标签...]：收藏当前/上一条消息的图（方案B）

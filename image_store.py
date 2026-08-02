@@ -108,7 +108,9 @@ class ImageStore:
                     user_id    TEXT DEFAULT NULL,
                     user_name  TEXT DEFAULT NULL,
                     trigger_msg TEXT DEFAULT NULL,
-                    status     INTEGER NOT NULL DEFAULT 0
+                    status     INTEGER NOT NULL DEFAULT 0,
+                    deleted    INTEGER NOT NULL DEFAULT 0,
+                    deleted_at REAL DEFAULT NULL
                 )
                 """
             )
@@ -120,6 +122,8 @@ class ImageStore:
                 ("user_name", "TEXT"),
                 ("trigger_msg", "TEXT"),
                 ("status", "INTEGER NOT NULL DEFAULT 0"),
+                ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+                ("deleted_at", "REAL DEFAULT NULL"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -487,6 +491,8 @@ class ImageStore:
             "user_name": row["user_name"],
             "trigger_msg": row["trigger_msg"],
             "status": row["status"],
+            "deleted": bool(row["deleted"]),
+            "deleted_at": row["deleted_at"],
             "tags": self.tags_of(row["sha256"]),
         }
 
@@ -496,15 +502,20 @@ class ImageStore:
         type: str | None = None,
         session=None,
         starred_only: bool = False,
+        trash: bool = False,
         limit: int = 20,
         offset: int = 0,
     ) -> list[dict]:
-        """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。"""
+        """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
+        trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
+        """
         if not self.enabled() or not _HAS_SQLITE:
             return []
         conn = self._conn_get()
         sql = "SELECT * FROM images WHERE 1=1"
+        sql += " AND deleted=?" if trash else " AND deleted=0"
         args: list = []
+        args.append(1 if trash else 0)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
@@ -662,14 +673,55 @@ class ImageStore:
             return False
 
     def delete(self, sha256: str) -> bool:
+        """软删除：移入回收站（标记 deleted=1），不真删文件/记录。
+
+        收藏图不允许移入回收站。回收站内调用 purge 才是真正删除。
+        """
         if not sha256:
             return False
         conn = self._conn_get()
         row = self._row(sha256)
         if not row:
             return False
+        if row["deleted"]:
+            return True  # 已在回收站
         # 收藏图不允许删除
         if row["starred"]:
+            return False
+        try:
+            conn.execute(
+                "UPDATE images SET deleted=1, deleted_at=? WHERE sha256=?",
+                (time.time(), row["sha256"]),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 移入回收站失败: {e}")
+            return False
+
+    def restore(self, sha256: str) -> bool:
+        """从回收站恢复（deleted=0）。"""
+        if not sha256:
+            return False
+        conn = self._conn_get()
+        try:
+            conn.execute(
+                "UPDATE images SET deleted=0, deleted_at=NULL WHERE sha256=?",
+                (sha256,),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 恢复失败: {e}")
+            return False
+
+    def purge(self, sha256: str) -> bool:
+        """真正删除（从回收站彻底清除）：删除文件 + 记录 + 标签。"""
+        if not sha256:
+            return False
+        conn = self._conn_get()
+        row = self._row(sha256)
+        if not row:
             return False
         p = self._path_of_row(row)
         try:
@@ -679,9 +731,7 @@ class ImageStore:
             logger.warning(f"[图库] 删除文件失败: {e}")
         try:
             conn.execute("DELETE FROM image_tags WHERE sha256=?", (row["sha256"],))
-            conn.execute(
-                "DELETE FROM images WHERE sha256=?", (row["sha256"],)
-            )
+            conn.execute("DELETE FROM images WHERE sha256=?", (row["sha256"],))
             conn.commit()
             return True
         except Exception as e:
@@ -693,21 +743,30 @@ class ImageStore:
             return {"enabled": False}
         conn = self._conn_get()
         try:
-            total = conn.execute("SELECT COUNT(*) c FROM images").fetchone()["c"]
+            total = conn.execute(
+                "SELECT COUNT(*) c FROM images WHERE deleted=0"
+            ).fetchone()["c"]
             starred = conn.execute(
-                "SELECT COUNT(*) c FROM images WHERE starred=1"
+                "SELECT COUNT(*) c FROM images WHERE starred=1 AND deleted=0"
             ).fetchone()["c"]
             tagged = conn.execute(
-                "SELECT COUNT(DISTINCT sha256) c FROM image_tags"
+                "SELECT COUNT(DISTINCT t.sha256) c FROM image_tags t "
+                "JOIN images i ON i.sha256=t.sha256 WHERE i.deleted=0"
             ).fetchone()["c"]
             gen = conn.execute(
-                "SELECT COUNT(*) c FROM images WHERE source=?", (SRC_GEN,)
+                "SELECT COUNT(*) c FROM images WHERE source=? AND deleted=0",
+                (SRC_GEN,),
             ).fetchone()["c"]
             ref = conn.execute(
-                "SELECT COUNT(*) c FROM images WHERE source=?", (SRC_REF,)
+                "SELECT COUNT(*) c FROM images WHERE source=? AND deleted=0",
+                (SRC_REF,),
             ).fetchone()["c"]
             user = conn.execute(
-                "SELECT COUNT(*) c FROM images WHERE source=?", (SRC_USER,)
+                "SELECT COUNT(*) c FROM images WHERE source=? AND deleted=0",
+                (SRC_USER,),
+            ).fetchone()["c"]
+            trash_count = conn.execute(
+                "SELECT COUNT(*) c FROM images WHERE deleted=1"
             ).fetchone()["c"]
         except Exception as e:
             logger.warning(f"[图库] 统计失败: {e}")
@@ -730,6 +789,7 @@ class ImageStore:
             "user": user,
             "size_mb": round(size / 1024 / 1024, 2),
             "max_total_mb": int(self._cfg("max_total_mb", 2048)),
+            "trash_count": trash_count,
         }
 
     # ------------------------------------------------------------------ #
@@ -757,7 +817,7 @@ class ImageStore:
             rows = conn.execute(
                 """
                 SELECT i.* FROM images i
-                WHERE i.starred=0
+                WHERE i.starred=0 AND i.deleted=0
                   AND NOT EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=i.sha256)
                 ORDER BY i.created_at ASC
                 """

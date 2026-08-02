@@ -125,10 +125,14 @@
           <div class="section-heading wide">
             <p>IMAGE GALLERY</p>
             <h2 id="galleryTitle">图库</h2>
-            <span>浏览已生成的图片，支持关键词搜索、收藏与删除。</span>
+            <span>点击任意图片查看大图与详情；删除会先移入回收站，回收站内彻底删除才是真删。</span>
           </div>
           <div id="galStats" class="gal-stats" aria-live="polite"></div>
           <div class="gal-toolbar">
+            <div class="tabs" id="galTabs">
+              <button type="button" class="tab active" data-galtab="normal">图库</button>
+              <button type="button" class="tab" data-galtab="trash">回收站 <span id="galTrashBadge" class="badge-count" hidden>0</span></button>
+            </div>
             <label class="sr-only" for="galSearch">搜索图库</label>
             <input id="galSearch" type="search" placeholder="搜索关键词、prompt…" autocomplete="off" spellcheck="false" />
             <label class="sr-only" for="galType">图片类型</label>
@@ -168,12 +172,16 @@
       </form>
     </dialog>
 
-    <!-- 图片放大预览 -->
-    <dialog id="imageDialog" class="image-dialog" aria-label="图片预览">
-      <form method="dialog">
+    <!-- 图片大图查看（点击图片打开，展示信息） -->
+    <dialog id="imageDialog" class="image-dialog" aria-label="图片详情">
+      <form method="dialog" class="image-dialog-form">
         <button id="imageDialogClose" class="image-close" type="submit" aria-label="关闭预览">&times;</button>
-        <img id="imageDialogImg" src="" alt="" />
-        <div id="imageDialogInfo" class="image-info"></div>
+        <div class="image-dialog-body">
+          <div class="image-dialog-imgwrap">
+            <img id="imageDialogImg" src="" alt="" />
+          </div>
+          <aside id="imageDialogInfo" class="image-info"></aside>
+        </div>
       </form>
     </dialog>
 
