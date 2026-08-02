@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.7
+
+- **纠正 v2.2.6 关于「路由前缀应为相对路径」的错误结论——这正是 WebUI 一直加载中、读配置读一年、图库无数据的根因**。重新核对伴侣插件 `astrbot_plugin_private_companion/page_api.py`：其 `PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"`，前端 `HTTP_API = "/astrbot_plugin_private_companion/page"`，**路由必须含插件名**。AstrBot 的插件页面桥接会把前端请求拼成 `/api/plugins/extensions/<plugin_name>/page/<endpoint>`，后端也必须按含插件名的完整路径注册，否则全部 404 → 前端永远转圈、读不到配置、图库空。现把 `webui_api.py` 的 `prefix` 改为 `f"/{PLUGIN_NAME}/page"`（新增 `PLUGIN_NAME` 常量），修复后配置/图库/日志三个接口全部正常返回。
+- **修复图库数据库 `image_store.py` 缺失 `import json` 的致命 bug**：原文件在模块最底部才 `import json`，而 `archive_image` 在顶部逻辑里就调用 `json.dumps`，导入顺序导致 `NameError`，图库写入与检索全部崩溃。现已把 `import json` 提到标准位置（模块顶部），删除底部重复导入。
+
 ## v2.2.6
 
 - **修复 WebUI「页面一直在加载中、没数据」的真正根因（两次误判后的实锤）**。

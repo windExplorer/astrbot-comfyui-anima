@@ -12,6 +12,7 @@
 """
 
 import hashlib
+import json
 import os
 import time
 from pathlib import Path
@@ -649,6 +650,3 @@ except Exception:  # pragma: no cover
     import logging  # type: ignore
 
     logger = logging.getLogger("astrbot_plugin_comfyui_anima")
-
-# 延迟导入 json，避免与模块顶层其它 import 顺序冲突
-import json  # noqa: E402

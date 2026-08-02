@@ -9,8 +9,12 @@ astrbot/dashboard/asgi_runtime.py 的 call_request_view / bind_quart_request_con
 因此：
 1) handler 签名里**不能**声明 request 参数——否则会 TypeError 导致接口 500；
    需要请求信息时用 `from quart import request` 的全局对象（request.args / get_json）。
-2) 路由前缀写相对路径（如 /page/config），不含插件名；宿主会按插件名前缀匹配。
-   参考伴侣插件 astrbot_plugin_private_companion 的 page_api 全部用相对路径。
+2) 路由前缀必须含插件名：/<plugin_name>/page/...。前端 API_PREFIX 为 "page/"，
+   宿主会拼成 /api/plugins/extensions/<plugin_name>/page/<endpoint>，而 AstrBot 的
+   路由注册（asgi_runtime.FastAPIAppAdapter.add_url_rule）也是按「含插件名的完整路径」
+   注册的。参考伴侣插件 astrbot_plugin_private_companion 即 PAGE_API_PREFIX =
+   f"/{PLUGIN_NAME}/page"，前端 HTTP_API 同样含插件名。前缀写错（少了插件名）会导致
+   全部 404 / 前端永远加载中。
 
 功能：
 - /schema          读取插件配置 schema（_conf_schema.json），用于前端结构化渲染
@@ -32,6 +36,10 @@ import mimetypes
 import time
 from collections import deque
 from pathlib import Path
+
+# 插件名（与 metadata.yaml 的 name 一致）。路由前缀必须含它，否则 AstrBot
+# 的插件页面桥接会把请求发到错误路径（全部 404 / 前端永远加载中）。
+PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 
 from starlette.responses import JSONResponse, Response
 
@@ -260,11 +268,14 @@ def register_web_api(plugin) -> None:
     from astrbot.api import logger as _log
     api = WebUIApi(plugin)
     ctx = plugin.context
-    # 路由写相对路径（不含插件名）。参考伴侣插件 astrbot_plugin_private_companion
-    # 的 page_api：其路由全部是 /overview、/config/... 这类相对路径且能正常工作，
-    # 说明 AstrBot 会按插件名前缀匹配。前端 bridge 的 endpoint 传 "page/config"，
-    # 宿主自动拼 /api/v1/plugins/extensions/<plugin_name>/ 前缀。
-    prefix = "/page"
+    # 路由必须含插件名：/<plugin_name>/page/...。
+    # 配套前端 app.js 的 API_PREFIX = "page/"，宿主（AstrBot dashboard 的
+    # PluginPagePage.vue / plugin_page_bridge.js）会拼成
+    #   /api/plugins/extensions/<plugin_name>/page/<endpoint>
+    # 而 register_web_api 在 AstrBot 内部就是按「含插件名的完整路径」注册的
+    # （见伴侣插件 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"）。
+    # 前缀少了插件名会导致全部 404，前端永远加载中。
+    prefix = f"/{PLUGIN_NAME}/page"
 
     routes = [
         (f"{prefix}/schema", api.get_schema, ["GET"], "读取配置 schema"),

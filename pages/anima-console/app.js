@@ -92,8 +92,9 @@
 
   // ---- bridge API ----
   // AstrBot 的 bridge 会自动拼接 /api/plugins/extensions/<plugin_name>/ 前缀，
-  // 后端路由注册在 /page/... 下，因此 endpoint 需包含 "page/" 来匹配完整路径，
-  // 即最终请求为 /api/plugins/extensions/<plugin_name>/page/<endpoint>。
+  // 后端路由注册在 /<plugin_name>/page/... 下，因此 endpoint 需包含 "page/" 来匹配
+  // 完整路径，即最终请求为
+  // /api/plugins/extensions/<plugin_name>/page/<endpoint>。
   // bridge 对 {status:"ok",data} 自动解包为 data；
   // 对 {status:"error"} 或 HTTP 失败自动 reject。
   var API_PREFIX = "page/";
