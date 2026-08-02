@@ -320,8 +320,9 @@
   "llm_model": {
     "type": "string",
     "description": "指定用于「理解指令并调用工具」的大模型",
-    "hint": "选填。当默认对话模型不支持 Function Calling（工具调用）导致 AI 调用 comfyui_draw / comfyui_gallery 等工具时传参为空、出图失败，可在此填一个支持工具调用的模型（LLM 服务提供商的名称或 ID，在 AstrBot「服务提供商」里查看），插件会用它来解析用户意图并补全工具参数。留空则用 AstrBot 默认对话模型。",
-    "default": ""
+    "hint": "选填。当默认对话模型不支持 Function Calling（工具调用）导致 AI 调用 comfyui_draw / comfyui_gallery 等工具时传参为空、出图失败，可在此选择一个支持工具调用的 LLM 服务提供商，插件会用它来解析用户意图并补全工具参数。留空则用 AstrBot 默认对话模型。",
+    "default": "",
+    "_special": "select_provider"
   },
   "draw_timeout": {
     "type": "int",
