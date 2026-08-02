@@ -870,6 +870,28 @@ class ComfyUIDrawPlugin(Star):
         yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
         await event.send(MessageChain([Plain(str(text))]))
 
+    def _record_failed(
+        self, event, positive, wf, is_img2img, ref_sha256, draw_start, reason
+    ) -> None:
+        """出图失败时写一条失败记录到图库（供 WebUI「出图记录」展示）。"""
+        try:
+            if self.gallery is None:
+                return
+            self.gallery.add_failed_record(
+                prompt=(positive or ""),
+                prompt_raw=(positive or ""),
+                workflow=(wf.get("name") if wf else "") or "",
+                is_img2img=bool(is_img2img),
+                ref_sha256=(ref_sha256 or ""),
+                cost_sec=(time.time() - draw_start) if draw_start else None,
+                user_id=(getattr(event, "user_id", "") or ""),
+                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                trigger_msg=(getattr(event, "message_str", "") or ""),
+                reason=(reason or ""),
+            )
+        except Exception as e:
+            logger.warning(f"[图库] 写入失败记录出错（忽略）: {e}")
+
     @staticmethod
     def _classify_error(exc: Exception) -> str:
         """把异常粗分类，用于挑选给用户看的可爱话术（connect/timeout/server/generic）。
@@ -1265,6 +1287,10 @@ class ComfyUIDrawPlugin(Star):
             if not prompt_id:
                 logger.warning("[绘图失败][提交] ComfyUI 未返回 prompt_id")
                 await self._send(event, self._cute("no_task_id"))
+                self._record_failed(
+                    event, positive, wf, is_img2img, ref_sha256,
+                    _draw_start, "ComfyUI 未返回 prompt_id（提交失败）",
+                )
                 return
 
             # 记录最近任务，供 /queuestatus 使用
@@ -1295,12 +1321,20 @@ class ComfyUIDrawPlugin(Star):
                 if not history:
                     logger.warning(f"[绘图失败][超时] 等待 {timeout} 秒仍无结果，prompt_id={prompt_id}")
                     await self._send(event, self._cute("timeout"))
+                    self._record_failed(
+                        event, positive, wf, is_img2img, ref_sha256,
+                        _draw_start, f"等待 {timeout} 秒仍无结果（超时）",
+                    )
                     return
 
                 images = comfyui_client.extract_images(history, wf.get("output_node"))
                 if not images:
                     logger.warning("[绘图失败][无图] 任务完成但未找到输出图片节点")
                     await self._send(event, self._cute("no_image"))
+                    self._record_failed(
+                        event, positive, wf, is_img2img, ref_sha256,
+                        _draw_start, "任务完成但未找到输出图片节点（无图）",
+                    )
                     return
 
                 for img in images:
@@ -1346,6 +1380,12 @@ class ComfyUIDrawPlugin(Star):
                                 denoise=(denoise if is_img2img else None),
                                 is_img2img=bool(is_img2img),
                                 ref_sha256=(ref_sha256 or ""),
+                                size_bytes=(os.path.getsize(img_path) if os.path.exists(img_path) else None),
+                                cost_sec=(time.time() - _draw_start),
+                                user_id=(getattr(event, "user_id", "") or ""),
+                                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                                trigger_msg=(getattr(event, "message_str", "") or ""),
+                                status=0,
                             )
                             # archive_image 会把文件从 temp/ 移动到 gallery/，必须用
                             # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。

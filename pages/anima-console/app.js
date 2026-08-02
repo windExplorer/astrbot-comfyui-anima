@@ -5,6 +5,7 @@
     config: {},
     configDirty: false,
     logs: [],
+    records: [],
     galStats: {},
     galResults: [],
     galSearching: false,
@@ -22,12 +23,20 @@
     cfgContent: $("cfgContent"),
     cfgSaveBtn: $("cfgSaveBtn"),
     cfgSaveMsg: $("cfgSaveMsg"),
-    // logs
+    // logs / 出图记录
     logContent: $("logContent"),
     logLevel: $("logLevel"),
     logSearch: $("logSearch"),
     logRefreshBtn: $("logRefreshBtn"),
     logCount: $("logCount"),
+    logTabs: $("logTabs"),
+    logTabRecords: $("logTabRecords"),
+    logTabRunlog: $("logTabRunlog"),
+    recBody: $("recBody"),
+    recEmpty: $("recEmpty"),
+    recSearch: $("recSearch"),
+    recFailedOnly: $("recFailedOnly"),
+    recCount: $("recCount"),
     // gallery
     galStats: $("galStats"),
     galGrid: $("galGrid"),
@@ -330,7 +339,11 @@
     });
     history.replaceState(null, "", "#" + name);
     // lazy load
-    if (name === "logs" && !state.logs.length) loadLogs();
+    if (name === "logs") {
+      setLogTab("records"); // 默认展示出图记录
+      if (!state.records.length) loadRecords();
+      if (!state.logs.length) loadLogs();
+    }
     if (name === "gallery" && !state.galResults.length) galSearch();
   }
 
@@ -583,7 +596,79 @@
     }
   });
 
-  // ====== LOGS ======
+  // ====== 出图记录 + 运行日志 ======
+  var logTabState = "records"; // 默认显示「出图记录」
+
+  async function loadRecords() {
+    var data;
+    try {
+      data = await apiGet("records", {
+        failed: els.recFailedOnly.checked ? 1 : 0,
+      });
+    } catch (e) {
+      els.recBody.innerHTML = '<tr><td colspan="9" class="empty error">读取出图记录失败：' + escapeHtml(e.message) + '</td></tr>';
+      throw e;
+    }
+    state.records = Array.isArray(data) ? data : (data && Array.isArray(data.records) ? data.records : []);
+    if (!state.records.length) {
+      els.recEmpty.hidden = false;
+      els.recBody.innerHTML = "";
+    } else {
+      els.recEmpty.hidden = true;
+    }
+    els.recCount.textContent = state.records.length + " 条";
+    renderRecords();
+    setStatus("出图记录已加载");
+  }
+
+  function renderRecords() {
+    var q = els.recSearch.value.trim().toLowerCase();
+    var rows = state.records.filter(function (r) {
+      if (!q) return true;
+      return [r.user_name, r.trigger_msg, r.prompt, r.prompt_raw]
+        .join(" ").toLowerCase().indexOf(q) >= 0;
+    });
+    if (!rows.length) {
+      els.recBody.innerHTML = '<tr><td colspan="9" class="empty">没有匹配的出图记录</td></tr>';
+      return;
+    }
+    els.recBody.innerHTML = rows.map(function (r) {
+      var isFail = Number(r.status) === 1;
+      var thumb = (r.data_url && r.ext !== "fail")
+        ? '<img class="rec-thumb" src="' + escapeHtml(r.data_url) + '" alt="预览" />'
+        : '<div class="rec-thumb empty-thumb">' + (isFail ? "失败" : "—") + '</div>';
+      var t = (r.created_at ? new Date(Number(r.created_at) * 1000) : null);
+      var time = t ? t.toLocaleString("zh-CN", { hour12: false }) : "—";
+      var wh = (r.w && r.h) ? (r.w + "×" + r.h) : "—";
+      var size = (r.size_bytes != null) ? fmtSize(r.size_bytes) : (isFail ? "—" : "—");
+      var cost = (r.cost_sec != null) ? (Number(r.cost_sec).toFixed(1) + "s") : "—";
+      var user = [r.user_name, r.user_id].filter(Boolean).join(" · ") || "—";
+      var prompt = (r.prompt_raw || r.prompt || "").slice(0, 60);
+      var status = isFail
+        ? '<span class="badge fail">失败</span>'
+        : '<span class="badge ok">成功</span>';
+      var msg = (r.trigger_msg || "").slice(0, 40);
+      return '<tr>' +
+        '<td>' + thumb + '</td>' +
+        '<td>' + escapeHtml(time) + '</td>' +
+        '<td>' + escapeHtml(user) + '</td>' +
+        '<td>' + escapeHtml(msg) + '</td>' +
+        '<td>' + escapeHtml(wh) + '</td>' +
+        '<td>' + escapeHtml(size) + '</td>' +
+        '<td>' + escapeHtml(cost) + '</td>' +
+        '<td>' + status + '</td>' +
+        '<td class="rec-prompt">' + escapeHtml(prompt) + '</td>' +
+        '</tr>';
+    }).join("");
+  }
+
+  function fmtSize(bytes) {
+    bytes = Number(bytes) || 0;
+    if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + " MB";
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return bytes + " B";
+  }
+
   async function loadLogs() {
     var data;
     try {
@@ -625,9 +710,33 @@
       : '<div class="empty">没有匹配的日志</div>';
   }
 
+  function setLogTab(name) {
+    logTabState = name;
+    var isRec = name === "records";
+    els.logTabRecords.hidden = !isRec;
+    els.logTabRunlog.hidden = isRec;
+    document.querySelectorAll("#logTabs .tab").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.logtab === name);
+    });
+    if (isRec) {
+      if (!state.records.length) loadRecords();
+    } else {
+      if (!state.logs.length) loadLogs();
+    }
+  }
+
   els.logLevel.addEventListener("change", renderLogs);
   els.logSearch.addEventListener("input", renderLogs);
-  els.logRefreshBtn.addEventListener("click", loadLogs);
+  els.logRefreshBtn.addEventListener("click", function () {
+    if (logTabState === "records") loadRecords(); else loadLogs();
+  });
+  els.recSearch.addEventListener("input", renderRecords);
+  els.recFailedOnly.addEventListener("change", loadRecords);
+  if (els.logTabs) {
+    els.logTabs.querySelectorAll(".tab").forEach(function (b) {
+      b.addEventListener("click", function () { setLogTab(b.dataset.logtab); });
+    });
+  }
 
   // ====== GALLERY ======
   async function loadGalStats() {
@@ -748,6 +857,7 @@
       hideGlobalError();
       var failures = [];
       try { await loadConfig(); } catch (e) { failures.push("配置"); }
+      try { await loadRecords(); } catch (e) { failures.push("出图记录"); }
       try { await loadLogs(); } catch (e) { failures.push("日志"); }
       try { await loadGalStats(); } catch (e) { failures.push("图库统计"); }
       try { await galSearch(); } catch (e) { failures.push("图库搜索"); }

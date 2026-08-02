@@ -103,6 +103,20 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     # 日志
     # -------------------------------------------------------------- #
+    async def get_records(self):
+        """WebUI 出图记录：返回结构化出图记录（用户/消息/尺寸/大小/耗时/状态/缩略图）。"""
+        try:
+            if self.plugin.gallery is None:
+                return json_response({"records": [], "total": 0})
+            try:
+                only_failed = bool(int(request.query.get("failed", 0)))
+            except Exception:
+                only_failed = False
+            rows = self.plugin.gallery.recent_records(limit=300, only_failed=only_failed)
+            return json_response({"records": rows, "total": len(rows)})
+        except Exception as e:
+            return error_response(f"读取出图记录失败: {e}")
+
     async def get_logs(self):
         try:
             # 优先用内存环形缓冲；若为空（刚重载/尚未产生日志），回退读取落盘日志文件
@@ -267,6 +281,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/config", api.get_config, ["GET"], "读取控制台配置"),
         (f"{prefix}/config", api.save_config, ["POST"], "保存控制台配置"),
         (f"{prefix}/logs", api.get_logs, ["GET"], "读取控制台日志"),
+        (f"{prefix}/records", api.get_records, ["GET"], "读取出图记录"),
         (f"{prefix}/gallery/stats", api.gallery_stats, ["GET"], "图库统计"),
         (f"{prefix}/gallery/search", api.gallery_search, ["GET"], "图库检索"),
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),

@@ -54,28 +54,69 @@
           </section>
         </section>
 
-        <!-- ====== 日志 ====== -->
+        <!-- ====== 日志 / 出图记录 ====== -->
         <section id="logsView" class="workspace" aria-labelledby="logsTitle">
           <div class="section-heading wide">
-            <p>REAL-TIME LOGS</p>
-            <h2 id="logsTitle">运行日志</h2>
-            <span>显示插件最近产生的日志（内存环形缓冲 + 文件日志）。</span>
+            <p>DRAW RECORDS &amp; LOGS</p>
+            <h2 id="logsTitle">出图记录 / 日志</h2>
+            <span>出图记录：谁、发了什么消息、出的图、尺寸/大小/耗时/成败。运行日志：插件运行流水。</span>
           </div>
+
           <div class="logs-toolbar">
-            <label class="sr-only" for="logLevel">日志级别</label>
-            <select id="logLevel">
-              <option value="all">全部级别</option>
-              <option value="INFO">INFO</option>
-              <option value="all" selected>全部级别</option>
-              <option value="ERROR">仅 ERROR</option>
-            </select>
-            <label class="sr-only" for="logSearch">搜索日志</label>
-            <input id="logSearch" type="search" placeholder="搜索日志关键词…" autocomplete="off" spellcheck="false" />
+            <div class="tabs" id="logTabs">
+              <button type="button" class="tab active" data-logtab="records">出图记录</button>
+              <button type="button" class="tab" data-logtab="runlog">运行日志</button>
+            </div>
             <button id="logRefreshBtn" type="button">刷新</button>
-            <span id="logCount" class="count" aria-live="polite"></span>
           </div>
-          <div id="logContent" class="log-viewer" aria-live="polite" aria-label="日志内容">
-            <div class="empty">正在读取日志…</div>
+
+          <!-- 出图记录 -->
+          <div id="logTabRecords">
+            <div class="logs-toolbar sub">
+              <input id="recSearch" type="search" placeholder="搜索用户 / 消息 / 提示词…" autocomplete="off" spellcheck="false" />
+              <label class="sr-only" for="recFailedOnly">仅看失败</label>
+              <input type="checkbox" id="recFailedOnly" />
+              <label for="recFailedOnly">仅看失败</label>
+              <span id="recCount" class="count" aria-live="polite"></span>
+            </div>
+            <div class="records-table-wrap">
+              <table class="records-table">
+                <thead>
+                  <tr>
+                    <th>预览</th>
+                    <th>出图时间</th>
+                    <th>用户</th>
+                    <th>触发消息</th>
+                    <th>尺寸</th>
+                    <th>大小</th>
+                    <th>耗时</th>
+                    <th>状态</th>
+                    <th>提示词</th>
+                  </tr>
+                </thead>
+                <tbody id="recBody"></tbody>
+              </table>
+              <div id="recEmpty" class="empty">暂无出图记录。出图后这里会自动出现。</div>
+            </div>
+          </div>
+
+          <!-- 运行日志 -->
+          <div id="logTabRunlog" hidden>
+            <div class="logs-toolbar sub">
+              <label class="sr-only" for="logLevel">日志级别</label>
+              <select id="logLevel">
+                <option value="all" selected>全部级别</option>
+                <option value="INFO">INFO</option>
+                <option value="WARN">WARN</option>
+                <option value="ERROR">ERROR</option>
+              </select>
+              <label class="sr-only" for="logSearch">搜索日志</label>
+              <input id="logSearch" type="search" placeholder="搜索日志关键词…" autocomplete="off" spellcheck="false" />
+              <span id="logCount" class="count" aria-live="polite"></span>
+            </div>
+            <div id="logContent" class="log-viewer" aria-live="polite" aria-label="日志内容">
+              <div class="empty">正在读取日志…</div>
+            </div>
           </div>
         </section>
 

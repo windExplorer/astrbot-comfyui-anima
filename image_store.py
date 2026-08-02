@@ -11,6 +11,7 @@
 - 保留策略：超 max_total_mb 时按 LRU 淘汰，收藏 / 带标签图永不淘汰。
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -101,10 +102,29 @@ class ImageStore:
                     source     TEXT NOT NULL DEFAULT 'gen',
                     use_count  INTEGER NOT NULL DEFAULT 0,
                     starred    INTEGER NOT NULL DEFAULT 0,
-                    created_at REAL NOT NULL DEFAULT 0
+                    created_at REAL NOT NULL DEFAULT 0,
+                    size_bytes INTEGER DEFAULT NULL,
+                    cost_sec   REAL DEFAULT NULL,
+                    user_id    TEXT DEFAULT NULL,
+                    user_name  TEXT DEFAULT NULL,
+                    trigger_msg TEXT DEFAULT NULL,
+                    status     INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            # 兼容已存在的旧库：缺列则补上
+            for _col, _type in (
+                ("size_bytes", "INTEGER"),
+                ("cost_sec", "REAL"),
+                ("user_id", "TEXT"),
+                ("user_name", "TEXT"),
+                ("trigger_msg", "TEXT"),
+                ("status", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
+                except Exception:
+                    pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS image_tags (
@@ -189,6 +209,12 @@ class ImageStore:
         denoise=None,
         is_img2img: bool = False,
         ref_sha256: str = "",
+        size_bytes: int = None,
+        cost_sec: float = None,
+        user_id: str = "",
+        user_name: str = "",
+        trigger_msg: str = "",
+        status: int = 0,
     ) -> str | None:
         """归档一张图（移动转正，内容寻址去重）。
 
@@ -239,12 +265,16 @@ class ImageStore:
                     conn.execute(
                         "UPDATE images SET prompt=?, prompt_raw=?, workflow=?, "
                         "loras=?, seed=?, w=?, h=?, denoise=?, is_img2img=?, "
-                        "ref_sha256=?, source=? WHERE sha256=?",
+                        "ref_sha256=?, source=?, size_bytes=?, cost_sec=?, "
+                        "user_id=?, user_name=?, trigger_msg=?, status=? "
+                        "WHERE sha256=?",
                         (
                             prompt, prompt_raw, workflow, loras_json,
                             seed, w, h, denoise,
                             1 if is_img2img else 0, ref_sha256 or "",
-                            source, sha,
+                            source, size_bytes, cost_sec,
+                            user_id or "", user_name or "", trigger_msg or "",
+                            status, sha,
                         ),
                     )
                 conn.commit()
@@ -279,15 +309,17 @@ class ImageStore:
                 INSERT INTO images
                 (sha256, ext, month, prompt, prompt_raw, workflow, loras,
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
-                 use_count, starred, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?)
+                 use_count, starred, created_at, size_bytes, cost_sec,
+                 user_id, user_name, trigger_msg, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
                     prompt, prompt_raw, workflow, loras_json,
                     seed, w, h, denoise,
                     1 if is_img2img else 0, ref_sha256 or "", source,
-                    time.time(),
+                    time.time(), size_bytes, cost_sec,
+                    user_id or "", user_name or "", trigger_msg or "", status,
                 ),
             )
             conn.commit()
@@ -307,6 +339,83 @@ class ImageStore:
         if sha and tags:
             self.add_tags(sha, tags)
         return sha
+
+    def add_failed_record(
+        self,
+        *,
+        prompt: str = "",
+        prompt_raw: str = "",
+        workflow: str = "",
+        is_img2img: bool = False,
+        ref_sha256: str = "",
+        size_bytes: int = None,
+        cost_sec: float = None,
+        user_id: str = "",
+        user_name: str = "",
+        trigger_msg: str = "",
+        reason: str = "",
+    ) -> None:
+        """写入一条**出图失败**记录（status=1，无真实文件，用随机 sha 占位）。
+
+        用于「出图记录」视图展示失败情况：哪个用户、发了什么消息、耗时、原因等。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return
+        sha = "fail_" + _sha256_of((reason + str(time.time())).encode("utf-8"))[:_SHA_PREFIX]
+        conn = self._conn_get()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO images
+                (sha256, ext, month, prompt, prompt_raw, workflow, loras,
+                 seed, w, h, denoise, is_img2img, ref_sha256, source,
+                 use_count, starred, created_at, size_bytes, cost_sec,
+                 user_id, user_name, trigger_msg, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,1)
+                """,
+                (
+                    sha, "fail", time.strftime("%Y-%m"),
+                    prompt, prompt_raw, workflow, "",
+                    None, None, None, None,
+                    1 if is_img2img else 0, ref_sha256 or "", SRC_GEN,
+                    time.time(), size_bytes, cost_sec,
+                    user_id or "", user_name or "", (trigger_msg or "") + (f" | 失败: {reason}" if reason else ""),
+                ),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[图库] 写入失败记录出错: {e}")
+
+    def recent_records(self, limit: int = 200, only_failed: bool = False) -> list[dict]:
+        """出图记录（用于 WebUI「日志」页）。返回含用户/消息/尺寸/大小/耗时/状态的结构化记录。
+
+        失败记录 ext='fail'，前端据此判断无缩略图。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return []
+        conn = self._conn_get()
+        try:
+            sql = (
+                "SELECT * FROM images WHERE 1=1"
+                + (" AND status=1" if only_failed else "")
+                + " ORDER BY created_at DESC LIMIT ?"
+            )
+            rows = conn.execute(sql, (int(limit),)).fetchall()
+            out = []
+            for r in rows:
+                d = self._row_to_dict(r)
+                if r["ext"] != "fail":
+                    try:
+                        d["data_url"] = self.data_url(r["sha256"][:_SHA_PREFIX], r["ext"])
+                    except Exception:
+                        d["data_url"] = None
+                else:
+                    d["data_url"] = None
+                out.append(d)
+            return out
+        except Exception as e:
+            logger.warning(f"[图库] 读取出图记录失败: {e}")
+            return []
 
     # ------------------------------------------------------------------ #
     # 标签
@@ -372,6 +481,12 @@ class ImageStore:
             "use_count": row["use_count"],
             "starred": bool(row["starred"]),
             "created_at": row["created_at"],
+            "size_bytes": row["size_bytes"],
+            "cost_sec": row["cost_sec"],
+            "user_id": row["user_id"],
+            "user_name": row["user_name"],
+            "trigger_msg": row["trigger_msg"],
+            "status": row["status"],
             "tags": self.tags_of(row["sha256"]),
         }
 
@@ -500,6 +615,21 @@ class ImageStore:
                 if cand.exists():
                     return str(cand)
         return None
+
+    def data_url(self, sha256_prefix: str, ext: str) -> str | None:
+        """返回缩略用 base64 data URL（行内展示，避免额外接口）。失败返回 None。"""
+        p = self.path_of(sha256_prefix)
+        if not p or not os.path.exists(p):
+            return None
+        try:
+            mime = {
+                "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "webp": "image/webp", "gif": "image/gif",
+            }.get((ext or "png").lower(), "image/png")
+            b64 = base64.b64encode(Path(p).read_bytes()).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except Exception:
+            return None
 
     def send(self, sha256: str) -> bool:
         """标记已发送（use_count += 1）。返回路径是否可达。"""
