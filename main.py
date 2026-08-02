@@ -275,6 +275,15 @@ class ComfyUIDrawPlugin(Star):
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.workflow_dir.mkdir(parents=True, exist_ok=True)
 
+        # 图库：把成品图/参考图/用户收藏图永久归档到 gallery/ 与 refs/（SQLite 索引）
+        self.gallery = None
+        try:
+            from image_store import ImageStore
+
+            self.gallery = ImageStore(self.data_dir, self.config.get("gallery", {}))
+        except Exception as e:
+            logger.warning(f"[init] 图库初始化失败（功能不可用）: {e}")
+
     async def initialize(self) -> None:
         # 给 LLM 工具的 JSON schema 补 `required`。
         # AstrBot 的 llm_tool 装饰器仅靠 docstring 生成 schema，不会标记 required，
@@ -287,6 +296,7 @@ class ComfyUIDrawPlugin(Star):
             required_map = {
                 "comfyui_draw": ["prompt"],
                 "comfyui_img2img": ["prompt"],
+                "comfyui_gallery": ["mode"],
                 # comfyui_workflows 无参数，无需 required
             }
             patched = []
@@ -340,8 +350,11 @@ class ComfyUIDrawPlugin(Star):
             p = p.with_suffix(".json")
         return str(p)
 
-    def _cleanup_temp(self, max_age: float = 86400) -> None:
-        """清理 temp/ 中超过 max_age 秒的旧图片，避免无限增长。"""
+    def _cleanup_temp(self, max_age: float | None = None) -> None:
+        """清理 temp/ 中超过 keep_temp_hours 小时的旧图片，避免无限增长；
+        同时按配置触发图库 LRU 容量清理（收藏/带标签图永不淘汰）。"""
+        if max_age is None:
+            max_age = int(self._cfg("gallery", {}).get("keep_temp_hours", 24)) * 3600
         try:
             now = time.time()
             for f in self.temp_dir.iterdir():
@@ -349,6 +362,12 @@ class ComfyUIDrawPlugin(Star):
                     f.unlink()
         except Exception:
             pass
+        # 图库 LRU 清理（轻量，失败不致命）
+        if self.gallery is not None:
+            try:
+                self.gallery.enforce_lru()
+            except Exception as _e:
+                logger.debug(f"[图库] LRU 清理异常（忽略）: {_e}")
 
     def _servers(self) -> list[dict]:
         return self._cfg("comfyui_servers", []) or []
@@ -874,6 +893,8 @@ class ComfyUIDrawPlugin(Star):
         self._last_event = event
         # 出图计时起点（用于生成完成后的耗时报告）
         _draw_start = time.time()
+        # 图生图参考图的 sha256（归档成品图时回填到 ref_sha256 字段）
+        ref_sha256 = None
         if not positive or not positive.strip():
             await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
@@ -926,6 +947,22 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, self._friendly_error(e, "上传参考图"))
                 return
             logger.info(f"图生图：已注入 {len(init_images)} 张参考图")
+
+            # 图库：把参考图（用户发来的原图）归档到 refs/，并记录其 sha256 供成品图回链
+            if self.gallery is not None:
+                try:
+                    from image_store import SRC_REF, SRC_USER
+
+                    for _ri in init_images:
+                        if not _ri or not os.path.exists(_ri):
+                            continue
+                        # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回
+                        _sha = self.gallery.archive_image(_ri, source=SRC_USER)
+                        if _sha and ref_sha256 is None:
+                            ref_sha256 = _sha
+                        logger.info(f"[图库] 已归档参考图: {_ri} -> {_sha}")
+                except Exception as _re:
+                    logger.warning(f"[图库] 参考图归档失败（不影响出图）: {_re}")
 
         # Anima 工作流：中文提示词翻译为 Danbooru 标签
         # 仅当提示词包含中文时才调用（纯英文/无中文时直接作为标签使用，跳过翻译）
@@ -1198,6 +1235,35 @@ class ComfyUIDrawPlugin(Star):
                     with open(tmp_path, "wb") as f:
                         f.write(data)
                     img_path = str(tmp_path)
+
+                    # 图库归档：把成品图按内容寻址永久移入 gallery/（移动转正，不重复占空间）
+                    if self.gallery is not None:
+                        try:
+                            from image_store import SRC_GEN
+                            _real_w, _real_h = w, h
+                            if _PILImage is not None:
+                                try:
+                                    with _PILImage.open(img_path) as _im:
+                                        _real_w, _real_h = _im.width, _im.height
+                                except Exception:
+                                    pass
+                            self.gallery.archive_image(
+                                img_path,
+                                source=SRC_GEN,
+                                prompt=positive,
+                                prompt_raw=positive,
+                                workflow=(wf.get("name") or ""),
+                                loras=enabled,
+                                seed=(seeds_used[0] if seeds_used else None),
+                                w=_real_w,
+                                h=_real_h,
+                                denoise=(denoise if is_img2img else None),
+                                is_img2img=bool(is_img2img),
+                                ref_sha256=(ref_sha256 or ""),
+                            )
+                        except Exception as _ge:
+                            logger.warning(f"[图库] 归档失败（不影响出图）: {_ge}")
+
                     # 产出 (图片节点, 本地路径) 元组：指令只取节点 yield 给用户，
                     # 记下本插件最近生成的图片本地路径（按会话），供图生图兜底使用
                     sid = getattr(event, "session_id", "") or ""
@@ -1680,6 +1746,224 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # ------------------------------------------------------------------ #
+    # 指令：/gallery 图片画廊与语义标签召回
+    # ------------------------------------------------------------------ #
+    async def _gallery_resolve_ref(self, event: AstrMessageEvent) -> str | None:
+        """指代消解（async 版）：找出当前语境下「这张图」的本地路径。
+
+        优先级：1) 上一条消息里出现的图（await _extract_images）>
+        2) 本会话最近生成的图 > 3) 本会话最近收到的图。
+        """
+        if self.gallery is None:
+            return None
+        # 1) 当前消息里的图（_extract_images 为 async）
+        try:
+            _msgs = await self._extract_images(event)
+            if _msgs:
+                for _p in _msgs:
+                    if _p and os.path.exists(_p):
+                        return _p
+        except Exception as _e:
+            logger.warning(f"[图库] 提取当前消息图片失败: {_e}")
+        # 2) / 3) 本会话生成 / 收到（ImageStore.resolve_ref 处理）
+        return self.gallery.resolve_ref(event, event.session_id or "")
+
+    async def _gallery_send_image(self, event: AstrMessageEvent, sha: str) -> bool:
+        """根据 sha256/前缀拼路径，并发图。返回是否成功。"""
+        path = self.gallery.path_of(sha)
+        if not path:
+            await self._send(event, f"没找到这张图（sha={sha[:16]}），可能已被清理或从未入库。")
+            return False
+        try:
+            await event.send(Image(file=path))
+            self.gallery.send(sha)
+            return True
+        except Exception as _e:
+            logger.warning(f"[图库] 发图失败: {_e}")
+            await self._send(event, "这张图文件丢失了，可能已被 LRU 清理。")
+            return False
+
+    @filter.command("gallery")
+    async def cmd_gallery(self, event: AstrMessageEvent):
+        """图片画廊与语义标签召回。用法见子命令。"""
+        if self.gallery is None:
+            await self._send(event, "图库未启用或初始化失败，请检查配置。")
+            event.stop_event()
+            return
+        args = self._strip_command(event.message_str, "gallery") or ""
+        parts = args.split()
+        sub = (parts[0] or "").lower() if parts else "list"
+        rest = parts[1:]
+
+        # 跨会话范围（关闭 cross_session 时仅当前会话）
+        session_scope = None if self._cfg("gallery", {}).get("cross_session") else (event.session_id or "")
+
+        if sub == "list":
+            n = 10
+            if rest:
+                try:
+                    n = max(1, min(int(rest[0]), 50))
+                except ValueError:
+                    pass
+            rows = self.gallery.search(limit=n, session=session_scope)
+            if not rows:
+                await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
+            else:
+                lines = ["最近的图片："]
+                for i, r in enumerate(rows, 1):
+                    tags = (" #" + " #".join(r["tags"])) if r["tags"] else ""
+                    star = "★" if r["starred"] else ""
+                    lines.append(
+                        f"{i}. [{r['sha16']}]{star} {r['source']} "
+                        f"{r['w']}×{r['h']} 用{r['use_count']}次{tags}\n"
+                        f"   {r['prompt'][:60]}"
+                    )
+                lines.append("\n发图用：/gallery send <序号或sha前几位>")
+                await self._send(event, "\n".join(lines))
+
+        elif sub == "search":
+            kw = " ".join(rest).strip()
+            if not kw:
+                await self._send(event, "用法：/gallery search <关键词>")
+            else:
+                rows = self.gallery.search(keyword=kw, limit=20, session=session_scope)
+                if not rows:
+                    await self._send(event, f"没找到含「{kw}」的图。")
+                else:
+                    lines = [f"检索「{kw}」的结果："]
+                    for i, r in enumerate(rows, 1):
+                        lines.append(f"{i}. [{r['sha16']}] {r['prompt'][:60]}")
+                    lines.append("\n发图用：/gallery send <序号或sha前几位>")
+                    await self._send(event, "\n".join(lines))
+
+        elif sub == "tag":
+            # /gallery tag [图标识] <标签...>
+            if not rest:
+                await self._send(event, "用法：/gallery tag [序号或sha前几位] <标签1> <标签2> ...")
+            else:
+                # 第一个参数是图标识（数字序号或 sha 前缀）还是标签？
+                target = None
+                tag_start = 0
+                first = rest[0]
+                if first.isdigit():
+                    target = int(first)  # 序号
+                    tag_start = 1
+                elif len(first) >= 6 and all(c in "0123456789abcdef" for c in first.lower()):
+                    target = first  # sha 前缀
+                    tag_start = 1
+                tags = rest[tag_start:]
+                if not tags:
+                    await self._send(event, "请至少给一个标签，如：/gallery tag 合照 我们的合照")
+                    event.stop_event()
+                    return
+                # 解析 target 到 sha
+                sha = None
+                if target is None:
+                    # 指代消解：默认指向"这张图"
+                    p = await self._gallery_resolve_ref(event)
+                    if p:
+                        # 用文件反查 sha：遍历 images 找相同绝对路径
+                        for r in self.gallery.search(limit=1000):
+                            if self.gallery.path_of(r["sha256"]) == p:
+                                sha = r["sha256"]
+                                break
+                else:
+                    if isinstance(target, int):
+                        rows = self.gallery.search(limit=1000, session=session_scope)
+                        if 1 <= target <= len(rows):
+                            sha = rows[target - 1]["sha256"]
+                    else:
+                        sha = target
+                if not sha:
+                    await self._send(event, "没找到这张图（先发图、或指定 /gallery tag <序号> <标签>）")
+                else:
+                    self.gallery.add_tags(sha, tags)
+                    await self._send(event, f"已给 [{sha[:16]}] 打标签：{'、'.join(tags)}")
+
+        elif sub in ("findbytag", "bytag"):
+            tag = " ".join(rest).strip()
+            if not tag:
+                await self._send(event, "用法：/gallery findByTag <标签>")
+            else:
+                rows = self.gallery.recall_by_tag(tag, limit=20)
+                if not rows:
+                    await self._send(event, f"没有带「{tag}」标签的图。")
+                else:
+                    lines = [f"带「{tag}」的图（共 {len(rows)} 张）："]
+                    for i, r in enumerate(rows, 1):
+                        star = "★" if r["starred"] else ""
+                        lines.append(f"{i}. [{r['sha16']}]{star} {r['source']} {r['prompt'][:40]}")
+                    lines.append("\n发图用：/gallery send <序号或sha前几位>")
+                    await self._send(event, "\n".join(lines))
+
+        elif sub == "send":
+            if not rest:
+                await self._send(event, "用法：/gallery send <序号或sha前几位>")
+            else:
+                arg = rest[0]
+                if arg.isdigit():
+                    rows = self.gallery.search(limit=1000, session=session_scope)
+                    if 1 <= int(arg) <= len(rows):
+                        await self._gallery_send_image(event, rows[int(arg) - 1]["sha256"])
+                    else:
+                        await self._send(event, "序号越界了。")
+                else:
+                    await self._gallery_send_image(event, arg)
+
+        elif sub == "star":
+            if not rest:
+                await self._send(event, "用法：/gallery star <sha前几位>")
+            else:
+                ok = self.gallery.star(rest[0], 1)
+                await self._send(event, "已收藏 ★（永不淘汰）。" if ok else "没找到这张图。")
+
+        elif sub == "unstar":
+            if rest:
+                self.gallery.star(rest[0], 0)
+                await self._send(event, "已取消收藏。")
+
+        elif sub == "del":
+            if not rest:
+                await self._send(event, "用法：/gallery del <sha前几位>")
+            else:
+                ok = self.gallery.delete(rest[0])
+                await self._send(event, "已删除。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
+
+        elif sub == "save":
+            # /gallery save [标签...]：收藏当前/上一条消息的图（方案B）
+            p = await self._gallery_resolve_ref(event)
+            if not p:
+                await self._send(event, "没找到要收藏的图（当前/上条消息没有图，本会话也没生成过图）。")
+            else:
+                tags = rest
+                sha = self.gallery.archive_user_image(p, tags=tags)
+                if sha:
+                    extra = (" 标签：" + "、".join(tags)) if tags else ""
+                    await self._send(event, f"已收藏这张图 [{sha[:16]}]{extra}")
+                else:
+                    await self._send(event, "收藏失败（图库可能未启用）。")
+
+        elif sub == "stats":
+            st = self.gallery.stats()
+            lines = [
+                f"图库统计：",
+                f"· 总张数：{st.get('total', 0)}",
+                f"· 收藏：{st.get('starred', 0)}　带标签：{st.get('tagged', 0)}",
+                f"· 生图/参考/用户收藏：{st.get('gen',0)}/{st.get('ref',0)}/{st.get('user',0)}",
+                f"· 占用：{st.get('size_mb', 0)} MB / 上限 {st.get('max_total_mb', 0)} MB",
+            ]
+            await self._send(event, "\n".join(lines))
+
+        else:
+            await self._send(
+                event,
+                "未知子命令。可用：list [n] | search <关键词> | tag [图] <标签...> | "
+                "findByTag <标签> | send <序号/sha> | star <sha> | unstar <sha> | "
+                "del <sha> | save [标签...] | stats",
+            )
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
     # LLM 工具：comfyui_draw（AI 对话触发）
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_draw")
@@ -1699,6 +1983,13 @@ class ComfyUIDrawPlugin(Star):
         denoise: float = -1,
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
+
+        什么时候不要用本工具（改用 comfyui_gallery）：
+        - 用户要的是「以前画过的图 / 收藏的图 / 之前发过的某张照片」，而不是要新画一张。
+          例如「把我们的合照发我」「上次那张猫的图再发一次」「把收藏的图发我」——
+          这些一律调用 comfyui_gallery（mode=recall / mode=search），本工具永远只出【新】图，
+          绝不从图库复用旧图。
+        - 本工具与 comfyui_gallery 职责严格分离：生图归 draw，发旧图归 gallery。
 
         触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时（如「画一只猫」、
         「生成一张风景图」、「来张图：穿和服的少女」），务必调用此工具，并把用户的
@@ -1908,6 +2199,132 @@ class ComfyUIDrawPlugin(Star):
                     logger.debug(f"[取图] 已缓存会话最近收到图片 {len(bucket)} 张: {bucket}")
         except Exception as e:
             logger.debug(f"[取图] 缓存会话图片失败（忽略）: {e}")
+
+    # ------------------------------------------------------------------ #
+    # LLM 工具：comfyui_gallery（图库检索与语义标签召回）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="comfyui_gallery")
+    async def llm_gallery(
+        self,
+        event: AstrMessageEvent,
+        mode: str = "recall",
+        keyword: str = "",
+        tag: str = "",
+        limit: int = 10,
+        source: str = "",
+    ):
+        """在图片画廊里检索、召回（发图）或收藏图片。与 comfyui_draw 职责分离：
+        本工具只负责「发以前的图 / 找某类图 / 收藏这张」，绝不生成新图。
+
+        什么时候用本工具（而不是 comfyui_draw）：
+        - 用户要的是已存在的图：如「把我们的合照发我」「上次那张图再发一次」
+          「把收藏的猫图发我」「找一张海边的图」。
+        - 用户要收藏/打标签：如「这张是我们的合照，以后找你要就发这张」
+          「收藏这张图，标签叫合照」。
+
+        什么时候不要用本工具：
+        - 用户想新画一张图（任何「画/生成/来张图」意图）→ 用 comfyui_draw。
+        - 本工具不会生成新图，强行用于生图意图会失败。
+
+        Args:
+            mode(string): 操作模式，必填其一：
+                - "recall"：按语义标签召回并发图（如 tag="合照"）。命中多张时返回带编号的列表，
+                  请告诉用户「回复编号即可发对应那张」，或继续调用本工具 mode="send" 指定序号。
+                - "search"：按提示词关键词检索（keyword 参数，如 keyword="猫"）。
+                - "save"：收藏当前/上一条消息里的图（用户发来的照片或刚生成的图），
+                  并可顺带打标签（tag 参数，多个标签用空格分隔）。
+                - "send"：直接发某张图（配合 keyword 传序号字符串，如 "3"；或传 sha 前几位）。
+                - "list"：列出最近图片。
+                - "stats"：图库统计。
+            keyword(string): search 模式下的提示词关键词；或 send 模式下传序号/sha 前几位。
+            tag(string): recall/save 模式下的语义标签（如「合照」）。可含空格，多个标签用空格分隔（save 时）。
+            limit(int): 返回数量上限，默认 10。
+
+        注意：发图由插件在本地完成，模型不会、也不需要接触任何文件路径。
+        """
+        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
+        if plugin is None:
+            plugin = self
+        if plugin.gallery is None:
+            return "图库未启用或初始化失败，无法检索/收藏图片。"
+        g = plugin.gallery
+        cross = bool(plugin._cfg("gallery", {}).get("cross_session"))
+        session = None if cross else (getattr(event, "session_id", "") or "")
+
+        if mode == "recall":
+            if not tag or not tag.strip():
+                return "recall 模式需要 tag 参数（语义标签，如「合照」）。"
+            rows = g.recall_by_tag(tag.strip(), limit=limit)
+            if not rows:
+                return f"图库里没有带「{tag.strip()}」标签的图。可先用 /gallery save 或对话里说「收藏这张，标签叫XX」来打标签。"
+            if len(rows) == 1:
+                ok = await plugin._gallery_send_image(event, rows[0]["sha256"])
+                return ("已发送该图。" if ok else "找到图但发送失败。")
+            # 多张：列出让用户选（按确认口径）
+            lines = [f"带「{tag.strip()}」的图有 {len(rows)} 张，回复编号即可发对应那张："]
+            for i, r in enumerate(rows, 1):
+                star = "★" if r["starred"] else ""
+                lines.append(f"{i}. [{r['sha16']}]{star} {r['prompt'][:40]}")
+            return "\n".join(lines)
+
+        elif mode == "search":
+            if not keyword or not keyword.strip():
+                return "search 模式需要 keyword 参数（提示词关键词）。"
+            rows = g.search(keyword=keyword.strip(), limit=limit, session=session)
+            if not rows:
+                return f"没找到含「{keyword.strip()}」的图。"
+            if len(rows) == 1:
+                ok = await plugin._gallery_send_image(event, rows[0]["sha256"])
+                return ("已发送该图。" if ok else "找到图但发送失败。")
+            lines = [f"检索「{keyword.strip()}」的结果："]
+            for i, r in enumerate(rows, 1):
+                lines.append(f"{i}. [{r['sha16']}] {r['prompt'][:40]}")
+            lines.append("回复编号即可发对应那张。")
+            return "\n".join(lines)
+
+        elif mode == "save":
+            p = await plugin._gallery_resolve_ref(event)
+            if not p:
+                return "没有可收藏的图（当前/上条消息没有图，本会话也没生成过图）。"
+            tags = tag.split() if tag else []
+            sha = g.archive_user_image(p, tags=tags)
+            if not sha:
+                return "收藏失败（图库可能未启用）。"
+            extra = (" 标签：" + "、".join(tags)) if tags else ""
+            return f"已收藏这张图 [{sha[:16]}]{extra}。以后说「把{'/'.join(tags) if tags else '这张'}发我」即可召回。"
+
+        elif mode == "send":
+            arg = (keyword or "").strip()
+            if not arg:
+                return "send 模式需要 keyword 参数传序号（如「3」）或 sha 前几位。"
+            if arg.isdigit():
+                rows = g.search(limit=1000, session=session)
+                if 1 <= int(arg) <= len(rows):
+                    ok = await plugin._gallery_send_image(event, rows[int(arg) - 1]["sha256"])
+                    return ("已发送。" if ok else "发送失败。")
+                return "序号越界。"
+            ok = await plugin._gallery_send_image(event, arg)
+            return ("已发送。" if ok else "没找到这张图。")
+
+        elif mode == "list":
+            rows = g.search(limit=limit, session=session)
+            if not rows:
+                return "画廊还是空的～先画点图或收藏点图吧。"
+            lines = ["最近的图片："]
+            for i, r in enumerate(rows, 1):
+                t = (" #" + " #".join(r["tags"])) if r["tags"] else ""
+                lines.append(f"{i}. [{r['sha16']}]{'★' if r['starred'] else ''} {r['source']}{t}")
+            return "\n".join(lines)
+
+        elif mode == "stats":
+            st = g.stats()
+            return (
+                f"图库：共 {st.get('total',0)} 张（生图{st.get('gen',0)}/参考{st.get('ref',0)}/"
+                f"用户{st.get('user',0)}），收藏 {st.get('starred',0)}，带标签 {st.get('tagged',0)}；"
+                f"占用 {st.get('size_mb',0)}/{st.get('max_total_mb',0)} MB"
+            )
+        else:
+            return "未知 mode。可用：recall / search / save / send / list / stats。"
 
     # LLM 工具：comfyui_workflows（查询工作流列表）
     # ------------------------------------------------------------------ #

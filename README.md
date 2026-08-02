@@ -15,10 +15,15 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 
 通过 AstrBot WebUI 的「插件管理 → 上传 zip」安装本插件（选 `astrbot_plugin_comfyui_anima.zip`），或把整个插件目录放到 AstrBot 的 `data/plugins/` 下。安装后 `requirements.txt` 中的依赖会被自动安装。
 
-插件启动后会在其**数据目录** `data/plugin_data/astrbot_plugin_comfyui_anima/`（AstrBot 数据根下的 `plugin_data/<插件id>/`）下自动创建两个子目录：
+插件启动后会在其**数据目录** `data/plugin_data/astrbot_plugin_comfyui_anima/`（AstrBot 数据根下的 `plugin_data/<插件id>/`）下自动创建子目录：
 
-- `temp/`：存放 ComfyUI 返回的图片（超过 1 天自动清理）
+- `temp/`：下载中转，存放 ComfyUI 返回的图片（超过配置 `keep_temp_hours` 小时自动清理）
 - `workflow/`：存放工作流 JSON 文件
+- `gallery/YYYY-MM/`：文生图/图生图**成品图**永久归档（内容寻址文件名 `sha256[:16].ext`）
+- `refs/YYYY-MM/`：图生图**参考图**与用户**收藏图**永久归档
+- `gallery.db`：SQLite 索引库（图片元数据 + 语义标签）
+
+> 成品图经过内容寻址后从 `temp/` 移动（os.replace）到 `gallery/`，因此 `temp/` 不会与画廊重复占空间。模型本身不会、也不需要接触任何本地文件路径——发图由插件在本地用 `event.send(Image(file=绝对路径))` 完成。
 
 ## 配置（插件配置页）
 
@@ -68,6 +73,12 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 - `queue_poll_interval`：轮询出图结果的间隔（秒，默认 2）
 - `return_queue_position`：提交后是否发送可爱提示（无排队说在出图，有排队说前面几位）
 
+### gallery（图片画廊与语义标签召回）
+- `enabled`：是否启用图库归档（默认 `true`）
+- `max_total_mb`：图库总容量上限（默认 `2048` MB）。超出后按 LRU（最早创建优先）淘汰，但**收藏图与带语义标签的图永不淘汰**
+- `cross_session`：跨会话默认可检索（默认 `false`）。关闭时 `/gallery` 与 `comfyui_gallery` 仅能检索到「当前会话」生成的图；开启后所有会话的图都可被检索
+- `keep_temp_hours`：`temp/` 中转目录下载副本的保留小时数（默认 `24`），到期清理
+
 ## 使用
 
 ### 指令
@@ -89,6 +100,30 @@ AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发
 AI 会调用 `comfyui_draw` 工具，并按你提到的 LoRA 名称启用对应 LoRA。Anima 工作流下，中文描述会先被翻译成 Danbooru 标签。
 
 **图生图**：在消息里附带一张图片并对机器人说变换需求（如「把这张图变成油画风格」「图生图：转绘成动漫风」），AI 会调用 `comfyui_img2img` 工具，把图片作为参考图重绘；若只发文字则走普通 `comfyui_draw`。
+
+### 图片画廊与语义标签（gallery）
+
+生成的成品图、图生图参考图、以及用户在聊天里发来/收藏的图，都会被永久归档到 `gallery/`（成品）与 `refs/`（参考图/收藏图），并用 SQLite 索引。
+
+**指令 `/gallery`**
+- `/gallery list [n]` — 列出最近 n 张（默认 10）
+- `/gallery search <关键词>` — 按提示词 LIKE 检索
+- `/gallery tag [图] <标签...>` — 给图打语义标签（不指定「图」则默认指向当前/上一条消息的图）
+- `/gallery findByTag <标签>` — 按标签召回（命中多张列出让你选）
+- `/gallery send <序号或sha前几位>` — 发图（使用次数 +1）
+- `/gallery star <sha前几位>` / `/gallery unstar <sha前几位>` — 收藏/取消收藏（收藏图永不淘汰）
+- `/gallery del <sha前几位>` — 删除（收藏图不可删）
+- `/gallery save [标签...]` — 收藏当前/上一条消息里的图（支持方案 B：把用户发来的现实照片也存进画廊）
+- `/gallery stats` — 统计张数/容量/收藏数/标签数
+
+**AI 对话**
+- 召回旧图（生图意图之外的「发以前的图」）走 `comfyui_gallery` 工具，例如：
+  > 把我们的合照发我
+- 收藏并打标签：
+  > 这张是我们的合照，以后我找你要你就发这张
+- 模型只负责语义路由（说「要合照」），图片由插件在本地发送；模型全程不接触文件路径。
+
+> 边界：`comfyui_draw` 永远只生成【新】图，绝不复用图库旧图；任何「发已有的图/找某类图/收藏这张」都走 `comfyui_gallery`。
 
 ## 工作流 JSON 获取
 在 ComfyUI 界面点「Queue」旁边的菜单 → **Export (API Format)**，把得到的 JSON 放到插件数据目录的 `workflow/` 下（如 `workflow/sd.json`），然后配置里填 `workflow_name: sd` 即可；或直接把 JSON 粘贴到 `workflow_json`。节点 ID 可在该 JSON 的顶层键中找到（如 `"6": {...}`）。

@@ -344,5 +344,36 @@
     "description": "提交后发送提示",
     "hint": "提交绘图任务后是否发送可爱提示（无排队时提示正在出图，有排队时提示前面还有几位）。",
     "default": true
+  },
+  "gallery": {
+    "type": "object",
+    "description": "图片画廊与语义标签召回：把生成的成品图、图生图参考图、用户在聊天里发来/收藏的图永久归档到 data_dir 下的 gallery/ 与 refs/，支持按提示词检索与按语义标签（如「合照」）召回。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用图库归档与检索。关闭后生成/收藏的图不会入库存档，comfyui_gallery 与 /gallery 不可用。"
+      },
+      "max_total_mb": {
+        "type": "int",
+        "default": 2048,
+        "slider": {
+          "min": 128,
+          "max": 20480,
+          "step": 128
+        },
+        "description": "图库总容量上限（MB）。超出后按 LRU（最早创建优先）淘汰，但收藏图与带语义标签的图永不淘汰。"
+      },
+      "cross_session": {
+        "type": "bool",
+        "default": false,
+        "description": "跨会话默认可检索。关闭时，/gallery 与 comfyui_gallery 仅能检索到「当前会话」范围内生成的图；开启后所有会话的图都可被检索。"
+      },
+      "keep_temp_hours": {
+        "type": "int",
+        "default": 24,
+        "description": "temp/ 中转目录中下载副本的保留小时数，到期清理。成品图已通过内容寻址移入 gallery/，temp/ 仅作下载中转。"
+      }
+    }
   }
 }

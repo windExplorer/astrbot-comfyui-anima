@@ -2,6 +2,18 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.0.0
+
+- **重大版本：新增 SQLite 图库（gallery）与语义标签召回**：把生成的成品图、图生图参考图、以及用户在聊天里发来/收藏的图，按内容寻址（sha256[:16]）永久归档到数据目录下的 `gallery/YYYY-MM/` 与 `refs/YYYY-MM/`，写入 SQLite（`gallery.db`）便于检索。本次升级为 2.0.0 主要即因引入此全新能力模块。
+  - 新增 `image_store.py`：`ImageStore` 负责建表、`archive_image`/`archive_user_image`（移动转正、内容寻址去重）、标签增删查、按提示词 LIKE 检索、按语义标签召回、LRU 容量淘汰（收藏/带标签图永不淘汰）。
+  - `_conf_schema.json` / 配置页新增 `gallery` 块：`enabled`、`max_total_mb`、`cross_session`、`keep_temp_hours`。
+  - `_do_draw` 落盘后自动归档成品图（补采 LoRA 列表、真实宽高、seed、denoise、图生图参考图 sha256）；图生图参考图同时归档到 `refs/`。
+  - 新增指令 `/gallery`：`list` / `search` / `tag` / `findByTag` / `send` / `star` / `unstar` / `del` / `save` / `stats`。`tag`/`save` 不指定图时按「上条消息的图 > 本会话生成 > 本会话收到」指代消解取「这张图」；`findByTag`/`recall` 命中多张时列出让用户选。
+  - 新增 LLM 工具 `comfyui_gallery`（mode: recall/search/save/send/list/stats），支持「把我们的合照发我」「收藏这张，标签叫合照」等自然语言。模型只做语义路由，图片由插件本地 `event.send(Image(file=绝对路径))` 代发，模型全程不接触文件路径。
+  - 明确边界：`comfyui_draw` 永远只生成新图、绝不复用旧图；发旧图/找某类图/收藏走 `comfyui_gallery`。`comfyui_gallery` 已加入 `required: ["mode"]`，避免空参数调用。
+  - `temp/` 仅作下载中转，成品图经 `os.replace` 移动转正，不重复占空间；`_cleanup_temp` 顺带按 `keep_temp_hours` 与 LRU 触发清理。
+  - 详见 `README.md` 的「图片画廊与语义标签（gallery）」章节。
+
 ## v1.2.5
 
 - **精简 LLM 绘图工具的可见参数，降低模型吐畸形/空 JSON 概率**：`llm_tool` 的 JSON schema 完全由 docstring 的 `Args:` 段生成，而 deepseek 等模型在参数较多（尤其 `loras` 数组、`image` URL）时极易产出空串或非法 JSON，被 `openai_source` 兜底成 `{}` 并报「解析参数失败」。现从 docstring 中移除非核心参数（width/height/loras/seed/source/image/denoise），仅保留 prompt/negative_prompt/workflow/img2img_workflow，这些高级项改由函数默认值与内部逻辑处理。同时给 `prompt` 加上「必填、不要包裹自然语言」的强约束措辞。配合 v1.2.3 的 `event.message_str` 兜底与 v1.2.4 的 schema `required` 补丁，三重保障。
