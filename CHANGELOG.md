@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.0
+
+- **WebUI 控制台全面重写**，对齐 `astrbot_plugin_get_px`（画境拾珍）的专业风格：
+  - **三文件分离**：`index.html`（页面骨架）+ `styles.css`（完整样式）+ `app.js`（业务逻辑），告别单文件内联的混乱。
+  - **CSS 变量体系**：支持亮色/暗色自动切换（`prefers-color-scheme: dark`），统一色调与间距。
+  - **原生 `<dialog>` 弹窗**：确认对话框与图片放大预览均使用 `<dialog>` 元素，不再使用简陋的 `alert`/`confirm`。
+  - **Toast 通知**：操作反馈改为底部浮动 Toast，不打断用户操作流。
+  - **IIFE 模块化**：`app.js` 采用 IIFE + `state` 对象管理模式，与参考插件一致的编码风格。
+  - **`_page.json`**：新增页面元信息（title + description），AstrBot Dashboard 可读取显示友好标题。
+  - 四个功能模块保持不变：配置 / 日志 / 调试 / 图库，但 UI 焕然一新。
+
 ## v2.1.7
 
 - **修复 zip 包路径分隔符导致 Linux/Docker 下目录变文件名的严重 bug**。`Compress-Archive` 在 Windows 上打包时使用反斜杠 `\` 作为 zip 内部路径分隔符，而 AstrBot 运行在 Linux 上时，Python 的 `zipfile.extractall()` 原样保留 `\`，导致 `pages\anima-console\index.html` 被解压为单个文件而非目录层级。本版重写 `build_zip.ps1`，弃用 `Compress-Archive`，改用 `.NET ZipFile` 手动构建 zip，强制所有路径使用正斜杠 `/`，确保跨平台兼容。
