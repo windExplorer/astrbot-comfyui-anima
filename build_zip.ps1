@@ -66,7 +66,16 @@ function Add-ItemToZip($fsPath, $zipEntryPath) {
     } else {
         $entry = $zip.CreateEntry($zipEntryPath)
         $stream = $entry.Open()
-        $bytes = [System.IO.File]::ReadAllBytes($fsPath)
+        # 给 pages 的静态资源加版本化 query，强制浏览器在每次发布后拉取新文件，
+        # 避免旧缓存导致「统计有数但图库空白 / 回收站点不动」等典型缓存症状。
+        if ($zipEntryPath -eq "pages/anima-console/index.html" -and $newVer -ne "") {
+            $html = [System.IO.File]::ReadAllText($fsPath)
+            $html = $html -replace '\./app\.js', ("./app.js?v=" + $newVer)
+            $html = $html -replace '\./styles\.css', ("./styles.css?v=" + $newVer)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
+        } else {
+            $bytes = [System.IO.File]::ReadAllBytes($fsPath)
+        }
         $stream.Write($bytes, 0, $bytes.Length)
         $stream.Dispose()
     }
