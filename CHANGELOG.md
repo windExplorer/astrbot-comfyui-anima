@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.5
+
+- **图库初始化增加目录路径日志**：插件启动时打印 `data_dir`、`gallery/`、`refs/`、`gallery.db` 的完整路径，方便排查"看不到画廊目录"的问题。
+- 图库目录 `gallery/YYYY-MM/` 与 `refs/YYYY-MM/` 在 `ImageStore.__init__` 中通过 `mkdir(parents=True, exist_ok=True)` 自动创建，**无需提前在仓库里放置空目录**。若重启后仍无目录，请检查 AstrBot 日志中 `[init] 图库已就绪` 或 `[init] 图库初始化失败` 的输出，定位具体原因。
+
 ## v2.1.4
 
 - **修复打包脚本 `build_zip.ps1` 因相对路径导致 `pages/` 目录漏打包的 bug**。原脚本 `Compress-Archive -Path "pages"` 依赖当前工作目录，若脚本在非插件根目录下执行则找不到目录，导致 zip 包中缺失 `pages/`，Dashboard 自然看不到 WebUI 入口。现改为全部使用基于 `$PSScriptRoot` 的绝对路径 + `-LiteralPath`，确保任意位置执行都能正确打包。同时补充了之前漏掉的 `workflow/` 目录。

@@ -281,8 +281,13 @@ class ComfyUIDrawPlugin(Star):
             from image_store import ImageStore
 
             self.gallery = ImageStore(self.data_dir, self.config.get("gallery", {}))
+            logger.info(
+                f"[init] 图库已就绪: {self.data_dir} "
+                f"(gallery={self.gallery.gallery_dir}, refs={self.gallery.refs_dir}, "
+                f"db={self.gallery.db_path})"
+            )
         except Exception as e:
-            logger.warning(f"[init] 图库初始化失败（功能不可用）: {e}")
+            logger.warning(f"[init] 图库初始化失败（功能不可用）: {e}", exc_info=True)
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
