@@ -786,7 +786,7 @@
       if (els.galStarred.checked) params.starred = "1";
       if (galTabState === "trash") params.trash = "1";
       var data = await apiGet("gallery/search", params);
-      state.galResults = Array.isArray(data) ? data : (data.results || data.images || []);
+      state.galResults = Array.isArray(data) ? data : (data.rows || data.results || data.images || []);
       renderGalResults();
       els.galCount.textContent = state.galResults.length + " 张";
     } catch (e) {

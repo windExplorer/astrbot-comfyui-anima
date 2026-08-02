@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.16
+
+- **修复图库一直空白、回收站点击无反应**：根因是前端 `galSearch()` 解析响应时只认 `data.results` / `data.images`，但后端 `gallery/search` 实际返回的是 `{rows, total}`，导致 `state.galResults` 永远为空数组——图库永远显示空、回收站也永远显示空（看起来像「点击无反应」）。改为兼容 `data.rows || data.results || data.images`。纯前端修复。
+
 ## v2.2.15
 
 - **修复 WebUI 一直显示「部分数据加载失败」报错条**：根因是 `.global-error` 样式设置了 `display:flex`，覆盖了元素 `hidden` 属性的默认 `display:none`，导致这个错误条在没有任何错误时也会被强制显示（里面写着占位的「部分数据加载失败。」文案）。新增 `[hidden]{display:none!important}` 通用规则，让所有带 `hidden` 的元素（错误条、回收站角标、日志子面板等）恢复正常隐藏逻辑。纯前端修复，数据与接口无变化。
