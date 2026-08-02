@@ -278,7 +278,10 @@ class ComfyUIDrawPlugin(Star):
         # 图库：把成品图/参考图/用户收藏图永久归档到 gallery/ 与 refs/（SQLite 索引）
         self.gallery = None
         try:
-            from image_store import ImageStore
+            try:
+                from .image_store import ImageStore
+            except ImportError:
+                from image_store import ImageStore
 
             self.gallery = ImageStore(self.data_dir, self.config.get("gallery", {}))
             logger.info(
@@ -291,7 +294,10 @@ class ComfyUIDrawPlugin(Star):
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
-            from webui_api import LOG_BUFFER
+            try:
+                from .webui_api import LOG_BUFFER
+            except ImportError:
+                from webui_api import LOG_BUFFER
 
             self._webui_log_buffer = LOG_BUFFER
             self._install_webui_log_handler()
@@ -368,7 +374,10 @@ class ComfyUIDrawPlugin(Star):
 
         # 注册 WebUI 控制台路由（/api/<插件名>/page/...）
         try:
-            from webui_api import register_web_api
+            try:
+                from .webui_api import register_web_api
+            except ImportError:
+                from webui_api import register_web_api
 
             register_web_api(self)
         except Exception as e:
@@ -1020,7 +1029,10 @@ class ComfyUIDrawPlugin(Star):
             # 图库：把参考图（用户发来的原图）归档到 refs/，并记录其 sha256 供成品图回链
             if self.gallery is not None:
                 try:
-                    from image_store import SRC_REF, SRC_USER
+                    try:
+                        from .image_store import SRC_REF, SRC_USER
+                    except ImportError:
+                        from image_store import SRC_REF, SRC_USER
 
                     for _ri in init_images:
                         if not _ri or not os.path.exists(_ri):
@@ -1308,7 +1320,10 @@ class ComfyUIDrawPlugin(Star):
                     # 图库归档：把成品图按内容寻址永久移入 gallery/（移动转正，不重复占空间）
                     if self.gallery is not None:
                         try:
-                            from image_store import SRC_GEN
+                            try:
+                                from .image_store import SRC_GEN
+                            except ImportError:
+                                from image_store import SRC_GEN
                             _real_w, _real_h = w, h
                             if _PILImage is not None:
                                 try:

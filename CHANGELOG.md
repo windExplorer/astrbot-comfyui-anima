@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.6
+
+- **修复 `ModuleNotFoundError: No module named 'image_store'/'webui_api'`**。AstrBot 以 package 方式加载插件时，`sys.path` 不包含插件目录，导致 `from image_store import ImageStore` 这种绝对导入失败。改为优先使用 `from .image_store import ImageStore` 相对导入，回退兼容绝对导入。受影响的导入：`ImageStore`、`SRC_REF`、`SRC_USER`、`SRC_GEN`、`LOG_BUFFER`、`register_web_api`。
+- 该 bug 导致图库（`ImageStore`）和 WebUI 控制台（`webui_api`）在插件加载时全部初始化失败，是之前"看不到画廊目录 + 看不到 WebUI 入口"的真正根因之一。
+
 ## v2.1.5
 
 - **图库初始化增加目录路径日志**：插件启动时打印 `data_dir`、`gallery/`、`refs/`、`gallery.db` 的完整路径，方便排查"看不到画廊目录"的问题。
