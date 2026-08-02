@@ -799,9 +799,14 @@
 
   function renderGalResults() {
     if (!state.galResults.length) {
-      els.galGrid.innerHTML = galTabState === "trash"
-        ? '<div class="empty">回收站是空的。</div>'
-        : '<div class="empty">没有找到匹配的图片</div>';
+      if (galTabState === "trash") {
+        els.galGrid.innerHTML = '<div class="empty">回收站是空的。</div>';
+      } else {
+        var filtering = !!(els.galSearch.value.trim() || els.galType.value || els.galStarred.checked);
+        els.galGrid.innerHTML = filtering
+          ? '<div class="empty">没有找到匹配的图片</div>'
+          : '<div class="empty">图库里还没有图片。<br/>先在对话框里让插件出一张图，生成成功后会自动归档到这里。</div>';
+      }
       return;
     }
     var isTrash = galTabState === "trash";
