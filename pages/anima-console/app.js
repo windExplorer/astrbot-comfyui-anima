@@ -476,8 +476,9 @@
       var h = img.h || img.height || "";
       var size = w && h ? w + "x" + h : "";
       var starred = img.starred;
+      var thumb = img.thumb || "";
       return '<div class="gal-card">' +
-        '<img src="" data-sha="' + escapeHtml(sha) + '" alt="' + escapeHtml(prompt.slice(0, 80)) + '" loading="lazy" />' +
+        '<img src="' + escapeHtml(thumb) + '" data-sha="' + escapeHtml(sha) + '" alt="' + escapeHtml(prompt.slice(0, 80)) + '" loading="lazy" />' +
         '<div class="gal-meta">' +
           '<div class="gal-prompt">' + escapeHtml(prompt.slice(0, 60) || "(无描述)") + '</div>' +
           '<div>' + escapeHtml(size) + (img.is_img2img ? " · 图生图" : "") + '</div>' +
@@ -489,15 +490,6 @@
         '</div>' +
       '</div>';
     }).join("");
-    // load thumbnails
-    state.galResults.forEach(function (img) {
-      var sha = img.sha256 || "";
-      var imgEl = els.galGrid.querySelector('img[data-sha="' + sha.replace(/"/g, '\\"') + '"]');
-      if (!imgEl) return;
-      apiGet("gallery/image?sha=" + encodeURIComponent(sha)).then(function (data) {
-        if (data && data.data_url) imgEl.src = data.data_url;
-      }).catch(function () {});
-    });
     // events
     els.galGrid.querySelectorAll("[data-star]").forEach(function (btn) {
       btn.addEventListener("click", async function () {
@@ -570,7 +562,15 @@
     for (let i = 0; i < 80; i += 1) {
       const candidate = window.AstrBotPluginPage;
       if (candidate && typeof candidate.apiGet === "function") {
-        try { if (candidate.ready) await candidate.ready(); } catch (e) { /* already ready */ }
+        try {
+          if (candidate.ready) {
+            // 防止 ready() 在某些环境下永不 resolve 导致一直"正在连接…"
+            await Promise.race([
+              candidate.ready(),
+              new Promise((resolve) => setTimeout(resolve, 3000)),
+            ]);
+          }
+        } catch (e) { /* already ready */ }
         return candidate;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));

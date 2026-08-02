@@ -1,19 +1,23 @@
 """Anima 控制台 WebUI 后端 API。
 
 通过 AstrBot 的 context.register_web_api 注册路由，配合 pages/anima-console/
-下的前端页面使用。宿主 _call_plugin_extension 会用完整 plugin_path
-（形如 "<plugin_name>/page/config"，含插件名）与注册路由做正则 fullmatch，
-因此此处注册的路径必须包含插件名前缀（参考 AstrBot 文档：路由形如
-/{PLUGIN_NAME}/stats）。前端 bridge 的 endpoint 只传 "page/config"，
-由宿主自动拼 /api/v1/plugins/extensions/<plugin_name>/ 前缀。
+下的前端页面使用。
+
+重要（已踩坑）：AstrBot 在调用 web_api handler 时，只通过 path_params（路由
+占位符）传参，并把 Quart 全局 request 绑定到当前上下文（见 AstrBot 源码
+astrbot/dashboard/asgi_runtime.py 的 call_request_view / bind_quart_request_context）。
+因此：
+1) handler 签名里**不能**声明 request 参数——否则会 TypeError 导致接口 500；
+   需要请求信息时用 `from quart import request` 的全局对象（request.args / get_json）。
+2) 路由前缀写相对路径（如 /page/config），不含插件名；宿主会按插件名前缀匹配。
+   参考伴侣插件 astrbot_plugin_private_companion 的 page_api 全部用相对路径。
 
 功能：
 - /schema          读取插件配置 schema（_conf_schema.json），用于前端结构化渲染
 - /config          读取/保存插件配置
 - /logs            读取内存日志环形缓冲（由 main.py 安装的 handler 填充）
 - /gallery/stats   图库统计
-- /gallery/search  图库检索
-- /gallery/image   按 sha256 返回图片文件
+- /gallery/search  图库检索（每条返回 data_url 缩略图）
 - /gallery/star    收藏/取消收藏
 - /gallery/delete  删除
 - /gallery/tags    为某图添加标签
@@ -29,8 +33,13 @@ import time
 from collections import deque
 from pathlib import Path
 
-from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+# AstrBot 在 Quart test_request_context 中执行 handler，全局 request 可用。
+try:
+    from quart import request as qrequest
+except Exception:  # pragma: no cover
+    qrequest = None
 
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
@@ -54,16 +63,19 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     # 配置
     # -------------------------------------------------------------- #
-    async def get_config(self, request: Request) -> Response:
+    async def get_config(self) -> Response:
         try:
             cfg = self.plugin.config
-            # 过滤掉不可序列化的对象，仅保留可 JSON 化的顶层结构
-            safe = json.loads(json.dumps(cfg, default=lambda o: str(o)))
+            # AstrBot 的 Config 对象本身是可映射的，转 dict 后序列化
+            try:
+                safe = dict(cfg)
+            except Exception:
+                safe = json.loads(json.dumps(cfg, default=lambda o: str(o)))
             return _ok(safe)
         except Exception as e:
             return _err(f"读取配置失败: {e}")
 
-    async def get_schema(self, request: Request) -> Response:
+    async def get_schema(self) -> Response:
         try:
             schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
             if not schema_path.exists():
@@ -74,11 +86,12 @@ class WebUIApi:
         except Exception as e:
             return _err(f"读取配置 schema 失败: {e}")
 
-    async def save_config(self, request: Request) -> Response:
+    async def save_config(self) -> Response:
         try:
-            body = await request.body()
-            payload = json.loads(body or b"{}")
-            new_cfg = payload.get("config")
+            body = await qrequest.get_json(silent=True) if qrequest else {}
+            if not isinstance(body, dict):
+                body = {}
+            new_cfg = body.get("config")
             if not isinstance(new_cfg, dict):
                 return _err("config 必须是对象")
             # 安全合并：仅覆盖顶层键，保留未提交键
@@ -99,12 +112,12 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     # 日志
     # -------------------------------------------------------------- #
-    async def get_logs(self, request: Request) -> Response:
+    async def get_logs(self) -> Response:
         try:
             lines = list(LOG_BUFFER)
             # 支持前端按行数截取（默认全部 2000 行）
             try:
-                n = int(request.query_params.get("n", "2000"))
+                n = int(qrequest.args.get("n", "2000")) if qrequest else 2000
             except Exception:
                 n = 2000
             if n > 0:
@@ -114,13 +127,12 @@ class WebUIApi:
             return _err(f"读取日志失败: {e}")
 
     # -------------------------------------------------------------- #
-    # -------------------------------------------------------------- #
     # 图库
     # -------------------------------------------------------------- #
     def _gallery(self):
         return getattr(self.plugin, "gallery", None)
 
-    async def gallery_stats(self, request: Request) -> Response:
+    async def gallery_stats(self) -> Response:
         g = self._gallery()
         if g is None:
             return _err("图库未启用或初始化失败")
@@ -129,37 +141,47 @@ class WebUIApi:
         except Exception as e:
             return _err(f"统计失败: {e}")
 
-    async def gallery_search(self, request: Request) -> Response:
+    async def gallery_search(self) -> Response:
         g = self._gallery()
         if g is None:
             return _err("图库未启用或初始化失败")
         try:
-            kw = request.query_params.get("keyword", "")
-            stype = request.query_params.get("type", "") or None
+            kw = (qrequest.args.get("keyword", "") if qrequest else "")
+            stype = (qrequest.args.get("type", "") or None) if qrequest else None
             if stype in ("", "all"):
                 stype = None
-            starred = request.query_params.get("starred", "0") == "1"
+            starred = (qrequest.args.get("starred", "0") == "1") if qrequest else False
             try:
-                limit = int(request.query_params.get("limit", "40"))
+                limit = int(qrequest.args.get("limit", "40")) if qrequest else 40
             except Exception:
                 limit = 40
             try:
-                offset = int(request.query_params.get("offset", "0"))
+                offset = int(qrequest.args.get("offset", "0")) if qrequest else 0
             except Exception:
                 offset = 0
             rows = g.search(keyword=kw, type=stype, starred_only=starred, limit=limit, offset=offset)
-            # 给前端补一个缩略图访问地址（相对路径，前端拼 API 前缀）
+            # 列表中直接返回 data_url 缩略图（前端 img.src 用），避免依赖外部路径
             for r in rows:
-                r["thumb"] = f"gallery/image?sha={r.get('sha256', '')}"
+                sha = r.get("sha256", "")
+                try:
+                    p = g.path_of(sha)
+                    if p and Path(p).exists():
+                        raw = await asyncio.to_thread(Path(p).read_bytes)
+                        mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+                        r["thumb"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                    else:
+                        r["thumb"] = ""
+                except Exception:
+                    r["thumb"] = ""
             return _ok(rows)
         except Exception as e:
             return _err(f"检索失败: {e}")
 
-    async def gallery_image(self, request: Request) -> Response:
+    async def gallery_image(self) -> Response:
         g = self._gallery()
         if g is None:
             return _err("图库未启用或初始化失败")
-        sha = request.query_params.get("sha", "")
+        sha = (qrequest.args.get("sha", "") if qrequest else "")
         if not sha:
             return _err("缺少 sha 参数")
         try:
@@ -178,13 +200,12 @@ class WebUIApi:
         encoded = base64.b64encode(raw).decode("ascii")
         return _ok({"data_url": f"data:{mime};base64,{encoded}", "mime": mime})
 
-    async def gallery_star(self, request: Request) -> Response:
+    async def gallery_star(self) -> Response:
         g = self._gallery()
         if g is None:
             return _err("图库未启用或初始化失败")
         try:
-            body = await request.body()
-            payload = json.loads(body or b"{}")
+            payload = await _read_json()
             sha = payload.get("sha", "")
             on = 1 if payload.get("on", True) else 0
             if not sha:
@@ -194,13 +215,12 @@ class WebUIApi:
         except Exception as e:
             return _err(f"操作失败: {e}")
 
-    async def gallery_delete(self, request: Request) -> Response:
+    async def gallery_delete(self) -> Response:
         g = self._gallery()
         if g is None:
             return _err("图库未启用或初始化失败")
         try:
-            body = await request.body()
-            payload = json.loads(body or b"{}")
+            payload = await _read_json()
             sha = payload.get("sha", "")
             if not sha:
                 return _err("缺少 sha")
@@ -209,13 +229,12 @@ class WebUIApi:
         except Exception as e:
             return _err(f"删除失败: {e}")
 
-    async def gallery_tags(self, request: Request) -> Response:
+    async def gallery_tags(self) -> Response:
         g = self._gallery()
         if g is None:
             return _err("图库未启用或初始化失败")
         try:
-            body = await request.body()
-            payload = json.loads(body or b"{}")
+            payload = await _read_json()
             sha = payload.get("sha", "")
             tags = payload.get("tags", [])
             if not sha or not tags:
@@ -226,18 +245,26 @@ class WebUIApi:
             return _err(f"打标签失败: {e}")
 
 
+async def _read_json():
+    """从全局 quart request 读取 JSON body（AstrBot 不向 handler 传 request 参数）。"""
+    if not qrequest:
+        return {}
+    try:
+        return await qrequest.get_json(silent=True) or {}
+    except Exception:
+        return {}
+
+
 def register_web_api(plugin) -> None:
     """在插件 initialize 时调用，注册所有控制台路由。"""
     from astrbot.api import logger as _log
     api = WebUIApi(plugin)
     ctx = plugin.context
-    # 关键：宿主 _call_plugin_extension 用完整 plugin_path（含插件名，形如
-    # "<plugin_name>/page/config"）与注册路由做正则 fullmatch，因此注册的 route
-    # 必须包含插件名前缀（参考 AstrBot 文档：注册路由形如 /{PLUGIN_NAME}/stats）。
-    # 前端 bridge 的 endpoint 只需传 "page/config"，宿主会自动拼
-    # /api/v1/plugins/extensions/<plugin_name>/ 前缀。
-    plugin_name = getattr(plugin, "name", "astrbot_plugin_comfyui_anima")
-    prefix = f"/{plugin_name}/page"
+    # 路由写相对路径（不含插件名）。参考伴侣插件 astrbot_plugin_private_companion
+    # 的 page_api：其路由全部是 /overview、/config/... 这类相对路径且能正常工作，
+    # 说明 AstrBot 会按插件名前缀匹配。前端 bridge 的 endpoint 传 "page/config"，
+    # 宿主自动拼 /api/v1/plugins/extensions/<plugin_name>/ 前缀。
+    prefix = "/page"
 
     routes = [
         (f"{prefix}/schema", api.get_schema, ["GET"], "读取配置 schema"),

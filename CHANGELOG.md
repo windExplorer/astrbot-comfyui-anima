@@ -2,10 +2,18 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.6
+
+- **修复 WebUI「页面一直在加载中、没数据」的真正根因（两次误判后的实锤）**。
+  通过阅读 AstrBot 源码 `astrbot/dashboard/asgi_runtime.py` 的 `call_request_view` / `bind_quart_request_context` 确认：**宿主在调用 web_api handler 时，只通过路由占位符传参，从不向 handler 传递 `request` 参数**，而是把 Quart 全局 `request` 绑定到当前上下文。因此：
+  1. 之前的 handler 全部把 `request: Request` 声明为函数参数，宿主调用时缺少该参数 → `TypeError: missing required positional argument 'request'` → 所有接口 500/挂起 → 前端永远拿不到数据、一直转圈。现改为去掉 `request` 参数，改用 `from quart import request` 的全局对象（`request.args` / `await request.get_json()`），与伴侣插件 `astrbot_plugin_private_companion/page_api.py` 的写法一致。
+  2. 路由前缀回退为**相对路径** `/page`（不含插件名）：伴侣插件所有路由均为相对路径 `/overview`、`/config/...` 且正常工作，说明 AstrBot 按插件名前缀匹配，无需在 path 里写插件名。v2.2.5 加回插件名前缀属于误判，本次回退。
+  3. 图库列表 `gallery/search` 直接返回每张图的 `data_url` 缩略图（前端 `img.src` 直接用，不再依赖外部路径或二次请求），避免缩略图裂图与多次请求导致的"加载中"观感。前端卡片渲染相应改为直接使用 `img.thumb`。
+  4. `bridge.ready()` 增加 3s 超时保护，避免极端情况下卡在"正在连接…"。
+
 ## v2.2.5
 
-- **修复 v2.2.2 引入的致命回归：WebUI 所有接口 404（一直没数据）**。
-  通过阅读 AstrBot 源码（`dashboard/src/views/PluginPagePage.vue` 的 `buildPluginApiPath` 与 `astrbot/dashboard/api/plugins.py` 的 `_match_registered_web_api`）确认：宿主用**完整 plugin_path（含插件名，如 `<plugin_name>/page/config`）** 与注册路由做正则 fullmatch，且官方文档明确"注册路由需包含插件名前缀"。v2.2.2 把路由前缀从 `/{plugin_name}/page` 误改成 `/page`，导致请求路径 `/<plugin_name>/page/config` 与注册的 `/page/config` 不匹配、全部 404，页面一直无数据。现已恢复为 `/{plugin_name}/page`，前端 endpoint 仍用 `page/...`（宿主自动拼插件名前缀）。
+- （误判记录，已在 v2.2.6 回退）曾误以为 v2.2.2 缺插件名前缀导致 404；实为方向判断错误。路由前缀在 v2.2.6 恢复为相对路径。
 
 ## v2.2.4
 
