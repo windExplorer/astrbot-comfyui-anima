@@ -347,12 +347,14 @@
   },
   "gallery": {
     "type": "object",
-    "description": "图片画廊与语义标签召回：把生成的成品图、图生图参考图、用户在聊天里发来/收藏的图永久归档到 data_dir 下的 gallery/ 与 refs/，支持按提示词检索与按语义标签（如「合照」）召回。",
+    "description": "图片画廊与语义标签召回",
+    "hint": "把生成的成品图、图生图参考图、用户在聊天里发来/收藏的图，按内容寻址永久归档到 gallery/ 与 refs/，支持按提示词检索和按语义标签（如「合照」）召回。模型不直接接触文件路径，发图由插件在本地完成。",
     "items": {
       "enabled": {
         "type": "bool",
         "default": true,
-        "description": "启用图库归档与检索。关闭后生成/收藏的图不会入库存档，comfyui_gallery 与 /gallery 不可用。"
+        "description": "启用图库",
+        "hint": "关闭后生成的图与收藏的图不会入库存档，comfyui_gallery 工具与 /gallery 指令均不可用。"
       },
       "max_total_mb": {
         "type": "int",
@@ -362,17 +364,20 @@
           "max": 20480,
           "step": 128
         },
-        "description": "图库总容量上限（MB）。超出后按 LRU（最早创建优先）淘汰，但收藏图与带语义标签的图永不淘汰。"
+        "description": "图库容量上限（MB）",
+        "hint": "超出后按 LRU（最早创建优先）淘汰旧图；收藏图与带语义标签的图永不淘汰。"
       },
       "cross_session": {
         "type": "bool",
         "default": false,
-        "description": "跨会话默认可检索。关闭时，/gallery 与 comfyui_gallery 仅能检索到「当前会话」范围内生成的图；开启后所有会话的图都可被检索。"
+        "description": "跨会话检索",
+        "hint": "开启后所有会话的图都可被检索；关闭时 /gallery 与 comfyui_gallery 仅能检索「当前会话」范围内生成的图。"
       },
       "keep_temp_hours": {
         "type": "int",
         "default": 24,
-        "description": "temp/ 中转目录中下载副本的保留小时数，到期清理。成品图已通过内容寻址移入 gallery/，temp/ 仅作下载中转。"
+        "description": "temp/ 保留小时数",
+        "hint": "下载中转目录 temp/ 中副本的保留小时数，到期自动清理。成品图已通过内容寻址移入 gallery/，temp/ 仅作中转。"
       }
     }
   }

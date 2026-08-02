@@ -13,6 +13,7 @@
   - 明确边界：`comfyui_draw` 永远只生成新图、绝不复用旧图；发旧图/找某类图/收藏走 `comfyui_gallery`。`comfyui_gallery` 已加入 `required: ["mode"]`，避免空参数调用。
   - `temp/` 仅作下载中转，成品图经 `os.replace` 移动转正，不重复占空间；`_cleanup_temp` 顺带按 `keep_temp_hours` 与 LRU 触发清理。
   - 详见 `README.md` 的「图片画廊与语义标签（gallery）」章节。
+  - 配置样式修正：`_conf_schema.json` 的 `gallery` 配置块补全 `hint` 字段（区块说明与子项说明），并将子项的长说明从 `description` 移到 `hint`，对齐 AstrBot dashboard（V4 渲染）规范——`description` 仅作短名称、`hint` 作说明文字，避免面板里该区块说明缺失、子项名称过长的问题。
 
 ## v1.2.5
 
