@@ -301,7 +301,7 @@ body{
 
 /* image big-view dialog with info panel */
 .image-dialog{
-  border:none;border-radius:var(--radius);max-width:min(960px,94vw);width:auto;padding:0;
+  border:none;border-radius:var(--radius);max-width:min(1240px,96vw);width:auto;padding:0;
   margin:auto;
   background:var(--bg-raised);box-shadow:0 24px 60px rgba(0,0,0,.45);color:var(--text)
 }
@@ -310,9 +310,9 @@ body{
 .image-close{position:absolute;top:10px;right:12px;z-index:2;width:34px;height:34px;border:none;border-radius:50%;
   background:rgba(0,0,0,.4);color:#fff;font-size:1.3rem;line-height:1;cursor:pointer}
 .image-close:hover{background:rgba(0,0,0,.65)}
-.image-dialog-body{display:flex;gap:0;max-height:84vh}
-.image-dialog-imgwrap{background:#0c0d11;display:flex;align-items:center;justify-content:center;min-width:300px}
-.image-dialog-imgwrap img{max-width:min(640px,60vw);max-height:84vh;width:auto;height:auto;display:block;object-fit:contain}
+.image-dialog-body{display:flex;gap:0;max-height:90vh}
+.image-dialog-imgwrap{background:#0c0d11;display:flex;align-items:center;justify-content:center;min-width:300px;flex:1 1 auto}
+.image-dialog-imgwrap img{max-width:min(900px,78vw);max-height:90vh;width:auto;height:auto;display:block;object-fit:contain;cursor:default}
 .image-info{padding:18px 20px;width:300px;max-height:84vh;overflow:auto;font-size:.82rem;line-height:1.7}
 .image-info > div{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)}
 .image-info .k{flex:0 0 64px;color:var(--text-muted)}

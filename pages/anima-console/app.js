@@ -939,6 +939,13 @@
 
   // ====== BIND EVENTS ======
   function bindEvents() {
+    // 大图弹窗：点击背景/空白区域（非图片、非信息面板、非关闭按钮）关闭
+    els.imageDialog.addEventListener("click", function (e) {
+      if (e.target.closest(".image-close")) return;
+      if (e.target.closest(".image-dialog-imgwrap img, .image-info")) return;
+      els.imageDialog.close();
+    });
+
     // nav
     document.querySelectorAll(".workspace-nav [data-view]").forEach(function (btn) {
       btn.addEventListener("click", function () { switchView(btn.dataset.view); });
