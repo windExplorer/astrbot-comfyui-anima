@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f8f6f9" />
-    <meta name="description" content="AstrBot 插件 ComfyUI Anima 控制台 - 管理绘图配置、查看运行日志、调试 ComfyUI 服务器、浏览图库。" />
+    <meta name="description" content="AstrBot 插件 ComfyUI Anima 控制台 - 管理绘图配置、查看运行日志、浏览图库。" />
     <title>Anima 控制台</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -16,7 +16,7 @@
         <div>
           <p class="kicker">COMFYUI ANIMA / CONTROL CONSOLE</p>
           <h1>Anima 控制台</h1>
-          <p class="subtitle">管理绘图配置，查看运行日志，调试 ComfyUI 服务器，浏览与检索图库。</p>
+          <p class="subtitle">管理绘图配置，查看运行日志，浏览与检索图库。</p>
         </div>
         <div class="status-badge" role="status" aria-label="插件状态">
           <span class="pulse" aria-hidden="true"></span>
@@ -32,7 +32,6 @@
       <nav class="workspace-nav" aria-label="功能模块导航">
         <button class="active" data-view="config" type="button">配置</button>
         <button data-view="logs" type="button">日志</button>
-        <button data-view="debug" type="button">调试</button>
         <button data-view="gallery" type="button">图库</button>
         <button id="refreshBtn" class="refresh" type="button">刷新数据</button>
       </nav>
@@ -77,18 +76,6 @@
           </div>
           <div id="logContent" class="log-viewer" aria-live="polite" aria-label="日志内容">
             <div class="empty">正在读取日志…</div>
-          </div>
-        </section>
-
-        <!-- ====== 调试 ====== -->
-        <section id="debugView" class="workspace" aria-labelledby="debugTitle">
-          <div class="section-heading wide">
-            <p>SERVER DIAGNOSTICS</p>
-            <h2 id="debugTitle">ComfyUI 服务器调试</h2>
-            <span>检查各 ComfyUI 服务器的连通性、GPU 状态与队列长度。</span>
-          </div>
-          <div id="serverList" class="server-list">
-            <div class="empty">正在读取服务器列表…</div>
           </div>
         </section>
 

@@ -8,7 +8,6 @@
     config: {},
     configDirty: false,
     logs: [],
-    servers: [],
     galStats: {},
     galResults: [],
     galSearching: false,
@@ -32,8 +31,6 @@
     logSearch: $("logSearch"),
     logRefreshBtn: $("logRefreshBtn"),
     logCount: $("logCount"),
-    // debug
-    serverList: $("serverList"),
     // gallery
     galStats: $("galStats"),
     galGrid: $("galGrid"),
@@ -136,7 +133,6 @@
     history.replaceState(null, "", "#" + name);
     // lazy load
     if (name === "logs" && !state.logs.length) loadLogs();
-    if (name === "debug" && !state.servers.length) loadServers();
   }
 
   // ====== CONFIG ======
@@ -288,63 +284,6 @@
   els.logSearch.addEventListener("input", renderLogs);
   els.logRefreshBtn.addEventListener("click", loadLogs);
 
-  // ====== DEBUG ======
-  async function loadServers() {
-    try {
-      var data = await apiGet("servers");
-      state.servers = Array.isArray(data) ? data : (data.servers || []);
-      renderServers();
-      setStatus("服务器列表已加载");
-    } catch (e) {
-      els.serverList.innerHTML = '<div class="empty error">读取服务器列表失败：' + escapeHtml(e.message) + '</div>';
-    }
-  }
-
-  function renderServers() {
-    if (!state.servers.length) {
-      els.serverList.innerHTML = '<div class="empty">未配置 ComfyUI 服务器</div>';
-      return;
-    }
-    els.serverList.innerHTML = state.servers.map(function (srv, idx) {
-      var status = srv.status || "unknown";
-      var statusLabel = status === "online" ? "在线" : status === "offline" ? "离线" : "未检测";
-      return '<div class="server-card">' +
-        '<div class="server-header">' +
-          '<h3>' + escapeHtml(srv.label || srv.url || ("服务器 " + (idx + 1))) + '</h3>' +
-          '<span class="server-status ' + status + '">' + statusLabel + '</span>' +
-        '</div>' +
-        '<div class="server-info">' +
-          '<div>地址：' + escapeHtml(srv.url || "-") + '</div>' +
-          (srv.gpu ? '<div>GPU：' + escapeHtml(srv.gpu) + '</div>' : '') +
-          (srv.queue != null ? '<div>队列：' + srv.queue + '</div>' : '') +
-        '</div>' +
-        '<div class="server-actions">' +
-          '<button data-test="' + idx + '">测试连接</button>' +
-        '</div>' +
-      '</div>';
-    }).join("");
-    els.serverList.querySelectorAll("[data-test]").forEach(function (btn) {
-      btn.addEventListener("click", async function () {
-        var idx = Number(btn.dataset.test);
-        var srv = state.servers[idx];
-        if (!srv || !srv.url) return;
-        setButtonBusy(btn, true, "检测中…", "测试连接");
-        try {
-          var result = await apiGet("test_server?url=" + encodeURIComponent(srv.url));
-          srv.status = result && result.ok ? "online" : "offline";
-          if (result) { srv.gpu = result.gpu; srv.queue = result.queue; }
-          showToast("连接成功");
-        } catch (e) {
-          srv.status = "offline";
-          showToast(e.message || "连接失败", "error");
-        } finally {
-          setButtonBusy(btn, false, "检测中…", "测试连接");
-          renderServers();
-        }
-      });
-    });
-  }
-
   // ====== GALLERY ======
   async function loadGalStats() {
     try {
@@ -473,7 +412,6 @@
       var failures = [];
       try { await loadConfig(); } catch (e) { failures.push("配置"); }
       try { await loadLogs(); } catch (e) { failures.push("日志"); }
-      try { await loadServers(); } catch (e) { failures.push("调试"); }
       try { await loadGalStats(); } catch (e) { failures.push("图库统计"); }
       try { await galSearch(); } catch (e) { failures.push("图库搜索"); }
       if (failures.length) showGlobalError(failures);

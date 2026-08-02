@@ -9,8 +9,6 @@
 功能：
 - /config          读取/保存插件配置
 - /logs            读取内存日志环形缓冲（由 main.py 安装的 handler 填充）
-- /servers         列出已配置的 ComfyUI 服务器
-- /test_server     测试某台 ComfyUI 服务器连通性（调用 /system_stats）
 - /gallery/stats   图库统计
 - /gallery/search  图库检索
 - /gallery/image   按 sha256 返回图片文件
@@ -31,12 +29,6 @@ from pathlib import Path
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-
-try:
-    import aiohttp
-except ImportError:  # pragma: no cover
-    aiohttp = None
-
 
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
@@ -109,57 +101,6 @@ class WebUIApi:
             return _err(f"读取日志失败: {e}")
 
     # -------------------------------------------------------------- #
-    # 调试：服务器连通性
-    # -------------------------------------------------------------- #
-    async def list_servers(self, request: Request) -> Response:
-        servers = self.plugin._servers()
-        out = []
-        for s in servers:
-            out.append({
-                "name": s.get("name", ""),
-                "url": s.get("url", ""),
-                "enabled": s.get("enabled", True),
-            })
-        return _ok(out)
-
-    async def test_server(self, request: Request) -> Response:
-        name = request.query_params.get("name", "")
-        servers = self.plugin._servers()
-        target = None
-        for s in servers:
-            if s.get("name") == name or (not name and s.get("enabled", True)):
-                target = s
-                break
-        if not target:
-            return _err(f"未找到服务器: {name}")
-        url = target.get("url", "")
-        client_id = target.get("client_id") or None
-        timeout = int(self.plugin._cfg("draw_timeout", 120)) + 30
-        if aiohttp is None:
-            return _err("aiohttp 未安装，无法测试")
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.get(url.rstrip("/") + "/system_stats") as resp:
-                    if resp.status != 200:
-                        return _err(f"HTTP {resp.status}")
-                    data = await resp.json()
-            # 顺带探测可用工作流数量
-            wf_count = 0
-            try:
-                async with session.get(url.rstrip("/") + "/object_info") as r2:
-                    if r2.status == 200:
-                        info = await r2.json()
-                        wf_count = len(info) if isinstance(info, dict) else 0
-            except Exception:
-                pass
-            return _ok({
-                "url": url,
-                "system_stats": data,
-                "node_types": wf_count,
-            }, msg="连接成功")
-        except Exception as e:
-            return _err(f"连接失败: {e}")
-
     # -------------------------------------------------------------- #
     # 图库
     # -------------------------------------------------------------- #
@@ -281,8 +222,6 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/config", api.get_config, ["GET"], "读取控制台配置"),
         (f"{prefix}/config", api.save_config, ["POST"], "保存控制台配置"),
         (f"{prefix}/logs", api.get_logs, ["GET"], "读取控制台日志"),
-        (f"{prefix}/servers", api.list_servers, ["GET"], "列出 ComfyUI 服务器"),
-        (f"{prefix}/test_server", api.test_server, ["GET"], "测试 ComfyUI 连接"),
         (f"{prefix}/gallery/stats", api.gallery_stats, ["GET"], "图库统计"),
         (f"{prefix}/gallery/search", api.gallery_search, ["GET"], "图库检索"),
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
