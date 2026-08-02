@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.1
+
+- **修复 WebUI 前端无法调用后端 API 的问题**。上一版（v2.1.0）前端错误地使用了 `bridge.fetch()` 接口，而 AstrBot 页面 bridge 实际提供的是 `window.AstrBotPluginPage.apiGet(endpoint, params)` / `apiPost(endpoint, body)`（父窗口自动拼 `/api/plugins/extensions` 前缀并携带 Dashboard 鉴权）。本版重写为正确的 bridge 调用方式，并针对图片 `<img>` 无法携带鉴权头的问题，改用 `apiGet` 拉取二进制再转 `blob:` URL 渲染缩略图。若 bridge 不可用则回退到裸 `fetch('/api/plugins/extensions' + endpoint)` + `localStorage` 中的 `astrbot_token`。
+- **说明入口位置**：WebUI 页面入口不在「设置」里，而是在 AstrBot Dashboard 的「插件」列表 → 点开本插件 → 页面 Tab（即 `/pages/astrbot_plugin_comfyui_anima/anima-console/`）。若重装后仍未出现，请确认插件已重新加载/重启 AstrBot。
+
 ## v2.1.0
 
 - **新增 Anima 控制台 WebUI（大更新）**。参考 `astrbot_plugin_private_companion` 的页面机制，在 `metadata.yaml` 的 `pages:` 声明 `anima-console` 页面（AstrBot 自动挂载到 `/pages/astrbot_plugin_comfyui_anima/anima-console/`），并新增后端 `webui_api.py` 与前端点 `pages/anima-console/index.html`。控制台包含四个模块：

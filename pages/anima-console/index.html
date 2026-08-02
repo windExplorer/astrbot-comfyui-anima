@@ -181,25 +181,99 @@
 const PLUGIN = "astrbot_plugin_comfyui_anima";
 const API_BASE = "/" + PLUGIN + "/page";
 
-// ---- 兼容 AstrBot 页面 bridge：优先 getPageBridge，回退裸 fetch ----
+// ---- 兼容 AstrBot 页面 bridge ----
+// 正确方式：window.AstrBotPluginPage.apiGet(endpoint, params) / apiPost(endpoint, body)
+// endpoint 为相对路径（如 /astrbot_plugin_comfyui_anima/page/config），
+// 父窗口（AstrBot dashboard）会自动拼 /api/plugins/extensions 前缀并携带鉴权。
+// 回退：裸 fetch('/api/plugins/extensions' + endpoint) 并带上 token。
+const PLUGIN_API_PREFIX = "/api/plugins/extensions";
+
+function getBridge() {
+  return (typeof window.AstrBotPluginPage !== "undefined") ? window.AstrBotPluginPage : null;
+}
+
+function getToken() {
+  try {
+    return localStorage.getItem("astrbot_token") || "";
+  } catch (e) { return ""; }
+}
+
+async function apiGet(endpoint, params) {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.apiGet === "function") {
+    return await bridge.apiGet(endpoint, params || {});
+  }
+  let url = PLUGIN_API_PREFIX + endpoint;
+  const qs = params ? new URLSearchParams(params).toString() : "";
+  if (qs) url += (url.includes("?") ? "&" : "?") + qs;
+  const headers = {};
+  const t = getToken();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  const r = await fetch(url, { method: "GET", headers });
+  return await r.json();
+}
+
+async function apiPost(endpoint, body) {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.apiPost === "function") {
+    return await bridge.apiPost(endpoint, body || {});
+  }
+  const url = PLUGIN_API_PREFIX + endpoint;
+  const headers = { "Content-Type": "application/json" };
+  const t = getToken();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body || {}) });
+  return await r.json();
+}
+
+// 统一入口：自动按 method 选择 apiGet / apiPost
 async function api(path, opts = {}) {
-  const url = API_BASE + path;
-  let bridge = null;
-  if (window.getPageBridge) {
-    try { bridge = await window.getPageBridge(); } catch (e) { bridge = null; }
+  const method = (opts.method || "GET").toUpperCase();
+  if (method === "POST") {
+    let body = opts.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) { body = {}; }
+    }
+    return await apiPost(path, body);
   }
-  if (bridge && typeof bridge.fetch === "function") {
-    const full = (bridge.apiBase || API_BASE) + path;
-    return await bridge.fetch(full, opts);
+  // GET：把 query string 解析成 params
+  let params = {};
+  if (path.includes("?")) {
+    const qs = path.split("?", 2)[1];
+    params = Object.fromEntries(new URLSearchParams(qs));
+    path = path.split("?")[0];
   }
-  return await fetch(url, opts);
+  return await apiGet(path, params);
+}
+
+// 获取二进制图片为 blob URL（用于 <img>，绕过无法带 header 的限制）
+async function apiImageBlobUrl(endpoint) {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.apiGet === "function") {
+    // bridge 返回的可能直接是二进制；尝试拿 arrayBuffer
+    try {
+      const resp = await bridge.apiGet(endpoint, {});
+      if (resp instanceof Response) return URL.createObjectURL(await resp.blob());
+      if (resp && resp.arrayBuffer) return URL.createObjectURL(new Blob([resp]));
+    } catch (e) { /* fallthrough */ }
+  }
+  const url = PLUGIN_API_PREFIX + endpoint;
+  const headers = {};
+  const t = getToken();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  const r = await fetch(url, { method: "GET", headers });
+  if (!r.ok) return "";
+  const blob = await r.blob();
+  return URL.createObjectURL(blob);
 }
 
 async function getJSON(path, opts) {
   try {
-    const r = await api(path, opts);
-    const text = await r.text();
-    return text ? JSON.parse(text) : {};
+    const data = await api(path, opts);
+    if (typeof data === "string") {
+      try { return JSON.parse(data); } catch (e) { return { success: false, msg: data }; }
+    }
+    return data || {};
   } catch (e) {
     return { success: false, msg: "请求失败: " + e.message };
   }
@@ -313,7 +387,6 @@ async function loadGalStats() {
 }
 document.getElementById("btnGalleryStats").onclick = loadGalStats;
 
-const IMG_BASE = API_BASE + "/gallery/image?sha=";
 async function galSearch() {
   const kw = document.getElementById("galKw").value.trim();
   const type = document.getElementById("galType").value;
@@ -326,13 +399,22 @@ async function galSearch() {
   const grid = document.getElementById("galGrid");
   if (d.success && Array.isArray(d.data) && d.data.length) {
     grid.innerHTML = d.data.map(r => gitem(r)).join("");
+    // 异步加载缩略图（图片需鉴权，用 blob URL）
+    d.data.forEach(r => {
+      const sha = r.sha256 || "";
+      const img = grid.querySelector(`img[data-sha="${cssEsc(sha)}"]`);
+      if (img) {
+        apiImageBlobUrl("/gallery/image?sha=" + encodeURIComponent(sha))
+          .then(url => { if (url) img.src = url; })
+          .catch(() => {});
+      }
+    });
   } else {
     grid.innerHTML = `<span class="muted">${esc(d.msg || "无结果")}</span>`;
   }
 }
 function gitem(r) {
   const sha = r.sha256 || "";
-  const src = IMG_BASE + encodeURIComponent(sha);
   const typ = r.source || "";
   const pill = typ === "ref" ? '<span class="pill ref">参考图</span>'
              : typ === "user" ? '<span class="pill user">用户图</span>'
@@ -340,7 +422,7 @@ function gitem(r) {
   const star = r.starred ? "★" : "☆";
   const w = r.width || "?", h = r.height || "?";
   return `<div class="gitem" data-sha="${esc(sha)}">
-    <img src="${src}" loading="lazy" onclick="zoom('${esc(src)}')" />
+    <img data-sha="${esc(sha)}" src="" loading="lazy" onclick="zoom('${esc(sha)}')" />
     <div class="gmeta">${pill} ${w}x${h}${r.starred ? ' <span class="star">'+star+'</span>' : ''}
       <div style="margin-top:4px">${(r.prompt_raw||r.prompt||"").slice(0,40)}${(r.prompt_raw||r.prompt||"").length>40?"…":""}</div>
     </div>
@@ -351,25 +433,27 @@ function gitem(r) {
   </div>`;
 }
 window.toggleStar = async (sha, cur) => {
-  const d = await getJSON("/gallery/star", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sha, on: !cur })
-  });
-  toast(d.success ? "已更新收藏" : "失败: " + d.msg, d.success ? "ok" : "err");
+  const d = await apiPost("/gallery/star", { sha, on: !cur });
+  toast(d.success ? "已更新收藏" : "失败: " + (d.msg || ""), d.success ? "ok" : "err");
   galSearch();
 };
 window.delImg = async (sha) => {
   if (!confirm("确定删除该图？此操作不可恢复。")) return;
-  const d = await getJSON("/gallery/delete", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sha })
-  });
-  toast(d.success ? "已删除" : "失败: " + d.msg, d.success ? "ok" : "err");
+  const d = await apiPost("/gallery/delete", { sha });
+  toast(d.success ? "已删除" : "失败: " + (d.msg || ""), d.success ? "ok" : "err");
   galSearch();
   loadGalStats();
 };
-window.zoom = (src) => { window.open(src, "_blank"); };
+window.zoom = (sha) => {
+  apiImageBlobUrl("/gallery/image?sha=" + encodeURIComponent(sha))
+    .then(url => { if (url) window.open(url, "_blank"); });
+};
 document.getElementById("btnGalSearch").onclick = galSearch;
+
+function cssEsc(s) {
+  // 用于 querySelector 的安全转义
+  return String(s).replace(/["\\]/g, "\\$&");
+}
 
 function esc(s) {
   return String(s == null ? "" : s)
