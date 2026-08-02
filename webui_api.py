@@ -7,6 +7,7 @@
 /api/plugins/extensions/astrbot_plugin_comfyui_anima/page/config。
 
 功能：
+- /schema          读取插件配置 schema（_conf_schema.json），用于前端结构化渲染
 - /config          读取/保存插件配置
 - /logs            读取内存日志环形缓冲（由 main.py 安装的 handler 填充）
 - /gallery/stats   图库统计
@@ -60,6 +61,17 @@ class WebUIApi:
             return _ok(safe)
         except Exception as e:
             return _err(f"读取配置失败: {e}")
+
+    async def get_schema(self, request: Request) -> Response:
+        try:
+            schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
+            if not schema_path.exists():
+                return _err("找不到 _conf_schema.json")
+            raw = schema_path.read_text(encoding="utf-8")
+            schema = json.loads(raw)
+            return _ok(schema)
+        except Exception as e:
+            return _err(f"读取配置 schema 失败: {e}")
 
     async def save_config(self, request: Request) -> Response:
         try:
@@ -130,7 +142,11 @@ class WebUIApi:
                 limit = int(request.query_params.get("limit", "40"))
             except Exception:
                 limit = 40
-            rows = g.search(keyword=kw, type=stype, starred_only=starred, limit=limit)
+            try:
+                offset = int(request.query_params.get("offset", "0"))
+            except Exception:
+                offset = 0
+            rows = g.search(keyword=kw, type=stype, starred_only=starred, limit=limit, offset=offset)
             # 给前端补一个缩略图访问地址（相对路径，前端拼 API 前缀）
             for r in rows:
                 r["thumb"] = f"gallery/image?sha={r.get('sha256', '')}"
@@ -219,6 +235,7 @@ def register_web_api(plugin) -> None:
     prefix = "/page"
 
     routes = [
+        (f"{prefix}/schema", api.get_schema, ["GET"], "读取配置 schema"),
         (f"{prefix}/config", api.get_config, ["GET"], "读取控制台配置"),
         (f"{prefix}/config", api.save_config, ["POST"], "保存控制台配置"),
         (f"{prefix}/logs", api.get_logs, ["GET"], "读取控制台日志"),

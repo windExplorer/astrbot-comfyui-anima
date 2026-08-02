@@ -133,13 +133,16 @@
     history.replaceState(null, "", "#" + name);
     // lazy load
     if (name === "logs" && !state.logs.length) loadLogs();
+    if (name === "gallery" && !state.galResults.length) galSearch();
   }
 
   // ====== CONFIG ======
+  // 基于插件 _conf_schema.json 结构化渲染配置编辑器（而非把 config 当黑盒拍平）。
   async function loadConfig() {
     try {
-      var data = await apiGet("config");
-      state.config = data || {};
+      var results = await Promise.all([apiGet("config"), apiGet("schema")]);
+      state.config = results[0] || {};
+      state.schema = results[1] || {};
       state.configDirty = false;
       renderConfig();
       setStatus("配置已加载");
@@ -149,75 +152,213 @@
     }
   }
 
-  function renderConfig() {
-    var cfg = state.config;
-    // flatten nested dict to simple key-value
-    var fields = [];
-    function walk(obj, prefix) {
-      Object.keys(obj || {}).forEach(function (k) {
-        var val = obj[k];
-        var key = prefix ? prefix + "." + k : k;
-        if (val && typeof val === "object" && !Array.isArray(val)) {
-          walk(val, key);
-        } else {
-          fields.push({ key: key, val: val });
-        }
-      });
+  // 按 data-path（点分路径，数组用数字段）读取/写入配置值
+  function getPath(obj, path) {
+    var parts = String(path).split(".");
+    var cur = obj;
+    for (var i = 0; i < parts.length; i += 1) {
+      if (cur == null) return undefined;
+      cur = cur[parts[i]];
     }
-    walk(cfg, "");
-    if (!fields.length) {
-      els.cfgContent.innerHTML = '<div class="empty">配置为空</div>';
+    return cur;
+  }
+  function setPath(obj, path, val) {
+    var parts = String(path).split(".");
+    var cur = obj;
+    for (var i = 0; i < parts.length - 1; i += 1) {
+      var k = parts[i];
+      if (cur[k] == null || typeof cur[k] !== "object") cur[k] = /^\d+$/.test(parts[i + 1]) ? [] : {};
+      cur = cur[k];
+    }
+    cur[parts[parts.length - 1]] = val;
+  }
+
+  function fieldHintHtml(field) {
+    var h = "";
+    if (field.description) h += '<p class="fh-desc">' + escapeHtml(field.description) + '</p>';
+    if (field.hint) h += '<p class="fh-hint">' + escapeHtml(field.hint) + '</p>';
+    return h;
+  }
+
+  // 渲染单个基础字段（bool / string / int / float / text / 带 slider）
+  function renderField(path, field, value) {
+    var type = field.type || "string";
+    var inner = "";
+    if (type === "bool") {
+      inner = '<label class="switch"><input type="checkbox" data-path="' + escapeHtml(path) + '" ' +
+        (value ? "checked" : "") + ' /><span class="slider-ui"></span></label>';
+    } else if (type === "text") {
+      inner = '<textarea data-path="' + escapeHtml(path) + '" rows="3">' +
+        escapeHtml(value == null ? "" : String(value)) + '</textarea>';
+    } else if (type === "int" || type === "float") {
+      var numVal = value == null ? "" : String(value);
+      if (field.slider) {
+        var min = field.slider.min, max = field.slider.max, step = field.slider.step || 1;
+        inner = '<div class="num-slider">' +
+          '<input type="range" data-path="' + escapeHtml(path) + '" data-num="1" min="' + min + '" max="' + max +
+          '" step="' + step + '" value="' + (value == null ? min : value) + '" />' +
+          '<input type="number" data-path="' + escapeHtml(path) + '" data-num="1" value="' + numVal +
+          '" step="' + (type === "float" ? "any" : step) + '" />' +
+          '</div>';
+      } else {
+        inner = '<input type="number" data-path="' + escapeHtml(path) + '" value="' + numVal +
+          '" step="' + (type === "float" ? "any" : "1") + '" />';
+      }
+    } else {
+      inner = '<input type="text" data-path="' + escapeHtml(path) + '" value="' +
+        escapeHtml(value == null ? "" : String(value)) + '" />';
+    }
+    return '<div class="cfg-field"><div class="cfg-field-head">' + inner + '</div>' + fieldHintHtml(field) + '</div>';
+  }
+
+  // 渲染嵌套 object
+  function renderObject(path, schemaObj, valueObj) {
+    var html = '<div class="cfg-group">';
+    Object.keys(schemaObj.items || {}).forEach(function (k) {
+      var child = schemaObj.items[k];
+      var v = valueObj ? valueObj[k] : undefined;
+      var childPath = path ? path + "." + k : k;
+      html += '<div class="cfg-sub"><h4>' + escapeHtml(k) + '</h4>' + renderFieldByType(childPath, child, v) + '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  // 渲染 template_list（如服务器列表 / LoRA 库 / 工作流列表）
+  function renderTemplateList(path, field, listArr) {
+    var itemsSchema = (field.templates && field.templates.default && field.templates.default.items) || {};
+    var displayKey = (field.templates && field.templates.default && field.templates.default.display_item) || "name";
+    var arr = Array.isArray(listArr) ? listArr : [];
+    var html = '<div class="tmpl-list" data-list="' + escapeHtml(path) + '">';
+    arr.forEach(function (item, idx) {
+      var title = item && item[displayKey] ? item[displayKey] : (field.templates.default.name + " " + (idx + 1));
+      html += '<div class="tmpl-item" data-index="' + idx + '">';
+      html += '<div class="tmpl-head"><span>' + escapeHtml(String(title)) + '</span>' +
+        '<button type="button" class="tmpl-del" data-del="' + idx + '">删除</button></div>';
+      html += '<div class="tmpl-body">';
+      Object.keys(itemsSchema).forEach(function (k) {
+        var child = itemsSchema[k];
+        var childPath = path + "." + idx + "." + k;
+        html += '<div class="cfg-sub"><h4>' + escapeHtml(k) + '</h4>' + renderFieldByType(childPath, child, item ? item[k] : undefined) + '</div>';
+      });
+      html += '</div></div>';
+    });
+    html += '</div>';
+    html += '<button type="button" class="tmpl-add" data-add="' + escapeHtml(path) + '">+ 添加' +
+      (field.templates && field.templates.default ? escapeHtml(field.templates.default.name) : "条目") + '</button>';
+    return html;
+  }
+
+  function renderFieldByType(path, field, value) {
+    var type = field.type || "string";
+    if (type === "object") return renderObject(path, field, value);
+    if (type === "template_list") return renderTemplateList(path, field, value);
+    return renderField(path, field, value);
+  }
+
+  function renderConfig() {
+    var schema = state.schema || {};
+    var keys = Object.keys(schema);
+    if (!keys.length) {
+      els.cfgContent.innerHTML = '<div class="empty">未获取到配置结构（schema 为空）</div>';
       els.cfgSaveBtn.disabled = true;
       return;
     }
-    els.cfgContent.innerHTML = fields.map(function (f) {
-      var type = typeof f.val === "boolean" ? "bool" : typeof f.val === "number" ? "num" : "str";
-      var inputHtml = "";
-      if (type === "bool") {
-        inputHtml = '<input type="checkbox" data-key="' + escapeHtml(f.key) + '" ' + (f.val ? "checked" : "") + ' />';
-      } else if (type === "num") {
-        inputHtml = '<input type="number" data-key="' + escapeHtml(f.key) + '" value="' + f.val + '" step="any" />';
+    var html = '<div class="cfg-sections">';
+    keys.forEach(function (key) {
+      var field = schema[key];
+      var val = state.config ? state.config[key] : undefined;
+      html += '<section class="cfg-section" data-key="' + escapeHtml(key) + '">';
+      html += '<div class="cfg-section-title"><h3>' + escapeHtml(key) + '</h3>' +
+        (field.description ? '<span>' + escapeHtml(field.description) + '</span>' : '') + '</div>';
+      html += '<div class="cfg-section-body">';
+      if (field.type === "object") {
+        html += renderObject(key, field, val);
+      } else if (field.type === "template_list") {
+        html += renderTemplateList(key, field, val);
       } else {
-        var valStr = f.val === null || f.val === undefined ? "" : String(f.val);
-        if (valStr.length > 80) {
-          inputHtml = '<textarea data-key="' + escapeHtml(f.key) + '" rows="3">' + escapeHtml(valStr) + '</textarea>';
-        } else {
-          inputHtml = '<input type="text" data-key="' + escapeHtml(f.key) + '" value="' + escapeHtml(valStr) + '" />';
-        }
+        html += renderField(key, field, val);
       }
-      return '<div class="cfg-field"><label>' + escapeHtml(f.key) + '</label>' + inputHtml + '</div>';
-    }).join("");
+      html += '</div></section>';
+    });
+    html += '</div>';
+    els.cfgContent.innerHTML = html;
     els.cfgSaveBtn.disabled = true;
     els.cfgSaveMsg.textContent = "";
 
-    // mark dirty on change
-    els.cfgContent.querySelectorAll("input,textarea").forEach(function (el) {
-      el.addEventListener("input", function () {
-        state.configDirty = true;
-        els.cfgSaveBtn.disabled = false;
-        els.cfgSaveMsg.textContent = "";
+    // 标记 dirty + slider/number 联动
+    var sliders = {};
+    els.cfgContent.querySelectorAll("[data-path]").forEach(function (el) {
+      var mark = function () { markDirty(); };
+      el.addEventListener("input", mark);
+      el.addEventListener("change", mark);
+      if (el.type === "range") sliders[el.dataset.path] = el;
+    });
+    // range 与 number 双向联动（同 data-path 且 data-num=1 的两个控件）
+    Object.keys(sliders).forEach(function (p) {
+      var range = sliders[p];
+      var num = els.cfgContent.querySelector('input[type="number"][data-path="' + cssEsc(p) + '"][data-num="1"]');
+      if (num) {
+        range.addEventListener("input", function () { num.value = range.value; });
+        num.addEventListener("input", function () { range.value = num.value; });
+      }
+    });
+
+    // 模板列表：添加 / 删除
+    els.cfgContent.querySelectorAll(".tmpl-add").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var listPath = btn.dataset.add;
+        var field = getPath(state.schema, listPath);
+        var itemsSchema = (field && field.templates && field.templates.default && field.templates.default.items) || {};
+        var empty = {};
+        Object.keys(itemsSchema).forEach(function (k) {
+          if ("default" in itemsSchema[k]) empty[k] = itemsSchema[k].default;
+        });
+        var arr = getPath(state.config, listPath);
+        if (!Array.isArray(arr)) { arr = []; setPath(state.config, listPath, arr); }
+        arr.push(empty);
+        markDirty();
+        renderConfig();
       });
-      el.addEventListener("change", function () {
-        state.configDirty = true;
-        els.cfgSaveBtn.disabled = false;
-        els.cfgSaveMsg.textContent = "";
+    });
+    els.cfgContent.querySelectorAll(".tmpl-del").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var listPath = btn.closest(".tmpl-list").dataset.list;
+        var idx = Number(btn.dataset.del);
+        var arr = getPath(state.config, listPath);
+        if (Array.isArray(arr)) {
+          arr.splice(idx, 1);
+          markDirty();
+          renderConfig();
+        }
       });
     });
   }
 
+  function cssEsc(s) {
+    return String(s).replace(/["\\]/g, "\\$&");
+  }
+
+  function markDirty() {
+    state.configDirty = true;
+    els.cfgSaveBtn.disabled = false;
+    els.cfgSaveMsg.textContent = "";
+  }
+
   function readConfigForm() {
-    var cfg = JSON.parse(JSON.stringify(state.config));
-    els.cfgContent.querySelectorAll("[data-key]").forEach(function (el) {
-      var key = el.dataset.key;
-      var val = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
-      // set nested key
-      var parts = key.split(".");
-      var obj = cfg;
-      for (var i = 0; i < parts.length - 1; i++) {
-        if (!obj[parts[i]] || typeof obj[parts[i]] !== "object") obj[parts[i]] = {};
-        obj = obj[parts[i]];
+    var cfg = JSON.parse(JSON.stringify(state.config || {}));
+    els.cfgContent.querySelectorAll("[data-path]").forEach(function (el) {
+      var path = el.dataset.path;
+      var raw = el.type === "checkbox" ? el.checked : el.value;
+      var val;
+      if (el.type === "checkbox") {
+        val = el.checked;
+      } else if (el.type === "number" || el.dataset.num === "1") {
+        val = raw === "" ? null : Number(raw);
+      } else {
+        val = el.value;
       }
-      obj[parts[parts.length - 1]] = val;
+      setPath(cfg, path, val);
     });
     return cfg;
   }
@@ -228,7 +369,7 @@
     setButtonBusy(els.cfgSaveBtn, true, "保存中…", "保存配置");
     try {
       var cfg = readConfigForm();
-      await apiPost("config", cfg);
+      await apiPost("config", { config: cfg });
       state.config = cfg;
       state.configDirty = false;
       els.cfgSaveBtn.disabled = true;
@@ -308,7 +449,7 @@
     try {
       var params = {};
       var q = els.galSearch.value.trim();
-      if (q) params.q = q;
+      if (q) params.keyword = q;
       if (els.galType.value) params.type = els.galType.value;
       if (els.galStarred.checked) params.starred = "1";
       var data = await apiGet("gallery/search", params);

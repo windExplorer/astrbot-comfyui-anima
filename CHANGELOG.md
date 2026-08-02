@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.4
+
+- **重写 WebUI 两大核心功能，使其真正可用**：
+  - **配置编辑器基于 `_conf_schema.json` 重写**：原来把 config 当黑盒拍平成几十上百个裸输入框（卡死、无说明、保存不了）。现改为读取插件配置 schema，按字段类型结构化渲染：分组（section）、嵌套对象、布尔开关（switch）、数字+滑块联动（slider）、多行文本，以及 `template_list` 类型（ComfyUI 服务器列表 / LoRA 库 / 工作流列表）支持可视化增删条目。每个字段展示 description 与默认值 hint，修改即标脏、可一键保存。保存时按 schema 结构构造完整 config 回传（`/config`，body 为 `{config: ...}`）。
+  - **图库管理真正可用**：修复了搜索参数名错误（`q` → `keyword`，与后端 `/gallery/search` 对齐）导致搜索无效的问题；进入图库视图自动加载列表（缩略图走 `data_url`，不依赖外部路径）；支持按关键字/类型/仅收藏筛选、点击放大预览（含 prompt、参数、LoRA、种子、来源等元信息）、收藏/取消收藏、删除（带确认弹窗）。
+  - 后端新增 `/schema` 接口返回 `_conf_schema.json`；`/gallery/search` 增加 `offset` 分页参数（image_store.search 同步支持）。
+
 ## v2.2.3
 
 - **移除 WebUI 中多余的「调试」模块（连 ComfyUI 服务器的功能）**。该模块是之前自行添加的画蛇添足：列出 ComfyUI 服务器、`/servers` 与 `/test_server` 路由、以及「测试连接」按钮。ComfyUI 连通性本应由插件自身运行验证，不应在控制台里让人手动连服务器。现前端删除调试视图/导航/相关代码，后端删除 `servers`、`test_server` 两个路由与 `aiohttp` 依赖。控制台仅保留配置、日志、图库三块。

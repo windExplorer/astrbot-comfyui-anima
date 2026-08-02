@@ -124,6 +124,44 @@ body{
 .form-msg.ok{color:var(--success)}
 .form-msg.err{color:var(--danger)}
 
+/* 基于 schema 的结构化配置 */
+.cfg-sections{display:flex;flex-direction:column;gap:18px}
+.cfg-section{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-card);overflow:hidden}
+.cfg-section-title{display:flex;align-items:baseline;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg-raised)}
+.cfg-section-title h3{margin:0;font-size:.95rem;color:var(--text);font-weight:700}
+.cfg-section-title span{font-size:.78rem;color:var(--text-muted)}
+.cfg-section-body{padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+.cfg-group{display:flex;flex-direction:column;gap:12px;padding-left:8px;border-left:2px solid var(--border)}
+.cfg-sub{display:flex;flex-direction:column;gap:5px}
+.cfg-sub h4{margin:0;font-size:.82rem;color:var(--text-secondary);font-weight:600}
+.cfg-field-head{display:flex}
+.cfg-field-head input[type="text"],.cfg-field-head input[type="number"],.cfg-field-head textarea{flex:1}
+.fh-desc{margin:0;font-size:.76rem;color:var(--text-secondary);line-height:1.4}
+.fh-hint{margin:2px 0 0;font-size:.72rem;color:var(--text-muted);font-family:var(--font-mono)}
+
+/* 开关 */
+.switch{position:relative;display:inline-block;width:44px;height:24px;flex:0 0 auto}
+.switch input{opacity:0;width:0;height:0}
+.slider-ui{position:absolute;inset:0;background:var(--bg-raised);border:1px solid var(--border);border-radius:999px;transition:.2s;cursor:pointer}
+.slider-ui:before{content:"";position:absolute;height:18px;width:18px;left:2px;top:2px;background:var(--text-muted);border-radius:50%;transition:.2s}
+.switch input:checked + .slider-ui{background:var(--accent);border-color:var(--accent)}
+.switch input:checked + .slider-ui:before{transform:translateX(20px);background:#fff}
+
+/* 数字 + 滑块联动 */
+.num-slider{display:flex;align-items:center;gap:10px;flex:1}
+.num-slider input[type="range"]{flex:1;accent-color:var(--accent)}
+.num-slider input[type="number"]{width:90px;flex:0 0 auto}
+
+/* template_list（服务器/LoRA/工作流） */
+.tmpl-list{display:flex;flex-direction:column;gap:10px}
+.tmpl-item{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);overflow:hidden}
+.tmpl-head{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--bg-raised);border-bottom:1px solid var(--border);font-size:.82rem;font-weight:600;color:var(--text)}
+.tmpl-del{padding:3px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--danger);font-size:.76rem;cursor:pointer}
+.tmpl-del:hover{border-color:var(--danger)}
+.tmpl-body{padding:10px;display:flex;flex-direction:column;gap:10px}
+.tmpl-add{margin-top:4px;padding:8px 14px;border:1px dashed var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--accent);font-size:.82rem;cursor:pointer;align-self:flex-start}
+.tmpl-add:hover{border-color:var(--accent);background:var(--accent-light)}
+
 /* logs */
 .logs-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
 .logs-toolbar select,.logs-toolbar input[type="search"]{

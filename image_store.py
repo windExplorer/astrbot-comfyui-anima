@@ -360,6 +360,7 @@ class ImageStore:
         session=None,
         starred_only: bool = False,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。"""
         if not self.enabled() or not _HAS_SQLITE:
@@ -379,8 +380,9 @@ class ImageStore:
             args.append(type)
         if starred_only:
             sql += " AND starred=1"
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         args.append(int(limit))
+        args.append(int(offset))
         try:
             rows = conn.execute(sql, args).fetchall()
         except Exception as e:
