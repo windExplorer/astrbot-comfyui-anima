@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.1.4
+
+- **修复打包脚本 `build_zip.ps1` 因相对路径导致 `pages/` 目录漏打包的 bug**。原脚本 `Compress-Archive -Path "pages"` 依赖当前工作目录，若脚本在非插件根目录下执行则找不到目录，导致 zip 包中缺失 `pages/`，Dashboard 自然看不到 WebUI 入口。现改为全部使用基于 `$PSScriptRoot` 的绝对路径 + `-LiteralPath`，确保任意位置执行都能正确打包。同时补充了之前漏掉的 `workflow/` 目录。
+- 升级后请重新上传 zip 安装，重启 AstrBot 即可在插件卡片上看到「打开WebUI」按钮。
+
 ## v2.1.3
 
 - **严格对齐 AstrBot 官方插件页面文档与伴侣插件**，重写 Dashboard WebUI 的桥接与接口协议：

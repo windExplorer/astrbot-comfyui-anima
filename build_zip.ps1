@@ -29,7 +29,7 @@ if (Test-Path $zipPath) {
     Write-Host $errMsg -ForegroundColor Red
     exit 1
 }
-$files = @(
+$relativeFiles = @(
     "_conf_schema.json",
     "main.py",
     "webui_api.py",
@@ -41,21 +41,23 @@ $files = @(
     "requirements.txt",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE",
-    "pages"
+    "LICENSE"
 )
-$missing = @()
-foreach ($f in $files) {
-    if (-not (Test-Path (Join-Path $root $f))) {
-        $missing += $f
-    }
+$dirFiles = @(
+    "pages",
+    "workflow"
+)
+$files = @()
+foreach ($f in $relativeFiles) {
+    $p = Join-Path $root $f
+    if (Test-Path $p) { $files += $p } else { Write-Host "Missing file: $p" -ForegroundColor Red; exit 1 }
 }
-if ($missing.Count -gt 0) {
-    $missMsg = "Missing files: " + ($missing -join ", ")
-    Write-Host $missMsg -ForegroundColor Red
-    exit 1
+foreach ($d in $dirFiles) {
+    $p = Join-Path $root $d
+    if (Test-Path $p) { $files += $p } else { Write-Host "Missing dir: $p" -ForegroundColor Red; exit 1 }
 }
-Compress-Archive -Path $files -DestinationPath $zipPath -Force
+# Use -LiteralPath with absolute paths to avoid CWD-dependent resolution
+Compress-Archive -LiteralPath $files -DestinationPath $zipPath -Force
 if (Test-Path $zipPath) {
     $size = (Get-Item $zipPath).Length
     $kb = [math]::Round($size / 1024, 1)
