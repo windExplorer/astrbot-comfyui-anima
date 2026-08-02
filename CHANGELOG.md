@@ -2,9 +2,9 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
-## v2.0.2
+## v2.1.0
 
-- **新增 Anima 控制台 WebUI**。参考 `astrbot_plugin_private_companion` 的页面机制，在 `metadata.yaml` 的 `pages:` 声明 `anima-console` 页面（AstrBot 自动挂载到 `/pages/astrbot_plugin_comfyui_anima/anima-console/`），并新增后端 `webui_api.py` 与前端点 `pages/anima-console/index.html`。控制台包含四个模块：
+- **新增 Anima 控制台 WebUI（大更新）**。参考 `astrbot_plugin_private_companion` 的页面机制，在 `metadata.yaml` 的 `pages:` 声明 `anima-console` 页面（AstrBot 自动挂载到 `/pages/astrbot_plugin_comfyui_anima/anima-console/`），并新增后端 `webui_api.py` 与前端点 `pages/anima-console/index.html`。控制台包含四个模块：
   - **配置**：在线读取/编辑/保存 `_conf_schema.json` 对应的插件配置（JSON 编辑器，保存即生效）。
   - **日志**：实时读取插件运行日志（内存环形缓冲 + `data_dir/webui.log`，支持自动刷新、行数选择）。
   - **调试**：列出已配置的 ComfyUI 服务器并一键测试连通性（调用 `/system_stats`，附带节点数）。
