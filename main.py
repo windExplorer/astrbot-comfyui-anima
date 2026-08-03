@@ -2340,14 +2340,21 @@ class ComfyUIDrawPlugin(Star):
         if init_images:
             logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
         else:
-            logger.info("[取图] llm_draw 未取到任何参考图，按文生图处理")
-
-        # 注意：图生图只认「本次消息/引用里带了图、或 image 参数显式给了图」，
-        # 一律不翻历史消息缓存（g_last_received / g_last_generated），避免把本插件
-        # 之前生成的图、或会话中途残留的图片误当成参考图，导致：
-        #   1) 纯续画（"再来一张"）被误判为图生图而找用户要图；
-        #   2) 工作流被错误切到 default_img2img_workflow（如"动漫"突然变"真人"）。
-        # 因此此处刻意不启用任何基于历史缓存的兜底取图。
+            # 兜底：本次消息/引用/_last_event 都没取到图时，退回「本会话用户最近发来的图」
+            # （g_last_received，在 LLM 工具调用前趁图还在时已缓存）。
+            # 典型场景：用户先发一张图，AI 用自己的话总结并调用本工具做图生图，此时工具
+            # 收到的 event 是 AI 的纯文本回复、图片既未被引用也没被带入 event，但用户确实
+            # 刚发过图——这种"用户当前意图的参考图"兜底合理（用户发图对话本身即图生图意图）。
+            # 注意：刻意不回退「本插件自己生成的图」(g_last_generated)，避免续画/上次出图
+            # 被误当成图生图参考图导致结果污染、或工作流被错误切到图生图默认流。
+            sid = getattr(event, "session_id", "") or ""
+            for p in (g_last_received.get(sid) or []):
+                if p and os.path.exists(p) and p not in init_images:
+                    init_images.append(p)
+            if init_images:
+                logger.info(f"[取图] llm_draw 启用兜底图片（本会话用户最近收到）: {init_images}")
+            else:
+                logger.info("[取图] llm_draw 未取到任何参考图，按文生图处理")
 
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
@@ -2754,15 +2761,21 @@ class ComfyUIDrawPlugin(Star):
                     init_images.append(ep)
 
         if not init_images:
-            # 关键修正：图生图工具不再回退到「本插件历史生成图 / 会话历史收到图」缓存。
-            # 旧逻辑会拿上一张旧图当参考图，导致两种误导：
-            #   1) 用户纯文字让 AI「改图」但本次根本没发图时，工具仍带着旧图跑图生图，
-            #      表现为「AI 没取图就用图生图工作流」；
-            #   2) 参考图与用户当前意图无关，结果离谱。
-            # 现在只认「image 参数 + 本次消息/引用里的图 + LLM 调用前趁图还在时缓存的
-            # _last_event」；都没有就明确报错，让 AI 自己意识到需要用户先发图，
-            # 而不是用一张来路不明的旧图静默出图。
-            return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
+            # 兜底：本次消息/引用/_last_event 都没取到图时，退回「本会话用户最近发来的图」
+            # （g_last_received，在 LLM 工具调用前趁图还在时已缓存到）。
+            # 典型场景：用户先发一张图，AI 用自己的话总结并调用本工具做图生图，此时工具
+            # 收到的 event 是 AI 的纯文本回复、图片消息既未被引用也没被带入 event，
+            # 但用户确实刚发过图——这种"用户当前意图的参考图"兜底合理。
+            # 注意：特意不回退「本插件自己生成的图」(g_last_generated)，避免把续画/上次出图
+            # 误当成图生图参考图导致结果污染。
+            sid = getattr(event, "session_id", "") or ""
+            for p in (g_last_received.get(sid) or []):
+                if p and os.path.exists(p) and p not in init_images:
+                    init_images.append(p)
+            if init_images:
+                logger.info(f"[取图] 启用兜底图片（本会话用户最近收到）: {init_images}")
+            else:
+                return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
         # ── 决定工作流 ─────────────────────────────────────────────
         # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图
