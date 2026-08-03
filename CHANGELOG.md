@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.43
+
+- **改善「AI 总是找不对工作流」的问题**：
+  1. `_resolve_workflow` 匹配更宽容：名称匹配增加**大小写不敏感 + 去除首尾空格**（AI 常把 `Default` 写成 `default` 之类）；并保留按文件名（`workflow_name`，带/不带 `.json`）回退。
+  2. 工作流找不到时，**报错提示里列出所有可用工作流名**（如 `找不到名为「xx」的工作流。可用工作流：sd、sdxl、manga。`），让用户/AI 一眼看出该传哪个名字。
+  3. `comfyui_draw`/`comfyui_img2img` 的 `workflow`/`img2img_workflow` 参数描述加强：必须用 `comfyui_workflows` 查询返回的**确切名称**，禁止凭记忆/猜测，否则会找不到工作流。
+
 ## v2.2.42
 
 - **LLM 工具执行异常不再冒泡成 AstrBot 的「调用工具报错」**：此前若 `comfyui_draw`/`comfyui_img2img` 内部有未捕获异常，会直接抛到 AstrBot，用户在对话里只看到笼统的「工具调用报错」，无法定位。现给两个工具加 `_safe_llm_tool` 装饰器：
