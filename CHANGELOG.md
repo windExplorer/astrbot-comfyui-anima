@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.40
+
+- **恢复 LLM 绘图工具的高级参数暴露给大模型**：此前 v1.2.5 为"降低空 JSON 概率"曾把 `comfyui_draw`/`comfyui_img2img` 暴露给大模型的参数精简为仅 `prompt/negative_prompt/workflow/img2img_workflow`，导致大模型**无法主动传宽高、LoRA、seed、denoise、参考图**（例如用户要求"画一张 1024x768 的图""固定种子复现"时无从传达）。
+  1. `llm_draw` 的 `Args:` 重新暴露 `width(number)/height(number)/loras(array[string])/seed(number)/image(string)/denoise(number)`；
+  2. `llm_img2img` 的 `Args:` 重新暴露 `loras(array[string])/seed(number)/image(string)/denoise(number)`；
+  3. 二次提取（`_llm_extract_args`）的 spec 与回填逻辑同步补上 `width/height/seed/denoise`，模型空参数时仍能从用户原话兜底提取；
+  4. 参数传递链路确认：`llm_draw` 已将 `width/height/seed/denoise/loras` 传给 `_do_draw`（`width or None`、`seed or None`、`denoise if denoise >= 0 else None`），模型传入即可生效。
+  - 保留 `prompt` 必填保护：模型未填 prompt 时仍走二次提取/原始消息兜底，避免"参数空洞"死循环。
+  - 兼容性：`width(number)`/`loras(array[string])` 等类型均在 AstrBot `SUPPORTED_TYPES` 内，注册校验通过，不影响工具加载。
+
 ## v2.2.39
 
 - **修复 WebUI 图库/出图记录图片全部加载不出来（图库空白）**：根因是后端 `gallery_search` / `get_records` 返回的 `thumb`/`thumb_url` 用了**裸路径** `/{插件名}/gallery/image?sha=...`，而 AstrBot 的插件 API 实际挂在 `/api/v1/plugins/extensions/<插件名>/...` 下且需登录 token，浏览器 `<img>` 直连该裸路径 → 404/401 → 图加载不出来。同时大图弹窗 `imageUrl()` 也用了同款裸路径，点开大图同样空白。

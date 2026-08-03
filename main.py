@@ -2321,9 +2321,16 @@ class ComfyUIDrawPlugin(Star):
             negative_prompt(string): 负向提示词，可选，不填则留空。
             workflow(string): 文生图时的工作流名称，可选，留空使用文生图默认工作流。
             img2img_workflow(string): 图生图时的工作流名称，可选。仅当消息附带参考图时生效。
+            width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
+            height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
+            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
+            seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
+            image(string): 图生图参考图的 URL。仅当用户在消息里明确附带了图片且需要按该图变换时传入；多数情况用户直接发图时无需传此参数，插件会自动从消息/会话提取图片。
+            denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
-        注意：width/height/loras/seed/denoise 等高级参数已内置默认值，无需在工具参数中填写；
-        若消息带了图片，插件会自动切换为图生图模式，无需手动指定 image 参数。
+        补充说明：
+        - 用户未明确要求宽高/lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
+        - 图生图：即使不传 image，只要用户消息/会话里有图，插件也会自动提取做参考图。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
@@ -2357,7 +2364,8 @@ class ComfyUIDrawPlugin(Star):
                     "workflow(string): 文生图工作流名，可选。\n"
                     "img2img_workflow(string): 图生图工作流名，可选。\n"
                     "loras(string): LoRA 名称列表，可选。\n"
-                    "width(int): 宽度，可选。height(int): 高度，可选。",
+                    "width(int): 宽度，可选。height(int): 高度，可选。\n"
+                    "seed(int): 随机种子，可选。denoise(float): 降噪幅度0~1，可选。",
                 )
                 if extracted and extracted.get("prompt"):
                     prompt = str(extracted["prompt"]).strip()
@@ -2370,6 +2378,17 @@ class ComfyUIDrawPlugin(Star):
                         img2img_workflow = str(extracted["img2img_workflow"])
                     if extracted.get("loras") and not loras:
                         loras = extracted["loras"]
+                    try:
+                        if extracted.get("width") is not None and not width:
+                            width = int(extracted["width"])
+                        if extracted.get("height") is not None and not height:
+                            height = int(extracted["height"])
+                        if extracted.get("seed") is not None and not seed:
+                            seed = int(extracted["seed"])
+                        if extracted.get("denoise") is not None and not denoise:
+                            denoise = float(extracted["denoise"])
+                    except (TypeError, ValueError):
+                        pass
             if not prompt or not prompt.strip():
                 if user_text:
                     prompt = self._strip_command(user_text, "draw")
@@ -2836,9 +2855,14 @@ class ComfyUIDrawPlugin(Star):
             negative_prompt(string): 负向提示词，可选，不填则留空。
             img2img_workflow(string): 图生图专用工作流名称，可选。按上文「工作流选择规则」选择；
                 不传则自动用图生图默认工作流（建议先调用 comfyui_workflows 确认可用工作流）。
+            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
+            seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
+            image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
+            denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
-        注意：loras/seed/denoise 等高级参数已内置默认值，无需在工具参数中填写；
-        参考图请直接附在用户消息里，插件会自动提取，无需手动指定 image 参数。
+        补充说明：
+        - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
+        - 参考图通常附在用户消息里即可，插件会自动提取；无需强求大模型传 image 参数。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
@@ -2868,7 +2892,8 @@ class ComfyUIDrawPlugin(Star):
                     "prompt(string): 基于参考图的变换/生成描述（必填）。\n"
                     "negative_prompt(string): 负向提示词，可选。\n"
                     "img2img_workflow(string): 图生图工作流名，可选。\n"
-                    "loras(string): LoRA 名称列表，可选。",
+                    "loras(string): LoRA 名称列表，可选。\n"
+                    "seed(int): 随机种子，可选。denoise(float): 降噪幅度0~1，可选。",
                 )
                 if extracted and extracted.get("prompt"):
                     prompt = str(extracted["prompt"]).strip()
@@ -2878,6 +2903,13 @@ class ComfyUIDrawPlugin(Star):
                         img2img_workflow = str(extracted["img2img_workflow"])
                     if extracted.get("loras") and not loras:
                         loras = extracted["loras"]
+                    try:
+                        if extracted.get("seed") is not None and not seed:
+                            seed = int(extracted["seed"])
+                        if extracted.get("denoise") is not None and not denoise:
+                            denoise = float(extracted["denoise"])
+                    except (TypeError, ValueError):
+                        pass
             if not prompt or not prompt.strip():
                 if user_text:
                     prompt = self._strip_command(user_text, "img2img")
