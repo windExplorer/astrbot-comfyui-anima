@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.33
+
+- **修复图生图提交 ComfyUI 报 400 Bad Request**：注入参考图时把 `[filename, subfolder, type]` 三元组写进了 `LoadImage` 节点的 `image` 输入，但标准 `LoadImage` 在 `/prompt` API 下 `image` 输入期望**字符串文件名**；三元组是节点间连线的引用格式，当单输入框值会直接 400。这是 v2.2.29 把文件名改三元组引入的回归（v1.0.69 当年改字符串后 400 即消失，方向本就正确）。现改回只传字符串文件名——`upload_image` 已把图写到 `type=input` 目录，LoadImage 凭文件名即可在 input 目录找到。注意：v2.2.29 那个 "Permission denied" 是远端 ComfyUI `input` 目录权限问题，与用字符串还是三元组无关，不应因此改格式。
+
 ## v2.2.32
 
 - **修复「AI 总结后调图生图但图片没传过来」导致按文生图提交（LoadImage 为空）**：用户先发一张图，AI 用自己的话总结并调用 `comfyui_draw` / `comfyui_img2img` 做图生图时，工具收到的 event 是 AI 的纯文本回复，图片既未被引用也没被带入 event，`_extract_images` 取不到（日志表现为「消息组件共 1 个 -> Plain」「未取到任何参考图，按文生图处理」）。v2.2.31 一刀切删掉历史兜底后，这种合理场景也失败了。现恢复「本会话用户最近发来的图」(`g_last_received`) 兜底——该缓存在 LLM 工具调用前趁图片还在时已由 `_capture_llm_event` 写入，正好覆盖"用户刚发图、AI 随后调用绘图工具"的场景。仍**不回退本插件自己生成的图** (`g_last_generated`)，避免续画/上次出图被误当图生图参考图。

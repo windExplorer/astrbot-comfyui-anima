@@ -49,8 +49,10 @@ class ComfyUIClient:
     async def upload_image(self, path: str, image_type: str = "input") -> dict:
         """上传一张本地图片到 ComfyUI 的 /upload/image，返回接口 JSON 中的图片引用信息。
 
-        返回形如 {"name": "abc.png", "subfolder": "", "type": "input"}，可直接作为
-        LoadImage 节点的 image 输入（[name, subfolder, type]），用于图生图（img2img）。
+        返回形如 {"name": "abc.png", "subfolder": "", "type": "input"}。
+        注意：标准 LoadImage 节点在 /prompt API 下 image 输入应为**字符串文件名**（info["name"]），
+        而非 [name, subfolder, type] 三元组（三元组是节点间连线引用格式，当单输入框值会 400）。
+        上传已写到 type=input 目录，调用方取 info["name"] 作为 image 输入即可。
         """
         session = await self._session_get()
         try:

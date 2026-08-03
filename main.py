@@ -1084,23 +1084,18 @@ class ComfyUIDrawPlugin(Star):
             try:
                 for img_path in init_images:
                     info = await client.upload_image(img_path)
-                    # ComfyUI 的 LoadImage 节点 image 输入约定为 [filename, subfolder, type]
-                    # 三元组（部分加载类节点在只给裸文件名时会把 input 目录当路径解析，导致
-                    # "Permission denied: .../input"）。这里用上传接口返回的标准三元组，
-                    # 避免裸字符串被错误解析。
+                    # ComfyUI 标准 LoadImage 节点在 /prompt API 下，image 输入期望「字符串文件名」
+                    # （不是 [name, subfolder, type] 三元组——三元组是节点间连线的引用格式，
+                    # 当作单个 image 输入框的值会直接导致 400 Bad Request）。
+                    # 上传接口已把图片写到 type=input 目录，这里只传文件名即可。
                     image_name = (
                         info.get("name")
                         or info.get("filename")
                         or os.path.basename(img_path)
                     )
-                    image_tuple = [
-                        image_name,
-                        info.get("subfolder", "") or "",
-                        info.get("type", "input") or "input",
-                    ]
-                    workflow_builder.set_image_node(prompt, load_node, image_tuple)
+                    workflow_builder.set_image_node(prompt, load_node, image_name)
                     logger.info(
-                        f"已注入参考图到节点 {load_node}: {img_path} -> {image_tuple}"
+                        f"已注入参考图到节点 {load_node}: {img_path} -> {image_name}"
                     )
             except Exception as e:
                 await self._send(event, self._friendly_error(e, "上传参考图"))
