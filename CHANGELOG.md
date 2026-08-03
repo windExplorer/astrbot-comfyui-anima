@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.38
+
+- **修复图生图引用图解析失败时「服务器有图却用不上」**：用户引用本插件之前生成的图做图生图时，引用图走平台 `get_msg` API 拉取，常因协议不支持而失败（"本地读不到"）；但那张图其实就在 AstrBot 部署服务器的 `gallery/` 目录里、路径也已记录在 `g_last_generated[sid]`。此前 `comfyui_img2img` / `llm_draw` 取图兜底**刻意跳过**了本插件生成的图，导致明明服务器有图却取不到。现增加三级兜底：在用户发来的图、历史图都取不到时，回退到**本会话最近 1 张本插件生成的图**（服务器本地 gallery 路径，含存在性校验），限定本会话+最近1张以压低误用旧图风险。典型场景：引用 AI 刚生成的图、平台拉不到引用消息时，直接从服务器取图做参考图。
+
 ## v2.2.37
 
 - **修复 v2.2.36 启动报错 `filter has no attribute 'on_message'`**：本版本 AstrBot 的 `astrbot.api.event.filter` 未提供 `on_message` 装饰器（仅有 `on_agent_begin` / `on_llm_request` / `on_using_llm_tool` 等）。将新增的「每条用户消息抓图」钩子由 `@filter.on_message()` 改为 `@filter.on_agent_begin()`——它在本条用户消息进入 LLM 前仅触发一次，event 即为用户原始消息（含图片与引用图），同样能在最早时机把图写入 `g_recent_user_images` 滚动缓存，覆盖前一条消息图与引用图未回填的兜底需求。

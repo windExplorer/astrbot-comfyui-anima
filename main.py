@@ -2444,8 +2444,18 @@ class ComfyUIDrawPlugin(Star):
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
                         break
+            # 三级兜底：本会话「本插件最近生成的图」——这些图就在 AstrBot 部署服务器本地
+            # 的 gallery/ 目录里（archive_image 归档后路径记录在 g_last_generated）。
+            # 典型场景：用户引用了 AI 之前生成的图做图生图，但平台 get_msg 拉不到引用消息、
+            # 引用图解析失败；此时服务器上明明有这张图，直接用它做参考图即可，无需再走平台。
+            # 限定「本会话 + 最近 1 张」避免把很早以前的旧图误当参考图。
+            if not init_images:
+                for p in (list(reversed(g_last_generated.get(sid) or []))[:1]):
+                    if p and os.path.exists(p) and p not in init_images:
+                        init_images.append(p)
+                        break
             if init_images:
-                logger.info(f"[取图] llm_draw 启用兜底图片（本会话用户最近收到/历史）: {init_images}")
+                logger.info(f"[取图] llm_draw 启用兜底图片（本会话用户最近收到/历史/生成图）: {init_images}")
             else:
                 logger.info("[取图] llm_draw 未取到任何参考图，按文生图处理")
 
@@ -2927,8 +2937,18 @@ class ComfyUIDrawPlugin(Star):
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
                         break
+            # 三级兜底：本会话「本插件最近生成的图」——这些图就在 AstrBot 部署服务器本地
+            # 的 gallery/ 目录里（archive_image 归档后路径记录在 g_last_generated）。
+            # 典型场景：用户引用了 AI 之前生成的图做图生图，但平台 get_msg 拉不到引用消息、
+            # 引用图解析失败；此时服务器上明明有这张图，直接用它做参考图即可，无需再走平台。
+            # 限定「本会话 + 最近 1 张」避免误用旧图。
+            if not init_images:
+                for p in (list(reversed(g_last_generated.get(sid) or []))[:1]):
+                    if p and os.path.exists(p) and p not in init_images:
+                        init_images.append(p)
+                        break
             if init_images:
-                logger.info(f"[取图] 启用兜底图片（本会话用户最近收到/历史）: {init_images}")
+                logger.info(f"[取图] 启用兜底图片（本会话用户最近收到/历史/生成图）: {init_images}")
             else:
                 return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
