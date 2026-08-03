@@ -2754,24 +2754,15 @@ class ComfyUIDrawPlugin(Star):
                     init_images.append(ep)
 
         if not init_images:
-            # 兜底：事件/参数均未取到图时，退回本插件最近生成的图、或本会话用户最近发来的图。
-            # 典型场景：用户引用本插件生成的图、或引用自己发的图做图生图，但工具执行时
-            # 平台压缩临时图已被清理、event 只剩文本，导致直接取图失败。
-            sid = getattr(event, "session_id", "") or ""
-            for store in (
-                g_last_generated.get(sid) or [],
-                g_last_generated.get("__global__") or [],
-                g_last_received.get(sid) or [],
-            ):
-                for p in store:
-                    if p and os.path.exists(p) and p not in init_images:
-                        init_images.append(p)
-                if init_images:
-                    break
-            if init_images:
-                logger.info(f"[取图] 启用兜底图片（本插件生成/会话最近收到）: {init_images}")
-            else:
-                return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
+            # 关键修正：图生图工具不再回退到「本插件历史生成图 / 会话历史收到图」缓存。
+            # 旧逻辑会拿上一张旧图当参考图，导致两种误导：
+            #   1) 用户纯文字让 AI「改图」但本次根本没发图时，工具仍带着旧图跑图生图，
+            #      表现为「AI 没取图就用图生图工作流」；
+            #   2) 参考图与用户当前意图无关，结果离谱。
+            # 现在只认「image 参数 + 本次消息/引用里的图 + LLM 调用前趁图还在时缓存的
+            # _last_event」；都没有就明确报错，让 AI 自己意识到需要用户先发图，
+            # 而不是用一张来路不明的旧图静默出图。
+            return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
         # ── 决定工作流 ─────────────────────────────────────────────
         # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图

@@ -368,7 +368,9 @@ class ImageStore:
         """
         if not self.enabled() or not _HAS_SQLITE:
             return
-        sha = "fail_" + _sha256_of((reason + str(time.time())).encode("utf-8"))[:_SHA_PREFIX]
+        sha = "fail_" + hashlib.sha256(
+            (reason + str(time.time())).encode("utf-8")
+        ).hexdigest()[:_SHA_PREFIX]
         conn = self._conn_get()
         try:
             conn.execute(
