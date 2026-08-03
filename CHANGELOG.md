@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.29
+
+- **修复图生图参考图注入路径错误（导致 ComfyUI 端 `Permission denied: .../input`）**：图生图时插件把上传后的参考图以**裸文件名字符串**注入 `LoadImage` 节点的 `image` 输入，部分 ComfyUI 加载类节点会把裸字符串误解析为 `input` 目录，触发 `av.open` 打开目录的 `PermissionError`。现按 ComfyUI 官方 API 约定改为注入 `[filename, subfolder, type]` 三元组（完整使用 `upload_image` 返回信息），由 ComfyUI 正确拼出文件路径。
+
 ## v2.2.28
 
 - **修复「写入失败记录出错：'NoneType' object is not subscriptable」**：`_record_failed` 在出图失败时写失败记录，但工作流名/用户信息取值不够健壮，偶发崩溃。现改为统一安全取法（`_wf_name` 兼容 dict/None/其他类型；用户信息取值防御 event 为 None），并在异常时打印完整栈（`exc_info=True`）+ 参数类型，便于下次精准定位。失败记录不再因崩溃而丢失。
