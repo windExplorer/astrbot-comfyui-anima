@@ -111,15 +111,27 @@ class ComfyUIClient:
 
 
 def extract_images(history_entry: dict, output_node: str | None = None) -> list[dict]:
-    """从任务历史条目中提取输出图片列表。"""
+    """从任务历史条目中提取输出图片列表。
+
+    兼容 outputs[...].images（SaveImage 等）与 outputs[...].gifs（VideoCombine /
+    AnimateDiff 等动图节点），降低「任务完成但未找到输出图片节点」的误报。
+    """
+
+    def _imgs(out):
+        if not isinstance(out, dict):
+            return None
+        imgs = out.get("images") or out.get("gifs") or []
+        return imgs if imgs else None
+
     if not history_entry:
         return []
     outputs = history_entry.get("outputs", {})
     if output_node and output_node in outputs:
-        images = outputs[output_node].get("images", [])
-        if images:
-            return images
+        imgs = _imgs(outputs[output_node])
+        if imgs:
+            return imgs
     for _node_id, out in outputs.items():
-        if isinstance(out, dict) and out.get("images"):
-            return out["images"]
+        imgs = _imgs(out)
+        if imgs:
+            return imgs
     return []

@@ -905,6 +905,15 @@ class ComfyUIDrawPlugin(Star):
         yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
         await event.send(MessageChain([Plain(str(text))]))
 
+    @staticmethod
+    def _wf_name(wf):
+        """安全取工作流名：兼容 dict / None / 其他类型，避免下标/属性访问崩溃。"""
+        if not wf:
+            return ""
+        if isinstance(wf, dict):
+            return wf.get("name") or ""
+        return getattr(wf, "name", "") or ""
+
     def _record_failed(
         self, event, positive, wf, is_img2img, ref_sha256, draw_start, reason
     ) -> None:
@@ -912,20 +921,28 @@ class ComfyUIDrawPlugin(Star):
         try:
             if self.gallery is None:
                 return
+            user_id = getattr(event, "user_id", "") or "" if event is not None else ""
+            user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
+            user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
+            trigger = getattr(event, "message_str", "") or "" if event is not None else ""
             self.gallery.add_failed_record(
                 prompt=(positive or ""),
                 prompt_raw=(positive or ""),
-                workflow=(wf.get("name") if wf else "") or "",
+                workflow=self._wf_name(wf),
                 is_img2img=bool(is_img2img),
                 ref_sha256=(ref_sha256 or ""),
                 cost_sec=(time.time() - draw_start) if draw_start else None,
-                user_id=(getattr(event, "user_id", "") or ""),
-                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
-                trigger_msg=(getattr(event, "message_str", "") or ""),
+                user_id=user_id,
+                user_name=user_name,
+                trigger_msg=trigger,
                 reason=(reason or ""),
             )
         except Exception as e:
-            logger.warning(f"[图库] 写入失败记录出错（忽略）: {e}")
+            logger.warning(
+                f"[图库] 写入失败记录出错（忽略）: {e} | "
+                f"wf={type(wf).__name__} event={type(event).__name__}",
+                exc_info=True,
+            )
 
     @staticmethod
     def _classify_error(exc: Exception) -> str:

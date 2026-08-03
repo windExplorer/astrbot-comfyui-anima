@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.28
+
+- **修复「写入失败记录出错：'NoneType' object is not subscriptable」**：`_record_failed` 在出图失败时写失败记录，但工作流名/用户信息取值不够健壮，偶发崩溃。现改为统一安全取法（`_wf_name` 兼容 dict/None/其他类型；用户信息取值防御 event 为 None），并在异常时打印完整栈（`exc_info=True`）+ 参数类型，便于下次精准定位。失败记录不再因崩溃而丢失。
+- **降低「任务完成但未找到输出图片节点」误报**：`extract_images` 此前只认 `outputs[...].images`。部分工作流（VideoCombine / AnimateDiff 等）用 `gifs` 字段输出，导致明明出图却被判为无图。现兼容 `images` 与 `gifs`，减少无图误报。
+
 ## v2.2.27
 
 - **大图详情面板补充「工作流」字段**：之前只显示类型，缺少生成该图所用的工作流名称。数据库 `images.workflow` 字段本来就有数据（`get_by_sha` 的 `meta` 也已返回），是前端 `openImage` 漏渲染了。现已在「类型」之后追加显示工作流名称。
