@@ -1138,12 +1138,26 @@ class ComfyUIDrawPlugin(Star):
 
         # 图生图：把参考图注入到工作流的 LoadImage 节点
         if init_images:
-            load_node = wf.get("image_node") or workflow_builder.find_node_by_class(
-                prompt, "LoadImage"
+            load_node = wf.get("image_node") or workflow_builder.find_image_loader_node(
+                prompt
             )
             if not load_node:
+                # 没找到图加载节点：列出现有「可能」是图加载的节点，方便用户去
+                # _conf_schema 的 image_node 手动指定，避免"明明有图却没填充"的困惑。
+                candidates = [
+                    f"{nid}({node.get('class_type','?')})"
+                    for nid, node in prompt.items()
+                    if isinstance(node, dict)
+                    and any(
+                        k in (node.get("class_type") or "")
+                        for k in ("LoadImage", "ImageLoader", "LoadImageFromPath")
+                    )
+                ]
+                hint = f" 疑似图加载节点：{', '.join(candidates)}" if candidates else ""
                 await self._send(
-                    event, "呜…这个工作流没有 LoadImage 节点，没法做图生图呢～"
+                    event,
+                    "呜…这个工作流没有 LoadImage 类的图加载节点，没法做图生图呢～"
+                    f"请在插件配置的 image_node 里手动填参考图节点的键名（如 39）。{hint}",
                 )
                 return
             try:

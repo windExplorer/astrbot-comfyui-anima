@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.35
+
+- **修复「参考图没填充到工作流」**：旧逻辑只认标准 `LoadImage` 节点（`find_node_by_class(prompt, "LoadImage")`）。但很多图生图工作流用的是非标准图加载节点（如 `LoadImageFromPath` / `LoadImageV2` / `ImageLoader` 等），导致自动查找找不到 → 注入被跳过 / 报错「没有 LoadImage 节点」，参考图没填进去。
+  1. 新增 `find_image_loader_node`：优先标准 `LoadImage`，否则按 `IMAGE_LOADER_HINTS` 前缀/全称匹配常见图加载类节点；
+  2. 找不到图加载节点时，报错信息会**列出工作流里疑似图加载节点的 id**（如 `39(LoadImageFromPath)`），方便用户在插件配置的 `image_node` 里手动指定键名；
+  3. 注意：ComfyUI 前端 LoadImage 节点的 image 下拉框**不显示**通过 `/prompt` API 注入的文件名是正常现象，服务端执行时即用该文件名去 input 目录取图；以日志里「已注入参考图到节点 XX -> 文件名」为准。
+
 ## v2.2.34
 
 - **修复「对话里 AI 自动图生图、引用了用户之前发的真实照片」读不到图**：用户引用一条带图历史消息让 AI 改图时，被引用图挂在那条历史消息的 `Reply` 上，AI 调 `comfyui_draw` 时只传 `prompt`+`workflow`、既不带图也不带引用，工具拿到的 event 里 `Reply.chain` 常为空，AstrBot 引用解析器回拉到的又是带签名内网 URL，`convert_to_file_path` 下载失败 → 引用图读不到 → 静默文生图。修复：

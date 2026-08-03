@@ -78,6 +78,40 @@ def find_node_by_class(prompt: dict, class_type: str):
     return None
 
 
+# 图加载类节点的 class_type 前缀/全称（兼容非标准 LoadImage，如 LoadImageFromPath
+# / LoadImageV2 / ImageLoader 等）。图生图时用于自动定位参考图要注入的节点。
+IMAGE_LOADER_HINTS = (
+    "LoadImage",
+    "LoadImageFromPath",
+    "LoadImageV2",
+    "LoadImageWithResize",
+    "LoadImageMasked",
+    "ImageLoader",
+    "LoadImageAndResize",
+    "LoadImageFromPathString",
+)
+
+
+def find_image_loader_node(prompt: dict, prefer: str = "LoadImage"):
+    """定位工作流里用于图生图的图加载节点 ID。
+
+    策略：
+      1. 优先标准 LoadImage；
+      2. 否则按 IMAGE_LOADER_HINTS 前缀/全称匹配（兼容大量自定义图加载节点）；
+      3. 仍找不到返回 None（调用方应提示用户在 image_node 手动指定）。
+    """
+    n = find_node_by_class(prompt, prefer)
+    if n is not None:
+        return n
+    for nid, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        ct = node.get("class_type") or ""
+        if any(ct == h or ct.startswith(h) for h in IMAGE_LOADER_HINTS):
+            return nid
+    return None
+
+
 def randomize_seed(prompt: dict, seed: int | None = None) -> list[int]:
     """为工作流中所有采样器节点随机化（或固定）种子。
 
