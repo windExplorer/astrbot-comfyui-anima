@@ -2434,14 +2434,16 @@ class ComfyUIDrawPlugin(Star):
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
         # ── 收集图片（图生图参考图）─────────────────────────────────
-        # 关键修正：图生图不要求 LLM 必须传 image 参数。
-        # 用户最常见的图生图方式就是「直接发一张图 + 一句文字（如『改成水彩风』）」，
-        # 此时图片作为多模态输入连同文字一起发给大模型，LLM 不会、也不应该再传 image
-        # 参数（图片它已经"看见"了）。旧逻辑只在 image 参数存在时才去事件取图，导致这种
-        # 自然对话方式的图生图永远取不到图，最终以文生图提交、LoadImage 节点为空
-        # （表现为"图生图根本没传图片上去"）。
-        # 现改为：只要 image 参数没成功取到图，就去本次消息/引用里自动提取图片；
-        # 一旦取到图即判定为图生图，参考图直接喂给 ComfyUI 的 LoadImage 节点。
+        # 关键修正：图生图不要求 LLM 必须传 image 参数。用户最常见的图生图方式就是
+        # 「直接发一张图 + 一句文字（如『改成水彩风』）」，此时图片作为多模态输入连同文字
+        # 一起发给大模型，LLM 不会、也不应该再传 image 参数（图片它已经"看见"了）。
+        #
+        # 本次改动（v2.2.46）：严格区分「图生图」与「文生图」——
+        #   · 判定图生图的依据 = LLM 显式传了 image 参数，OR 用户本次消息/引用里真的有图。
+        #   · 历史/会话兜底（g_last_received / g_recent_user_images / g_last_generated）
+        #     只用于「已判定为图生图、但参考图还没进 event」时补图，绝不让"捞到一张旧图"
+        #     反过来把文生图误判成图生图（旧逻辑导致文生图去历史里捞图→误判→工作流无
+        #     LoadImage 节点→报错）。
         init_images: list[str] = []
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
@@ -2457,60 +2459,53 @@ class ComfyUIDrawPlugin(Star):
             else:
                 logger.warning(f"[取图] image 参数下载失败: {img_url}")
 
-        # ② 从事件中自动提取图片。
-        #    图生图不需要大模型"看懂"图片——参考图直接喂给 ComfyUI 的 LoadImage 节点。
-        #    无论是否传了 image 参数，只要还没成功取到图，就去本次消息/引用里取
-        #    （含 LLM 工具调用前趁图片还在时缓存的原始事件 _last_event 兜底）。
+        # ② 从事件中自动提取图片（本次消息/引用里的图，是"用户确实发了图"的最可靠信号）
+        event_images: list[str] = []
+        last_ev = getattr(plugin, "_last_event", None)
         if not got_explicit_image:
             event_images = await plugin._extract_images(event)
-            last_ev = getattr(plugin, "_last_event", None)
             if not event_images and last_ev is not None and last_ev is not event:
                 logger.info("[取图] llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
                 event_images = await plugin._extract_images(last_ev)
-            # 去重合并（避免 image 参数 URL 和事件里是同一张图）
-            seen = set(init_images)
-            for ep in event_images:
-                if ep not in seen:
-                    seen.add(ep)
-                    init_images.append(ep)
+        # 去重合并（避免 image 参数 URL 和事件里是同一张图）
+        seen = set(init_images)
+        for ep in event_images:
+            if ep not in seen:
+                seen.add(ep)
+                init_images.append(ep)
 
-        if init_images:
-            logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
-        else:
-            # 兜底：本次消息/引用/_last_event 都没取到图时，退回「本会话用户最近发来的图」
-            # （g_last_received，在 LLM 工具调用前趁图还在时已缓存）。
-            # 典型场景：用户先发一张图，AI 用自己的话总结并调用本工具做图生图，此时工具
-            # 收到的 event 是 AI 的纯文本回复、图片既未被引用也没被带入 event，但用户确实
-            # 刚发过图——这种"用户当前意图的参考图"兜底合理（用户发图对话本身即图生图意图）。
-            # 注意：刻意不回退「本插件自己生成的图」(g_last_generated)，避免续画/上次出图
-            # 被误当成图生图参考图导致结果污染、或工作流被错误切到图生图默认流。
+        # ③ 判定图生图：LLM 显式传图 OR 本次消息/引用里有图
+        is_img2img = got_explicit_image or bool(event_images)
+
+        # ④ 已判定图生图、但参考图还没拿到（图没进 event，如引用图解析失败）时，
+        #    才用历史/会话/生成图兜底补一张参考图。纯文生图绝不进入这里。
+        if is_img2img and not init_images:
             sid = getattr(event, "session_id", "") or ""
             for p in (g_last_received.get(sid) or []):
                 if p and os.path.exists(p) and p not in init_images:
                     init_images.append(p)
-            # 二级兜底：本会话用户「历史消息里发过的图」（覆盖前一条消息发的图、
-            # 引用图未回填等场景）。仅当上面 g_last_received 仍为空时才启用，
-            # 且只取最近 1 张，避免把很久以前的旧图也混进来。
             if not init_images:
                 hist = list(reversed(g_recent_user_images.get(sid) or []))
                 for p in hist[:1]:
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
                         break
-            # 三级兜底：本会话「本插件最近生成的图」——这些图就在 AstrBot 部署服务器本地
-            # 的 gallery/ 目录里（archive_image 归档后路径记录在 g_last_generated）。
-            # 典型场景：用户引用了 AI 之前生成的图做图生图，但平台 get_msg 拉不到引用消息、
-            # 引用图解析失败；此时服务器上明明有这张图，直接用它做参考图即可，无需再走平台。
-            # 限定「本会话 + 最近 1 张」避免把很早以前的旧图误当参考图。
             if not init_images:
                 for p in (list(reversed(g_last_generated.get(sid) or []))[:1]):
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
                         break
             if init_images:
-                logger.info(f"[取图] llm_draw 启用兜底图片（本会话用户最近收到/历史/生成图）: {init_images}")
+                logger.info(f"[取图] llm_draw 图生图补图兜底（历史/会话/生成图）: {init_images}")
             else:
-                logger.info("[取图] llm_draw 未取到任何参考图，按文生图处理")
+                logger.info("[取图] llm_draw 已判定图生图但未取到参考图，尝试无图提交")
+
+        if init_images:
+            logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
+        elif is_img2img:
+            logger.info("[取图] llm_draw 图生图模式但无参考图可用")
+        else:
+            logger.info("[取图] llm_draw 文生图模式（未取图）")
 
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
@@ -2518,7 +2513,12 @@ class ComfyUIDrawPlugin(Star):
         #   image + workflow          → 用 workflow（语义匹配）
         #   image + 都没传            → 默认图生图工作流
         #   无 image                  → workflow 或默认文生图工作流
-        is_img2img = bool(init_images)
+        # is_img2img 已在取图段判定（LLM 显式传 image OR 本次消息/引用有图）。
+        # 若判定为图生图但最终没拿到任何参考图，降级为文生图，避免无图还走图生图工作流
+        # （导致去找 LoadImage 节点而报错）。
+        if is_img2img and not init_images:
+            logger.warning("[取图] llm_draw 图生图模式但无参考图，降级为文生图提交")
+            is_img2img = False
         if is_img2img and img2img_workflow and img2img_workflow.strip():
             resolved_wf = img2img_workflow.strip()
         elif is_img2img and workflow and workflow.strip():
