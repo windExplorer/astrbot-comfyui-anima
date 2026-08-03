@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import mimetypes
 import time
@@ -117,6 +118,20 @@ class WebUIApi:
             except Exception:
                 only_failed = False
             rows = self.plugin.gallery.recent_records(limit=300, only_failed=only_failed)
+            # 把裸路径 thumb_url 替换为 Pillow 压缩的小尺寸 data URL（浏览器 <img> 直连），
+            # 规避 AstrBot 插件 API 裸路径 404/401 与内联整图 base64 超时的问题。
+            for r in rows:
+                sha = (r.get("sha256") or "").strip()
+                if r.get("ext") != "fail" and sha:
+                    p = None
+                    try:
+                        p = self.plugin.gallery.path_of(sha)
+                    except Exception:
+                        p = None
+                    r["thumb_url"] = await asyncio.to_thread(_thumb_data_url, p) if p else ""
+                else:
+                    r["thumb_url"] = ""
+                r["data_url"] = None
             return json_response({"records": rows, "total": len(rows)})
         except Exception as e:
             return error_response(f"读取出图记录失败: {e}")
@@ -184,11 +199,19 @@ class WebUIApi:
                 offset = 0
             rows = g.search(keyword=kw, type=stype, starred_only=starred,
                             trash=trash, limit=limit, offset=offset)
-            # 只返回图片 URL（前端 <img src> 懒加载），不再把整图 base64 内联进
-            # JSON，避免响应体过大导致 10s 超时。URL 指向本插件 gallery_image 接口。
+            # 返回 Pillow 压缩的小尺寸缩略图 data URL（前端 <img src> 直连渲染）：
+            # AstrBot 插件 API 需登录 token，裸路径直连会 404/401；内联整图 base64
+            # 又会因一次几十张原图导致超时。缩略图体积小且不走路由，两者都规避。
             for r in rows:
                 sha = r.get("sha256", "")
-                r["thumb"] = f"/{PLUGIN_NAME}/gallery/image?sha={sha}" if sha else ""
+                if sha:
+                    try:
+                        p = g.path_of(sha)
+                    except Exception:
+                        p = None
+                    r["thumb"] = await asyncio.to_thread(_thumb_data_url, p) if p else ""
+                else:
+                    r["thumb"] = ""
             return json_response(rows)
         except Exception as e:
             return error_response(f"检索失败: {e}")
@@ -333,6 +356,47 @@ def _ext_of(mime: str) -> str:
         "image/avif": "avif",
     }
     return ext_map.get((mime or "").lower(), "jpg")
+
+
+def _thumb_data_url(path, max_w: int = 300) -> str:
+    """生成缩略图 data URL（不走 AstrBot 路由、无需 token，前端 <img> 直连可用）。
+
+    背景：AstrBot 插件 API 挂在 /api/v1/plugins/extensions/<插件名>/... 下且需要登录
+    token，浏览器 <img> 直连后端返回的裸路径要么 404 要么 401；而直接内联整图 base64
+    又会因图库一次几十张原图导致 10s 超时（v2.2.26 曾因此改为 URL）。这里用 Pillow 把
+    图压到小尺寸再 base64，体积小、不走路由，同时规避 404 与超时。环境无 Pillow 时
+    降级为直接内联原图（数量受限时也能用）。"""
+    try:
+        p = str(path)
+        if not p or not Path(p).exists():
+            return ""
+        try:
+            from PIL import Image as _PILImage
+        except Exception:
+            _PILImage = None
+        mime = mimetypes.guess_type(p)[0] or "image/jpeg"
+        raw = Path(p).read_bytes()
+        if _PILImage is not None:
+            try:
+                with _PILImage.open(p) as im:
+                    im.seek(0)
+                    w, h = im.size
+                    if w > max_w:
+                        nh = max(1, int(h * max_w / w))
+                        im = im.resize((max_w, nh), _PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    fmt = "JPEG" if mime == "image/jpeg" else "PNG"
+                    if im.mode in ("RGBA", "LA", "P"):
+                        im = im.convert("RGBA")
+                    im.save(buf, format=fmt, optimize=True)
+                    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+                    cmime = "image/jpeg" if fmt == "JPEG" else "image/png"
+                    return f"data:{cmime};base64,{encoded}"
+            except Exception:
+                pass
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    except Exception:
+        return ""
 
 
 def _log_request(handler, route_desc: str):

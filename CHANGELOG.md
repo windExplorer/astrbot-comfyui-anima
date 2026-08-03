@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.39
+
+- **修复 WebUI 图库/出图记录图片全部加载不出来（图库空白）**：根因是后端 `gallery_search` / `get_records` 返回的 `thumb`/`thumb_url` 用了**裸路径** `/{插件名}/gallery/image?sha=...`，而 AstrBot 的插件 API 实际挂在 `/api/v1/plugins/extensions/<插件名>/...` 下且需登录 token，浏览器 `<img>` 直连该裸路径 → 404/401 → 图加载不出来。同时大图弹窗 `imageUrl()` 也用了同款裸路径，点开大图同样空白。
+  1. 后端新增 `_thumb_data_url`：用 Pillow 把图**压缩到小尺寸（宽 300px）再 base64 内联**成 data URL，前端 `<img src>` 直连即显示——data URL 不走路由、无需 token，且体积小，不会像 v2.2.26 之前那样因一次内联几十张**整图** base64 导致 10s 超时（超时根因是"整图"，不是 base64 本身）。环境无 Pillow 时降级为直接内联原图。
+  2. `gallery_search` / `get_records` 改为返回该缩略图 data URL；
+  3. 前端大图弹窗 `openImage` 改为经 bridge `apiGet("gallery/image?sha=...&meta=1")` 拉取原图 data URL 渲染，不再直连裸路径。
+  - 影响：图库缩略图、出图记录缩略图、大图弹窗均可正常显示。
+
 ## v2.2.38
 
 - **修复图生图引用图解析失败时「服务器有图却用不上」**：用户引用本插件之前生成的图做图生图时，引用图走平台 `get_msg` API 拉取，常因协议不支持而失败（"本地读不到"）；但那张图其实就在 AstrBot 部署服务器的 `gallery/` 目录里、路径也已记录在 `g_last_generated[sid]`。此前 `comfyui_img2img` / `llm_draw` 取图兜底**刻意跳过**了本插件生成的图，导致明明服务器有图却取不到。现增加三级兜底：在用户发来的图、历史图都取不到时，回退到**本会话最近 1 张本插件生成的图**（服务器本地 gallery 路径，含存在性校验），限定本会话+最近1张以压低误用旧图风险。典型场景：引用 AI 刚生成的图、平台拉不到引用消息时，直接从服务器取图做参考图。

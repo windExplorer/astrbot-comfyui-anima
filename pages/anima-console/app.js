@@ -915,13 +915,22 @@
 
   async function openImage(sha) {
     try {
-      // 大图直接走图片 URL，浏览器原生加载（不内联 base64），立即显示
-      els.imageDialogImg.src = imageUrl(sha);
-      els.imageDialogInfo.innerHTML = '<div class="empty">加载信息中…</div>';
+      // 大图经 bridge 拉取 data_url（浏览器 <img> 直连裸路径会 404/401）。
+      // gallery/image?meta=1 走 bridge 返回 { data_url, mime, meta }，其中 data_url
+      // 是原图 base64，赋给 <img> src 即可显示，不走 AstrBot 插件路由。
+      els.imageDialogImg.src = "";
+      els.imageDialogImg.classList.add("img-loading");
+      els.imageDialogInfo.innerHTML = '<div class="empty">加载中…</div>';
       els.imageDialog.showModal();
-      // meta 异步补充（meta=1 返回 JSON，含 data_url 兜底 + 元数据）
+      var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha) + "&meta=1");
+      if (data && data.data_url) {
+        els.imageDialogImg.src = data.data_url;
+      } else {
+        els.imageDialogImg.src = imageUrl(sha);
+      }
+      els.imageDialogImg.classList.remove("img-loading");
+      // meta 元数据（meta=1 返回 JSON，含 data_url 兜底 + 元数据）
       try {
-        var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha) + "&meta=1");
         var img = data && data.meta ? data.meta : (data || {});
         var info = [];
         var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
