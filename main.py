@@ -5,7 +5,9 @@ import json
 import random
 import re
 import time
+import traceback
 import uuid
+from functools import wraps
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -66,6 +68,29 @@ g_recent_user_images: dict[str, list[str]] = {}
 # 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
 # 事实与元指令、清除 [section compacted] 等标记）。
 SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
+
+
+def _safe_llm_tool(func):
+    """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
+    而是打印完整堆栈到日志并返回一句可读的失败说明，让用户能看到原因而非笼统报错。
+
+    必须用 functools.wraps 保留 __doc__ 与 __name__，否则 AstrBot 的 @filter.llm_tool
+    会解析不到 docstring 里的 Args（工具 schema 依赖它）。
+    """
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            return await func(self, *args, **kwargs)
+        except Exception as e:
+            logger.error(
+                f"[{func.__name__}] 工具执行异常，已捕获避免冒泡:\n"
+                f"{traceback.format_exc()}"
+            )
+            return (
+                f"绘图工具执行时出错（{type(e).__name__}）：{e}。"
+                "请勿复述本提示给用户，自然地向用户说明生成遇到问题即可。"
+            )
+    return wrapper
 
 # 可爱随机话术：提交绘图后提示用，避免每次都相同
 _QUEUE_HINTS_GENERATING = [
@@ -2264,6 +2289,7 @@ class ComfyUIDrawPlugin(Star):
     # LLM 工具：comfyui_draw（AI 对话触发）
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_draw")
+    @_safe_llm_tool
     async def llm_draw(
         self,
         event: AstrMessageEvent,
@@ -2805,6 +2831,7 @@ class ComfyUIDrawPlugin(Star):
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_img2img")
+    @_safe_llm_tool
     async def llm_img2img(
         self,
         event: AstrMessageEvent,

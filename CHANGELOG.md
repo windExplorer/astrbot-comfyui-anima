@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.42
+
+- **LLM 工具执行异常不再冒泡成 AstrBot 的「调用工具报错」**：此前若 `comfyui_draw`/`comfyui_img2img` 内部有未捕获异常，会直接抛到 AstrBot，用户在对话里只看到笼统的「工具调用报错」，无法定位。现给两个工具加 `_safe_llm_tool` 装饰器：
+  1. 任何未捕获异常都被捕获，`logger.error` 打印**完整 Traceback 堆栈**到插件日志；
+  2. 工具返回一句可读失败说明（不冒泡），用户看到的不是「报错」而是明确提示。
+  - 目的：让「调了工具却出不来图」这类问题的**真实异常原因**浮出日志。若装上后仍复现，请把日志里 `[comfyui_draw] 工具执行异常` 或 `[comfyui_img2img] 工具执行异常` 那一段 `Traceback` 发给作者即可精确定位。
+  - 注意：装饰器用 `functools.wraps` 保留 docstring，不影响 `@filter.llm_tool` 解析工具 schema。
+
 ## v2.2.41
 
 - **重构 WebUI 图库的图片获取与展示，彻底解决「图库/出图记录图片加载不出来」**。参考成熟实现 `astrbot_plugin_stealer` 的图库方案重构：
