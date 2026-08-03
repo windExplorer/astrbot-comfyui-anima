@@ -249,38 +249,56 @@
     var url = new URL(path, "https://astrbot-plugin-page.local/");
     var routePath = url.pathname.replace(/^\/+/, "");
     var candidates = bridgeEndpointCandidates(routePath);
+    console.log("[anima-console] bridgeRequest 开始:", method, path, "候选路径(", candidates.length, "):", candidates.map(function (c) { return c.style + "=" + c.endpoint; }));
     var errors = [];
+    var attempts = [];
+    function recordAttempt(style, endpoint, ms, note) {
+      attempts.push(style + "=" + endpoint + " (" + ms.toFixed(0) + "ms, " + note + ")");
+      console.log("[anima-console]   尝试 " + style + "=" + endpoint + " 耗时 " + ms.toFixed(0) + "ms -> " + note);
+    }
     if (method === "GET") {
       var params = Object.fromEntries(url.searchParams.entries());
       for (var i = 0; i < candidates.length; i++) {
+        var t0 = performance.now();
         try {
           var p = await withTimeout(br.apiGet(candidates[i].endpoint, Object.keys(params).length ? params : undefined), 10000, "GET " + candidates[i].endpoint);
+          recordAttempt(candidates[i].style, candidates[i].endpoint, performance.now() - t0, "命中");
           if (isRouteMissingPayload(p)) { errors.push((p.message || p.error || "未找到该路由")); continue; }
           cachedPageEndpointStyle = candidates[i].style;
+          console.log("[anima-console] bridgeRequest 成功，使用风格:", candidates[i].style);
           return p;
         } catch (error) {
-          if (isRouteMissingError(error)) { errors.push(error.message || String(error)); continue; }
+          var isMissing = isRouteMissingError(error);
+          recordAttempt(candidates[i].style, candidates[i].endpoint, performance.now() - t0, isMissing ? "路由不存在(404)" : "异常:" + (error && error.message ? error.message : error));
+          if (isMissing) { errors.push(error.message || String(error)); continue; }
           throw error;
         }
       }
-      throw new Error(errors[0] || "未找到可用的页面 API 路由");
+      console.error("[anima-console] bridgeRequest 全部候选路径失败。尝试记录:", attempts);
+      throw new Error(errors[0] || "未找到可用的页面 API 路由（已尝试: " + attempts.join("; ") + "）");
     }
     var payload = body || {};
     if (typeof payload === "string") {
       try { payload = JSON.parse(payload); } catch (e) { payload = {}; }
     }
     for (var j = 0; j < candidates.length; j++) {
+      var t1 = performance.now();
       try {
         var r = await withTimeout(br.apiPost(candidates[j].endpoint, payload), 10000, "POST " + candidates[j].endpoint);
+        recordAttempt(candidates[j].style, candidates[j].endpoint, performance.now() - t1, "命中");
         if (isRouteMissingPayload(r)) { errors.push((r.message || r.error || "未找到该路由")); continue; }
         cachedPageEndpointStyle = candidates[j].style;
+        console.log("[anima-console] bridgeRequest 成功，使用风格:", candidates[j].style);
         return r;
       } catch (error) {
-        if (isRouteMissingError(error)) { errors.push(error.message || String(error)); continue; }
+        var isMissing2 = isRouteMissingError(error);
+        recordAttempt(candidates[j].style, candidates[j].endpoint, performance.now() - t1, isMissing2 ? "路由不存在(404)" : "异常:" + (error && error.message ? error.message : error));
+        if (isMissing2) { errors.push(error.message || String(error)); continue; }
         throw error;
       }
     }
-    throw new Error(errors[0] || "未找到可用的页面 API 路由");
+    console.error("[anima-console] bridgeRequest 全部候选路径失败。尝试记录:", attempts);
+    throw new Error(errors[0] || "未找到可用的页面 API 路由（已尝试: " + attempts.join("; ") + "）");
   }
 
   async function apiRaw(path, options) {

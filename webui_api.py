@@ -35,6 +35,7 @@ import json
 import mimetypes
 import time
 from collections import deque
+from functools import wraps
 from pathlib import Path
 
 from astrbot.api.web import error_response, json_response, request
@@ -325,6 +326,43 @@ class WebUIApi:
             return error_response(f"打标签失败: {e}")
 
 
+def _log_request(handler, route_desc: str):
+    """包装 WebUI handler，打印每次请求的路由、参数、耗时与返回状态，
+    便于在「页面在另一个地址打开导致请求超时/404」时定位问题。"""
+    from astrbot.api import logger as _log
+
+    @wraps(handler)
+    async def wrapper(*args, **kwargs):
+        t0 = time.time()
+        # 尝试读取当前请求的 path / 客户端信息（astrbot.api.web.request 为模块级当前请求）
+        req_path = route_desc
+        client = "-"
+        try:
+            from astrbot.api.web import request as _req
+            if _req is not None:
+                req_path = getattr(_req.url, "path", route_desc) or route_desc
+                client = getattr(_req.client, "host", "-") or "-"
+        except Exception:
+            pass
+        try:
+            result = await handler(*args, **kwargs)
+            cost = (time.time() - t0) * 1000
+            _log.info(
+                f"[WebUI] 请求 {req_path} ({route_desc}) from={client} "
+                f"耗时={cost:.0f}ms 状态=OK"
+            )
+            return result
+        except Exception as e:
+            cost = (time.time() - t0) * 1000
+            _log.warning(
+                f"[WebUI] 请求 {req_path} ({route_desc}) from={client} "
+                f"耗时={cost:.0f}ms 状态=ERR: {e}"
+            )
+            raise
+
+    return wrapper
+
+
 def register_web_api(plugin) -> None:
     """在插件 initialize 时调用，注册所有控制台路由。"""
     from astrbot.api import logger as _log
@@ -357,7 +395,7 @@ def register_web_api(plugin) -> None:
     registered = []
     for path, handler, methods, desc in routes:
         try:
-            ctx.register_web_api(path, handler, methods, desc)
+            ctx.register_web_api(path, _log_request(handler, desc), methods, desc)
             registered.append(path)
         except Exception as e:
             _log.warning(f"[WebUI] 注册路由失败 {path}: {e}")
