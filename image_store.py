@@ -28,6 +28,9 @@ except Exception:  # pragma: no cover - 极老环境降级
 # 内容寻址文件名取 sha256 前多少位
 _SHA_PREFIX = 16
 
+# 插件名（与 metadata.yaml / 路由前缀一致），用于拼图片访问 URL
+PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
+
 # source 取值
 SRC_GEN = "gen"  # 本插件生图成品
 SRC_REF = "ref"  # 图生图参考图
@@ -409,11 +412,13 @@ class ImageStore:
             for r in rows:
                 d = self._row_to_dict(r)
                 if r["ext"] != "fail":
-                    try:
-                        d["data_url"] = self.data_url(r["sha256"][:_SHA_PREFIX], r["ext"])
-                    except Exception:
-                        d["data_url"] = None
+                    # 返回图片 URL（前端 <img src> 懒加载），不再内联 base64，
+                    # 避免出图记录一多响应体爆炸导致超时。
+                    sha = r["sha256"]
+                    d["thumb_url"] = f"/{PLUGIN_NAME}/gallery/image?sha={sha}" if sha else ""
+                    d["data_url"] = None
                 else:
+                    d["thumb_url"] = ""
                     d["data_url"] = None
                 out.append(d)
             return out

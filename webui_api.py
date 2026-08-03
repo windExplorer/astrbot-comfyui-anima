@@ -38,7 +38,7 @@ from collections import deque
 from functools import wraps
 from pathlib import Path
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, file_response, json_response, request
 
 # 插件名（与 metadata.yaml 的 name 一致）。路由前缀必须含它，否则 AstrBot
 # 的插件页面桥接会把请求发到错误路径（全部 404 / 前端永远加载中）。
@@ -184,19 +184,11 @@ class WebUIApi:
                 offset = 0
             rows = g.search(keyword=kw, type=stype, starred_only=starred,
                             trash=trash, limit=limit, offset=offset)
-            # 列表中直接返回 data_url 缩略图（前端 img.src 用），避免依赖外部路径
+            # 只返回图片 URL（前端 <img src> 懒加载），不再把整图 base64 内联进
+            # JSON，避免响应体过大导致 10s 超时。URL 指向本插件 gallery_image 接口。
             for r in rows:
                 sha = r.get("sha256", "")
-                try:
-                    p = g.path_of(sha)
-                    if p and Path(p).exists():
-                        raw = await asyncio.to_thread(Path(p).read_bytes)
-                        mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-                        r["thumb"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-                    else:
-                        r["thumb"] = ""
-                except Exception:
-                    r["thumb"] = ""
+                r["thumb"] = f"/{PLUGIN_NAME}/gallery/image?sha={sha}" if sha else ""
             return json_response(rows)
         except Exception as e:
             return error_response(f"检索失败: {e}")
@@ -208,26 +200,30 @@ class WebUIApi:
         sha = request.query.get("sha", "")
         if not sha:
             return error_response("缺少 sha 参数")
+        # meta=1 时返回 JSON（含元数据 + data_url 兜底），供前端大图弹窗取信息用；
+        # 否则直接以图片 binary 返回（file_response），浏览器原生加载、支持断点。
+        want_meta = request.query.get("meta", "0") == "1"
         try:
             path = g.path_of(sha)
         except Exception as e:
             return error_response(f"路径解析失败: {e}")
         if not path or not Path(path).exists():
             return error_response("图片不存在", status_code=404)
-        # 对齐文档：图片以 data_url（base64）形式放入 JSON 返回，
-        # 由 AstrBot bridge 正常解包，前端 img.src = data_url 直接渲染。
-        try:
-            raw = await asyncio.to_thread(Path(path).read_bytes)
-        except Exception as e:
-            return error_response(f"读取图片失败: {e}")
-        mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-        encoded = base64.b64encode(raw).decode("ascii")
-        meta = None
-        try:
-            meta = g.get_by_sha(sha)
-        except Exception:
+        if want_meta:
             meta = None
-        return json_response({"data_url": f"data:{mime};base64,{encoded}", "mime": mime, "meta": meta})
+            try:
+                meta = g.get_by_sha(sha)
+            except Exception:
+                meta = None
+            try:
+                raw = await asyncio.to_thread(Path(path).read_bytes)
+                mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+                encoded = base64.b64encode(raw).decode("ascii")
+                return json_response({"data_url": f"data:{mime};base64,{encoded}", "mime": mime, "meta": meta})
+            except Exception as e:
+                return error_response(f"读取图片失败: {e}")
+        mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+        return file_response(path, filename=f"{sha}.{_ext_of(mime)}", content_type=mime)
 
     async def gallery_star(self):
         g = self._gallery()
@@ -324,6 +320,19 @@ class WebUIApi:
             return json_response({"msg": "标签已添加"})
         except Exception as e:
             return error_response(f"打标签失败: {e}")
+
+
+def _ext_of(mime: str) -> str:
+    """根据 MIME 推断文件扩展名（用于 gallery_image 下载文件名）。"""
+    ext_map = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/gif": "gif",
+        "image/bmp": "bmp",
+        "image/avif": "avif",
+    }
+    return ext_map.get((mime or "").lower(), "jpg")
 
 
 def _log_request(handler, route_desc: str):

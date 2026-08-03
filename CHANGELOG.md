@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.26
+
+- **图库改为返回图片链接而非 base64 内联（修复超时根因）**：之前 `gallery/search`、`gallery_image`、`recent_records` 都把整张原图 base64 内联进 JSON，图一多响应体爆炸（几十张图可达数 MB~数十 MB），序列化/传输/解析在 10s 内传不完，表现成「搜索超时」。改为：
+  - `gallery/image` 用 `file_response` 直接返回图片 binary（浏览器原生 `<img src>` 加载、支持断点、不占 API JSON 体积）；`?meta=1` 时仍返回含元数据 + data_url 兜底的 JSON，供大图弹窗取信息。
+  - `gallery/search` 与 `recent_records` 只返回图片 URL（`/astrbot_plugin_comfyui_anima/gallery/image?sha=xxx`），前端列表用 `<img loading="lazy">` 懒加载。
+  - 前端大图弹窗 `openImage` 改为直接 `imageUrl(sha)` 立即显示、meta 异步补充，不再等 base64 大图。
+- **前端 bridge 容错增强**：候选路径顺序调整为绝对路径（`astrbot_plugin_comfyui_anima/...`）优先，且「路由不存在(404) / 超时 / 网络异常」任一候选失败都继续尝试后续候选，单次超时从 10s 降到 6s，最终失败才抛出并附带全部尝试记录。
+
 ## v2.2.25
 
 - **修复「在另一个地址访问时 gallery 搜索超时」的根因**：之前后端路由注册成了 `/<plugin_name>/page/<action>`，前端又硬塞 `page/` 前缀，形成比官方约定多一层的 `/page`。在默认的 AstrBot 后台 iframe 里能侥幸命中，但一旦访问方式 / bridge 版本有细微差异（如在另一地址打开），转发规则对 `page/` 这层失配，请求 hang 到 10s 超时。现对齐 AstrBot 官方《插件 Pages》约定：后端路由改为 `/<plugin_name>/<action>`（去掉 `/page`），前端候选不再加 `page/` 前缀，与其他正常插件完全一致。控制台日志（v2.2.24 加的）保留，便于后续排查。

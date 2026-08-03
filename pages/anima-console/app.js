@@ -178,10 +178,10 @@
     };
     var ordered = [
       ["cached", byStyle.cached],
-      ["bare", byStyle.bare],
-      ["slash", byStyle.slash],
       ["full", byStyle.full],
       ["fullSlash", byStyle.fullSlash],
+      ["bare", byStyle.bare],
+      ["slash", byStyle.slash],
     ];
     var seen = new Set();
     return ordered
@@ -258,7 +258,7 @@
       for (var i = 0; i < candidates.length; i++) {
         var t0 = performance.now();
         try {
-          var p = await withTimeout(br.apiGet(candidates[i].endpoint, Object.keys(params).length ? params : undefined), 10000, "GET " + candidates[i].endpoint);
+          var p = await withTimeout(br.apiGet(candidates[i].endpoint, Object.keys(params).length ? params : undefined), 6000, "GET " + candidates[i].endpoint);
           recordAttempt(candidates[i].style, candidates[i].endpoint, performance.now() - t0, "命中");
           if (isRouteMissingPayload(p)) { errors.push((p.message || p.error || "未找到该路由")); continue; }
           cachedPageEndpointStyle = candidates[i].style;
@@ -267,8 +267,9 @@
         } catch (error) {
           var isMissing = isRouteMissingError(error);
           recordAttempt(candidates[i].style, candidates[i].endpoint, performance.now() - t0, isMissing ? "路由不存在(404)" : "异常:" + (error && error.message ? error.message : error));
-          if (isMissing) { errors.push(error.message || String(error)); continue; }
-          throw error;
+          // 路由不存在(404)或超时/网络异常都视为该候选失败，继续尝试后续候选
+          errors.push((error && error.message ? error.message : String(error)));
+          continue;
         }
       }
       console.error("[anima-console] bridgeRequest 全部候选路径失败。尝试记录:", attempts);
@@ -281,7 +282,7 @@
     for (var j = 0; j < candidates.length; j++) {
       var t1 = performance.now();
       try {
-        var r = await withTimeout(br.apiPost(candidates[j].endpoint, payload), 10000, "POST " + candidates[j].endpoint);
+        var r = await withTimeout(br.apiPost(candidates[j].endpoint, payload), 6000, "POST " + candidates[j].endpoint);
         recordAttempt(candidates[j].style, candidates[j].endpoint, performance.now() - t1, "命中");
         if (isRouteMissingPayload(r)) { errors.push((r.message || r.error || "未找到该路由")); continue; }
         cachedPageEndpointStyle = candidates[j].style;
@@ -290,8 +291,8 @@
       } catch (error) {
         var isMissing2 = isRouteMissingError(error);
         recordAttempt(candidates[j].style, candidates[j].endpoint, performance.now() - t1, isMissing2 ? "路由不存在(404)" : "异常:" + (error && error.message ? error.message : error));
-        if (isMissing2) { errors.push(error.message || String(error)); continue; }
-        throw error;
+        errors.push((error && error.message ? error.message : String(error)));
+        continue;
       }
     }
     console.error("[anima-console] bridgeRequest 全部候选路径失败。尝试记录:", attempts);
@@ -312,6 +313,10 @@
     payload = normalizeResponse(payload);
     if (!payload.success) throw new Error(payload.error || "请求失败");
     return payload.data;
+  }
+
+  function imageUrl(sha) {
+    return "/" + PAGE_PLUGIN_NAME + "/gallery/image?sha=" + encodeURIComponent(sha || "");
   }
 
   async function apiGet(endpoint, params) {
@@ -657,9 +662,9 @@
     }
     els.recBody.innerHTML = rows.map(function (r) {
       var isFail = Number(r.status) === 1;
-      var canOpen = (r.data_url && r.ext !== "fail" && r.sha256);
+      var canOpen = (r.thumb_url && r.ext !== "fail" && r.sha256);
       var thumb = canOpen
-        ? '<img class="rec-thumb" src="' + escapeHtml(r.data_url) + '" alt="预览" data-open="' + escapeHtml(r.sha256) + '" title="点击查看大图" />'
+        ? '<img class="rec-thumb" src="' + escapeHtml(r.thumb_url) + '" alt="预览" data-open="' + escapeHtml(r.sha256) + '" title="点击查看大图" loading="lazy" />'
         : '<div class="rec-thumb empty-thumb">' + (isFail ? "失败" : "—") + '</div>';
       var t = (r.created_at ? new Date(Number(r.created_at) * 1000) : null);
       var time = t ? t.toLocaleString("zh-CN", { hour12: false }) : "—";
@@ -910,29 +915,36 @@
 
   async function openImage(sha) {
     try {
-      var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha));
-      var img = data && data.meta ? data.meta : (data || {});
-      els.imageDialogImg.src = (data && data.data_url) || "";
-      var info = [];
-      var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
-      add("SHA", (img.sha256 || sha).slice(0, 20) + "…");
-      add("类型", img.is_img2img ? "图生图" : (img.source === "ref" ? "参考图" : (img.source === "user" ? "用户收藏" : "文生图")));
-      if (img.w && img.h) add("尺寸", img.w + " × " + img.h);
-      if (img.size_bytes != null) add("大小", fmtSize(img.size_bytes));
-      if (img.cost_sec != null) add("耗时", Number(img.cost_sec).toFixed(1) + " 秒");
-      if (img.created_at) {
-        var t = new Date(Number(img.created_at) * 1000);
-        add("出图时间", t.toLocaleString("zh-CN", { hour12: false }));
-      }
-      if (img.user_name || img.user_id) add("用户", [img.user_name, img.user_id].filter(Boolean).join(" · "));
-      if (img.trigger_msg) add("触发消息", img.trigger_msg);
-      if (img.status === 1) add("状态", "失败");
-      else if (img.status === 0) add("状态", "成功");
-      if (img.starred) add("收藏", "★ 已收藏");
-      if (img.positive_seed != null) add("Seed", img.positive_seed);
-      add("提示词", img.prompt_raw || img.prompt || "（无）");
-      els.imageDialogInfo.innerHTML = info.join("");
+      // 大图直接走图片 URL，浏览器原生加载（不内联 base64），立即显示
+      els.imageDialogImg.src = imageUrl(sha);
+      els.imageDialogInfo.innerHTML = '<div class="empty">加载信息中…</div>';
       els.imageDialog.showModal();
+      // meta 异步补充（meta=1 返回 JSON，含 data_url 兜底 + 元数据）
+      try {
+        var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha) + "&meta=1");
+        var img = data && data.meta ? data.meta : (data || {});
+        var info = [];
+        var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
+        add("SHA", (img.sha256 || sha).slice(0, 20) + "…");
+        add("类型", img.is_img2img ? "图生图" : (img.source === "ref" ? "参考图" : (img.source === "user" ? "用户收藏" : "文生图")));
+        if (img.w && img.h) add("尺寸", img.w + " × " + img.h);
+        if (img.size_bytes != null) add("大小", fmtSize(img.size_bytes));
+        if (img.cost_sec != null) add("耗时", Number(img.cost_sec).toFixed(1) + " 秒");
+        if (img.created_at) {
+          var t = new Date(Number(img.created_at) * 1000);
+          add("出图时间", t.toLocaleString("zh-CN", { hour12: false }));
+        }
+        if (img.user_name || img.user_id) add("用户", [img.user_name, img.user_id].filter(Boolean).join(" · "));
+        if (img.trigger_msg) add("触发消息", img.trigger_msg);
+        if (img.status === 1) add("状态", "失败");
+        else if (img.status === 0) add("状态", "成功");
+        if (img.starred) add("收藏", "★ 已收藏");
+        if (img.positive_seed != null) add("Seed", img.positive_seed);
+        add("提示词", img.prompt_raw || img.prompt || "（无）");
+        els.imageDialogInfo.innerHTML = info.join("");
+      } catch (e) {
+        els.imageDialogInfo.innerHTML = '<div class="empty error">信息加载失败：' + escapeHtml(e.message || "") + '</div>';
+      }
     } catch (e) {
       showToast("打开图片失败：" + (e.message || ""), "error");
     }
