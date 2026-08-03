@@ -97,8 +97,10 @@
                 <tbody id="recBody"></tbody>
               </table>
               <div id="recEmpty" class="empty">暂无出图记录。出图后这里会自动出现。</div>
-              <div class="gal-more-wrap" id="recMoreWrap" hidden>
-                <button id="recMoreBtn" type="button">加载更多</button>
+              <div class="gal-pager" id="recPager" hidden>
+                <button id="recPrevBtn" type="button">上一页</button>
+                <span id="recPageInfo" class="pager-info"></span>
+                <button id="recNextBtn" type="button">下一页</button>
               </div>
             </div>
           </div>
@@ -154,8 +156,10 @@
           <div id="galGrid" class="gal-grid" aria-live="polite" aria-label="图库网格">
             <div class="empty">请输入关键词搜索或直接浏览图库。</div>
           </div>
-          <div class="gal-more-wrap" id="galMoreWrap" hidden>
-            <button id="galMoreBtn" type="button">加载更多</button>
+          <div class="gal-pager" id="galPager" hidden>
+            <button id="galPrevBtn" type="button">上一页</button>
+            <span id="galPageInfo" class="pager-info"></span>
+            <button id="galNextBtn" type="button">下一页</button>
           </div>
         </section>
 
