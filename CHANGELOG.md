@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.34
+
+- **修复「对话里 AI 自动图生图、引用了用户之前发的真实照片」读不到图**：用户引用一条带图历史消息让 AI 改图时，被引用图挂在那条历史消息的 `Reply` 上，AI 调 `comfyui_draw` 时只传 `prompt`+`workflow`、既不带图也不带引用，工具拿到的 event 里 `Reply.chain` 常为空，AstrBot 引用解析器回拉到的又是带签名内网 URL，`convert_to_file_path` 下载失败 → 引用图读不到 → 静默文生图。修复：
+  1. 新增 `_download_url_to_temp`：`convert_to_file_path` 失败时，对 http(s) URL（引用图床地址）自带 UA/同域 Referer 兜底下载到本地 `temp/`，并校验内容非空；
+  2. `_capture_llm_event` 缓存「会话最近收到图片」时，额外专程解析「引用消息里的图」并落地，确保 `comfyui_draw` / `comfyui_img2img` 的 `g_last_received` 兜底（v2.2.32 引入）能命中用户引用的图；
+  3. 全程补充 [取图] 诊断日志，方便下次确认引用图落在哪一步。
+
 ## v2.2.33
 
 - **修复图生图提交 ComfyUI 报 400 Bad Request**：注入参考图时把 `[filename, subfolder, type]` 三元组写进了 `LoadImage` 节点的 `image` 输入，但标准 `LoadImage` 在 `/prompt` API 下 `image` 输入期望**字符串文件名**；三元组是节点间连线的引用格式，当单输入框值会直接 400。这是 v2.2.29 把文件名改三元组引入的回归（v1.0.69 当年改字符串后 400 即消失，方向本就正确）。现改回只传字符串文件名——`upload_image` 已把图写到 `type=input` 目录，LoadImage 凭文件名即可在 input 目录找到。注意：v2.2.29 那个 "Permission denied" 是远端 ComfyUI `input` 目录权限问题，与用字符串还是三元组无关，不应因此改格式。

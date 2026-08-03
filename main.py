@@ -175,6 +175,60 @@ async def _extract_quoted_images(event: "AstrMessageEvent") -> list:
         return []
 
 
+async def _download_url_to_temp(url: str) -> str | None:
+    """带 UA/Referer 把图片 URL 下载到本地 temp 目录，返回本地路径。
+    用于引用消息图片：部分平台（如 Aiocqhttp/QQ）引用的图只给出带签名的
+    内网 URL，AstrBot 的 convert_to_file_path 下载会失败，这里做一次兜底下载。"""
+    import aiohttp
+
+    try:
+        from astrbot.api import GLOBAL_CONFIG
+        temp_dir = GLOBAL_CONFIG.get("temp_dir", None)
+    except Exception:
+        temp_dir = None
+    if not temp_dir:
+        temp_dir = os.path.join(os.getcwd(), "data", "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    ext = os.path.splitext(url.split("?")[0])[1].lower() or ".jpg"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        ext = ".jpg"
+    out = os.path.join(temp_dir, f"quoted_{uuid.uuid4().hex}{ext}")
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            )
+        }
+        # 部分图床要求 Referer 为同域，否则 403
+        try:
+            from urllib.parse import urlparse
+
+            host = urlparse(url).netloc
+            if host:
+                headers["Referer"] = f"https://{host}/"
+        except Exception:
+            pass
+        async with aiohttp.ClientSession(headers=headers) as sess:
+            async with sess.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        f"[取图] 引用图兜底下载失败: HTTP {resp.status} {url[:80]}"
+                    )
+                    return None
+                data = await resp.read()
+        if not data or len(data) < 64:
+            logger.warning(f"[取图] 引用图兜底下载内容异常（空/过小）: {url[:80]}")
+            return None
+        with open(out, "wb") as f:
+            f.write(data)
+        logger.info(f"[取图] 引用图兜底下载成功: {url[:80]}... -> {out}")
+        return out
+    except Exception as e:
+        logger.warning(f"[取图] 引用图兜底下载异常（忽略）: {e} | {url[:80]}")
+        return None
+
+
 async def _image_to_local_path(item) -> str | None:
     """把一个 Image/CardImage 组件或图片引用字符串解析为本地文件路径。
     优先用 convert_to_file_path（兼容 url/file/base64/本地路径），
@@ -199,6 +253,17 @@ async def _image_to_local_path(item) -> str | None:
         p = await comp.convert_to_file_path()
     except Exception as e:
         logger.debug(f"[取图] convert_to_file_path 失败: {e}")
+    # 兜底：convert_to_file_path 失败时，若原始是 http(s) URL（如引用消息里的带签名图
+    # 床地址），尝试自带 UA/Referer 下载到本地 temp，避免"引用消息图片读不到"。
+    if not p:
+        raw_url = None
+        if isinstance(item, str) and item.startswith("http"):
+            raw_url = item
+        elif getattr(comp, "url", None):
+            raw_url = comp.url
+        if raw_url:
+            logger.debug(f"[取图] convert_to_file_path 失败，尝试 URL 兜底下载: {raw_url[:80]}")
+            p = await _download_url_to_temp(raw_url)
     if not p and getattr(comp, "path", None):
         p = comp.path
     if not p and getattr(comp, "file", None):
@@ -2437,6 +2502,17 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if sid:
                 cached = await self._extract_images(event)
+                # 额外：专程解析「引用消息里的图」。工具调用时 event 的图片可能已被剥离，
+                # 但用户「引用一条带图消息」时，该引用图不在当前消息体内、只挂在 Reply 上，
+                # _extract_images 已会尝试回拉；这里再单独跑一次确保不漏（含 URL 兜底下载）。
+                try:
+                    quoted = await self._extract_quoted_images(event)
+                    quoted = [await self._image_to_local_path(q) for q in quoted]
+                    for q in quoted:
+                        if q and q not in cached:
+                            cached.append(q)
+                except Exception as qe:
+                    logger.debug(f"[取图] 缓存时解析引用图失败（忽略）: {qe}")
                 cached = [p for p in cached if p and os.path.exists(p)]
                 if cached:
                     bucket = g_last_received.setdefault(sid, [])
@@ -2446,6 +2522,8 @@ class ComfyUIDrawPlugin(Star):
                     if len(bucket) > 5:
                         g_last_received[sid] = bucket[-5:]
                     logger.debug(f"[取图] 已缓存会话最近收到图片 {len(bucket)} 张: {bucket}")
+                else:
+                    logger.debug("[取图] 缓存时未从消息/引用取到任何图")
         except Exception as e:
             logger.debug(f"[取图] 缓存会话图片失败（忽略）: {e}")
 
