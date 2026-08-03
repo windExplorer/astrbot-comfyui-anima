@@ -117,7 +117,22 @@ class WebUIApi:
                 only_failed = bool(int(request.query.get("failed", 0)))
             except Exception:
                 only_failed = False
-            rows = self.plugin.gallery.recent_records(limit=300, only_failed=only_failed)
+            try:
+                page = request.query.get("page", 1, type=int)
+            except Exception:
+                page = 1
+            try:
+                size = request.query.get("size", 40, type=int)
+            except Exception:
+                size = 40
+            if page < 1:
+                page = 1
+            if size < 1 or size > 200:
+                size = 40
+            rows = self.plugin.gallery.recent_records(
+                limit=size, only_failed=only_failed, offset=(page - 1) * size
+            )
+            total = self.plugin.gallery.count_records(only_failed=only_failed)
             # 记录列表只返回元数据（含 sha），不内联缩略图 base64——避免一多就超时。
             # 缩略图由前端经 bridge 调 gallery_thumb 按需懒加载拉取单张 data URL。
             for r in rows:
@@ -125,7 +140,7 @@ class WebUIApi:
                 r["sha"] = sha
                 r["thumb_url"] = ""
                 r["data_url"] = None
-            return json_response({"records": rows, "total": len(rows)})
+            return json_response({"records": rows, "total": total, "page": page, "size": size})
         except Exception as e:
             return error_response(f"读取出图记录失败: {e}")
 

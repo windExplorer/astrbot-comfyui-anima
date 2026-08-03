@@ -395,8 +395,25 @@ class ImageStore:
         except Exception as e:
             logger.warning(f"[图库] 写入失败记录出错: {e}")
 
-    def recent_records(self, limit: int = 200, only_failed: bool = False) -> list[dict]:
+    def count_records(self, only_failed: bool = False) -> int:
+        """出图记录总条数（用于 WebUI 分页显示 total）。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return 0
+        conn = self._conn_get()
+        try:
+            sql = "SELECT COUNT(*) AS c FROM images WHERE 1=1" + (
+                " AND status=1" if only_failed else ""
+            )
+            row = conn.execute(sql).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception as e:
+            logger.warning(f"[图库] 记录计数失败: {e}")
+            return 0
+
+    def recent_records(self, limit: int = 200, only_failed: bool = False,
+                       offset: int = 0) -> list[dict]:
         """出图记录（用于 WebUI「日志」页）。返回含用户/消息/尺寸/大小/耗时/状态的结构化记录。
+        支持 offset 分页（配合 count_records）。
 
         失败记录 ext='fail'，前端据此判断无缩略图。
         """
@@ -407,9 +424,9 @@ class ImageStore:
             sql = (
                 "SELECT * FROM images WHERE 1=1"
                 + (" AND status=1" if only_failed else "")
-                + " ORDER BY created_at DESC LIMIT ?"
+                + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
             )
-            rows = conn.execute(sql, (int(limit),)).fetchall()
+            rows = conn.execute(sql, (int(limit), int(offset))).fetchall()
             out = []
             for r in rows:
                 d = self._row_to_dict(r)
@@ -521,6 +538,8 @@ class ImageStore:
             args.append(1)
         else:
             sql += " AND deleted=0"
+        # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
+        sql += " AND status=0"
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
@@ -563,6 +582,8 @@ class ImageStore:
             args.append(1)
         else:
             sql += " AND deleted=0"
+        # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
+        sql += " AND status=0"
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (

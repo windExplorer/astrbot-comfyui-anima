@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.45
+
+- **画廊不展示失败项目**：`image_store.search`/`count_search` 检索图库时排除失败记录（`status=1`/`ext='fail'`），图库网格只显示成功生成的图。
+- **WebUI 出图记录（日志页）分页**：`get_records` 支持 `page/size` 分页（每页 40 条），并用 `count_records` 返回真实总数；前端出图记录表格新增「加载更多」按钮，滚动累加加载（按 sha 去重）。避免一次拉取几百条记录导致响应慢。
+
 ## v2.2.44
 
 - **进一步降低「AI 选错工作流」概率**：`comfyui_draw`/`comfyui_img2img` 的 `workflow`/`img2img_workflow` 参数说明改为**明确引导「大多数情况留空即可，插件自动用默认工作流」**；只有用户明确要求特定画风、且通过 `comfyui_workflows` 查询到确切名称时才传。避免 AI 凭记忆/猜工作流名（工作流靠 `name` 引用，与文件名无关，猜名必失败）。

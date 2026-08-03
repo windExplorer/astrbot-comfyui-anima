@@ -6,6 +6,10 @@
     configDirty: false,
     logs: [],
     records: [],
+    recPage: 1,
+    recTotal: 0,
+    recPageSize: 40,
+    recSearching: false,
     galStats: {},
     galResults: [],
     galSearching: false,
@@ -40,6 +44,8 @@
     recSearch: $("recSearch"),
     recFailedOnly: $("recFailedOnly"),
     recCount: $("recCount"),
+    recMoreWrap: $("recMoreWrap"),
+    recMoreBtn: $("recMoreBtn"),
     // gallery
     galStats: $("galStats"),
     galGrid: $("galGrid"),
@@ -715,25 +721,63 @@
   var logTabState = "records"; // 默认显示「出图记录」
 
   async function loadRecords() {
+    // 首次加载重置到第一页；「加载更多」时追加下一页
+    await loadRecordsPage(1, true);
+  }
+
+  async function loadRecordsPage(page, reset) {
+    if (state.recSearching) return;
+    state.recSearching = true;
+    if (!reset && els.recMoreBtn) {
+      els.recMoreBtn.disabled = true;
+      els.recMoreBtn.textContent = "加载中…";
+    }
     var data;
     try {
       data = await apiGet("records", {
         failed: els.recFailedOnly.checked ? 1 : 0,
+        page: page,
+        size: state.recPageSize,
       });
     } catch (e) {
       els.recBody.innerHTML = '<tr><td colspan="9" class="empty error">读取出图记录失败：' + escapeHtml(e.message) + '</td></tr>';
+      state.recSearching = false;
+      if (els.recMoreBtn) {
+        els.recMoreBtn.disabled = false;
+        els.recMoreBtn.textContent = "加载更多";
+      }
       throw e;
     }
-    state.records = Array.isArray(data) ? data : (data && Array.isArray(data.records) ? data.records : []);
+    var rows = Array.isArray(data) ? data : (data && Array.isArray(data.records) ? data.records : []);
+    state.recTotal = (data && data.total != null) ? Number(data.total) : 0;
+    if (reset) {
+      state.records = rows;
+      state.recPage = 1;
+    } else {
+      var known = {};
+      state.records.forEach(function (r) { if (r.sha || r.sha256) known[r.sha || r.sha256] = true; });
+      rows.forEach(function (r) {
+        var k = r.sha || r.sha256 || "";
+        if (k && !known[k]) { known[k] = true; state.records.push(r); }
+      });
+      state.recPage = page;
+    }
     if (!state.records.length) {
       els.recEmpty.hidden = false;
       els.recBody.innerHTML = "";
     } else {
       els.recEmpty.hidden = true;
     }
-    els.recCount.textContent = state.records.length + " 条";
+    var shown = state.records.length;
+    els.recCount.textContent = (state.recTotal ? state.recTotal + " 条（已显示 " + shown + "）" : shown + " 条");
     renderRecords();
-    setStatus("出图记录已加载");
+    if (els.recMoreWrap) els.recMoreWrap.hidden = !(state.recTotal > state.records.length);
+    setStatus(reset ? "出图记录已加载" : "已加载更多");
+    state.recSearching = false;
+    if (els.recMoreBtn) {
+      els.recMoreBtn.disabled = false;
+      els.recMoreBtn.textContent = "加载更多";
+    }
   }
 
   function renderRecords() {
@@ -856,6 +900,11 @@
   });
   els.recSearch.addEventListener("input", renderRecords);
   els.recFailedOnly.addEventListener("change", loadRecords);
+  if (els.recMoreBtn) {
+    els.recMoreBtn.addEventListener("click", function () {
+      loadRecordsPage(state.recPage + 1, false);
+    });
+  }
   if (els.logTabs) {
     els.logTabs.querySelectorAll(".tab").forEach(function (b) {
       b.addEventListener("click", function () { setLogTab(b.dataset.logtab); });
