@@ -503,6 +503,43 @@ class ImageStore:
             "tags": self.tags_of(row["sha256"]),
         }
 
+    def count_search(
+        self,
+        keyword: str = "",
+        type: str | None = None,
+        starred_only: bool = False,
+        trash: bool = False,
+    ) -> int:
+        """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return 0
+        conn = self._conn_get()
+        sql = "SELECT COUNT(*) AS c FROM images WHERE 1=1"
+        args: list = []
+        if trash:
+            sql += " AND deleted=?"
+            args.append(1)
+        else:
+            sql += " AND deleted=0"
+        if keyword and keyword.strip():
+            kw = f"%{keyword.strip()}%"
+            sql += (
+                " AND (prompt LIKE ? OR prompt_raw LIKE ? OR workflow LIKE ?"
+                " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
+            )
+            args += [kw, kw, kw, kw]
+        if type:
+            sql += " AND source=?"
+            args.append(type)
+        if starred_only:
+            sql += " AND starred=1"
+        try:
+            row = conn.execute(sql, args).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception as e:
+            logger.warning(f"[图库] 计数失败: {e}")
+            return 0
+
     def search(
         self,
         keyword: str = "",

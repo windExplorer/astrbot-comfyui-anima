@@ -294,8 +294,11 @@ body{
 .badge.fail{background:var(--danger-light);color:var(--danger)}
 
 /* gallery: clickable image + trash tab */
-.gal-img{cursor:zoom-in}
+.gal-img{cursor:zoom-in;transition:filter .2s}
 .gal-card.in-trash{opacity:.72;border-style:dashed}
+.gal-more-wrap{display:flex;justify-content:center;padding:16px 0 8px}
+.gal-more-wrap button{padding:8px 28px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text-secondary);cursor:pointer;transition:all .15s}
+.gal-more-wrap button:hover{border-color:var(--accent);color:var(--accent)}
 .badge-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:4px;border-radius:9px;background:var(--danger);color:#fff;font-size:.68rem;font-weight:600;vertical-align:middle}
 .trash-stat{color:var(--danger)}
 

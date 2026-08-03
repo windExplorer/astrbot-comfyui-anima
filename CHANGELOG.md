@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.41
+
+- **重构 WebUI 图库的图片获取与展示，彻底解决「图库/出图记录图片加载不出来」**。参考成熟实现 `astrbot_plugin_stealer` 的图库方案重构：
+  1. **列表接口只返回元数据**：`gallery/search` 不再把任何缩略图 base64 内联进 JSON（此前 v2.2.39 一次内联几十张缩略图，图一多就超时），只返回 `{ images, total, page, size }`。
+  2. **新增按需缩略图接口 `gallery/thumb?sha=&size=300`**：单张返回 Pillow 压缩的小尺寸 base64 data URL。
+  3. **前端懒加载**：图库卡片/出图记录缩略图改为 `IntersectionObserver`，图片**进入视口**时才经 bridge `apiGet('gallery/thumb')` 拉取单张 data URL，配 **LRU 缓存**（200 张）与占位图。既不走 AstrBot 裸路径（404/401），也不会一次拉几十张图超时。
+  4. **分页**：`gallery/search` 支持 `page/size`，前端新增「加载更多」按钮，滚动累积加载，`total` 用真实 COUNT（新增 `image_store.count_search`）。
+  5. 大图弹窗沿用经 bridge 拉原图 data_url 的方式。
+  - 效果：无论图库多少张图，列表响应轻快，图片滚动到哪加载到哪，不再空白/超时。
+
 ## v2.2.40
 
 - **恢复 LLM 绘图工具的高级参数暴露给大模型**：此前 v1.2.5 为"降低空 JSON 概率"曾把 `comfyui_draw`/`comfyui_img2img` 暴露给大模型的参数精简为仅 `prompt/negative_prompt/workflow/img2img_workflow`，导致大模型**无法主动传宽高、LoRA、seed、denoise、参考图**（例如用户要求"画一张 1024x768 的图""固定种子复现"时无从传达）。

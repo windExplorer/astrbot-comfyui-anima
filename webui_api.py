@@ -118,19 +118,12 @@ class WebUIApi:
             except Exception:
                 only_failed = False
             rows = self.plugin.gallery.recent_records(limit=300, only_failed=only_failed)
-            # 把裸路径 thumb_url 替换为 Pillow 压缩的小尺寸 data URL（浏览器 <img> 直连），
-            # 规避 AstrBot 插件 API 裸路径 404/401 与内联整图 base64 超时的问题。
+            # 记录列表只返回元数据（含 sha），不内联缩略图 base64——避免一多就超时。
+            # 缩略图由前端经 bridge 调 gallery_thumb 按需懒加载拉取单张 data URL。
             for r in rows:
                 sha = (r.get("sha256") or "").strip()
-                if r.get("ext") != "fail" and sha:
-                    p = None
-                    try:
-                        p = self.plugin.gallery.path_of(sha)
-                    except Exception:
-                        p = None
-                    r["thumb_url"] = await asyncio.to_thread(_thumb_data_url, p) if p else ""
-                else:
-                    r["thumb_url"] = ""
+                r["sha"] = sha
+                r["thumb_url"] = ""
                 r["data_url"] = None
             return json_response({"records": rows, "total": len(rows)})
         except Exception as e:
@@ -190,31 +183,67 @@ class WebUIApi:
             starred = request.query.get("starred", "0") == "1"
             trash = request.query.get("trash", "0") == "1"
             try:
-                limit = request.query.get("limit", 40, type=int)
+                page = request.query.get("page", 1, type=int)
             except Exception:
-                limit = 40
+                page = 1
             try:
-                offset = request.query.get("offset", 0, type=int)
+                size = request.query.get("size", 40, type=int)
             except Exception:
-                offset = 0
+                size = 40
+            if page < 1:
+                page = 1
+            if size < 1:
+                size = 40
+            if size > 200:
+                size = 200
+            offset = (page - 1) * size
             rows = g.search(keyword=kw, type=stype, starred_only=starred,
-                            trash=trash, limit=limit, offset=offset)
-            # 返回 Pillow 压缩的小尺寸缩略图 data URL（前端 <img src> 直连渲染）：
-            # AstrBot 插件 API 需登录 token，裸路径直连会 404/401；内联整图 base64
-            # 又会因一次几十张原图导致超时。缩略图体积小且不走路由，两者都规避。
+                            trash=trash, limit=size, offset=offset)
+            total = g.count_search(keyword=kw, type=stype,
+                                   starred_only=starred, trash=trash)
+            # 列表只返回元数据（含 sha256），不内联任何缩略图 base64——避免一次几十张
+            # 图导致响应体爆炸/超时。缩略图由前端经 bridge 调用 gallery_thumb 按需、
+            # 懒加载、带 LRU 缓存地拉取单张 data URL（参考 astrbot_plugin_stealer 图库）。
             for r in rows:
-                sha = r.get("sha256", "")
-                if sha:
-                    try:
-                        p = g.path_of(sha)
-                    except Exception:
-                        p = None
-                    r["thumb"] = await asyncio.to_thread(_thumb_data_url, p) if p else ""
-                else:
-                    r["thumb"] = ""
-            return json_response(rows)
+                # 统一保留 sha256 作为前端取缩略图/大图的 key
+                sha = (r.get("sha256") or "").strip()
+                r["sha"] = sha
+                r.pop("thumb", None)
+                r.pop("thumb_url", None)
+            return json_response({"images": rows, "total": total, "page": page, "size": size})
         except Exception as e:
             return error_response(f"检索失败: {e}")
+
+    async def gallery_thumb(self):
+        """返回单张压缩缩略图 data URL（前端懒加载按需调用，走 bridge）。
+
+        设计参照 astrbot_plugin_stealer 图库：列表接口只给元数据，缩略图由前端在
+        图片进入视口时逐个调用本接口拉取 data URL，配 LRU 缓存。这样既不走 AstrBot
+        裸路径（404/401），也不会一次内联几十张图导致响应体爆炸/超时。
+        """
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        sha = request.query.get("sha", "")
+        if not sha:
+            return error_response("缺少 sha 参数")
+        try:
+            size = request.query.get("size", 300, type=int)
+        except Exception:
+            size = 300
+        try:
+            path = g.path_of(sha)
+        except Exception as e:
+            return error_response(f"路径解析失败: {e}")
+        if not path or not Path(path).exists():
+            return error_response("图片不存在", status_code=404)
+        try:
+            data_url = await asyncio.to_thread(_thumb_data_url, path, max_w=size)
+            if not data_url:
+                return error_response("生成缩略图失败")
+            return json_response({"sha": sha, "url": data_url})
+        except Exception as e:
+            return error_response(f"生成缩略图失败: {e}")
 
     async def gallery_image(self):
         g = self._gallery()
@@ -455,6 +484,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/records", api.get_records, ["GET"], "读取出图记录"),
         (f"{prefix}/gallery/stats", api.gallery_stats, ["GET"], "图库统计"),
         (f"{prefix}/gallery/search", api.gallery_search, ["GET"], "图库检索"),
+        (f"{prefix}/gallery/thumb", api.gallery_thumb, ["GET"], "图库缩略图"),
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
         (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
         (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除(移入回收站)"),

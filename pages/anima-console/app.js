@@ -9,6 +9,9 @@
     galStats: {},
     galResults: [],
     galSearching: false,
+    galPage: 1,
+    galTotal: 0,
+    galPageSize: 40,
   };
 
   const $ = function (id) { return document.getElementById(id); };
@@ -45,6 +48,8 @@
     galStarred: $("galStarred"),
     galSearchBtn: $("galSearchBtn"),
     galCount: $("galCount"),
+    galMoreWrap: $("galMoreWrap"),
+    galMoreBtn: $("galMoreBtn"),
     // dialogs
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
@@ -331,6 +336,88 @@
 
   async function apiPost(endpoint, body) {
     return apiRaw(endpoint, { method: "POST", body: body || {} });
+  }
+
+  // ---- 图库缩略图懒加载（参照 astrbot_plugin_stealer）----
+  // 列表接口只返回元数据；缩略图在图片进入视口时经 bridge 逐个拉取单张 data URL，
+  // 配 LRU 缓存。这样既不走 AstrBot 裸路径（404/401），也不会一次内联几十张图超时。
+  var THUMB_PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  var THUMB_LRU = new Map();
+  var THUMB_LRU_MAX = 200;
+  var thumbObserver = null;
+  var thumbLoading = new Set();
+
+  function thumbCacheGet(sha) {
+    if (!THUMB_LRU.has(sha)) return null;
+    var v = THUMB_LRU.get(sha);
+    THUMB_LRU.delete(sha);
+    THUMB_LRU.set(sha, v); // 刷新 LRU
+    return v;
+  }
+  function thumbCacheSet(sha, url) {
+    if (THUMB_LRU.has(sha)) THUMB_LRU.delete(sha);
+    THUMB_LRU.set(sha, url);
+    if (THUMB_LRU.size > THUMB_LRU_MAX) {
+      var oldest = THUMB_LRU.keys().next().value;
+      if (oldest != null) THUMB_LRU.delete(oldest);
+    }
+  }
+
+  async function loadThumb(sha) {
+    if (!sha || thumbLoading.has(sha)) return;
+    var cached = thumbCacheGet(sha);
+    if (cached) { applyThumb(sha, cached); return; }
+    thumbLoading.add(sha);
+    try {
+      var data = await apiGet("gallery/thumb", { sha: sha, size: 300 });
+      var url = data && (data.url || data.data_url);
+      if (url) {
+        thumbCacheSet(sha, url);
+        applyThumb(sha, url);
+      }
+    } catch (e) {
+      console.error("[anima-console] 缩略图加载失败:", sha, e);
+    } finally {
+      thumbLoading.delete(sha);
+    }
+  }
+
+  function applyThumb(sha, url) {
+    document.querySelectorAll('[data-sha="' + cssEscape(sha) + '"]').forEach(function (img) {
+      if (img && img.src !== url) img.src = url;
+    });
+  }
+
+  function cssEscape(value) {
+    return String(value).replace(/([^a-zA-Z0-9_-])/g, "\\$1");
+  }
+
+  function ensureThumbObserver() {
+    if (thumbObserver) return;
+    if (typeof IntersectionObserver !== "function") {
+      // 不支持 IntersectionObserver 时退化为立即加载
+      thumbObserver = { observe: function (el) { loadThumb(el.dataset.sha); } };
+      return;
+    }
+    thumbObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          var el = entry.target;
+          var sha = el && el.dataset.sha;
+          if (sha) loadThumb(sha);
+          thumbObserver.unobserve(el);
+        }
+      });
+    }, { rootMargin: "200px" });
+  }
+
+  function observeThumbs() {
+    ensureThumbObserver();
+    document.querySelectorAll("[data-sha]").forEach(function (el) {
+      if (el.dataset.observed) return;
+      el.dataset.observed = "1";
+      thumbObserver.observe(el);
+    });
   }
 
   // ---- confirm dialog ----
@@ -662,9 +749,10 @@
     }
     els.recBody.innerHTML = rows.map(function (r) {
       var isFail = Number(r.status) === 1;
-      var canOpen = (r.thumb_url && r.ext !== "fail" && r.sha256);
+      var recSha = r.sha || r.sha256 || "";
+      var canOpen = (recSha && r.ext !== "fail");
       var thumb = canOpen
-        ? '<img class="rec-thumb" src="' + escapeHtml(r.thumb_url) + '" alt="预览" data-open="' + escapeHtml(r.sha256) + '" title="点击查看大图" loading="lazy" />'
+        ? '<img class="rec-thumb" src="' + THUMB_PLACEHOLDER + '" data-sha="' + escapeHtml(recSha) + '" data-open="' + escapeHtml(recSha) + '" alt="预览" title="点击查看大图" loading="lazy" />'
         : '<div class="rec-thumb empty-thumb">' + (isFail ? "失败" : "—") + '</div>';
       var t = (r.created_at ? new Date(Number(r.created_at) * 1000) : null);
       var time = t ? t.toLocaleString("zh-CN", { hour12: false }) : "—";
@@ -691,6 +779,8 @@
         '<td class="rec-prompt">' + escapeHtml(prompt) + '</td>' +
         '</tr>';
     }).join("");
+    // 懒加载缩略图
+    observeThumbs();
     Array.prototype.forEach.call(els.recBody.querySelectorAll("[data-open]"), function (img) {
       img.addEventListener("click", function () { openImage(img.getAttribute("data-open")); });
     });
@@ -801,9 +891,20 @@
   var galTabState = "normal"; // normal | trash
 
   async function galSearch() {
+    await galSearchPage(1, true);
+  }
+
+  // 分页加载图库。reset=true 时重置到第一页并替换列表；否则在当前基础上加载下一页追加。
+  async function galSearchPage(page, reset) {
     if (state.galSearching) return;
     state.galSearching = true;
-    els.galGrid.innerHTML = '<div class="empty">搜索中…</div>';
+    if (reset) {
+      state.galPage = 1;
+      els.galGrid.innerHTML = '<div class="empty">搜索中…</div>';
+    } else if (page > 1 && els.galMoreBtn) {
+      els.galMoreBtn.disabled = true;
+      els.galMoreBtn.textContent = "加载中…";
+    }
     try {
       var params = {};
       var q = els.galSearch.value.trim();
@@ -811,15 +912,40 @@
       if (els.galType.value) params.type = els.galType.value;
       if (els.galStarred.checked) params.starred = "1";
       if (galTabState === "trash") params.trash = "1";
+      params.page = page;
+      params.size = state.galPageSize;
       var data = await apiGet("gallery/search", params);
-      state.galResults = Array.isArray(data) ? data : (data.rows || data.results || data.images || []);
+      var rows = Array.isArray(data) ? data : (data.rows || data.results || data.images || []);
+      state.galTotal = (data && typeof data === "object" && data.total != null)
+        ? Number(data.total) : 0;
+      if (reset) {
+        state.galResults = rows;
+        state.galPage = 1;
+      } else {
+        var known = {};
+        state.galResults.forEach(function (r) { if (r.sha || r.sha256) known[r.sha || r.sha256] = true; });
+        rows.forEach(function (r) {
+          var k = r.sha || r.sha256 || "";
+          if (k && !known[k]) { known[k] = true; state.galResults.push(r); }
+        });
+        state.galPage = page;
+      }
       renderGalResults();
-      els.galCount.textContent = state.galResults.length + " 张";
+      var shown = state.galResults.length;
+      els.galCount.textContent = (state.galTotal ? state.galTotal + " 张（已显示 " + shown + "）" : shown + " 张");
     } catch (e) {
-      els.galGrid.innerHTML = '<div class="empty error">搜索失败：' + escapeHtml(e.message) + '</div>';
-      els.galCount.textContent = "";
+      if (reset) {
+        els.galGrid.innerHTML = '<div class="empty error">搜索失败：' + escapeHtml(e.message) + '</div>';
+        els.galCount.textContent = "";
+      } else {
+        showToast(e.message || "加载更多失败", "error");
+      }
     } finally {
       state.galSearching = false;
+      if (els.galMoreBtn) {
+        els.galMoreBtn.disabled = false;
+        els.galMoreBtn.textContent = "加载更多";
+      }
     }
   }
 
@@ -837,20 +963,19 @@
     }
     var isTrash = galTabState === "trash";
     els.galGrid.innerHTML = state.galResults.map(function (img) {
-      var sha = img.sha256 || "";
+      var sha = img.sha || img.sha256 || "";
       var prompt = img.prompt || img.prompt_raw || "";
       var w = img.w || img.width || "";
       var h = img.h || img.height || "";
       var size = w && h ? w + "x" + h : "";
       var starred = img.starred;
-      var thumb = img.thumb || "";
       var actions = isTrash
         ? '<button data-restore="' + escapeHtml(sha) + '">恢复</button>' +
           '<button data-purge="' + escapeHtml(sha) + '" class="danger">彻底删除</button>'
         : '<button data-star="' + escapeHtml(sha) + '" class="' + (starred ? "starred" : "") + '">' + (starred ? "★" : "☆") + '</button>' +
           '<button data-del="' + escapeHtml(sha) + '" class="danger">移入回收站</button>';
       return '<div class="gal-card' + (isTrash ? " in-trash" : "") + '">' +
-        '<img class="gal-img" src="' + escapeHtml(thumb) + '" data-open="' + escapeHtml(sha) + '" alt="' + escapeHtml(prompt.slice(0, 80)) + '" loading="lazy" />' +
+        '<img class="gal-img" src="' + THUMB_PLACEHOLDER + '" data-sha="' + escapeHtml(sha) + '" data-open="' + escapeHtml(sha) + '" alt="' + escapeHtml(prompt.slice(0, 80)) + '" loading="lazy" />' +
         '<div class="gal-meta">' +
           '<div class="gal-prompt">' + escapeHtml(prompt.slice(0, 60) || "(无描述)") + '</div>' +
           '<div>' + escapeHtml(size) + (img.is_img2img ? " · 图生图" : "") + (img.deleted ? " · 回收站" : "") + '</div>' +
@@ -858,6 +983,13 @@
         '<div class="gal-actions">' + actions + '</div>' +
       '</div>';
     }).join("");
+
+    // 懒加载缩略图：图片进入视口时经 bridge 拉取单张 data URL
+    observeThumbs();
+
+    // 分页：还有更多时显示「加载更多」
+    var hasMore = state.galTotal > state.galResults.length;
+    if (els.galMoreWrap) els.galMoreWrap.hidden = !hasMore;
 
     // 点击图片直接看大图
     els.galGrid.querySelectorAll("[data-open]").forEach(function (img) {
@@ -962,6 +1094,11 @@
 
   els.galSearchBtn.addEventListener("click", galSearch);
   els.galSearch.addEventListener("keydown", function (e) { if (e.key === "Enter") galSearch(); });
+  if (els.galMoreBtn) {
+    els.galMoreBtn.addEventListener("click", function () {
+      galSearchPage(state.galPage + 1, false);
+    });
+  }
   if (els.galTabs) {
     els.galTabs.querySelectorAll(".tab").forEach(function (b) {
       b.addEventListener("click", function () {
