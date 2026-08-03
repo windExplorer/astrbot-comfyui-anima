@@ -368,13 +368,11 @@ def register_web_api(plugin) -> None:
     from astrbot.api import logger as _log
     api = WebUIApi(plugin)
     ctx = plugin.context
-    # 路由必须含插件名：/<plugin_name>/page/...。
-    # 配套前端 app.js 的 API_PREFIX = "page/"，宿主（AstrBot dashboard 的
-    # PluginPagePage.vue / plugin_page_bridge.js）会拼成
-    #   /api/plugins/extensions/<plugin_name>/page/<endpoint>
-    # 而 register_web_api 在 AstrBot 内部按「含插件名的完整路径」注册。
-    # 前缀少了插件名会导致全部 404，前端永远加载中。
-    prefix = f"/{PLUGIN_NAME}/page"
+    # 路由必须含插件名：/<plugin_name>/<endpoint>。
+    # 对齐 AstrBot 官方《插件 Pages》约定：后端注册带插件名前缀、
+    # 不带 /page；前端 bridge endpoint 写相对路径（不带插件名、不带 /page），
+    # 由 Dashboard 自动转发到 /api/v1/plugins/extensions/<plugin_name>/<endpoint>。
+    prefix = f"/{PLUGIN_NAME}"
 
     routes = [
         (f"{prefix}/schema", api.get_schema, ["GET"], "读取配置 schema"),

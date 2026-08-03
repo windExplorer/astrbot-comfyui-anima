@@ -105,8 +105,8 @@
   //      命中 404/未找到路由则换下一个候选，不再依赖单一前缀写法。
   //   3) normalizeResponse 把后端返回统一成 {success, data, error} 形态，前端只取 data。
   var PAGE_PLUGIN_NAME = "astrbot_plugin_comfyui_anima";
-  var PAGE_ENDPOINT_PREFIX = "page";
-  var HTTP_API = "/" + PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX; // fetch 兜底用，含插件名
+  var PAGE_ENDPOINT_PREFIX = ""; // 对齐 AstrBot 官方约定：bridge endpoint 不带 /page 前缀
+  var HTTP_API = "/" + PAGE_PLUGIN_NAME; // fetch 兜底用，含插件名
 
   let cachedPageBridge = null;
   let cachedPageEndpointStyle = "";
@@ -171,15 +171,13 @@
     var cleanRoute = String(routePath || "").replace(/^\/+/, "");
     var byStyle = {
       cached: cachedPageEndpointStyle ? endpointForStyle(cachedPageEndpointStyle, cleanRoute) : "",
-      page: PAGE_ENDPOINT_PREFIX + "/" + cleanRoute,
       bare: cleanRoute,
       slash: "/" + cleanRoute,
-      full: PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute,
-      fullSlash: "/" + PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute,
+      full: PAGE_PLUGIN_NAME + "/" + cleanRoute,
+      fullSlash: "/" + PAGE_PLUGIN_NAME + "/" + cleanRoute,
     };
     var ordered = [
       ["cached", byStyle.cached],
-      ["page", byStyle.page],
       ["bare", byStyle.bare],
       ["slash", byStyle.slash],
       ["full", byStyle.full],
@@ -201,11 +199,10 @@
   function endpointForStyle(style, routePath) {
     var cleanRoute = String(routePath || "").replace(/^\/+/, "");
     switch (style) {
-      case "page": return PAGE_ENDPOINT_PREFIX + "/" + cleanRoute;
       case "bare": return cleanRoute;
       case "slash": return "/" + cleanRoute;
-      case "full": return PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute;
-      case "fullSlash": return "/" + PAGE_PLUGIN_NAME + "/" + PAGE_ENDPOINT_PREFIX + "/" + cleanRoute;
+      case "full": return PAGE_PLUGIN_NAME + "/" + cleanRoute;
+      case "fullSlash": return "/" + PAGE_PLUGIN_NAME + "/" + cleanRoute;
       default: return "";
     }
   }
