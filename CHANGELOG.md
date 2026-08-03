@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.36
+
+- **修复图生图取不到「前一条消息发的图」和「引用消息里的图」**：旧实现只在 LLM 工具即将被调用时（`_capture_llm_event`）才去抓图片，而此时 event 已是 AI 自己的回复上下文，往往不含图——导致用户「先发图、AI 回复后说改这张图」这类场景取不到之前的图；引用图又只依赖 `extract_quoted_message_images` API（多数平台返回空）。现改为在**每条用户消息到达时**（`@filter.on_message` 钩子）即捕获该消息里的图片（含引用图），写入新的按会话滚动缓存 `g_recent_user_images`（保留最近 12 张）。`comfyui_draw` / `comfyui_img2img` 在「当前消息 + 引用 + `_last_event` + `g_last_received`」都取不到图时，再回退到 `g_recent_user_images` 最近 1 张，从而覆盖前一条消息图与引用图未回填的情况。
+
 ## v2.2.35
 
 - **修复「参考图没填充到工作流」**：旧逻辑只认标准 `LoadImage` 节点（`find_node_by_class(prompt, "LoadImage")`）。但很多图生图工作流用的是非标准图加载节点（如 `LoadImageFromPath` / `LoadImageV2` / `ImageLoader` 等），导致自动查找找不到 → 注入被跳过 / 报错「没有 LoadImage 节点」，参考图没填进去。

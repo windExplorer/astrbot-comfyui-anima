@@ -52,6 +52,16 @@ g_last_generated: dict[str, list[str]] = {}
 # 键为 session_id，值为最近收到的本地图片路径列表（最多 5 张）。
 g_last_received: dict[str, list[str]] = {}
 
+# 每个会话「用户历史消息里出现过的图片」滚动缓存（按时间倒序，最多保留 12 张），
+# 用于图生图兜底强度升级：
+#   - 覆盖「前一条消息发的图」：用户先发图、AI 回复后用户再说"改这张图"，
+#     LLM 工具触发时的 event 已是后续文本消息，_capture_llm_event 抓不到那条图，
+#     但本缓存在用户每次发消息时都会记录，因此能回溯到上一条的图。
+#   - 覆盖「引用消息里的图」：当平台未回填 Reply.chain、extract_quoted_message_images
+#     也返回空时，若该引用图曾作为用户消息体/历史消息出现，也能从这里兜底。
+# 仅在 LLM 工具调用且当前消息/引用/_last_event 全部取不到图时才启用，避免误用旧图。
+g_recent_user_images: dict[str, list[str]] = {}
+
 # 「我会永远陪着你」伴侣插件的来源标识：llm_draw 的 source 参数命中此值时，
 # 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
 # 事实与元指令、清除 [section compacted] 等标记）。
@@ -2425,8 +2435,17 @@ class ComfyUIDrawPlugin(Star):
             for p in (g_last_received.get(sid) or []):
                 if p and os.path.exists(p) and p not in init_images:
                     init_images.append(p)
+            # 二级兜底：本会话用户「历史消息里发过的图」（覆盖前一条消息发的图、
+            # 引用图未回填等场景）。仅当上面 g_last_received 仍为空时才启用，
+            # 且只取最近 1 张，避免把很久以前的旧图也混进来。
+            if not init_images:
+                hist = list(reversed(g_recent_user_images.get(sid) or []))
+                for p in hist[:1]:
+                    if p and os.path.exists(p) and p not in init_images:
+                        init_images.append(p)
+                        break
             if init_images:
-                logger.info(f"[取图] llm_draw 启用兜底图片（本会话用户最近收到）: {init_images}")
+                logger.info(f"[取图] llm_draw 启用兜底图片（本会话用户最近收到/历史）: {init_images}")
             else:
                 logger.info("[取图] llm_draw 未取到任何参考图，按文生图处理")
 
@@ -2500,6 +2519,45 @@ class ComfyUIDrawPlugin(Star):
             # 注意不要回本地路径等内部信息（那会经模型转述泄露给用户）。
             return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
         return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
+
+    # 在「每条用户消息到达」时即捕获其中的图片（含引用消息里的图），
+    # 写入 g_recent_user_images（按会话滚动）。这样即使后续 LLM 工具调用时
+    # 当前 event 已无图片（例如前一条消息发的图、或引用图未回填），仍可回溯
+    # 到用户最近发过的图做图生图兜底。比 _capture_llm_event 更前置、更可靠。
+    @filter.on_message()
+    async def _capture_user_images(self, event: AstrMessageEvent):
+        try:
+            # 只处理用户消息（避免把 AI 自己/系统消息也算进来污染图源）
+            sender = getattr(event, "get_sender_id", lambda: "")()
+            if not sender:
+                return
+            sid = getattr(event, "session_id", "") or ""
+            if not sid:
+                return
+            imgs = await self._extract_images(event)
+            # _extract_images 已覆盖：消息内图、引用消息内嵌图、引用 API 回退。
+            # 这里再尝试补一次引用图（部分平台引用图只在事件里以 Reply.id 形式存在，
+            # 且需在图片未被剥离的「原始消息到达」时机抓取才有效）。
+            try:
+                quoted = await self._extract_quoted_images(event)
+                quoted = [await self._image_to_local_path(q) for q in quoted]
+                for q in quoted:
+                    if q and q not in imgs:
+                        imgs.append(q)
+            except Exception as qe:
+                logger.debug(f"[取图] 原始消息抓引用图失败（忽略）: {qe}")
+            imgs = [p for p in imgs if p and os.path.exists(p)]
+            if imgs:
+                bucket = g_recent_user_images.setdefault(sid, [])
+                for p in imgs:
+                    if p not in bucket:
+                        bucket.append(p)
+                # 滚动：保留最近 12 张，避免无限增长
+                if len(bucket) > 12:
+                    g_recent_user_images[sid] = bucket[-12:]
+                logger.debug(f"[取图] 已记录会话历史图片 {len(bucket)} 张: {bucket[-3:]}")
+        except Exception as e:
+            logger.debug(f"[取图] 捕获用户消息图片失败（忽略）: {e}")
 
     # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
     # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，
@@ -2859,8 +2917,16 @@ class ComfyUIDrawPlugin(Star):
             for p in (g_last_received.get(sid) or []):
                 if p and os.path.exists(p) and p not in init_images:
                     init_images.append(p)
+            # 二级兜底：本会话用户「历史消息里发过的图」（覆盖前一条消息发的图、
+            # 引用图未回填等场景）。仅当上面仍为空时启用，且只取最近 1 张。
+            if not init_images:
+                hist = list(reversed(g_recent_user_images.get(sid) or []))
+                for p in hist[:1]:
+                    if p and os.path.exists(p) and p not in init_images:
+                        init_images.append(p)
+                        break
             if init_images:
-                logger.info(f"[取图] 启用兜底图片（本会话用户最近收到）: {init_images}")
+                logger.info(f"[取图] 启用兜底图片（本会话用户最近收到/历史）: {init_images}")
             else:
                 return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
