@@ -2353,8 +2353,8 @@ class ComfyUIDrawPlugin(Star):
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
                 不要留空，也不要用自然语言包裹，直接给出画面描述文本。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 文生图时的工作流名称，可选，留空使用文生图默认工作流。注意：必须使用 comfyui_workflows 工具查询返回的确切名称，禁止凭记忆或猜测工作流名，否则会找不到工作流。
-            img2img_workflow(string): 图生图时的工作流名称，可选。仅当消息附带参考图时生效。同样必须用 comfyui_workflows 查询到的确切名称。
+            workflow(string): 文生图工作流名称。★大多数情况留空即可，插件会自动使用默认工作流。只有用户明确要求特定画风/风格、且你通过 comfyui_workflows 查询到了确切名称时才传入。禁止凭记忆或猜测工作流名，否则找不到工作流。
+            img2img_workflow(string): 图生图工作流名称。仅在消息附带参考图时生效。同样：除非用户明确要求特定风格，否则留空让插件用图生图默认工作流；确需指定时必须用 comfyui_workflows 查询到的确切名称。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
@@ -2888,9 +2888,9 @@ class ComfyUIDrawPlugin(Star):
             prompt(string): 【必填】基于参考图的变换 / 生成描述（中文或英文均可）。这是唯一必须填写的参数，
                 直接给出变换意图文本，不要留空，不要包裹自然语言或 markdown。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            img2img_workflow(string): 图生图专用工作流名称，可选。不传则自动用图生图默认工作流。
-                注意：必须使用 comfyui_workflows 工具查询返回的确切名称，禁止凭记忆或猜测工作流名，
-                否则会找不到工作流。
+            img2img_workflow(string): 图生图工作流名称。★大多数情况留空即可，插件会自动用图生图默认工作流。
+                只有用户明确要求特定画风、且你通过 comfyui_workflows 查询到了确切名称时才传入。
+                禁止凭记忆或猜测工作流名，否则找不到工作流。
             loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
