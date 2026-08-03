@@ -1124,7 +1124,7 @@
         if (img.status === 1) add("状态", "失败");
         else if (img.status === 0) add("状态", "成功");
         if (img.starred) add("收藏", "★ 已收藏");
-        if (img.positive_seed != null) add("Seed", img.positive_seed);
+        if (img.seed != null) add("Seed", img.seed);
         add("提示词", img.prompt_raw || img.prompt || "（无）");
         els.imageDialogInfo.innerHTML = info.join("");
       } catch (e) {

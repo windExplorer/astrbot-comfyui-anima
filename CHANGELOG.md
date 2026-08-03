@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.48
+
+- **修复图库详情看不到 Seed**：前端大图弹窗（`anima-console/app.js`）误读字段名 `img.positive_seed`，但后端 `_row_to_dict` 实际返回的是 `seed` 字段，导致 Seed 行永不渲染。已改为正确的 `img.seed`。
+  - 背景：种子早已在出图时存入 `images.seed`（`main.py` 调 `archive_image(..., seed=seeds_used[0])`），后端查询与 `gallery/image?meta=1` 接口均正常返回，仅是前端展示字段名不匹配。
+  - 现在图库详情弹窗的「Seed」可正常显示，便于复现/对照生成参数。
+
 ## v2.2.47
 
 - **图库与出图记录改为翻页式分页**：将此前「加载更多」按钮改为标准的**上一页 / 第 X / N 页 / 下一页**翻页控件（图库每页 40 张、出图记录每页 40 条）。每次翻页替换当前页数据，不再累加。后端 `gallery/search` 与 `records` 均已支持 `page/size` 返回真实 `total`。
