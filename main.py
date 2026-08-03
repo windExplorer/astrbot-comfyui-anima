@@ -2520,12 +2520,14 @@ class ComfyUIDrawPlugin(Star):
             return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
         return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
 
-    # 在「每条用户消息到达」时即捕获其中的图片（含引用消息里的图），
-    # 写入 g_recent_user_images（按会话滚动）。这样即使后续 LLM 工具调用时
-    # 当前 event 已无图片（例如前一条消息发的图、或引用图未回填），仍可回溯
-    # 到用户最近发过的图做图生图兜底。比 _capture_llm_event 更前置、更可靠。
-    @filter.on_message()
-    async def _capture_user_images(self, event: AstrMessageEvent):
+    # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时即捕获
+    # 其中的图片（含引用消息里的图），写入 g_recent_user_images（按会话滚动）。
+    # 这样即使后续 LLM 工具调用时当前 event 已无图片（例如前一条消息发的图、
+    # 或引用图未回填），仍可回溯到用户最近发过的图做图生图兜底。
+    # 注意：本版本 filter 无 on_message，用 on_agent_begin 作为「每用户消息」入口
+    # （普通工具模式也会经由此钩子进入 Agent 流程），比 on_using_llm_tool 更前置。
+    @filter.on_agent_begin()
+    async def _capture_user_images(self, event: AstrMessageEvent, run_context):
         try:
             # 只处理用户消息（避免把 AI 自己/系统消息也算进来污染图源）
             sender = getattr(event, "get_sender_id", lambda: "")()
