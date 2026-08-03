@@ -927,6 +927,7 @@
         var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
         add("SHA", (img.sha256 || sha).slice(0, 20) + "…");
         add("类型", img.is_img2img ? "图生图" : (img.source === "ref" ? "参考图" : (img.source === "user" ? "用户收藏" : "文生图")));
+        if (img.workflow) add("工作流", img.workflow);
         if (img.w && img.h) add("尺寸", img.w + " × " + img.h);
         if (img.size_bytes != null) add("大小", fmtSize(img.size_bytes));
         if (img.cost_sec != null) add("耗时", Number(img.cost_sec).toFixed(1) + " 秒");
