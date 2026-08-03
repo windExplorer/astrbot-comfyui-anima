@@ -2296,14 +2296,20 @@ class ComfyUIDrawPlugin(Star):
         if loras:
             lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
 
-        # ── 收集图片 ─────────────────────────────────────────────────
-        # 先判断是否为图生图场景（传了 image 参数），再决定是否从事件取图
-        want_img2img = bool(image and image.strip())
+        # ── 收集图片（图生图参考图）─────────────────────────────────
+        # 关键修正：图生图不要求 LLM 必须传 image 参数。
+        # 用户最常见的图生图方式就是「直接发一张图 + 一句文字（如『改成水彩风』）」，
+        # 此时图片作为多模态输入连同文字一起发给大模型，LLM 不会、也不应该再传 image
+        # 参数（图片它已经"看见"了）。旧逻辑只在 image 参数存在时才去事件取图，导致这种
+        # 自然对话方式的图生图永远取不到图，最终以文生图提交、LoadImage 节点为空
+        # （表现为"图生图根本没传图片上去"）。
+        # 现改为：只要 image 参数没成功取到图，就去本次消息/引用里自动提取图片；
+        # 一旦取到图即判定为图生图，参考图直接喂给 ComfyUI 的 LoadImage 节点。
         init_images: list[str] = []
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
         got_explicit_image = False
-        if want_img2img:
+        if image and image.strip():
             img_url = image.strip()
             logger.info(f"[取图] llm_draw image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
@@ -2314,11 +2320,11 @@ class ComfyUIDrawPlugin(Star):
             else:
                 logger.warning(f"[取图] image 参数下载失败: {img_url}")
 
-        # ② 从事件中自动提取图片（仅图生图场景）。
+        # ② 从事件中自动提取图片。
         #    图生图不需要大模型"看懂"图片——参考图直接喂给 ComfyUI 的 LoadImage 节点。
-        #    因此当 image 参数已成功取到图时，不再去 event / last_event 做无谓兜底探测，
-        #    也避免把本插件历史生成图混进本次重绘。
-        if want_img2img and not got_explicit_image:
+        #    无论是否传了 image 参数，只要还没成功取到图，就去本次消息/引用里取
+        #    （含 LLM 工具调用前趁图片还在时缓存的原始事件 _last_event 兜底）。
+        if not got_explicit_image:
             event_images = await plugin._extract_images(event)
             last_ev = getattr(plugin, "_last_event", None)
             if not event_images and last_ev is not None and last_ev is not event:
@@ -2331,9 +2337,14 @@ class ComfyUIDrawPlugin(Star):
                     seen.add(ep)
                     init_images.append(ep)
 
-        # 注意：除非用户明确要求图生图（即 LLM 传入 image 参数、或本次消息/引用里带了图），
-        # 否则一律按文生图处理，绝不去翻历史消息缓存（g_last_received / g_last_generated），
-        # 避免把本插件之前生成的图、或会话中途残留的图片误当成参考图，导致：
+        if init_images:
+            logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
+        else:
+            logger.info("[取图] llm_draw 未取到任何参考图，按文生图处理")
+
+        # 注意：图生图只认「本次消息/引用里带了图、或 image 参数显式给了图」，
+        # 一律不翻历史消息缓存（g_last_received / g_last_generated），避免把本插件
+        # 之前生成的图、或会话中途残留的图片误当成参考图，导致：
         #   1) 纯续画（"再来一张"）被误判为图生图而找用户要图；
         #   2) 工作流被错误切到 default_img2img_workflow（如"动漫"突然变"真人"）。
         # 因此此处刻意不启用任何基于历史缓存的兜底取图。

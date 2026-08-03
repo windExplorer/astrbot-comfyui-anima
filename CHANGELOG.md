@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.30
+
+- **修复图生图"参考图根本没传上去 / LoadImage 节点为空"（核心取图门控 bug）**：旧逻辑只在 LLM 显式传入 `image` 参数时才去消息里取图；但用户最常见的图生图方式是「直接发一张图 + 一句文字（如『改成水彩风』）」，此时图片作为多模态输入连同文字一起发给大模型，LLM 不会、也不应再传 `image` 参数。结果取图分支被整个跳过，`init_images` 为空，任务以文生图提交，ComfyUI 端 `LoadImage` 节点 `image` 字段保持为空——正是用户看到的"图生图根本没传图片上去"。现改为：只要 `image` 参数没成功取到图，就无条件去本次消息/引用里自动提取图片（含 LLM 工具调用前趁图还在时缓存的 `_last_event` 兜底），一旦取到图即判定为图生图并把参考图注入 LoadImage 节点。仍严格不翻历史缓存（`g_last_received`/`g_last_generated`），避免"再来一张"被误判为图生图。
+
 ## v2.2.29
 
 - **修复图生图参考图注入路径错误（导致 ComfyUI 端 `Permission denied: .../input`）**：图生图时插件把上传后的参考图以**裸文件名字符串**注入 `LoadImage` 节点的 `image` 输入，部分 ComfyUI 加载类节点会把裸字符串误解析为 `input` 目录，触发 `av.open` 打开目录的 `PermissionError`。现按 ComfyUI 官方 API 约定改为注入 `[filename, subfolder, type]` 三元组（完整使用 `upload_image` 返回信息），由 ComfyUI 正确拼出文件路径。
