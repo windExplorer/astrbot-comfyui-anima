@@ -1656,14 +1656,15 @@ class ComfyUIDrawPlugin(Star):
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         images = await self._extract_images(event)
         # 图生图专用兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API
-        # 不可用时，退回本插件最近生成的图 / 本会话用户最近发来的图。注意：此兜底
+        # 不可用时，退回「用户最近发的图」优先，再退「本插件最近生成的图」。注意：此兜底
         # 仅限图生图入口，绝不进入通用 _extract_images，以免污染纯文生图指令。
         if not images:
             sid = getattr(event, "session_id", "") or ""
             for store in (
-                g_last_generated.get(sid) or [],
-                g_last_generated.get("__global__") or [],
-                g_last_received.get(sid) or [],
+                list(reversed(g_last_received.get(sid) or [])),
+                list(reversed(g_recent_user_images.get(sid) or [])),
+                list(reversed(g_last_generated.get(sid) or [])),
+                list(reversed(g_last_generated.get("__global__") or [])),
             ):
                 for p in store:
                     if p and os.path.exists(p) and p not in images:
@@ -2649,12 +2650,67 @@ class ComfyUIDrawPlugin(Star):
             return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
         return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
 
-    # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时即捕获
-    # 其中的图片（含引用消息里的图），写入 g_recent_user_images（按会话滚动）。
-    # 这样即使后续 LLM 工具调用时当前 event 已无图片（例如前一条消息发的图、
-    # 或引用图未回填），仍可回溯到用户最近发过的图做图生图兜底。
-    # 注意：本版本 filter 无 on_message，用 on_agent_begin 作为「每用户消息」入口
-    # （普通工具模式也会经由此钩子进入 Agent 流程），比 on_using_llm_tool 更前置。
+    # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
+    # 覆盖：消息内图、引用消息内嵌图、引用 API 回退；已过滤不存在路径。
+    async def _collect_user_images(self, event: AstrMessageEvent) -> list[str]:
+        imgs = await self._extract_images(event)
+        # _extract_images 已覆盖：消息内图、引用消息内嵌图、引用 API 回退。
+        # 这里再尝试补一次引用图（部分平台引用图只在事件里以 Reply.id 形式存在，
+        # 且需在图片未被剥离的「原始消息到达」时机抓取才有效）。
+        try:
+            quoted = await _extract_quoted_images(event)
+            quoted = [await _image_to_local_path(q) for q in quoted]
+            for q in quoted:
+                if q and q not in imgs:
+                    imgs.append(q)
+        except Exception as qe:
+            logger.debug(f"[取图] 原始消息抓引用图失败（忽略）: {qe}")
+        return [p for p in imgs if p and os.path.exists(p)]
+
+    def _record_user_images(self, sid: str, imgs: list[str]) -> None:
+        """把用户最近发的图写进两个缓存，供图生图兜底读取。"""
+        if not sid or not imgs:
+            return
+        # g_last_received：指令/工具兜底主用（最多 5 张，最近优先）
+        rb = g_last_received.setdefault(sid, [])
+        for p in imgs:
+            if p not in rb:
+                rb.append(p)
+        if len(rb) > 5:
+            g_last_received[sid] = rb[-5:]
+        # g_recent_user_images：更宽松的历史滚动（最多 12 张）
+        hb = g_recent_user_images.setdefault(sid, [])
+        for p in imgs:
+            if p not in hb:
+                hb.append(p)
+        if len(hb) > 12:
+            g_recent_user_images[sid] = hb[-12:]
+
+    # 每条用户消息（含纯指令，如 /draw /img2img /画）进入 handler 执行前，先用高优先级
+    # 提前缓存消息内/引用图片。这样即使后续指令只拿到纯文本（图片被剥离/引用未回填），
+    # 也能回溯到"用户最近发的图"做图生图兜底。
+    # 说明：AstrBot 的 on_agent_begin / on_using_llm_tool 只在消息进入 LLM Agent 流程时触发，
+    # 纯指令（command/regex 命中并 stop_event）不会进 Agent，所以必须用 event_message_type(ALL)
+    # 且给高 priority 保证它在 command handler 之前执行（handlers 按 -priority 降序）。
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=20)
+    async def _capture_user_images_on_message(self, event: AstrMessageEvent):
+        try:
+            sender = getattr(event, "get_sender_id", lambda: "")()
+            if not sender:
+                return
+            sid = getattr(event, "session_id", "") or ""
+            if not sid:
+                return
+            imgs = await self._collect_user_images(event)
+            self._record_user_images(sid, imgs)
+            if imgs:
+                logger.debug(f"[取图] 消息前置缓存 {len(imgs)} 张: {imgs}")
+        except Exception as e:
+            logger.debug(f"[取图] 消息前置捕获图片失败（忽略）: {e}")
+
+    # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时也捕获一次图片，
+    # 写入 g_recent_user_images（按会话滚动），供 LLM 工具兜底使用。
+    # 保留 on_agent_begin 版本以覆盖 AI 对话（非纯指令）场景。
     @filter.on_agent_begin()
     async def _capture_user_images(self, event: AstrMessageEvent, run_context):
         try:
@@ -2665,28 +2721,10 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if not sid:
                 return
-            imgs = await self._extract_images(event)
-            # _extract_images 已覆盖：消息内图、引用消息内嵌图、引用 API 回退。
-            # 这里再尝试补一次引用图（部分平台引用图只在事件里以 Reply.id 形式存在，
-            # 且需在图片未被剥离的「原始消息到达」时机抓取才有效）。
-            try:
-                quoted = await self._extract_quoted_images(event)
-                quoted = [await self._image_to_local_path(q) for q in quoted]
-                for q in quoted:
-                    if q and q not in imgs:
-                        imgs.append(q)
-            except Exception as qe:
-                logger.debug(f"[取图] 原始消息抓引用图失败（忽略）: {qe}")
-            imgs = [p for p in imgs if p and os.path.exists(p)]
+            imgs = await self._collect_user_images(event)
+            self._record_user_images(sid, imgs)
             if imgs:
-                bucket = g_recent_user_images.setdefault(sid, [])
-                for p in imgs:
-                    if p not in bucket:
-                        bucket.append(p)
-                # 滚动：保留最近 12 张，避免无限增长
-                if len(bucket) > 12:
-                    g_recent_user_images[sid] = bucket[-12:]
-                logger.debug(f"[取图] 已记录会话历史图片 {len(bucket)} 张: {bucket[-3:]}")
+                logger.debug(f"[取图] Agent 前置缓存 {len(imgs)} 张: {imgs}")
         except Exception as e:
             logger.debug(f"[取图] 捕获用户消息图片失败（忽略）: {e}")
 

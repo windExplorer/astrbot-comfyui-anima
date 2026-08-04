@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.60
+
+- **修复指令图生图"引用/最近发的图取不到"**：
+  - 根因：纯指令（`/draw` `/img2img` `/画`）被 command/regex handler 拦截后**不进 LLM Agent 流程**，而此前缓存「用户最近发的图」用的是 `on_agent_begin` / `on_using_llm_tool`（仅 Agent 流程触发），导致指令场景下这两个缓存一直是空的，引用/最近发的图兜底失效。
+  - 新增 `@filter.event_message_type(EventMessageType.ALL, priority=20)` 钩子 `_capture_user_images_on_message`，在**每条消息（含纯指令）执行前**用高优先级提前缓存消息内/引用图片到 `g_last_received` 与 `g_recent_user_images`。
+  - 抽出 `_collect_user_images` / `_record_user_images` 复用取图与缓存逻辑（覆盖消息内图、引用内嵌图、引用 API 回退）。
+  - 修正 `/img2img` 兜底优先级：**用户最近发的图**（`g_last_received` / `g_recent_user_images`）优先于**本插件最近生成的图**（`g_last_generated`），并取最近一张。
+  - 说明：`/draw` `/画` 为纯文生图入口，**不引入**历史图兜底，避免把纯文生图误判成图生图；它们带图/引用时仍会走 `_extract_images` 自动切图生图。
+
 ## v2.2.59
 
 - **新增「跨插件生图对接指南」文档**：明确其他插件若走工具生图应统一接入本插件（一套工作流/LoRA/图库/语言规范），并给出对接方法。
