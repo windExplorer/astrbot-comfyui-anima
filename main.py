@@ -1715,6 +1715,11 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf="默认"))
             event.stop_event()
             return
+        # 自然语言帮助：触发词后跟「帮助/说明/怎么用/咋用/help」等，复用 /drawhelp 输出
+        if re.match(r"^(?:帮助|说明|怎么用|咋用|help)$", rest.strip().lower()):
+            await self.cmd_help(event)
+            event.stop_event()
+            return
         # 尝试把 rest 首 token 当作可选工作流名。规则：
         #  - 首 token 长度 > 10（多半是用户直接写提示词，只是恰好开头像工作流名）
         #    → 不解析为工作流，整句当作提示词用默认工作流。
@@ -2068,6 +2073,7 @@ class ComfyUIDrawPlugin(Star):
             "/img2img 描述 [--wf 工作流] [...]  图生图（必须附带参考图）\n"
             "/画 [工作流名] 提示词 [...]   用指定/默认工作流作画（如 /画 真人 一个女孩）；工作流名可选、以空格分隔，找不到该工作流时回复可用列表\n"
             "/绘图 | /绘画 | /生图 | /画图 | /作画 | /画画 提示词 [...]   以上均用默认工作流作画（如 /绘图 一个女孩）\n"
+            "  · 以上任意中文触发词后跟「帮助/说明/怎么用」（如「画画帮助」「作图帮助」「绘图帮助」）也会显示本帮助。\n"
             "/loralist [--wf 工作流]   列出 LoRA（含预设）\n"
             "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
