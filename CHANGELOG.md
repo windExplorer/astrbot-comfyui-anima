@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.54
+
+- **新增「提示词语言规范」并写入 LLM 工具约束**：
+  - 规范：真人/写实工作流（`is_anima=false`）的 prompt 首选中文、除非用户明确要求英文才用英文；动漫/二次元工作流（`is_anima=true`）的 prompt **必须为英文标签化描述**，即使用户用中文描述也要翻译改写为英文 Danbooru 风格标签，不得原样透传中文。
+  - 已将上述规范直接写入 `comfyui_draw` 与 `comfyui_img2img` 两个 LLM 工具的 docstring（含 `negative_prompt` 同步遵循），使大模型在每次自动生成提示词时都必须遵守。
+  - 新增规范文档 `docs/prompt-language-guide.md`，作为给使用者/管理员/知识库的权威参考。
+
 ## v2.2.53
 
 - **补全"画"系中文绘图指令的说明与帮助入口**：

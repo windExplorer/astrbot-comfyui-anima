@@ -2381,6 +2381,18 @@ class ComfyUIDrawPlugin(Star):
         - 若用户明确提到"根据这张图/参考这张图/把这张图变成…"，必须传入 image 参数
           （消息中的图片URL）。
 
+        提示词语言规范（务必遵守）：
+        - 先确定本次出图的工作流类型：真人/写实工作流（is_anima=false）或动漫/二次元工作流
+          （is_anima=true，Anima）。可通过 comfyui_workflows 查询目标工作流的 is_anima 字段；
+          未指定工作流时按默认工作流判断（默认通常是真人）。
+        - 真人/写实工作流：prompt 首选中文，除非用户明确要求英文才用英文。
+        - 动漫/二次元工作流（is_anima=true）：prompt 必须为英文标签化描述（如
+          "1girl, solo, white dress, beach, backlight, masterpiece"），不得输出中文。
+          即使用户用中文描述，也要翻译改写为英文 Danbooru 风格标签，不要原样透传中文。
+        - 负向提示词（negative_prompt）同样遵循上述语言规则。
+        - 判断依据：is_anima=true 时插件会把含中文的 prompt 发送给 Danbooru 翻译成英文标签，
+          结果不可控；主动写英文标签才能获得稳定精确的出图效果。
+
         工作流选择规则（图生图）：
           插件已配置的工作流中，有些配置了「参考图节点」（image_node），说明该工作流
           支持图生图；有些没有，说明只能文生图。
@@ -2915,6 +2927,16 @@ class ComfyUIDrawPlugin(Star):
         - ⚠️ 图生图不需要你（大模型）去"理解"或"描述"参考图的内容：
           参考图会直接作为像素喂给 ComfyUI 的 LoadImage 节点，你只需把用户的变换意图
           翻译成英文提示词（prompt）即可，不要浪费步骤去调用视觉转述/读取图片内容。
+
+        提示词语言规范（务必遵守）：
+        - 先确定本次出图的工作流类型：真人/写实工作流（is_anima=false）或动漫/二次元工作流
+          （is_anima=true，Anima）。可通过 comfyui_workflows 查询目标工作流的 is_anima 字段；
+          未指定工作流时按默认工作流判断（默认通常是真人）。
+        - 真人/写实工作流：prompt 首选中文，除非用户明确要求英文才用英文。
+        - 动漫/二次元工作流（is_anima=true）：prompt 必须为英文标签化描述（如
+          "1boy, handsome, anime style, sharp eyes, masterpiece"），不得输出中文。
+          即使用户用中文描述变换意图，也要翻译改写为英文 Danbooru 风格标签，不要原样透传中文。
+        - 负向提示词（negative_prompt）同样遵循上述语言规则。
 
         工作流选择规则：
           插件已配置的工作流中，有些配置了「参考图节点」（image_node），说明该工作流
