@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.57
+
+- **修复内置 Skill「comfyui-draw」的 frontmatter 格式**：`description` 原用 YAML 折叠标量 `>-` 多行写法，虽可被 `yaml.safe_load` 解析，但不符 Anthropic Skills 标准（应为单行纯文本）。已改为标准单行 `description`，确保 AstrBot 的 `_parse_frontmatter_description` 稳定解析出技能描述。
+
 ## v2.2.56
 
 - **新增内置 Skill「comfyui-draw」，根治 LLM 聊久了忘记怎么画图/忘记工作流**：
