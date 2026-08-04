@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.59
+
+- **新增「跨插件生图对接指南」文档**：明确其他插件若走工具生图应统一接入本插件（一套工作流/LoRA/图库/语言规范），并给出对接方法。
+  - 说明 `comfyui_draw` / `comfyui_img2img` 作为 LLM 工具被其它插件直接调用，或通过宿主插件 `tool_call` 后端配置指向本插件。
+  - 强调关键点：必须传 `source`（命中 `SOURCE_COMPANION_PLUGIN` 才返回 `{"image_path": ...}` JSON，否则工具自己发图且不回路径）。
+  - 以伴侣插件为例给出完整配置映射（`custom_photo_tool_name=comfyui_draw`、`reference_param=image`、`extra_params={"source":"我会永远陪着你"}`、`kind_param` 留空等），并列出通用接入清单与禁止事项。
+
 ## v2.2.58
 
 - **内置 Skill「comfyui-draw」补充参数使用要点**：在"你能做什么"后新增"参数使用要点"段落，用规则式（而非清单式）告诉 LLM 各参数何时该填、何时留空——`prompt` 必填、`workflow` 默认不传仅用户要特定画风才传且必先查列表、`image` 有参考图才传、`seed`/`denoise` 用户明确要求才传、其余参数不要求就留空。参数定义本身仍由框架随工具自动注入，Skill 只补充"怎么填"的策略，避免重复与乱传参数。
