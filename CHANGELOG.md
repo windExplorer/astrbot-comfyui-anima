@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.58
+
+- **内置 Skill「comfyui-draw」补充参数使用要点**：在"你能做什么"后新增"参数使用要点"段落，用规则式（而非清单式）告诉 LLM 各参数何时该填、何时留空——`prompt` 必填、`workflow` 默认不传仅用户要特定画风才传且必先查列表、`image` 有参考图才传、`seed`/`denoise` 用户明确要求才传、其余参数不要求就留空。参数定义本身仍由框架随工具自动注入，Skill 只补充"怎么填"的策略，避免重复与乱传参数。
+
 ## v2.2.57
 
 - **修复内置 Skill「comfyui-draw」的 frontmatter 格式**：`description` 原用 YAML 折叠标量 `>-` 多行写法，虽可被 `yaml.safe_load` 解析，但不符 Anthropic Skills 标准（应为单行纯文本）。已改为标准单行 `description`，确保 AstrBot 的 `_parse_frontmatter_description` 稳定解析出技能描述。
