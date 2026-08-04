@@ -1705,9 +1705,9 @@ class ComfyUIDrawPlugin(Star):
           /画 提示词 [...]                      用默认工作流（如 /画 一个女孩）
           /画 工作流名 提示词 [...]             用指定工作流（如 /画 真人 一个女孩）
           /绘图|/绘画|/生图|/画图|/作画|/画画 提示词 [...]   用默认工作流
-        工作流名可选、必须以空格与提示词分隔；若指定了不存在的工作流，
-        会回复该工作流不存在并列出可用工作流。其余参数（--lora / --w /
-        --h / --seed / --wf 等）与 /draw 完全一致。"""
+        工作流名可选、必须以空格与提示词分隔；首 token 若长度超过 10 字则视为
+        提示词（用默认工作流），若长度 ≤10 但不是已知工作流会回复该工作流不存在并
+        列出可用工作流。其余参数（--lora / --w / --h / --seed / --wf 等）与 /draw 完全一致。"""
         text = (event.message_str or "").strip()
         m = re.match(self._DRAW_TRIGGER_PATTERN, text, re.S)
         rest = (m.group(1) or "").strip() if m else ""
@@ -1715,18 +1715,27 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf="默认"))
             event.stop_event()
             return
-        # 尝试把 rest 首 token 当作可选工作流名：仅当它确为已知工作流时才拆出，
-        # 否则整句都作为提示词（用默认工作流）。这样「画 一个女孩」不会把「一个」
-        # 误当成工作流；而「画 真人 一个女孩」中「真人」是工作流则正常拆出。
+        # 尝试把 rest 首 token 当作可选工作流名。规则：
+        #  - 首 token 长度 > 10（多半是用户直接写提示词，只是恰好开头像工作流名）
+        #    → 不解析为工作流，整句当作提示词用默认工作流。
+        #  - 首 token 长度 ≤ 10，但确为已知工作流 → 拆出作为指定工作流名。
+        #  - 首 token 长度 ≤ 10，且不是已知工作流 → 直接回复「没有该工作流」并列出可用，
+        #    不再静默回退当提示词（例如「画 真人 一个女孩」中真人拼错就明确报错）。
+        MAX_WF_NAME_LEN = 10
         wf_specified = None
         parts = rest.split(None, 1)
         first_tok = parts[0]
-        try:
-            self._resolve_workflow(first_tok)
-            wf_specified = first_tok
-            rest_for_parse = parts[1] if len(parts) > 1 else ""
-        except ValueError:
+        if len(first_tok) > MAX_WF_NAME_LEN:
             rest_for_parse = rest
+        else:
+            try:
+                self._resolve_workflow(first_tok)
+                wf_specified = first_tok
+                rest_for_parse = parts[1] if len(parts) > 1 else ""
+            except ValueError as e:
+                await self._send(event, str(e))
+                event.stop_event()
+                return
         prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest_for_parse)
         # 工作流优先级：显式 --wf > 首 token 推断的工作流名 > 默认
         wf_name = wf_arg or wf_specified
