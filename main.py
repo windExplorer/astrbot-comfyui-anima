@@ -179,11 +179,11 @@ _WF_HINTS = {
         "找不到「{wf}」，改用默认工作流画了一张。",
         "未找到名为「{wf}」的工作流，已用默认工作流替代。",
     ],
-    # 只写了工作流名，却没给提示词
+    # 只写了触发词却没给提示词
     "no_arg": [
-        "工作流是「{wf}」，但还缺提示词，例如：/画真人 一个女孩",
-        "「{wf}」没问题，可你还没说画什么，给句提示词吧，例如：/画真人 一个女孩",
-        "已选定「{wf}」，请补一句画面描述，如「/画真人 一个女孩」。",
+        "想画点啥呀？给句提示词呗~ 例如：/画 一个女孩",
+        "光说「画」可不够哦，补一句画面描述吧，例如：/画 一个女孩",
+        "还缺提示词呢，比如：/画 工作流名（可选） 一个女孩。",
     ],
 }
 
@@ -1688,33 +1688,48 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # 「画」系绘图指令（独立新增指令，非 /draw 别名）：
-    #   /画<工作流名> 提示词   用指定工作流（如 /画真人 一个女孩）
-    #   /画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词   用默认工作流
+    #   /画 [工作流名] 提示词   用指定/默认工作流（如 /画 真人 一个女孩）
+    #   /绘图 /绘画 /生图 /画图 /作画 /画画 提示词   均用默认工作流
+    # 语法约定：触发词后必须跟空格再写内容（触发词紧贴其它字不视为指令，
+    # 例如「画风成熟点」不会触发），以规避把闲聊误判为绘图指令。
+    # 工作流名是可选的，且必须以空格与提示词分隔；若指定的工作流不存在，
+    # 直接回复「xx 工作流不存在」并列出可用工作流，不再静默回退默认。
     # 与 /draw 并存，互不冲突。
-    _DRAW_DEFAULT_TRIGGERS = {"画", "绘图", "绘画", "画图", "画画"}
+    _DRAW_TRIGGER_PATTERN = r"^[/／]?(?:画|绘图|绘画|生图|画图|作画|画画)(?:\s+(.+))?$"
 
-    @filter.regex(r"^[/／]?画\S*")
+    @filter.regex(_DRAW_TRIGGER_PATTERN)
     async def cmd_draw_wf(self, event: AstrMessageEvent):
         """「画」系绘图指令（新增指令，非 /draw 别名）。
 
         用法：
-          /画工作流名 提示词 [...]   用指定工作流（如 /画真人 一个女孩）
-          /画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词 [...]   用默认工作流
-        其余参数（--lora / --w / --h / --seed 等）与 /draw 完全一致。
-        找不到指定工作流时，俏皮提示并改用默认工作流。"""
+          /画 提示词 [...]                      用默认工作流（如 /画 一个女孩）
+          /画 工作流名 提示词 [...]             用指定工作流（如 /画 真人 一个女孩）
+          /绘图|/绘画|/生图|/画图|/作画|/画画 提示词 [...]   用默认工作流
+        工作流名可选、必须以空格与提示词分隔；若指定了不存在的工作流，
+        会回复该工作流不存在并列出可用工作流。其余参数（--lora / --w /
+        --h / --seed / --wf 等）与 /draw 完全一致。"""
         text = (event.message_str or "").strip()
-        m = re.match(r"^[/／]?(\S+)(?:\s+(.+))?$", text, re.S)
-        trigger = m.group(1).lstrip("/／")  # 去掉可能的前导斜杠，统一为纯触发词
-        rest = (m.group(2) or "").strip()
+        m = re.match(self._DRAW_TRIGGER_PATTERN, text, re.S)
+        rest = (m.group(1) or "").strip() if m else ""
         if not rest:
-            await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=trigger))
+            await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf="默认"))
             event.stop_event()
             return
-        # 默认触发词 → 用默认工作流；否则「画」后的部分即工作流名
-        wf_name = None if trigger in self._DRAW_DEFAULT_TRIGGERS else trigger[1:]
-        prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest)
-        if wf_arg:
-            wf_name = wf_arg  # 若同时写了 --wf，以 --wf 为准
+        # 尝试把 rest 首 token 当作可选工作流名：仅当它确为已知工作流时才拆出，
+        # 否则整句都作为提示词（用默认工作流）。这样「画 一个女孩」不会把「一个」
+        # 误当成工作流；而「画 真人 一个女孩」中「真人」是工作流则正常拆出。
+        wf_specified = None
+        parts = rest.split(None, 1)
+        first_tok = parts[0]
+        try:
+            self._resolve_workflow(first_tok)
+            wf_specified = first_tok
+            rest_for_parse = parts[1] if len(parts) > 1 else ""
+        except ValueError:
+            rest_for_parse = rest
+        prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest_for_parse)
+        # 工作流优先级：显式 --wf > 首 token 推断的工作流名 > 默认
+        wf_name = wf_arg or wf_specified
         if not prompt.strip():
             await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=wf_name or "默认"))
             event.stop_event()
@@ -1722,14 +1737,17 @@ class ComfyUIDrawPlugin(Star):
         # 提前取图：决定是否走图生图默认工作流
         images = await self._extract_images(event)
         is_img = bool(images)
-        # 检查工作流是否存在：不存在则俏皮提示并退回默认工作流
-        try:
-            self._resolve_workflow(wf_name, is_img2img=is_img)
-        except ValueError:
-            await self._send(event, random.choice(_WF_HINTS["not_found"]).format(wf=wf_name))
-            wf_name = None
+        # 校验工作流：用户显式指定了工作流（--wf 或首 token 命中）则必须存在，
+        # 不存在直接回复可用列表，不再静默回退默认工作流。
+        if wf_name is not None:
+            try:
+                self._resolve_workflow(wf_name, is_img2img=is_img)
+            except ValueError as e:
+                await self._send(event, str(e))
+                event.stop_event()
+                return
         # 若消息或引用(回复)里带了图片，则按图生图处理（参考图注入 LoadImage 节点）。
-        # 否则走普通文生图。这样「画真人图 + 引用图片」也能自动图生图，不必强写 /img2img。
+        # 否则走普通文生图。这样「画 真人 一个女孩 + 引用图片」也能自动图生图。
         async for out, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
@@ -2039,8 +2057,8 @@ class ComfyUIDrawPlugin(Star):
             "  · LoRA 预设：--安魂曲/预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设，名称与预设名之间用 / 分隔）。\n"
             "  · 若消息带了图片，自动切换为图生图模式并使用图生图默认工作流。\n"
             "/img2img 描述 [--wf 工作流] [...]  图生图（必须附带参考图）\n"
-            "/画工作流名 提示词 [...]   用指定工作流作画（如 /画真人 一个女孩）；找不到该工作流时用默认工作流\n"
-            "/画 提示词 | /绘图 | /绘画 | /画图 | /画画 提示词 [...]   以上均用默认工作流作画（如 /绘图 一个女孩）\n"
+            "/画 [工作流名] 提示词 [...]   用指定/默认工作流作画（如 /画 真人 一个女孩）；工作流名可选、以空格分隔，找不到该工作流时回复可用列表\n"
+            "/绘图 | /绘画 | /生图 | /画图 | /作画 | /画画 提示词 [...]   以上均用默认工作流作画（如 /绘图 一个女孩）\n"
             "/loralist [--wf 工作流]   列出 LoRA（含预设）\n"
             "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
