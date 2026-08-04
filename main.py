@@ -191,9 +191,10 @@ _WF_HINTS = {
 # ------------------------------------------------------------------ #
 # 图生图取图辅助：从多种来源提取图片本地路径并打详细日志
 # ------------------------------------------------------------------ #
-async def _extract_quoted_images(event: "AstrMessageEvent") -> list:
+async def _extract_quoted_images(event: "AstrMessageEvent", reply_component=None) -> list:
     """尝试用 AstrBot 内置的引用消息解析器获取被引用消息里的图片引用
-    （url / base64 / 本地路径）。该 API 在较新版本可用，旧版本静默返回空。"""
+    （url / base64 / 本地路径）。该 API 在较新版本可用，旧版本静默返回空。
+    reply_component 为可选的具体 Reply 组件，传入可提高拉取成功率。"""
     try:
         from astrbot.core.utils.quoted_message_parser import (
             extract_quoted_message_images,
@@ -201,7 +202,10 @@ async def _extract_quoted_images(event: "AstrMessageEvent") -> list:
     except ImportError:
         return []
     try:
-        res = extract_quoted_message_images(event)
+        if reply_component is not None:
+            res = extract_quoted_message_images(event, reply_component)
+        else:
+            res = extract_quoted_message_images(event)
         if hasattr(res, "__await__"):
             res = await res
         return list(res or [])
@@ -883,6 +887,7 @@ class ComfyUIDrawPlugin(Star):
         )
 
         candidates: list = []  # (组件/引用, 来源描述)
+        has_reply = False  # 消息里是否出现引用(Reply)组件
         for comp in comps:
             # 用 type 属性判断组件类型，不依赖 isinstance（Reply/CardImage
             # 可能因不同 AstrBot 版本导入失败为 None，但 comp.type 始终可用）
@@ -892,6 +897,7 @@ class ComfyUIDrawPlugin(Star):
             elif (CardImage is not None and isinstance(comp, CardImage)) or ct == "CardImage":
                 candidates.append((comp, "卡片图片"))
             elif (Reply is not None and isinstance(comp, Reply)) or ct == "Reply":
+                has_reply = True
                 chain = getattr(comp, "chain", None) or []
                 logger.info(
                     f"[取图] 发现引用消息 Reply(id={getattr(comp, 'id', None)})，"
@@ -901,8 +907,9 @@ class ComfyUIDrawPlugin(Star):
                     st = str(getattr(sub, "type", ""))
                     if isinstance(sub, Image) or st == "Image":
                         candidates.append((sub, "引用消息内嵌图片"))
-                # 平台 API 回退：引用只含占位符时，用 reply.id 去拉原消息图片
-                for ref in await _extract_quoted_images(event):
+                # 平台 API 回退：引用只含占位符时，用 reply.id 去拉原消息图片。
+                # 显式传入找到的 Reply 组件，避免 AstrBot 再自行查找失败。
+                for ref in await _extract_quoted_images(event, reply_component=comp):
                     candidates.append((ref, "引用消息API回退"))
 
         paths: list[str] = []
@@ -917,6 +924,23 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"[取图] 跳过重复 [{src}] -> {p}")
             else:
                 logger.warning(f"[取图] 失败 [{src}] 无法解析为本地路径")
+
+        # 兜底：消息里带了引用(Reply)、但平台未回填引用内容/引用图解析失败时，
+        # 回退到「本会话用户最近发过的图」。用户引用的通常正是他自己刚发的图，
+        # 用历史缓存兜底是合理且安全的（仅当确实出现 Reply 才启用，纯文生图不受影响）。
+        if not paths and has_reply:
+            sid = getattr(event, "session_id", "") or ""
+            for store in (
+                list(reversed(g_last_received.get(sid) or [])),
+                list(reversed(g_recent_user_images.get(sid) or [])),
+            ):
+                for p in store:
+                    if p and os.path.exists(p) and p not in paths:
+                        paths.append(p)
+                if paths:
+                    break
+            if paths:
+                logger.info(f"[取图] 引用图解析失败，兜底最近用户发的图: {paths}")
 
         if paths:
             logger.info(f"[取图] 完成：共取得 {len(paths)} 张图片")

@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.61
+
+- **进一步修复「引用图取不到」**：
+  - `_extract_images` 遍历到引用(Reply)组件时，现在会**显式把该 Reply 组件传给引用消息 API 回退**（`_extract_quoted_images(event, reply_component=...)`），避免 AstrBot 内部二次查找 Reply 失败，提高 `get_msg` 远程拉取被引用消息图片的成功率。
+  - `_extract_quoted_images` 增加可选 `reply_component` 参数并透传给 AstrBot 解析器。
+  - `_extract_images` 末尾新增兜底：当消息里确实存在引用(Reply)组件但取不到图时，从「本会话用户最近发的图」（`g_last_received` / `g_recent_user_images`）兜底。仅当出现 Reply 才启用，纯文生图不受影响。
+
 ## v2.2.60
 
 - **修复指令图生图"引用/最近发的图取不到"**：
