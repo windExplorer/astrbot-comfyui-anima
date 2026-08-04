@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.62
+
+- **修复「引用图取不到」的根本原因**：`_extract_images` 判断组件类型时用 `str(comp.type)`，而 `comp.type` 是 **str 子类枚举**（如 `ComponentType.Reply`），`str()` 返回 `"ComponentType.Reply"`（带前缀）而非 `"Reply"`，导致 `ct == "Reply"` 永远不匹配，**引用(Reply)分支从未进入**，引用图自然取不到。
+  - 修复：改用 `comp.type.value / .name` 判断，并兼容 `"ComponentType.Reply"` 形式，使 Reply / CardImage / Image 三种组件都能被正确识别。
+  - 修复后：引用图会走引用消息内嵌图 + `_extract_quoted_images`（`get_msg` 远程拉取）解析；两者都失败且消息确有 Reply 时，回退到「本会话用户最近发的图」。
+
 ## v2.2.61
 
 - **进一步修复「引用图取不到」**：

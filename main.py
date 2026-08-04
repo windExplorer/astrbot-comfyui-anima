@@ -890,13 +890,22 @@ class ComfyUIDrawPlugin(Star):
         has_reply = False  # 消息里是否出现引用(Reply)组件
         for comp in comps:
             # 用 type 属性判断组件类型，不依赖 isinstance（Reply/CardImage
-            # 可能因不同 AstrBot 版本导入失败为 None，但 comp.type 始终可用）
-            ct = str(getattr(comp, "type", ""))
-            if isinstance(comp, Image) or ct == "Image":
+            # 可能因不同 AstrBot 版本导入失败为 None，但 comp.type 始终可用）。
+            # 注意：comp.type 是 str 子类的枚举（如 ComponentType.Reply），
+            # str(枚举) 返回 "ComponentType.Reply" 而非 "Reply"，故用 .value/.name。
+            t_raw = getattr(comp, "type", "")
+            ct = getattr(t_raw, "value", None) or getattr(t_raw, "name", None) or str(t_raw)
+            if isinstance(comp, Image) or ct in ("Image", "ComponentType.Image"):
                 candidates.append((comp, "消息内图片"))
-            elif (CardImage is not None and isinstance(comp, CardImage)) or ct == "CardImage":
+            elif (CardImage is not None and isinstance(comp, CardImage)) or ct in (
+                "CardImage",
+                "ComponentType.CardImage",
+            ):
                 candidates.append((comp, "卡片图片"))
-            elif (Reply is not None and isinstance(comp, Reply)) or ct == "Reply":
+            elif (Reply is not None and isinstance(comp, Reply)) or ct in (
+                "Reply",
+                "ComponentType.Reply",
+            ):
                 has_reply = True
                 chain = getattr(comp, "chain", None) or []
                 logger.info(
