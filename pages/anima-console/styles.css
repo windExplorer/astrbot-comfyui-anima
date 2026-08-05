@@ -94,10 +94,14 @@ body{
 /* workspace views */
 .workspace{display:none}
 .workspace.active{display:block}
-.section-heading{margin-bottom:18px}
+.section-heading{margin-bottom:18px;position:relative}
 .section-heading p{font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px}
 .section-heading h2{font-size:1.25rem;font-weight:700}
 .section-heading span{font-size:.82rem;color:var(--text-secondary);display:block;margin-top:4px;max-width:600px}
+.section-actions{position:absolute;top:0;right:0;display:flex;gap:8px}
+.section-actions button{padding:7px 14px;font-size:.82rem;font-weight:600;color:var(--text);background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer}
+.section-actions button:hover{background:var(--accent-light);border-color:var(--accent)}
+.section-actions button:disabled{opacity:.55;cursor:not-allowed}
 
 /* panel */
 .panel{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;box-shadow:var(--shadow-sm)}

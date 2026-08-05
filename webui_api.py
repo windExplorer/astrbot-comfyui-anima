@@ -388,6 +388,31 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"打标签失败: {e}")
 
+    async def backup_db(self):
+        """备份图库数据库（gallery.db），返回 base64 便于前端触发下载。
+
+        数据库文件通常不大（SQLite 元数据），走 bridge 拉取 base64 后在前端
+        构造 Blob 下载，规避 AstrBot 裸路径需登录 token 的问题。
+        """
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            db_path = getattr(g, "db_path", None)
+            if not db_path or not Path(db_path).exists():
+                return error_response("图库数据库文件不存在")
+            raw = await asyncio.to_thread(Path(db_path).read_bytes)
+            encoded = base64.b64encode(raw).decode("ascii")
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            filename = f"gallery_backup_{ts}.db"
+            return json_response({
+                "filename": filename,
+                "data_url": f"application/octet-stream;base64,{encoded}",
+                "size_bytes": len(raw),
+            })
+        except Exception as e:
+            return error_response(f"备份失败: {e}")
+
 
 def _ext_of(mime: str) -> str:
     """根据 MIME 推断文件扩展名（用于 gallery_image 下载文件名）。"""
@@ -507,6 +532,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/restore", api.gallery_restore, ["POST"], "图库恢复"),
         (f"{prefix}/gallery/purge", api.gallery_purge, ["POST"], "图库彻底删除"),
         (f"{prefix}/gallery/tags", api.gallery_tags, ["POST"], "图库打标签"),
+        (f"{prefix}/gallery/backup", api.backup_db, ["GET"], "备份图库数据库"),
     ]
     registered = []
     for path, handler, methods, desc in routes:

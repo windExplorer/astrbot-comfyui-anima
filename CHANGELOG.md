@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.83
+
+- **图库支持备份数据库下载**：控制台「图库」页新增「备份数据库」按钮，点击后把图库数据库（`gallery.db`）下载到本地（文件名 `gallery_backup_<时间戳>.db`），便于备份/迁移。数据经桥接走 base64 构造 Blob 下载，规避 AstrBot 裸路径需登录 token 的问题。后端新增 `GET /gallery/backup` 接口。
+
 ## v2.2.82
 
 - **让 `session_id` 过滤真正生效（跨会话配置落地）**：此前 `search`/`count_search`/`get_by_global_no` 收到 `session` 参数后直接忽略（仅兼容签名不参与 SQL），导致 `cross_session=false`（默认）时"仅检索当前会话"的语义没有落地——实际查了所有会话、仅靠 `user_id` 隔离。本次修复：

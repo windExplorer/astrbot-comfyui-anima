@@ -50,6 +50,7 @@
     recPageInfo: $("recPageInfo"),
     // gallery
     galStats: $("galStats"),
+    backupDbBtn: $("backupDbBtn"),
     galGrid: $("galGrid"),
     galSearch: $("galSearch"),
     galType: $("galType"),
@@ -1133,6 +1134,39 @@
     } catch (e) {
       showToast("打开图片失败：" + (e.message || ""), "error");
     }
+  }
+
+  // 备份图库数据库：从后端拉取 base64，前端构造 Blob 触发下载（走 bridge，规避裸路径需 token）。
+  function downloadDataUrl(dataUrl, filename) {
+    var mime = (dataUrl.split(",")[0] || "").split(":")[1] || "application/octet-stream";
+    var b64 = dataUrl.split(",")[1] || dataUrl;
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var blob = new Blob([bytes], { type: mime });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || "gallery_backup.db";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  if (els.backupDbBtn) {
+    els.backupDbBtn.addEventListener("click", async function () {
+      setButtonBusy(els.backupDbBtn, true, "备份中…", "备份数据库");
+      try {
+        var data = await apiGet("gallery/backup");
+        if (!data || !data.data_url) throw new Error("未获取到备份数据");
+        downloadDataUrl(data.data_url, data.filename || "gallery_backup.db");
+        showToast("已开始下载数据库备份");
+      } catch (e) {
+        showToast(e.message || "备份失败", "error");
+      } finally {
+        setButtonBusy(els.backupDbBtn, false, "备份中…", "备份数据库");
+      }
+    });
   }
 
   els.galSearchBtn.addEventListener("click", galSearch);
