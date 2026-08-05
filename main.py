@@ -963,31 +963,62 @@ class ComfyUIDrawPlugin(Star):
     def _split_external_prompt(text: str) -> tuple[str, str]:
         """把可能混合「正向/负向」与外部结构化标记的文本拆成 (正向, 负向)。
 
-        用于兼容 astrbot_plugin_private_companion 等调用方：它们把整段提示词
-        （含 'Negative prompt:' 段落、'[section compacted]' 占位符、'[User image
-        request]' 等分节方括号标题）塞进单个 prompt 参数。若不含有 'Negative
-        prompt:' 标记，则视为普通提示词原样返回（不影响常规 /draw 与 AI 对话调用）。
+        兼容外部插件（如 astrbot_plugin_private_companion）把整段塞进单个 prompt
+        的调用：包含 'Negative prompt:' 段落、'[section compacted]' 占位符、'[User
+        image request]' 等分节方括号标题，以及 'Avoid'/'Do not'/'Respect ...
+        exclusions' 负向软信号。
+
+        统一策略：**正向与构图约束全部保留，负面直接删除**（负向不输出，回退到调用方
+        自行提供的 negative_prompt）。对**所有来源**生效（不带 source 也处理），靠
+        软信号与方括号识别，不误伤无标记的自然语言描述（常规 /draw 与 AI 对话调用）。
         """
         if not text:
             return "", ""
         # 1) 按 'Negative prompt:' 拆分正/负（大小写与冒号差异均兼容）
         m = re.search(r"negative\s*prompt\s*[:：]", text, re.IGNORECASE)
-        if not m:
-            return text.strip(), ""
-        positive = text[: m.start()].strip()
-        negative = text[m.end():].strip()
-        # 2) 去掉开头的 'Positive prompt:' 标签
-        positive = re.sub(
-            r"^\s*positive\s*prompt\s*[:：]\s*", "", positive, flags=re.IGNORECASE
-        ).strip()
-        # 3) 清理伴侣插件注入的占位符与分节方括号标题（含空格的 [...]）
-        positive = re.sub(r"\[\s*section\s*compacted\s*\]", " ", positive, flags=re.IGNORECASE)
-        positive = re.sub(r"\[[^\]]*?\s.+?\]", " ", positive)
-        positive = re.sub(r"\s+", " ", positive).strip()
-        negative = re.sub(r"\[\s*section\s*compacted\s*\]", " ", negative, flags=re.IGNORECASE)
-        negative = re.sub(r"\[[^\]]*?\s.+?\]", " ", negative)
-        negative = re.sub(r"\s+", " ", negative).strip()
-        return positive, negative
+        if m:
+            positive = text[: m.start()].strip()
+            # 去掉开头的 'Positive prompt:' 标签
+            positive = re.sub(
+                r"^\s*positive\s*prompt\s*[:：]\s*", "", positive, flags=re.IGNORECASE
+            ).strip()
+            positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
+            # 负面直接删除（不保留，回退到调用方自行提供的 negative_prompt）
+            return positive, ""
+
+        # 2) 无 'Negative prompt:' 标记：兜底处理方括号标题 + 内联负向软信号。
+        #    命中 'Avoid'/'Do not'/'Respect ... exclusions' 时，软信号之后视为负面直接删除，
+        #    只保留软信号之前的正向与构图约束；未命中则原样返回。
+        neg_start = re.search(
+            r"(avoid\b|do not\b|respect[^.]*?exclusions\b)",
+            text,
+            re.IGNORECASE,
+        )
+        if neg_start:
+            positive = text[: neg_start.start()].strip()
+        else:
+            positive = text.strip()
+        positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
+        return positive, ""
+
+    @staticmethod
+    def _clean_prompt_markers(s: str) -> str:
+        """清理外部提示词里的方括号分节标题与占位符，压缩空白。
+
+        只删除结构噪声，保留中英文提示词正文（含中文描图）：
+        - '[section compacted]' 截断占位符；
+        - 含空格的方括号分节标题（如 '[User image request]'、'[Scene, style and
+          final preset]'）；
+        - 控制字符 / 零宽字符 / 孤立 emoji 等，但保留中文（\\u4e00-\\u9fff）。
+        """
+        if not s:
+            return ""
+        s = re.sub(r"\[\s*section\s*compacted\s*\]", " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"\[[^\]]*?\s.+?\]", " ", s)   # 含空格的方括号分节标题
+        # 仅清控制字符/零宽字符/孤立 emoji，保留字母数字、标点、中文
+        s = re.sub(r"[\u0000-\u001f\u200b-\u200f\ufeff]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
 
     @staticmethod
     def _format_companion_prompt(raw: str) -> tuple[str, str]:
@@ -2957,8 +2988,13 @@ class ComfyUIDrawPlugin(Star):
             resolved_wf = (workflow or "").strip() or None
 
         # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
+        # （通用处理始终生效：保留正向+构图约束、负面直接删除、清理方括号标题）
         positive, parsed_neg = plugin._split_external_prompt(prompt)
-        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+        # 伴侣插件专属过滤仅当配置开关开启时启用（默认关闭，避免影响常规调用）
+        if (
+            source and source.strip() == SOURCE_COMPANION_PLUGIN
+            and plugin._cfg("filter_companion_prompt", False)
+        ):
             cpos, cneg = plugin._format_companion_prompt(prompt)
             if cpos:
                 positive = cpos

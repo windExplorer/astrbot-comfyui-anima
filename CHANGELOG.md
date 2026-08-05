@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.0.2
+
+- **外部提示词统一「只取正向」**：`_split_external_prompt` 增强为对**所有来源**生效（不带 source 也处理）——正向与构图约束全部保留，负面直接删除（不输出到负向节点，回退调用方自带的 negative_prompt）。新增 `_clean_prompt_markers` 统一清理方括号分节标题（`[User image request]`、`[Scene, style and final preset]`）、`[section compacted]` 占位符与控制字符，**保留中文描图**；无 `Negative prompt:` 标记时，用 `Avoid` / `Do not` / `Respect ... exclusions` 软信号切分，软信号之后视为负面直接删除，无标记的自然语言描述原样返回。
+- **新增配置开关「陪伴插件提示词专属过滤」**（`filter_companion_prompt`，默认关闭）：开启后，当「我会永远陪着你」等伴侣插件带 source 标记调用时，额外启用 `_format_companion_prompt` 抽取用户诉求与构图连续性段落、过滤与出图无关的事实/元指令；关闭时（默认）仅做上述通用处理，不误伤常规 /draw 与 AI 对话调用。
+
 ## v3.0.1
 
 - **图生图优先选「名字带图生图」的工作流**：`comfyui_draw` / `comfyui_img2img` 的工具描述（docstring）新增"优先选择名称含「图生图」字样的工作流"的规则，LLM 选图生图工作流时优先匹配专为图生图设计的工作流。

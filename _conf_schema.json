@@ -317,6 +317,12 @@
     "hint": "开启后 AI 对话中可自动调用画图工具（comfyui_draw / comfyui_img2img）。关闭后仅支持指令画图（/draw、/img2img、/画xxx 等），避免与伴侣插件等第三方插件重复触发。",
     "default": true
   },
+  "filter_companion_prompt": {
+    "type": "bool",
+    "description": "陪伴插件提示词专属过滤",
+    "hint": "开启后，当「我会永远陪着你」等伴侣插件带 source 标记调用绘图时，会额外抽取其提示词里的用户诉求与构图连续性段落，过滤掉时间/日程/位置/情绪等与出图无关的事实与元指令。关闭时（默认）仅做通用处理：正向与构图约束保留、负面直接删除、清理方括号分节标题。",
+    "default": false
+  },
   "llm_model": {
     "type": "string",
     "description": "指定用于「理解指令并调用工具」的大模型",
