@@ -2168,6 +2168,56 @@ class ComfyUIDrawPlugin(Star):
         # 2) / 3) 本会话生成 / 收到（ImageStore.resolve_ref 处理）
         return self.gallery.resolve_ref(event, event.session_id or "")
 
+    def _is_admin(self, event) -> bool:
+        return bool(getattr(event, "is_admin", lambda: False)())
+
+    def _can_operate_image(self, event, row: dict, owner: str = "") -> tuple[bool, str]:
+        """图库「修改类操作」（打标签/删除/清空/改可见性等）的归属校验。
+
+        权限模型：
+          - 图片所有者（user_id == owner）可操作自己的图；
+          - 管理员可操作任意图（含无主图）；
+          - 无主图（user_id 为空）仅管理员可操作；
+          - 他人图片（含公开图）不可操作——公开只代表「他人可查看/发送」，不代表可修改。
+
+        返回 (是否允许, 拒绝原因)。row 为 None 时返回 (True, "")，由调用方处理「不存在」。
+        """
+        if row is None:
+            return True, ""
+        uid = (row.get("user_id") or "").strip()
+        # 图主
+        if uid and owner and uid == owner:
+            return True, ""
+        # 管理员
+        if self._is_admin(event):
+            return True, ""
+        # 无主图
+        if not uid:
+            return False, "这张图没有归属（无主图），仅管理员可操作。"
+        return False, "这张图是别人的，只有图片所有者和管理员可以操作。"
+
+    def _resolve_op_target(self, event, arg, owner: str, all_view: bool = False):
+        """解析图库「修改类操作」的目标并做归属校验。
+
+        arg 可为数字编号或 sha 前缀（不含 None；指代「当前这张图」由 tag 单独处理）。
+        返回 (sha, error_msg)。error_msg 非空表示拒绝或失败。
+        """
+        if str(arg).isdigit():
+            # 数字编号：get_by_global_no(owner) 天然只定位到本人（/全库，管理员视图）的图
+            eff_owner = "" if all_view else owner
+            row = self.gallery.get_by_global_no(int(arg), owner=eff_owner)
+            if row is None:
+                return None, "编号越界了。"
+        else:
+            # sha 前缀：可能命中他人图，需归属校验
+            row = self.gallery.get_by_sha(str(arg))
+            if row is None:
+                return None, "没找到这张图。"
+        can, why = self._can_operate_image(event, row, owner)
+        if not can:
+            return None, why
+        return row["sha256"], None
+
     async def _gallery_send_image(self, event: AstrMessageEvent, sha: str, owner: str = "") -> bool:
         """根据 sha256/前缀拼路径，并发图。返回是否成功。
         owner: 当前用户ID；传入后校验图片归属，防止取到/发到他人图片。"""
@@ -2376,7 +2426,7 @@ class ComfyUIDrawPlugin(Star):
                     await self._send(event, "请至少给一个标签，如：/图库 打标签 合照")
                     event.stop_event()
                     return
-                # 解析 target 到 sha
+                # 解析 target 到 sha（含归属校验：只有图主/管理员能给别人图打标签）
                 sha = None
                 if target is None:
                     # 指代消解：默认指向"这张图"。用「内容寻址 sha256」定位，而非路径字符串
@@ -2385,23 +2435,27 @@ class ComfyUIDrawPlugin(Star):
                     if p and os.path.exists(p):
                         _sha = self.gallery.sha_of(p)
                         if _sha:
-                            row = self.gallery.get_by_sha(_sha)
-                            if row and (row.get("is_public") or not row.get("user_id")
-                                        or row.get("user_id") == owner):
-                                sha = row["sha256"]
+                            _row = self.gallery.get_by_sha(_sha)
+                            can, why = self._can_operate_image(event, _row, owner)
+                            if can:
+                                sha = _row["sha256"] if _row else None
                         if not sha:
-                            await self._send(event, "这张图还没入库（图库里没有它的记录）。请先收藏该图（/图库 保存），或指定 /图库 打标签 <序号> <标签> 来打标签。")
+                            await self._send(event, "这张图还没入库（图库里没有它的记录）。请先收藏该图（/图库 保存），或指定 /图库 打标签 <编号> <标签> 来打标签。")
                             event.stop_event()
                             return
                 else:
                     if isinstance(target, int):
-                        # 数字 = 全局编号（列表里显示的编号），编号和 sha 都能操作
-                        eff_owner = "" if all_view else owner
-                        r = self.gallery.get_by_global_no(target, owner=eff_owner, session=session_scope)
-                        if r:
-                            sha = r["sha256"]
+                        sha, _err = self._resolve_op_target(event, target, owner, all_view)
+                        if _err:
+                            await self._send(event, _err)
+                            event.stop_event()
+                            return
                     else:
-                        sha = target
+                        sha, _err = self._resolve_op_target(event, target, owner, all_view)
+                        if _err:
+                            await self._send(event, _err)
+                            event.stop_event()
+                            return
                 if not sha:
                     await self._send(event, "没找到这张图（先发图、或指定 /图库 打标签 <编号> <标签>）")
                 else:
@@ -2443,22 +2497,34 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "star":
             if not rest:
-                await self._send(event, "用法：/图库 收藏 <sha前几位>")
+                await self._send(event, "用法：/图库 收藏 <编号或sha前几位>")
             else:
-                ok = self.gallery.star(rest[0], 1)
-                await self._send(event, "已收藏 ★（永不淘汰）。" if ok else "没找到这张图。")
+                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                else:
+                    ok = self.gallery.star(_sha, 1)
+                    await self._send(event, "已收藏 ★（永不淘汰）。" if ok else "没找到这张图。")
 
         elif sub == "unstar":
             if rest:
-                self.gallery.star(rest[0], 0)
-                await self._send(event, "已取消收藏。")
+                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                else:
+                    self.gallery.star(_sha, 0)
+                    await self._send(event, "已取消收藏。")
 
         elif sub == "del":
             if not rest:
-                await self._send(event, "用法：/图库 删除 <sha前几位>  （移入回收站，可在 /图库 回收站 查看，清空 才真删）")
+                await self._send(event, "用法：/图库 删除 <编号或sha前几位>  （移入回收站，可在 /图库 回收站 查看，清空 才真删）")
             else:
-                ok = self.gallery.delete(rest[0])
-                await self._send(event, "已移入回收站（用 /图库 清空 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
+                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                else:
+                    ok = self.gallery.delete(_sha)
+                    await self._send(event, "已移入回收站（用 /图库 清空 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
 
         elif sub == "trash":
             rows = self.gallery.search(trash=True, limit=100, owner=owner)
@@ -2472,17 +2538,25 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "restore":
             if not rest:
-                await self._send(event, "用法：/图库 恢复 <sha前几位>")
+                await self._send(event, "用法：/图库 恢复 <编号或sha前几位>")
             else:
-                ok = self.gallery.restore(rest[0])
-                await self._send(event, "已恢复。" if ok else "恢复失败（不在回收站或不存在）。")
+                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                else:
+                    ok = self.gallery.restore(_sha)
+                    await self._send(event, "已恢复。" if ok else "恢复失败（不在回收站或不存在）。")
 
         elif sub == "purge":
             if not rest:
-                await self._send(event, "用法：/图库 清空 <sha前几位>  （彻底删除，不可恢复）")
+                await self._send(event, "用法：/图库 清空 <编号或sha前几位>  （彻底删除，不可恢复）")
             else:
-                ok = self.gallery.purge(rest[0])
-                await self._send(event, "已彻底删除。" if ok else "删除失败（不在回收站或不存在）。")
+                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                else:
+                    ok = self.gallery.purge(_sha)
+                    await self._send(event, "已彻底删除。" if ok else "删除失败（不在回收站或不存在）。")
 
         elif sub == "save":
             # /gallery save [标签...]：收藏当前/上一条消息的图（方案B）
@@ -2517,25 +2591,12 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, f"用法：/图库 {('公开' if is_pub else '私有')} <序号或sha前几位>")
             else:
                 first = rest[0]
-                sha = None
-                if first.isdigit():
-                    # 数字 = 全局编号（列表里显示的编号）
-                    eff_owner = "" if all_view else owner
-                    r = self.gallery.get_by_global_no(int(first), owner=eff_owner, session=session_scope)
-                    if r:
-                        sha = r["sha256"]
-                    else:
-                        await self._send(event, "序号越界了。")
-                else:
-                    # sha 前缀：仅当是本人私有图或公开图才允许改（他人私有图不能改）
-                    row = self.gallery.get_by_sha(first)
-                    if row:
-                        if not row.get("is_public") and row.get("user_id") and row.get("user_id") != owner:
-                            await self._send(event, "这张图是私有的，不属于你，无法修改可见性。")
-                        else:
-                            sha = row["sha256"]
-                    else:
-                        await self._send(event, "没找到这张图。")
+                # 归属校验：只有图主/管理员能改他人图片的可见性
+                sha, _err = self._resolve_op_target(event, first, owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                    event.stop_event()
+                    return
                 if sha:
                     if self.gallery.set_visibility(sha, is_pub):
                         await self._send(event, f"已把 [{sha[:16]}] 设为{'公开' if is_pub else '私有'}。{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}")
@@ -3146,28 +3207,32 @@ class ComfyUIDrawPlugin(Star):
 
         elif mode in ("tag", "public", "private"):
             # 定位目标图（keyword 传序号或 sha 前几位；缺省时用最近生成的图）
+            # 归属校验：只有图主/管理员能给别人图打标签、改可见性。
             arg = (keyword or "").strip()
             sha = None
             if arg and arg.isdigit():
                 r = g.get_by_global_no(int(arg), owner=owner, session=session)
                 if r:
-                    sha = r["sha256"]
+                    _row = r
                 else:
                     return "编号越界。"
+                if not plugin._can_operate_image(event, _row, owner):
+                    return "这张图是别人的，只有图片所有者和管理员可以操作。"
+                sha = _row["sha256"]
             elif arg:
                 row = g.get_by_sha(arg)
-                if row:
-                    if not row.get("is_public") and row.get("user_id") and row.get("user_id") != owner:
-                        return "这张图是私有的，不属于你，无法操作。"
-                    sha = row["sha256"]
+                if not row:
+                    return "没找到这张图。"
+                if not plugin._can_operate_image(event, row, owner):
+                    return "这张图是别人的，只有图片所有者和管理员可以操作。"
+                sha = row["sha256"]
             else:
                 p = await plugin._gallery_resolve_ref(event)
                 if p and os.path.exists(p):
                     _sha = g.sha_of(p)
                     if _sha:
                         row = g.get_by_sha(_sha)
-                        if row and (row.get("is_public") or not row.get("user_id")
-                                    or row.get("user_id") == owner):
+                        if row and plugin._can_operate_image(event, row, owner):
                             sha = row["sha256"]
             if not sha:
                 return "没找到要操作的那张图。可传序号或 sha 前几位；若引用图尚未入库请先 /图库 保存。"
