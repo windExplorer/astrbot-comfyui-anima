@@ -855,14 +855,11 @@ class ImageStore:
         except Exception as e:
             logger.warning(f"[图库] 统计失败: {e}")
             return {"enabled": self.enabled()}
-        # 计算占用空间（仅统计 gallery/ 与 refs/）
-        size = 0
-        for d in (self.gallery_dir, self.refs_dir):
-            if not d.exists():
-                continue
-            for f in d.rglob("*"):
-                if f.is_file():
-                    size += f.stat().st_size
+        # 计算占用空间（仅统计 gallery/ 与 refs/；有效占用排除回收站图）
+        try:
+            active_size, trash_size = self._compute_sizes(conn)
+        except Exception:
+            active_size, trash_size = 0, 0
         return {
             "enabled": self.enabled(),
             "total": total,
@@ -871,7 +868,8 @@ class ImageStore:
             "gen": gen,
             "ref": ref,
             "user": user,
-            "size_mb": round(size / 1024 / 1024, 2),
+            "size_mb": round(active_size / 1024 / 1024, 2),
+            "trash_size_mb": round(trash_size / 1024 / 1024, 2),
             "max_total_mb": int(self._cfg("max_total_mb", 2048)),
             "trash_count": trash_count,
         }
@@ -879,25 +877,95 @@ class ImageStore:
     # ------------------------------------------------------------------ #
     # LRU 淘汰
     # ------------------------------------------------------------------ #
-    def enforce_lru(self) -> int:
-        """超 max_total_mb 时按创建时间升序淘汰非收藏、无标签图。返回删除数量。"""
+    def _compute_sizes(self, conn) -> tuple[int, int]:
+        """统计占用空间。
+
+        返回 (active_size, trash_size)：
+        - active_size：gallery/ 与 refs/ 中「有效」图文件的大小（排除回收站）。
+        - trash_size：回收站（deleted=1）图文件的大小（仍占磁盘，但已不可检索）。
+
+        口径：以文件系统实际大小为准；回收站文件用数据库 deleted 标记识别，
+        避免把用户已删除的图算进有效占用，使「当前占用」与实际可检索的图对得上。
+        """
+        active = 0
+        trash = 0
         if not _HAS_SQLITE:
-            return 0
-        max_mb = int(self._cfg("max_total_mb", 2048))
-        conn = self._conn_get()
-        try:
-            # 计算当前总大小
-            size = 0
+            # 无 SQLite 时无法区分回收站，退化为全量统计
             for d in (self.gallery_dir, self.refs_dir):
                 if not d.exists():
                     continue
                 for f in d.rglob("*"):
                     if f.is_file():
-                        size += f.stat().st_size
+                        active += f.stat().st_size
+            return active, 0
+        # 收集回收站文件路径集合
+        trash_paths = set()
+        try:
+            rows = conn.execute("SELECT * FROM images WHERE deleted=1").fetchall()
+            for row in rows:
+                try:
+                    p = self._path_of_row(row)
+                    trash_paths.add(str(p))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[图库] 统计回收站失败（按全量统计）: {e}")
+            trash_paths = set()
+        for d in (self.gallery_dir, self.refs_dir):
+            if not d.exists():
+                continue
+            for f in d.rglob("*"):
+                if f.is_file():
+                    if str(f) in trash_paths:
+                        trash += f.stat().st_size
+                    else:
+                        active += f.stat().st_size
+        return active, trash
+
+    def enforce_lru(self) -> int:
+        """超 max_total_mb 时按创建时间升序淘汰图。优先淘汰回收站图，
+        再淘汰非收藏、无标签图。返回删除数量。"""
+        if not _HAS_SQLITE:
+            return 0
+        max_mb = int(self._cfg("max_total_mb", 2048))
+        conn = self._conn_get()
+        try:
+            active_size, trash_size = self._compute_sizes(conn)
+            size = active_size + trash_size  # 总占用（含回收站）
             max_bytes = max_mb * 1024 * 1024
             if size <= max_bytes:
                 return 0
-            # 取可淘汰的图（starred=0 且无标签），按 created_at 升序
+        except Exception as e:
+            logger.warning(f"[图库] LRU 预检失败: {e}")
+            return 0
+
+        removed = 0
+        # 第一轮：优先清空回收站图（用户已删除，应最先腾出空间）
+        try:
+            trash_rows = conn.execute(
+                "SELECT * FROM images WHERE deleted=1 ORDER BY created_at ASC"
+            ).fetchall()
+        except Exception:
+            trash_rows = []
+        for row in trash_rows:
+            if size <= max_bytes:
+                break
+            p = self._path_of_row(row)
+            try:
+                if p.exists():
+                    sz = p.stat().st_size
+                    p.unlink()
+                    size -= sz
+            except OSError:
+                pass
+            try:
+                conn.execute("DELETE FROM images WHERE sha256=?", (row["sha256"],))
+                removed += 1
+            except Exception:
+                pass
+
+        # 第二轮：仍超限则淘汰有效图（starred=0 且无标签），按 created_at 升序
+        try:
             rows = conn.execute(
                 """
                 SELECT i.* FROM images i
@@ -906,11 +974,8 @@ class ImageStore:
                 ORDER BY i.created_at ASC
                 """
             ).fetchall()
-        except Exception as e:
-            logger.warning(f"[图库] LRU 预检失败: {e}")
-            return 0
-
-        removed = 0
+        except Exception:
+            rows = []
         for row in rows:
             if size <= max_bytes:
                 break

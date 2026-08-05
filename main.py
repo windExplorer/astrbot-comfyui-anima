@@ -2349,7 +2349,7 @@ class ComfyUIDrawPlugin(Star):
                 f"· 总张数：{st.get('total', 0)}",
                 f"· 收藏：{st.get('starred', 0)}　带标签：{st.get('tagged', 0)}",
                 f"· 生图/参考/用户收藏：{st.get('gen',0)}/{st.get('ref',0)}/{st.get('user',0)}",
-                f"· 占用：{st.get('size_mb', 0)} MB / 上限 {st.get('max_total_mb', 0)} MB",
+                f"· 有效占用：{st.get('size_mb', 0)} MB（回收站 {st.get('trash_size_mb', 0)} MB）/ 上限 {st.get('max_total_mb', 0)} MB",
             ]
             await self._send(event, "\n".join(lines))
 
@@ -2680,10 +2680,10 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
-            # 不替模型说话：只回中性事实，让模型依据自身人设自然回复用户。
-            # 注意不要回本地路径等内部信息（那会经模型转述泄露给用户）。
-            return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
-        return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
+            # 图片与固定小报告（尺寸/大小/耗时/时间）已由插件主动 event.send 发出，
+            # 模型无需也不应再补述文件信息。只回一句极简事实，明确指示简短收尾即可。
+            return "图片已发送给用户（含文件详情）。请用一句话简短收尾即可，不要重复文件信息。"
+        return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
     # 覆盖：消息内图、引用消息内嵌图、引用 API 回退；已过滤不存在路径。
@@ -2936,7 +2936,8 @@ class ComfyUIDrawPlugin(Star):
             return (
                 f"图库：共 {st.get('total',0)} 张（生图{st.get('gen',0)}/参考{st.get('ref',0)}/"
                 f"用户{st.get('user',0)}），收藏 {st.get('starred',0)}，带标签 {st.get('tagged',0)}；"
-                f"占用 {st.get('size_mb',0)}/{st.get('max_total_mb',0)} MB"
+                f"有效占用 {st.get('size_mb',0)} MB（回收站 {st.get('trash_size_mb',0)} MB）"
+                f"/ 上限 {st.get('max_total_mb',0)} MB"
             )
         else:
             return "未知 mode。可用：recall / search / save / send / list / stats。"
@@ -3221,7 +3222,7 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
-            # 不替模型说话：只回中性事实，让模型依据自身人设自然回复用户。
-            # 注意不要回本地路径等内部信息（那会经模型转述泄露给用户）。
-            return "绘图已完成，图片已发送给用户。请根据你的人设自然回复用户，无需复述本提示。"
-        return "本次生图失败，原因已记录到日志。请根据你的人设自然地向用户说明，无需复述本提示。"
+            # 图片与固定小报告（尺寸/大小/耗时/时间）已由插件主动 event.send 发出，
+            # 模型无需也不应再补述文件信息。只回一句极简事实，明确指示简短收尾即可。
+            return "图片已发送给用户（含文件详情）。请用一句话简短收尾即可，不要重复文件信息。"
+        return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
