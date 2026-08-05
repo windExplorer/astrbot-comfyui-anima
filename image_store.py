@@ -127,6 +127,7 @@ class ImageStore:
                 ("status", "INTEGER NOT NULL DEFAULT 0"),
                 ("deleted", "INTEGER NOT NULL DEFAULT 0"),
                 ("deleted_at", "REAL DEFAULT NULL"),
+                ("is_public", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -487,6 +488,23 @@ class ImageStore:
         except Exception:
             return []
 
+    def set_visibility(self, sha256: str, is_public: bool) -> bool:
+        """设置图片可见性：is_public=True 公开（他人可检索/发送），False 私有（仅本人）。
+        返回是否成功。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return False
+        conn = self._conn_get()
+        try:
+            cur = conn.execute(
+                "UPDATE images SET is_public=? WHERE sha256 LIKE ?",
+                (1 if is_public else 0, sha256 + "%"),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.warning(f"[图库] 设置可见性失败: {e}")
+            return False
+
     # ------------------------------------------------------------------ #
     # 检索 / 召回
     # ------------------------------------------------------------------ #
@@ -518,6 +536,7 @@ class ImageStore:
             "status": row["status"],
             "deleted": bool(row["deleted"]),
             "deleted_at": row["deleted_at"],
+            "is_public": bool(row["is_public"]),
             "tags": self.tags_of(row["sha256"]),
         }
 
@@ -544,7 +563,7 @@ class ImageStore:
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
         if owner:
-            sql += " AND (user_id IS NULL OR user_id='' OR user_id=?)"
+            sql += " AND (is_public=1 OR user_id IS NULL OR user_id='' OR user_id=?)"
             args.append(owner)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
@@ -593,9 +612,10 @@ class ImageStore:
             sql += " AND deleted=0"
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
-        # 用户隔离：只返回当前用户的图；空 owner 表示"库维护/全库"场景不过滤。
+        # 可见性过滤：公开图(is_public=1)所有人可见；私有图仅本人 + 历史无主图。
+        # owner 为空（库维护/全库场景）不过滤。
         if owner:
-            sql += " AND (user_id IS NULL OR user_id='' OR user_id=?)"
+            sql += " AND (is_public=1 OR user_id IS NULL OR user_id='' OR user_id=?)"
             args.append(owner)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
@@ -633,7 +653,7 @@ class ImageStore:
                     SELECT i.* FROM images i
                     JOIN image_tags t ON i.sha256 = t.sha256
                     WHERE t.tag LIKE ? AND i.deleted=0
-                      AND (i.user_id IS NULL OR i.user_id='' OR i.user_id=?)
+                      AND (i.is_public=1 OR i.user_id IS NULL OR i.user_id='' OR i.user_id=?)
                     ORDER BY i.created_at DESC LIMIT ?
                     """,
                     (kw, owner, int(limit)),

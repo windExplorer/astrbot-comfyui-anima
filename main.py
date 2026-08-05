@@ -2156,11 +2156,12 @@ class ComfyUIDrawPlugin(Star):
     async def _gallery_send_image(self, event: AstrMessageEvent, sha: str, owner: str = "") -> bool:
         """根据 sha256/前缀拼路径，并发图。返回是否成功。
         owner: 当前用户ID；传入后校验图片归属，防止取到/发到他人图片。"""
-        # 归属校验：按 sha 精确查一条记录，确认属于当前用户（或历史无主图）。
+        # 归属校验：按 sha 精确查一条记录。
+        # 允许发送：公开图（is_public=1）任何人可发；私有图仅本人（或历史无主图）。
         row = self.gallery.get_by_sha(sha) if hasattr(self.gallery, "get_by_sha") else None
         if row is not None and owner:
-            if row.get("user_id") and row.get("user_id") != owner:
-                await self._send(event, "这张图不属于你，无法发送。")
+            if not row.get("is_public") and row.get("user_id") and row.get("user_id") != owner:
+                await self._send(event, "这张图是私有的，不属于你，无法发送。")
                 return False
         path = self.gallery.path_of(sha)
         if not path:
@@ -2374,12 +2375,41 @@ class ComfyUIDrawPlugin(Star):
             ]
             await self._send(event, "\n".join(lines))
 
+        elif sub in ("public", "private"):
+            # /gallery public|private <序号或sha前几位>
+            is_pub = sub == "public"
+            if not rest:
+                await self._send(event, f"用法：/gallery {sub} <序号或sha前几位>（设为{'公开' if is_pub else '私有'}）")
+            else:
+                first = rest[0]
+                sha = None
+                if first.isdigit():
+                    rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
+                    if 1 <= int(first) <= len(rows):
+                        sha = rows[int(first) - 1]["sha256"]
+                    else:
+                        await self._send(event, "序号越界了。")
+                else:
+                    # sha 前缀：仅当是本人私有图或公开图才允许改（他人私有图不能改）
+                    row = self.gallery.get_by_sha(first)
+                    if row:
+                        if not row.get("is_public") and row.get("user_id") and row.get("user_id") != owner:
+                            await self._send(event, "这张图是私有的，不属于你，无法修改可见性。")
+                        else:
+                            sha = row["sha256"]
+                    else:
+                        await self._send(event, "没找到这张图。")
+                if sha:
+                    if self.gallery.set_visibility(sha, is_pub):
+                        await self._send(event, f"已把 [{sha[:16]}] 设为{'公开' if is_pub else '私有'}。{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}")
+                    else:
+                        await self._send(event, "设置可见性失败。")
         else:
             await self._send(
                 event,
                 "未知子命令。可用：list [n] | search <关键词> | tag [图] <标签...> | "
                 "findByTag <标签> | send <序号/sha> | star <sha> | unstar <sha> | "
-                "del <sha> | save [标签...] | stats",
+                "del <sha> | save [标签...] | public|private <序号/sha> | stats",
             )
         event.stop_event()
 
@@ -2860,11 +2890,15 @@ class ComfyUIDrawPlugin(Star):
                 - "send"：直接发某张图（配合 keyword 传序号字符串，如 "3"；或传 sha 前几位）。
                 - "list"：列出最近图片。
                 - "stats"：图库统计。
-            keyword(string): search 模式下的提示词关键词；或 send 模式下传序号/sha 前几位。
-            tag(string): recall/save 模式下的语义标签（如「合照」）。可含空格，多个标签用空格分隔（save 时）。
+                - "tag"：给某张图打标签（keyword 传序号或 sha 前几位，tag 传标签，多个空格分隔）。
+                - "public"：把某张图设为公开（keyword 传序号或 sha 前几位），公开后其他用户也能检索到。
+                - "private"：把某张图设为私有（keyword 传序号或 sha 前几位），仅自己可见。
+            keyword(string): search 模式下的提示词关键词；send/tag/public/private 模式下传序号或 sha 前几位。
+            tag(string): recall/tag/save 模式下的语义标签（如「合照」）。可含空格，多个标签用空格分隔（tag/save 时）。
             limit(int): 返回数量上限，默认 10。
 
-        注意：发图由插件在本地完成，模型不会、也不需要接触任何文件路径。
+        注意：发图由插件在本地完成，模型不会、也不需要接触任何文件路径。图片默认私有，
+        仅本人可见；设为公开后其他用户也能检索/发送。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
@@ -2963,8 +2997,49 @@ class ComfyUIDrawPlugin(Star):
                 f"有效占用 {st.get('size_mb',0)} MB（回收站 {st.get('trash_size_mb',0)} MB）"
                 f"/ 上限 {st.get('max_total_mb',0)} MB"
             )
+
+        elif mode in ("tag", "public", "private"):
+            # 定位目标图（keyword 传序号或 sha 前几位；缺省时用最近生成的图）
+            arg = (keyword or "").strip()
+            sha = None
+            if arg and arg.isdigit():
+                rows = g.search(limit=1000, session=session, owner=owner)
+                if 1 <= int(arg) <= len(rows):
+                    sha = rows[int(arg) - 1]["sha256"]
+                else:
+                    return "序号越界。"
+            elif arg:
+                row = g.get_by_sha(arg)
+                if row:
+                    if not row.get("is_public") and row.get("user_id") and row.get("user_id") != owner:
+                        return "这张图是私有的，不属于你，无法操作。"
+                    sha = row["sha256"]
+            else:
+                p = await plugin._gallery_resolve_ref(event)
+                if p:
+                    for r in g.search(limit=1000, owner=owner):
+                        if g.path_of(r["sha256"]) == p:
+                            sha = r["sha256"]
+                            break
+            if not sha:
+                return "没找到要操作的那张图。可传序号或 sha 前几位。"
+
+            if mode == "tag":
+                tags = (tag or "").strip().split()
+                if not tags:
+                    return "tag 模式需要 tag 参数（多个标签用空格分隔）。"
+                g.add_tags(sha, tags)
+                return f"已给 [{sha[:16]}] 打标签：{'、'.join(tags)}。"
+            # public / private
+            is_pub = mode == "public"
+            if g.set_visibility(sha, is_pub):
+                return (
+                    f"已把 [{sha[:16]}] 设为{'公开' if is_pub else '私有'}。"
+                    f"{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}"
+                )
+            return "设置可见性失败。"
         else:
-            return "未知 mode。可用：recall / search / save / send / list / stats。"
+            return "未知 mode。可用：recall / search / save / send / list / stats / tag / public / private。"
 
     # LLM 工具：comfyui_workflows（查询工作流列表）
     # ------------------------------------------------------------------ #
