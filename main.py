@@ -2207,9 +2207,23 @@ class ComfyUIDrawPlugin(Star):
             "公开": "public",
             "私有": "private",
             "帮助": "help", "怎么用": "help", "说明": "help",
+            "全部": "all", "全库": "all", "所有": "all",
         }
         sub = _sub_zh.get(raw_sub, raw_sub)
         rest = parts[1:]
+        # 全库模式：/图库 全部 列表 [页码]（仅管理员可用，展示所有用户图片）
+        all_view = False
+        if sub == "all":
+            if not bool(getattr(event, "is_admin", lambda: False)()):
+                await self._send(event, "只有管理员可以查看全库图片。")
+                event.stop_event()
+                return
+            all_view = True
+            if rest:
+                sub = _sub_zh.get(rest[0].lower(), rest[0].lower())
+                rest = rest[1:]
+            else:
+                sub = "list"
 
         # 跨会话范围（关闭 cross_session 时仅当前会话）
         session_scope = None if self._cfg("gallery", {}).get("cross_session") else (event.session_id or "")
@@ -2231,7 +2245,8 @@ class ComfyUIDrawPlugin(Star):
                 "· 保存 [标签...]　收藏当前这张图\n"
                 "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
                 "· 回收站　查看回收站\n"
-                "· 统计　查看图库统计信息\n\n"
+                "· 统计　查看图库统计信息\n"
+                "· 全部 列表/搜索（管理员）　查看所有用户的图片（带 sid/用户名）\n\n"
                 "示例：/图库 列表 2　/图库 取图 1　/图库 打标签 合照　/图库 公开 1",
             )
         elif sub == "list":
@@ -2243,19 +2258,22 @@ class ComfyUIDrawPlugin(Star):
                     page = max(1, int(rest[0]))
                 except ValueError:
                     pass
-            total = self.gallery.count_search(session=session_scope, owner=owner)
+            # 全库模式：管理员可查看所有用户的图片（owner 传空表示不过滤）
+            eff_owner = "" if all_view else owner
+            total = self.gallery.count_search(session=session_scope, owner=eff_owner)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
             rows = self.gallery.search(
                 limit=page_size, offset=(page - 1) * page_size,
-                session=session_scope, owner=owner,
+                session=session_scope, owner=eff_owner,
             )
             if not rows:
                 await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
             else:
-                # 是否管理员（管理员额外展示所属会话 sid）
+                # 是否管理员（管理员额外展示所属会话 sid；全库模式展示 user_id/user_name）
                 is_admin = bool(getattr(event, "is_admin", lambda: False)())
-                lines = [f"图库（第 {page}/{total_pages} 页，共 {total} 张）："]
+                _head = "全库图" if all_view else "图库"
+                lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
                     # 标签优先；无标签则取提示词前 10 个字
                     if r.get("tags"):
@@ -2270,10 +2288,14 @@ class ComfyUIDrawPlugin(Star):
                         _tm = "-"
                     _wf = (r.get("workflow") or "").strip() or "默认"
                     _sid = (r.get("session_id") or "").strip()
+                    _uid = (r.get("user_id") or "").strip()
+                    _uname = (r.get("user_name") or "").strip()
                     star = "★" if r.get("starred") else ""
                     line = f"{i}. {star}{desc}\n   {_wf} | {_tm}"
-                    if is_admin and _sid:
-                        line += f" | sid:{_sid}"
+                    if is_admin and (_sid or all_view):
+                        line += f" | sid:{_sid or '-'}"
+                        if all_view:
+                            line += f" | {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/gallery list <页码>（共 {total_pages} 页）")
                 lines.append("发图用：/gallery send <序号或sha前几位>")
@@ -2284,13 +2306,29 @@ class ComfyUIDrawPlugin(Star):
             if not kw:
                 await self._send(event, "用法：/gallery search <关键词>")
             else:
-                rows = self.gallery.search(keyword=kw, limit=20, session=session_scope, owner=owner)
+                eff_owner = "" if all_view else owner
+                rows = self.gallery.search(keyword=kw, limit=20, session=session_scope, owner=eff_owner)
                 if not rows:
                     await self._send(event, f"没找到含「{kw}」的图。")
                 else:
-                    lines = [f"检索「{kw}」的结果："]
+                    is_admin = bool(getattr(event, "is_admin", lambda: False)())
+                    _head = "全库检索" if all_view else "检索"
+                    lines = [f"{_head}「{kw}」的结果："]
                     for i, r in enumerate(rows, 1):
-                        lines.append(f"{i}. [{r['sha16']}] {r['prompt'][:60]}")
+                        tags = (" #" + " #".join(r["tags"])) if r.get("tags") else ""
+                        _ts = r.get("created_at") or 0
+                        try:
+                            _tm = time.strftime("%m-%d %H:%M", time.localtime(float(_ts)))
+                        except Exception:
+                            _tm = "-"
+                        _wf = (r.get("workflow") or "").strip() or "默认"
+                        _sid = (r.get("session_id") or "").strip()
+                        line = f"{i}. {r['sha16']}{tags}\n   {_wf} | {_tm}"
+                        if is_admin and (_sid or all_view):
+                            line += f" | sid:{_sid or '-'}"
+                            if all_view:
+                                line += f" | {r.get('user_name') or r.get('user_id') or '匿名'}"
+                        lines.append(line)
                     lines.append("\n发图用：/gallery send <序号或sha前几位>")
                     await self._send(event, "\n".join(lines))
 
