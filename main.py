@@ -2353,7 +2353,6 @@ class ComfyUIDrawPlugin(Star):
                 lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
                     _gno = r.get("gidx", i)  # 图库唯一编号（跨分页稳定，可直接取图）
-                    _sha16 = (r.get("sha256") or "")[:16] or ""
                     # 描述：标签优先；无标签用用户发送的消息前 10 字（无消息则回退提示词）
                     desc = self._gallery_desc(r, 10)
                     # 出图时间：created_at 时间戳转本地时间
@@ -2367,14 +2366,14 @@ class ComfyUIDrawPlugin(Star):
                     _uid = (r.get("user_id") or "").strip()
                     _uname = (r.get("user_name") or "").strip()
                     star = "★" if r.get("starred") else ""
-                    line = f"{_gno}. {star}{desc}\n   [{_sha16}] {_wf} | {_tm}"
+                    line = f"{_gno}. {star}{desc}\n   {_wf} | {_tm}"
                     if is_admin and (_sid or all_view):
                         line += f" | sid:{_sid or '-'}"
                         if all_view:
                             line += f" | {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 列表 <页码>（共 {total_pages} 页）")
-                lines.append("发图用：/图库 取图 <编号或sha前几位>（编号为上方「N.」左侧的数字）")
+                lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字；也支持 sha 前几位）")
                 await self._send(event, "\n".join(lines))
 
         elif sub == "starred":
@@ -2402,7 +2401,6 @@ class ComfyUIDrawPlugin(Star):
                 lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
                     _gno = r.get("gidx", i)
-                    _sha16 = (r.get("sha256") or "")[:16] or ""
                     desc = self._gallery_desc(r, 10)
                     _ts = r.get("created_at") or 0
                     try:
@@ -2413,14 +2411,14 @@ class ComfyUIDrawPlugin(Star):
                     _sid = (r.get("session_id") or "").strip()
                     _uid = (r.get("user_id") or "").strip()
                     _uname = (r.get("user_name") or "").strip()
-                    line = f"{_gno}. ★{desc}\n   [{_sha16}] {_wf} | {_tm}"
+                    line = f"{_gno}. ★{desc}\n   {_wf} | {_tm}"
                     if is_admin and (_sid or all_view):
                         line += f" | sid:{_sid or '-'}"
                         if all_view:
                             line += f" | {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 收藏列表 <页码>（共 {total_pages} 页）")
-                lines.append("发图用：/图库 取图 <编号或sha前几位>")
+                lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
                 await self._send(event, "\n".join(lines))
 
         elif sub == "search":
@@ -2446,13 +2444,13 @@ class ComfyUIDrawPlugin(Star):
                             _tm = "-"
                         _wf = (r.get("workflow") or "").strip() or "默认"
                         _sid = (r.get("session_id") or "").strip()
-                        line = f"{_gno}. {r['sha16']}{tags}\n   {_wf} | {_tm}"
+                        line = f"{_gno}. {tags}\n   {_wf} | {_tm}"
                         if is_admin and (_sid or all_view):
                             line += f" | sid:{_sid or '-'}"
                             if all_view:
                                 line += f" | {r.get('user_name') or r.get('user_id') or '匿名'}"
                         lines.append(line)
-                    lines.append("发图用：/图库 取图 <编号或sha前几位>")
+                    lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
                     await self._send(event, "\n".join(lines))
 
         elif sub == "tag":
@@ -2524,8 +2522,8 @@ class ComfyUIDrawPlugin(Star):
                     for i, r in enumerate(rows, 1):
                         _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
                         star = "★" if r["starred"] else ""
-                        lines.append(f"{_gno}. [{r['sha16']}]{star} {r['source']} {self._gallery_desc(r, 40)}")
-                    lines.append("发图用：/图库 取图 <编号或sha前几位>")
+                        lines.append(f"{_gno}. {star} {r['source']} {self._gallery_desc(r, 40)}")
+                    lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
                     await self._send(event, "\n".join(lines))
 
         elif sub == "send":
@@ -3181,7 +3179,7 @@ class ComfyUIDrawPlugin(Star):
             for i, r in enumerate(rows, 1):
                 _gno = r.get("gidx", i)  # 图库唯一编号，send 传它即可定位到同一张
                 star = "★" if r["starred"] else ""
-                lines.append(f"{_gno}. [{r['sha16']}]{star} {plugin._gallery_desc(r, 40)}")
+                lines.append(f"{_gno}. {star} {plugin._gallery_desc(r, 40)}")
             return "\n".join(lines)
 
         elif mode == "search":
@@ -3208,7 +3206,7 @@ class ComfyUIDrawPlugin(Star):
             lines = [f"检索「{keyword.strip()}」的结果："]
             for i, r in enumerate(rows, 1):
                 _gno = r.get("gidx", i)  # 图库唯一编号，send 传它即可定位到同一张
-                lines.append(f"{_gno}. [{r['sha16']}] {plugin._gallery_desc(r, 40)}")
+                lines.append(f"{_gno}. {plugin._gallery_desc(r, 40)}")
             lines.append("回复编号即可发对应那张。")
             return "\n".join(lines)
 
@@ -3244,7 +3242,7 @@ class ComfyUIDrawPlugin(Star):
             lines = ["最近的图片（回复编号即可发图）："]
             for i, r in enumerate(rows, 1):
                 t = (" #" + " #".join(r["tags"])) if r["tags"] else ""
-                lines.append(f"{r.get('gidx', i)}. [{r['sha16']}]{'★' if r['starred'] else ''} {r['source']}{t}")
+                lines.append(f"{r.get('gidx', i)}. {'★' if r['starred'] else ''} {r['source']}{t}")
             return "\n".join(lines)
 
         elif mode == "stats":
