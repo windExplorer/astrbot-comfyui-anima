@@ -407,6 +407,12 @@
         "default": 24,
         "description": "temp/ 保留小时数",
         "hint": "下载中转目录 temp/ 中副本的保留小时数，到期自动清理。成品图已通过内容寻址移入 gallery/，temp/ 仅作中转。"
+      },
+      "display_mode": {
+        "type": "string",
+        "default": "text",
+        "description": "图库展示方式",
+        "hint": "列表/搜索/找标签/收藏列表/统计等展示内容的发送方式：text=直接发文字；render=尝试用 AstrBot 渲染服务（text_to_image，Pillow 渲染）把文字渲染成图片发送，渲染失败时自动回退为文字。"
       }
     }
   }

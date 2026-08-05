@@ -1048,6 +1048,26 @@ class ComfyUIDrawPlugin(Star):
         yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
         await event.send(MessageChain([Plain(str(text))]))
 
+    async def _send_display(self, event: AstrMessageEvent, text: str) -> None:
+        """按图库配置的展示方式发送展示内容。
+
+        gallery.display_mode == "render" 时，尝试用 AstrBot 渲染服务（text_to_image，
+        底层 Pillow 渲染）把文字渲染成图片发送；渲染失败或服务不可用时**自动回退为文字**。
+        其他值（默认 text）直接发送文字。
+        """
+        if str(self._cfg("gallery", {}).get("display_mode", "text")).strip().lower() == "render":
+            try:
+                url = await self.text_to_image(text)
+                if url:
+                    await event.send(MessageChain([Image(url=url)]))
+                    return
+            except Exception as _e:
+                try:
+                    self.logger.warning(f"[图库] 图片渲染失败，回退文字: {_e}")
+                except Exception:
+                    pass
+        await self._send(event, text)
+
     @staticmethod
     def _wf_name(wf):
         """安全取工作流名：兼容 dict / None / 其他类型，避免下标/属性访问崩溃。"""
@@ -2374,7 +2394,7 @@ class ComfyUIDrawPlugin(Star):
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 列表 <页码>（共 {total_pages} 页）")
                 lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字；也支持 sha 前几位）")
-                await self._send(event, "\n".join(lines))
+                await self._send_display(event, "\n".join(lines))
 
         elif sub == "starred":
             # 收藏列表：只看自己收藏的图（★），分页逻辑与列表一致
@@ -2419,7 +2439,7 @@ class ComfyUIDrawPlugin(Star):
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 收藏列表 <页码>（共 {total_pages} 页）")
                 lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
-                await self._send(event, "\n".join(lines))
+                await self._send_display(event, "\n".join(lines))
 
         elif sub == "search":
             kw = " ".join(rest).strip()
@@ -2451,7 +2471,7 @@ class ComfyUIDrawPlugin(Star):
                                 line += f" | {r.get('user_name') or r.get('user_id') or '匿名'}"
                         lines.append(line)
                     lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
-                    await self._send(event, "\n".join(lines))
+                    await self._send_display(event, "\n".join(lines))
 
         elif sub == "tag":
             # /gallery tag [图标识] <标签...>
@@ -2524,7 +2544,7 @@ class ComfyUIDrawPlugin(Star):
                         star = "★" if r["starred"] else ""
                         lines.append(f"{_gno}. {star} {r['source']} {self._gallery_desc(r, 40)}")
                     lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
-                    await self._send(event, "\n".join(lines))
+                    await self._send_display(event, "\n".join(lines))
 
         elif sub == "send":
             if not rest:
@@ -2631,7 +2651,7 @@ class ComfyUIDrawPlugin(Star):
                 # 删除相关功能关闭：不向普通用户展示回收站占用
                 f"· 有效占用：{st.get('size_mb', 0)} MB / 上限 {st.get('max_total_mb', 0)} MB",
             ]
-            await self._send(event, "\n".join(lines))
+            await self._send_display(event, "\n".join(lines))
 
         elif sub in ("public", "private"):
             # /gallery public|private <序号或sha前几位>
