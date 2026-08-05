@@ -551,9 +551,11 @@ class ImageStore:
         starred_only: bool = False,
         trash: bool = False,
         owner: str = "",
+        session=None,
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
-        owner: 用户隔离标识，与 search 保持一致。"""
+        owner: 用户隔离标识，与 search 保持一致。
+        session: 兼容 search 的参数签名（images 表无 session_id 列，暂不按会话过滤）。"""
         if not self.enabled() or not _HAS_SQLITE:
             return 0
         conn = self._conn_get()

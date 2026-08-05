@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.76
+
+- **修复 /图库 列表分页 TypeError**：`/图库 列表` 调用 `count_search(session=...)`，但 `count_search` 无 `session` 参数导致崩溃。已为 `count_search` 增加 `session` 参数（签名与 `search` 对齐；images 表无 session_id 列，暂不按会话过滤，仅防调用报错）。
+
 ## v2.2.75
 
 - **新增图库帮助命令**：`/图库 帮助` 或 `/图库 help` 显示完整的图库指令中文说明（列表/搜索/打标签/找标签/取图/收藏/公开私有/保存/删除回收站/统计等），并附示例。
