@@ -914,13 +914,18 @@ class ImageStore:
         return self.path_of(sha256) is not None
 
     def star(self, sha256: str, on: int = 1) -> bool:
+        """收藏/取消收藏。sha256 应为完整 64 位哈希（精确匹配）。
+
+        注意：必须精确匹配完整 sha256，不能用前缀 LIKE —— 否则短前缀会误中多张图，
+        或在某些边界下把「设置某张」变成「更新多张」，导致收藏计数与预期不符。
+        """
         if not sha256:
             return False
         conn = self._conn_get()
         try:
             conn.execute(
-                "UPDATE images SET starred=? WHERE sha256 LIKE ?",
-                (1 if on else 0, sha256 + "%"),
+                "UPDATE images SET starred=? WHERE sha256=?",
+                (1 if on else 0, sha256),
             )
             conn.commit()
             return True

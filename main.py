@@ -1066,10 +1066,17 @@ class ComfyUIDrawPlugin(Star):
 
         伴侣传来的整段含 Positive/Negative 分段、分节标题、'[section compacted]' 占位符，
         以及大量与出图无关的事实描述（时间/日程/位置/情绪等）和元指令。这里只抽取对
-        出图真正有用的部分：
-        - 用户原始诉求（紧接 'user request:' 的内容）
-        - 构图连续性段落（[Composition and continuity] 区块，标准 SD 风格标签）
-        - 负向段落（Negative prompt: 区块，去掉其中的 'Do not ...' 元指令）
+        出图真正有用的部分，采用「白名单段保留」策略：保留那些承载 SD 风格标签的节，
+        丢弃纯事实 / 元指令段。
+
+        保留的节（标题大小写不敏感，方括号可有可无）：
+        - user request / [User image request]：用户原始出图诉求（首行）
+        - additional visual recognition notes：角色外观识别要点（狐娘人设等）
+        - additional outfit preference：穿搭偏好（daily_outfit_photo_prompt 落在此处）
+        - visual continuity reference：跨轮视觉连续性参考
+        - [Composition and continuity]：构图连续性标准 SD 标签
+        负向段（Negative prompt:）单独保留，去掉其中的 'Do not ...' 元指令与占位符。
+
         其余噪声（场景事实、分节标题、元指令、截断占位符）一律丢弃。
         """
         if not raw:
@@ -1079,27 +1086,81 @@ class ComfyUIDrawPlugin(Star):
         pos_raw = raw[: m.start()].strip() if m else raw.strip()
         neg_raw = raw[m.end():].strip() if m else ""
 
-        # 2) 正向：抽取 user request 与 Composition and continuity 两块
-        parts: list[str] = []
-        um = re.search(r"user\s*request\s*[:：]\s*(.+)", pos_raw, re.IGNORECASE)
-        if um:
-            chunk = um.group(1).split("\n")[0].strip()
+        # 2) 正向：白名单段抽取
+        # 各保留节的标题正则（允许带或不带方括号）
+        keep_sections = [
+            r"user\s*image\s*request",
+            r"user\s*request",
+            r"additional\s*visual\s*recognition\s*notes",
+            r"additional\s*outfit\s*preference",
+            r"visual\s*continuity\s*reference",
+            r"composition\s*and\s*continuity",
+        ]
+        # 用统一正则把正向段按标题切成 (标题, 内容) 块
+        split_pat = re.compile(
+            r"(?:^|\n)\s*\[?\s*("
+            + "|".join(keep_sections)
+            + r")\s*\]?\s*[:：]?\s*\n",
+            re.IGNORECASE,
+        )
+        # 先把正向段按标题切分；没有命中任何白名单标题的零散首行视为 user request 首行
+        chunks: list[str] = []
+
+        # 提取所有白名单块
+        matches = list(split_pat.finditer(pos_raw))
+        if matches:
+            for i, mt in enumerate(matches):
+                start = mt.end()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(pos_raw)
+                content = pos_raw[start:end].strip()
+                content = re.sub(r"\[\s*section\s*compacted\s*\]", " ", content, flags=re.IGNORECASE)
+                content = re.sub(r"\s+", " ", content).strip()
+                if content:
+                    chunks.append(content)
+            # 首个白名单块之前、且不以白名单标题开头的文本，当作 user request 首行补上
+            head = pos_raw[: matches[0].start()].strip()
+            if head:
+                head = re.sub(r"\[\s*section\s*compacted\s*\]", " ", head, flags=re.IGNORECASE)
+                head = re.sub(r"\s+", " ", head).strip()
+                # 仅取首行，避免把分节标题后残留的噪声带进来
+                head_first = head.split("\n")[0].strip()
+                if head_first and not re.search(r"user\s*request", head_first, re.IGNORECASE):
+                    chunks.insert(0, head_first)
+        else:
+            # 没有任何白名单标题：退回旧逻辑，取首行作为 user request
+            um = re.search(r"user\s*request\s*[:：]\s*(.+)", pos_raw, re.IGNORECASE)
+            if um:
+                chunk = um.group(1).split("\n")[0].strip()
+            else:
+                chunk = pos_raw.split("\n")[0].strip()
             chunk = re.sub(r"\[\s*section\s*compacted\s*\]", " ", chunk, flags=re.IGNORECASE)
             chunk = re.sub(r"\s+", " ", chunk).strip()
             if chunk:
-                parts.append(chunk)
-        cm = re.search(
-            r"\[Composition and continuity\](.+?)(?:\n\[|$)",
-            pos_raw,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if cm:
-            block = cm.group(1).strip()
-            block = re.sub(r"\[\s*section\s*compacted\s*\]", " ", block, flags=re.IGNORECASE)
-            block = re.sub(r"\s+", " ", block).strip()
-            if block:
-                parts.append(block)
-        positive = ", ".join(p for p in parts if p)
+                chunks.append(chunk)
+
+        positive = ", ".join(p for p in chunks if p)
+
+        # 2.5) 中文保护：伴侣 prompt 里用户的**中文描图**往往不在白名单英文标题段内
+        # （例如裸中文段落、[Scene, style and final preset] 等非白名单段里的中文）。
+        # 白名单策略只保留「带英文标题」的段，会把这些中文整体丢弃——这是 bug。
+        # 这里兜底：扫描所有未被白名单块覆盖、含中文且非方括号标题行的内容，追加保留。
+        # 原则：**中文是用户出图意图核心，绝不丢；纯英文事实段仍按白名单丢弃**。
+        if re.search(r"[\u4e00-\u9fff]", pos_raw):
+            # 先把已收集 chunk 拼成一段用于「去重判断」（避免重复追加同一行）
+            used_blob = "\n".join(chunks)
+            for raw_line in pos_raw.split("\n"):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if not re.search(r"[\u4e00-\u9fff]", line):
+                    continue  # 纯英文/数字行：按白名单策略，不兜底保留
+                if line.startswith("["):
+                    continue  # 方括号标题行（含中文标题）本身不是描图，跳过
+                # 已作为某 chunk 一部分存在则跳过（允许子串，避免重复）
+                if line in used_blob:
+                    continue
+                chunks.append(line)
+            positive = ", ".join(p for p in chunks if p)
 
         # 3) 负向：取 Negative prompt 区块，去掉元指令与占位符
         neg = neg_raw
@@ -1122,22 +1183,151 @@ class ComfyUIDrawPlugin(Star):
     async def _send_display(self, event: AstrMessageEvent, text: str) -> None:
         """按图库配置的展示方式发送展示内容。
 
-        gallery.display_mode == "render" 时，尝试用 AstrBot 渲染服务（text_to_image，
-        底层 Pillow 渲染）把文字渲染成图片发送；渲染失败或服务不可用时**自动回退为文字**。
+        gallery.display_mode == "render" 时，优先用 AstrBot 自带的文本转图片服务
+        (text_to_image，官方 HTML 模板渲染美观、清晰)；若该服务不可用 / 返回空 /
+        发送异常，再用本插件内置的 Pillow 渲染做兜底（仅防止完全无图可发），再失败回退文字。
         其他值（默认 text）直接发送文字。
         """
         if str(self._cfg("gallery", {}).get("display_mode", "text")).strip().lower() == "render":
+            # 1) 优先：AstrBot text_to_image 官方渲染服务（模板漂亮、清晰）
             try:
                 url = await self.text_to_image(text)
                 if url:
-                    await event.send(MessageChain([Image(url=url)]))
+                    # AstrBot 的 Image 组件第一个必填参数是 file（不是 url）。
+                    # text_to_image 返回的是本地路径，用 fromFileSystem；http(s) 才用 fromURL。
+                    if url.startswith("http://") or url.startswith("https://"):
+                        img_comp = Image.fromURL(url)
+                    else:
+                        img_comp = Image.fromFileSystem(url)
+                    await event.send(MessageChain([img_comp]))
                     return
+                self.logger.warning("[图库] AstrBot 渲染服务返回空 URL，改用 Pillow 兜底")
             except Exception as _e:
                 try:
-                    self.logger.warning(f"[图库] 图片渲染失败，回退文字: {_e}")
+                    self.logger.warning(f"[图库] AstrBot 渲染失败，改用 Pillow 兜底: {_e}")
                 except Exception:
                     pass
+            # 2) 兜底：本插件内置 Pillow 渲染（仅在 AstrBot 服务不可用时）
+            render_path = self._render_gallery_text_pillow(text)
+            if render_path:
+                try:
+                    await event.send(MessageChain([Image.fromFileSystem(render_path)]))
+                    return
+                except Exception as _e:
+                    self.logger.warning(f"[图库] Pillow 兜底渲染图发送失败，回退文字: {_e}")
+            # 3) 最终回退：文字
+            await self._send(
+                event,
+                text + "\n\n⚠ 渲染成图片失败（AstrBot 文本转图片服务不可用，Pillow 兜底也未成功），已回退文字。请确认 AstrBot「文本转图片」服务已启用并选择了激活模板。",
+            )
+            return
         await self._send(event, text)
+
+    def _render_gallery_text_pillow(self, text: str, font_size: int = 22) -> str | None:
+        """用 Pillow 把图库展示文字绘制成高清图片（解决 AstrBot 默认 t2i 字小发虚）。
+
+        做法：2x 超采样（先在大尺寸画布上用大字号绘制，再缩放回目标尺寸）得到抗锯齿清晰字；
+        白底深灰字，按字符宽度自动换行，兼容中英文；输出 PNG 到 data_dir 下的临时渲染目录。
+        返回图片路径；Pillow 不可用 / 绘制失败 / 字体缺失时返回 None（调用方回退）。
+        """
+        if _PILImage is None:
+            return None
+        try:
+            from PIL import ImageDraw, ImageFont
+
+            # 找一款能显示中文的字体（按常见路径尝试，缺失则用默认位图字体，中文可能方块）
+            font = None
+            for _cand in (
+                "C:/Windows/Fonts/msyh.ttc",          # Windows 微软雅黑
+                "C:/Windows/Fonts/simhei.ttf",        # Windows 黑体
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/System/Library/Fonts/PingFang.ttc",  # macOS
+            ):
+                try:
+                    font = ImageFont.truetype(_cand, font_size)
+                    break
+                except Exception:
+                    continue
+            if font is None:
+                try:
+                    font = ImageFont.load_default()
+                except Exception:
+                    return None
+
+            scale = 2  # 超采样倍数
+            pad = 28 * scale
+            line_h = int(font_size * 1.6 * scale)
+            max_w = 760 * scale  # 内容区最大宽度（2x）
+
+            # 单个字符宽度估算：emoji/异常字符用保守近似，避免 getlength 返回 0/异常导致整行折行错乱
+            def _ch_w(ch: str) -> float:
+                try:
+                    w = font.getlength(ch)
+                    if w and w > 0:
+                        return w
+                except Exception:
+                    pass
+                # 兜底：emoji/符号按约一个字宽估算，空白按 0.3 字宽
+                if ch in (" ", "\t"):
+                    return font_size * 0.3 * scale
+                return font_size * 1.0 * scale
+
+            # 逐字符折行（兼容中英文混排）；遇到超长无空格串（URL/sha）也强制硬断，避免溢出
+            lines: list[str] = []
+            for raw in text.split("\n"):
+                if raw == "":
+                    lines.append("")
+                    continue
+                cur = ""
+                cur_w = 0
+                for ch in raw:
+                    w = _ch_w(ch)
+                    if cur_w > 0 and cur_w + w > max_w:
+                        lines.append(cur)
+                        cur = ch
+                        cur_w = w
+                    else:
+                        # 即便当前已是超长单词（无空格），也允许在超出 max_w 处硬断
+                        if cur_w + w > max_w and cur:
+                            lines.append(cur)
+                            cur = ""
+                            cur_w = 0
+                        cur += ch
+                        cur_w += w
+                if cur:
+                    lines.append(cur)
+
+            content_h = line_h * len(lines)
+            img_w = max_w + pad * 2
+            img_h = content_h + pad * 2
+            img_h = max(img_h, int(font_size * 4 * scale))
+
+            big = _PILImage.new("RGB", (img_w, img_h), (255, 255, 255))
+            draw = ImageDraw.Draw(big)
+            ink = (33, 33, 33)
+            y = pad
+            for ln in lines:
+                draw.text((pad, y), ln, font=font, fill=ink)
+                y += line_h
+
+            # 缩回目标尺寸（抗锯齿）
+            out = big.resize((img_w // scale, img_h // scale), _PILImage.LANCZOS)
+
+            render_dir = os.path.join(self.data_dir, "gallery_render")
+            try:
+                os.makedirs(render_dir, exist_ok=True)
+            except Exception:
+                pass
+            out_path = os.path.join(render_dir, f"gallery_{int(time.time() * 1000)}.png")
+            out.save(out_path, "PNG")
+            return out_path
+        except Exception as _e:
+            try:
+                self.logger.warning(f"[图库] Pillow 渲染失败: {_e}")
+            except Exception:
+                pass
+            return None
 
     @staticmethod
     def _wf_name(wf):
@@ -2310,6 +2500,21 @@ class ComfyUIDrawPlugin(Star):
             return None, why
         return row["sha256"], None
 
+    def _parse_gallery_targets(self, rest: list[str]) -> list[str]:
+        """把 /图库 子命令后面的参数解析成多个「目标」token。
+
+        支持逗号或空格分隔，例如「1,2,3」「1 2 3」「1,2 3」都会被拆成 ['1','2','3']。
+        每个 token 可以是数字序号或 sha 前缀（原样保留给后续 _resolve_op_target 判断）。
+        仅保留非空 token，连续分隔符不会产生空串。
+        """
+        out: list[str] = []
+        for tok in rest:
+            for piece in re.split(r"[,，\s]+", tok):
+                piece = piece.strip()
+                if piece:
+                    out.append(piece)
+        return out
+
     async def _gallery_send_image(self, event: AstrMessageEvent, sha: str, owner: str = "") -> bool:
         """根据 sha256/前缀拼路径，并发图。返回是否成功。
         owner: 当前用户ID；传入后校验图片归属，防止取到/发到他人图片。"""
@@ -2407,8 +2612,8 @@ class ComfyUIDrawPlugin(Star):
                 "· 搜索 <关键词>　按画面描述检索\n"
                 "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
                 "· 找标签 <标签>　按标签取图\n"
-                "· 取图 <序号/sha>　发某张图（序号指列表里的编号）\n"
-                "· 收藏 <sha> / 取消收藏 <sha>　收藏或取消收藏\n"
+                "· 取图 <序号/sha>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
+                "· 收藏 <序号/sha> / 取消收藏 <序号/sha>　收藏或取消收藏（可多张）\n"
                 "· 收藏列表 [页码]　查看自己收藏的图（★）\n"
                 "· 公开 <序号/sha> / 私有 <序号/sha>　设置图片可见性（公开后他人可检索）\n"
                 "· 保存 [标签...]　收藏当前这张图\n"
@@ -2416,11 +2621,15 @@ class ComfyUIDrawPlugin(Star):
                 # "· 回收站　查看回收站\n"
                 "· 统计　查看图库统计信息\n"
                 "· 全部 列表/搜索（管理员）　查看所有用户的图片（带 sid/用户名）\n\n"
-                "示例：/图库 列表 2　/图库 取图 1　/图库 打标签 合照　/图库 公开 1",
+                "多张用法：取图/收藏/取消收藏 都支持一次性多张，序号用逗号或空格隔开。\n"
+                "示例：/图库 列表 2　/图库 取图 1,2,3　/图库 收藏 1 2 5　/图库 取图 1,2,4 7",
             )
         elif sub == "list":
-            # 列表分页：每页 5 条，参数为页码（默认第 1 页）
-            page_size = 5
+            # 列表分页：每页数量取自 gallery.page_size 配置（默认 5，夹紧到 1~50）
+            try:
+                page_size = max(1, min(50, int(self._cfg("gallery", {}).get("page_size", 5))))
+            except (TypeError, ValueError):
+                page_size = 5
             page = 1
             if rest:
                 try:
@@ -2457,20 +2666,21 @@ class ComfyUIDrawPlugin(Star):
                     _sid = (r.get("session_id") or "").strip()
                     _uid = (r.get("user_id") or "").strip()
                     _uname = (r.get("user_name") or "").strip()
-                    star = "★" if r.get("starred") else ""
-                    line = f"{_gno}. {star}{desc}\n   {_wf} | {_tm}"
+                    star = "❤️ " if r.get("starred") else ""
+                    line = f"{_gno}. {star}{desc} | {_wf} | {_tm}"
                     if is_admin and (_sid or all_view):
-                        line += f" | sid:{_sid or '-'}"
-                        if all_view:
-                            line += f" | {_uname or _uid or '匿名'}"
+                        line += f" | 👤 {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 列表 <页码>（共 {total_pages} 页）")
-                lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字；也支持 sha 前几位）")
+                lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
                 await self._send_display(event, "\n".join(lines))
 
         elif sub == "starred":
             # 收藏列表：只看自己收藏的图（★），分页逻辑与列表一致
-            page_size = 5
+            try:
+                page_size = max(1, min(50, int(self._cfg("gallery", {}).get("page_size", 5))))
+            except (TypeError, ValueError):
+                page_size = 5
             page = 1
             if rest:
                 try:
@@ -2478,12 +2688,13 @@ class ComfyUIDrawPlugin(Star):
                 except ValueError:
                     pass
             eff_owner = "" if all_view else owner
-            total = self.gallery.count_search(starred_only=True, session=session_scope, owner=eff_owner)
+            # 收藏是用户级资产，跨会话可见，不因 session 过滤而丢图（否则「收藏两张只显示一张」）。
+            total = self.gallery.count_search(starred_only=True, owner=eff_owner)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
             rows = self.gallery.search(
                 starred_only=True, limit=page_size, offset=(page - 1) * page_size,
-                session=session_scope, owner=eff_owner,
+                owner=eff_owner,
             )
             if not rows:
                 await self._send(event, "你还没收藏任何图。收藏后可用 /图库 收藏列表 查看。")
@@ -2503,14 +2714,12 @@ class ComfyUIDrawPlugin(Star):
                     _sid = (r.get("session_id") or "").strip()
                     _uid = (r.get("user_id") or "").strip()
                     _uname = (r.get("user_name") or "").strip()
-                    line = f"{_gno}. ★{desc}\n   {_wf} | {_tm}"
+                    line = f"{_gno}. ❤️ {desc} | {_wf} | {_tm}"
                     if is_admin and (_sid or all_view):
-                        line += f" | sid:{_sid or '-'}"
-                        if all_view:
-                            line += f" | {_uname or _uid or '匿名'}"
+                        line += f" | 👤 {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 收藏列表 <页码>（共 {total_pages} 页）")
-                lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
+                lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
                 await self._send_display(event, "\n".join(lines))
 
         elif sub == "search":
@@ -2536,19 +2745,20 @@ class ComfyUIDrawPlugin(Star):
                             _tm = "-"
                         _wf = (r.get("workflow") or "").strip() or "默认"
                         _sid = (r.get("session_id") or "").strip()
-                        line = f"{_gno}. {tags}\n   {_wf} | {_tm}"
+                        _uid = (r.get("user_id") or "").strip()
+                        _uname = (r.get("user_name") or "").strip()
+                        tag_line = f" | {tags.strip()}" if tags.strip() else ""
+                        line = f"{_gno}.{desc}{tag_line} | {_wf} | {_tm}"
                         if is_admin and (_sid or all_view):
-                            line += f" | sid:{_sid or '-'}"
-                            if all_view:
-                                line += f" | {r.get('user_name') or r.get('user_id') or '匿名'}"
+                            line += f" | 👤 {_uname or _uid or '匿名'}"
                         lines.append(line)
-                    lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
+                    lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
                     await self._send_display(event, "\n".join(lines))
 
         elif sub == "tag":
             # /gallery tag [图标识] <标签...>
             if not rest:
-                await self._send(event, "用法：/图库 打标签 [序号或sha前几位] <标签1> <标签2> ...")
+                await self._send(event, "用法：/图库 打标签 <序号> <标签1> <标签2> ...")
             else:
                 # 第一个参数是图标识（数字序号或 sha 前缀）还是标签？
                 target = None
@@ -2615,44 +2825,70 @@ class ComfyUIDrawPlugin(Star):
                         _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
                         star = "★" if r["starred"] else ""
                         lines.append(f"{_gno}. {star} {r['source']} {self._gallery_desc(r, 40)}")
-                    lines.append("发图用：/图库 取图 <序号>（也支持 sha 前几位）")
+                    lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
                     await self._send_display(event, "\n".join(lines))
 
         elif sub == "send":
             if not rest:
-                await self._send(event, "用法：/图库 取图 <编号或sha前几位>")
+                await self._send(event, "用法：/图库 取图 <序号>（可多张，用逗号或空格隔开，如「/图库 取图 1,2,3」）")
             else:
-                arg = rest[0]
-                if arg.isdigit():
-                    # 数字 = 全局编号（列表里显示的编号）
-                    eff_owner = "" if all_view else owner
-                    r = self.gallery.get_by_global_no(int(arg), owner=eff_owner, session=session_scope)
-                    if r:
-                        await self._gallery_send_image(event, r["sha256"], owner=eff_owner)
+                targets = self._parse_gallery_targets(rest)
+                eff_owner = "" if all_view else owner
+                sent_ok, sent_fail = 0, 0
+                for arg in targets:
+                    if arg.isdigit():
+                        # 数字 = 全局编号（列表里显示的编号）
+                        r = self.gallery.get_by_global_no(int(arg), owner=eff_owner, session=session_scope)
+                        if r:
+                            ok = await self._gallery_send_image(event, r["sha256"], owner=eff_owner)
+                            sent_ok += 1 if ok else 0
+                            sent_fail += 0 if ok else 1
+                        else:
+                            sent_fail += 1
+                            await self._send(event, f"编号 {arg} 越界了，已跳过。")
                     else:
-                        await self._send(event, "编号越界了。")
-                else:
-                    await self._gallery_send_image(event, arg, owner=("" if all_view else owner))
+                        ok = await self._gallery_send_image(event, arg, owner=eff_owner)
+                        sent_ok += 1 if ok else 0
+                        sent_fail += 0 if ok else 1
+                if len(targets) > 1:
+                    await self._send(event, f"已发 {sent_ok} 张，失败/跳过 {sent_fail} 张。")
 
         elif sub == "star":
             if not rest:
-                await self._send(event, "用法：/图库 收藏 <编号或sha前几位>")
+                await self._send(event, "用法：/图库 收藏 <序号>（可多张，用逗号或空格隔开，如「/图库 收藏 1,2,3」）")
             else:
-                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
-                if _err:
-                    await self._send(event, _err)
-                else:
-                    ok = self.gallery.star(_sha, 1)
-                    await self._send(event, "已收藏 ★（永不淘汰）。" if ok else "没找到这张图。")
+                targets = self._parse_gallery_targets(rest)
+                ok_n, skip_n = 0, 0
+                for t in targets:
+                    _sha, _err = self._resolve_op_target(event, t, owner, all_view)
+                    if _err:
+                        skip_n += 1
+                        await self._send(event, f"「{t}」：{_err}（已跳过）")
+                        continue
+                    if self.gallery.star(_sha, 1):
+                        ok_n += 1
+                    else:
+                        skip_n += 1
+                        await self._send(event, f"「{t}」：没找到这张图，已跳过。")
+                if len(targets) > 1:
+                    await self._send(event, f"已收藏 {ok_n} 张，跳过 {skip_n} 张 ★")
 
         elif sub == "unstar":
-            if rest:
-                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
-                if _err:
-                    await self._send(event, _err)
-                else:
+            if not rest:
+                await self._send(event, "用法：/图库 取消收藏 <序号>（可多张，用逗号或空格隔开）")
+            else:
+                targets = self._parse_gallery_targets(rest)
+                ok_n, skip_n = 0, 0
+                for t in targets:
+                    _sha, _err = self._resolve_op_target(event, t, owner, all_view)
+                    if _err:
+                        skip_n += 1
+                        await self._send(event, f"「{t}」：{_err}（已跳过）")
+                        continue
                     self.gallery.star(_sha, 0)
-                    await self._send(event, "已取消收藏。")
+                    ok_n += 1
+                if len(targets) > 1:
+                    await self._send(event, f"已取消收藏 {ok_n} 张，跳过 {skip_n} 张。")
 
         # 删除相关功能暂时关闭（v2.2.87 起不开放删除/回收站/清空/恢复）
         # elif sub == "del":
@@ -2729,7 +2965,7 @@ class ComfyUIDrawPlugin(Star):
             # /gallery public|private <序号或sha前几位>
             is_pub = sub == "public"
             if not rest:
-                await self._send(event, f"用法：/图库 {('公开' if is_pub else '私有')} <序号或sha前几位>")
+                await self._send(event, f"用法：/图库 {('公开' if is_pub else '私有')} <序号>")
             else:
                 first = rest[0]
                 # 归属校验：只有图主/管理员能改他人图片的可见性
@@ -3325,15 +3561,25 @@ class ComfyUIDrawPlugin(Star):
         elif mode == "send":
             arg = (keyword or "").strip()
             if not arg:
-                return "send 模式需要 keyword 参数传序号（如「3」）或 sha 前几位。"
-            if arg.isdigit():
-                r = g.get_by_global_no(int(arg), owner=owner, session=session)
-                if r:
-                    ok = await plugin._gallery_send_image(event, r["sha256"], owner=owner)
-                    return ("已发送。" if ok else "发送失败。")
-                return "编号越界。"
-            ok = await plugin._gallery_send_image(event, arg, owner=owner)
-            return ("已发送。" if ok else "没找到这张图。")
+                return "send 模式需要 keyword 参数传序号（如「3」，可多张用逗号或空格隔开「1,2,3」）或 sha 前几位。"
+            targets = plugin._parse_gallery_targets([arg])
+            sent_ok, sent_fail = 0, 0
+            for t in targets:
+                if t.isdigit():
+                    r = g.get_by_global_no(int(t), owner=owner, session=session)
+                    if r:
+                        ok = await plugin._gallery_send_image(event, r["sha256"], owner=owner)
+                        sent_ok += 1 if ok else 0
+                        sent_fail += 0 if ok else 1
+                    else:
+                        sent_fail += 1
+                else:
+                    ok = await plugin._gallery_send_image(event, t, owner=owner)
+                    sent_ok += 1 if ok else 0
+                    sent_fail += 0 if ok else 1
+            if len(targets) > 1:
+                return f"已发送 {sent_ok} 张，失败/跳过 {sent_fail} 张。"
+            return ("已发送。" if sent_ok else "没找到这张图/发送失败。")
 
         elif mode == "list":
             rows = g.search(limit=limit, session=session, owner=owner)

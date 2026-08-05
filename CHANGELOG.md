@@ -2,6 +2,66 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.0.17
+
+- **图库每页显示数量做成配置项**：`gallery.page_size`（整数，默认 5，有效范围夹紧到 1~50）控制列表/收藏列表每页条目数；原硬编码的 `page_size = 5` 改为读取该配置。`_conf_schema.json` 新增对应配置项（图库面板可调）。
+
+## v3.0.16
+
+- **图库列表去掉「工作流:」「时间:」「标签:」字样**：展示只保留值本身，用 `|` 分隔，不再显示冗余字段名。普通/收藏列表形如 `序号 描述 | default | 08-06 03:13 | 👤 用户名`；搜索列表额外以 ` | #标签1 #标签2` 接在描述后。
+
+## v3.0.15
+
+- **图库列表格式改回单行 + `|` 分隔**：上一版把工作流/时间/标签拆成「中文标题 + 换行」两行，用户反馈其实只想要主行后面用 `|` 串起来、不要额外加「工作流:」标题和换行。故三处列表（普通列表、收藏列表、搜索结果）统一改回 `序号 描述 | 工作流: xxx | 时间: xxx`（搜索额外 ` | 标签: ...`，管理员视图 ` | 👤 用户名`）的单行 `|` 分隔样式。同时补上搜索循环里漏定义的 `_uid`/`_uname` 变量，避免管理员视图渲染时 NameError。
+
+## v3.0.14
+
+- **图库 render 模式改回 AstrBot 官方渲染为主路径**：之前自写的 Pillow 渲染被反馈「字粗糙、不如别人用 AstrBot 渲染的漂亮」。复盘确认此前「字模糊」的真正根因是 `Image(url=)` 报错导致 AstrBot 渲染从未成功（直接回退文字），并非模板质量问题。故将 `_send_display` 的 render 分支优先级反转：**优先用 AstrBot 自带 `text_to_image`（官方 HTML 模板，美观清晰）**，仅当该服务不可用/返回空/发送异常时，才用内置 Pillow 渲染做兜底，再失败才回退文字（带 ⚠ 提示）。`display_mode` 配置项仍为下拉框 `text`/`render`，无需改动。
+
+## v3.0.13
+
+- **图库管理员/全部视图不再展示 `sid:` 技术字段**：列表、收藏列表、搜索结果的管理员视图（及全部列表）原先显示 `| sid:xxxx` 这类内部会话标识，对管理员无意义且不友好。改为显示用户图标 + 名称：`| 👤 用户名`（无名称时回退 user_id，再无则「匿名」）。管理员仍能直观区分是谁的图，且不再暴露内部 sid。
+
+## v3.0.12
+
+- **图库列表字段区分 + 修复 Pillow 渲染换行错乱**：
+  - 列表/收藏列表/搜索结果的展示格式改进：工作流、时间、标签都加上中文标签并分行显示（如 `工作流: default   时间: 08-06 03:13`、`标签: #合照 #猫`），不再把「工作流 | 时间」裸挤在一行，字段一目了然。
+  - 修复 Pillow 渲染图片的换行错乱：`_render_gallery_text_pillow` 原按 `font.getlength(ch)` 折行，但 emoji（❤️）等字符 getlength 返回 0/异常值，导致整行折行计算错乱。新增 `_ch_w` 估算：emoji/异常字符用保守近似宽度（约一个字宽），空白约 0.3 字宽；并对超长无空格串（URL/sha 等）强制硬断，避免溢出画布。
+
+## v3.0.11
+
+- **图库 render 模式改用内置 Pillow 高清渲染（解决字模糊）**：之前 `/图库` 的 render 展示依赖 AstrBot 的 `text_to_image`（HTML 模板渲染），其 `render_t2i` 不接受字号/宽度/缩放参数，模板默认字小且生成图易被压缩，导致渲染出的字发虚模糊。
+  - 新增 `_render_gallery_text_pillow`：用 Pillow 把展示文字绘制成图片，**2x 超采样抗锯齿**（大画布大字绘制后缩回目标尺寸）+ 22px 字号 + 1.6 行距 + 白底深灰字；按字符宽度自动折行兼容中英文混排；自动探测系统中文字体（Windows 雅黑/黑体、Linux 文泉驿/Noto CJK、macOS 苹方），输出 PNG 到 `data_dir/gallery_render/`。
+  - `_send_display` 的 render 分支改为优先用该内置渲染；Pillow 不可用/失败 → 回退 AstrBot `text_to_image` → 再失败 → 回退文字（带 ⚠ 提示）。
+
+## v3.0.10
+
+- **图库提示文案去掉 sha 相关说明**：列表/搜索/收藏列表/统计等展示里的「发图用：/图库 取图 <序号>」提示，以及「取图/收藏/取消收藏/打标签/公开/私有」的用法提示，统一移除「也支持 sha 前几位」「<编号或sha前几位>」等面向用户的 sha 说明，改为只提示用序号（上方「N.」左侧的数字）。（注：用 sha 前几位定位图片的能力本身仍保留，仅提示文案不再提及，避免对普通用户造成困惑。）
+
+## v3.0.9
+
+- **修复：图库 render 模式发送图片报 `Image.__init__() missing 1 required positional argument: 'file'`**：`_send_display` 误用 `Image(url=url)` 构造图片组件，而 AstrBot 的 `Image.__init__` 第一个必填参数是 `file`（不是 `url`）。`text_to_image` 返回的是**本地文件路径**，故改用 `Image.fromFileSystem(path)`（http(s) 才走 `Image.fromURL`）。修复后 render 模式可正常把列表/搜索/统计渲染成图片发送。
+
+## v3.0.8
+
+- **修复：伴侣专属过滤把中文描图整体丢弃**：`_format_companion_prompt` 的白名单策略只保留带英文标题（如 `user request`、`[Composition and continuity]`）的段，而用户的**中文描图**常落在非白名单段（裸中文段落、`[Scene, style and final preset]` 等），会被整体过滤掉，表现为「中文提示词被过滤」。
+  - 新增「中文保护」兜底：白名单段之外、所有**含中文字符且非方括号标题行**的内容行也一并保留（中文是用户出图意图核心，绝不丢；纯英文事实段仍按白名单丢弃）。已保留的 chunk 内容做去重，避免重复。
+  - 注意：Anima 工作流（is_anima=true）下，含中文的 prompt 仍会走 Danbooru 翻译成英文标签（这是二次元模型出图刚需）。翻译成功时整段中文被替换为英文标签属预期行为；若希望中文也保留，可在配置 `danbooru.append_original=true` 改为「中文 + 英文标签」并存。翻译失败时自动回退保留原始中文。
+
+## v3.0.7
+
+- **图库 `/gallery` 支持多张批量操作**：「取图 / 收藏 / 取消收藏」现支持一次传多个目标，序号或 sha 前缀用逗号或空格隔开（如 `/图库 取图 1,2,3`、`/图库 收藏 1 2 5`）；LLM 工具 `comfyui_gallery` 的 send 模式也支持 `keyword="1,2,3"` 一次发多张。新增 `_parse_gallery_targets` 统一按 `, ，` 与空白切分；多张时汇总「已发 N / 失败 M」「已收藏 N / 跳过 M」。
+- **修复：收藏列表跨会话不显示（「收藏两张只显示一张」）**：收藏列表此前带 `session` 过滤，`cross_session=false` 时只显示当前会话收藏的图，其他会话收藏的被隐藏。改为用户级（跨会话）可见。同时把 `ImageStore.star` 的更新从 `WHERE sha256 LIKE 前缀%` 改为**完整 sha256 精确匹配**，消除短前缀误中多张导致收藏计数异常的隐患。
+- **列表已收藏标记更醒目**：普通列表 / 收藏列表 / 搜索结果中，已收藏的图改用红色爱心 `❤️` 标记（未收藏不占位），替代原来的灰色 `★`。
+- **图库展示方式改为下拉框 + 渲染失败可见提示**：`_conf_schema.json` 的 `gallery.display_mode` 加 `options: ["text","render"]`（面板渲染为下拉框）；`render` 模式下若渲染服务返回空或抛异常，回退文字时附 `⚠` 提示，便于定位 AstrBot「文本转图片」是否启用且已选激活模板。
+- **伴侣插件专属过滤修复（v3.0.6 已合入本版基线）**：`_format_companion_prompt` 改为白名单段保留，放行 `additional outfit preference` / `additional visual recognition notes` / `visual continuity reference` 等承载出图标签的节，配置框里的词不再被丢弃。
+
+## v3.0.6
+
+- **修复伴侣插件专属过滤 `_format_companion_prompt` 丢弃穿搭/外观配置词**：此前过滤逻辑只保留 `user request:` 首行与 `[Composition and continuity]` 区块，把 `additional outfit preference:`（伴侣插件的 `daily_outfit_photo_prompt` 就落在这里）、`additional visual recognition notes:`（狐娘等角色人设）、`visual continuity reference:` 等承载出图标签的节整体丢弃，导致用户在伴侣插件配置框填的「teenager, 18-19 years old, cute」等词完全不生效。
+  - 改为「白名单段保留」策略：用统一正则按标题把正向段切成 `(标题, 内容)` 块，只保留白名单内的节（`user request` / `additional visual recognition notes` / `additional outfit preference` / `visual continuity reference` / `composition and continuity`），丢弃纯事实/元指令节；首个白名单块之前的零散首行仍当作 user request 补回。负向段处理不变（保留标签、去掉 `Do not ...` 元指令与占位符）。
+  - 注意：即使放行，真人/写实工作流画二次元兽耳娘（狐娘等）仍勉强，建议在 `daily_outfit_photo_prompt` 等配置里补性别锚（如 `1girl` / `female`）以稳定出女性角色。
+
 ## v3.0.5
 
 - **调试日志改为完整展示原始提示词与过滤结果**：`[拆prompt][DBG]` 现在会把 `_split_external_prompt` 收到的**原始输入**和**过滤后的正向提示词**完整打印（超长内容按 400 字符分段，避免单行被截断），便于人工直接对比"过滤前/过滤后"到底差在哪。仅用于排查提示词切分问题，确认无误后可移除。

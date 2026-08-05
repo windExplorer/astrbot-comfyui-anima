@@ -417,8 +417,16 @@
       "display_mode": {
         "type": "string",
         "default": "text",
+        "options": ["text", "render"],
         "description": "图库展示方式",
-        "hint": "列表/搜索/找标签/收藏列表/统计等展示内容的发送方式：text=直接发文字；render=尝试用 AstrBot 渲染服务（text_to_image，Pillow 渲染）把文字渲染成图片发送，渲染失败时自动回退为文字。"
+        "hint": "列表/搜索/找标签/收藏列表/统计等展示内容的发送方式：text=直接发文字；render=尝试用 AstrBot 渲染服务（text_to_image，Pillow 渲染）把文字渲染成图片发送，渲染失败时自动回退为文字并附提示。要让 render 生效，需在 AstrBot 设置里启用「文本转图片」并选择激活模板。",
+        "obvious_hint": true
+      },
+      "page_size": {
+        "type": "int",
+        "default": 5,
+        "description": "图库每页显示数量",
+        "hint": "列表/收藏列表每页展示的条目数。有效范围 1~50，超出会自动夹紧。"
       }
     }
   }
