@@ -488,6 +488,10 @@ class ImageStore:
         except Exception:
             return []
 
+    def sha_of(self, path: str) -> str | None:
+        """计算文件内容 sha256（完整 64 位）。用于对引用图内容寻址定位图库记录。"""
+        return _sha256_of(path)
+
     def set_visibility(self, sha256: str, is_public: bool) -> bool:
         """设置图片可见性：is_public=True 公开（他人可检索/发送），False 私有（仅本人）。
         返回是否成功。"""

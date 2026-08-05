@@ -2255,14 +2255,20 @@ class ComfyUIDrawPlugin(Star):
                 # 解析 target 到 sha
                 sha = None
                 if target is None:
-                    # 指代消解：默认指向"这张图"
+                    # 指代消解：默认指向"这张图"。用「内容寻址 sha256」定位，而非路径字符串
+                    # 全等比较（temp 路径与归档路径目录不同，字符串永远不等）。
                     p = await self._gallery_resolve_ref(event)
-                    if p:
-                        # 用文件反查 sha：遍历当前用户的图找相同绝对路径
-                        for r in self.gallery.search(limit=1000, owner=owner):
-                            if self.gallery.path_of(r["sha256"]) == p:
-                                sha = r["sha256"]
-                                break
+                    if p and os.path.exists(p):
+                        _sha = self.gallery.sha_of(p)
+                        if _sha:
+                            row = self.gallery.get_by_sha(_sha)
+                            if row and (row.get("is_public") or not row.get("user_id")
+                                        or row.get("user_id") == owner):
+                                sha = row["sha256"]
+                        if not sha:
+                            await self._send(event, "这张图还没入库（图库里没有它的记录）。请先收藏该图（/gallery save），或指定 /gallery tag <序号> <标签> 来打标签。")
+                            event.stop_event()
+                            return
                 else:
                     if isinstance(target, int):
                         rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
@@ -3016,13 +3022,15 @@ class ComfyUIDrawPlugin(Star):
                     sha = row["sha256"]
             else:
                 p = await plugin._gallery_resolve_ref(event)
-                if p:
-                    for r in g.search(limit=1000, owner=owner):
-                        if g.path_of(r["sha256"]) == p:
-                            sha = r["sha256"]
-                            break
+                if p and os.path.exists(p):
+                    _sha = g.sha_of(p)
+                    if _sha:
+                        row = g.get_by_sha(_sha)
+                        if row and (row.get("is_public") or not row.get("user_id")
+                                    or row.get("user_id") == owner):
+                            sha = row["sha256"]
             if not sha:
-                return "没找到要操作的那张图。可传序号或 sha 前几位。"
+                return "没找到要操作的那张图。可传序号或 sha 前几位；若引用图尚未入库请先 /gallery save。"
 
             if mode == "tag":
                 tags = (tag or "").strip().split()
