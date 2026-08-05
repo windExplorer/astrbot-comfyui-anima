@@ -2234,7 +2234,7 @@ class ComfyUIDrawPlugin(Star):
         if sub in ("help", "帮助"):
             await self._send(
                 event,
-                "📚 图库指令说明（支持 /gallery 与 /图库 两种入口）：\n"
+                "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"
                 "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
                 "· 搜索 <关键词>　按画面描述检索\n"
                 "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
@@ -2297,14 +2297,14 @@ class ComfyUIDrawPlugin(Star):
                         if all_view:
                             line += f" | {_uname or _uid or '匿名'}"
                     lines.append(line)
-                lines.append(f"\n翻页：/gallery list <页码>（共 {total_pages} 页）")
-                lines.append("发图用：/gallery send <序号或sha前几位>")
+                lines.append(f"\n翻页：/图库 列表 <页码>（共 {total_pages} 页）")
+                lines.append("发图用：/图库 取图 <序号或sha前几位>")
                 await self._send(event, "\n".join(lines))
 
         elif sub == "search":
             kw = " ".join(rest).strip()
             if not kw:
-                await self._send(event, "用法：/gallery search <关键词>")
+                await self._send(event, "用法：/图库 搜索 <关键词>")
             else:
                 eff_owner = "" if all_view else owner
                 rows = self.gallery.search(keyword=kw, limit=20, session=session_scope, owner=eff_owner)
@@ -2329,13 +2329,13 @@ class ComfyUIDrawPlugin(Star):
                             if all_view:
                                 line += f" | {r.get('user_name') or r.get('user_id') or '匿名'}"
                         lines.append(line)
-                    lines.append("\n发图用：/gallery send <序号或sha前几位>")
+                    lines.append("\n发图用：/图库 取图 <序号或sha前几位>")
                     await self._send(event, "\n".join(lines))
 
         elif sub == "tag":
             # /gallery tag [图标识] <标签...>
             if not rest:
-                await self._send(event, "用法：/gallery tag [序号或sha前几位] <标签1> <标签2> ...")
+                await self._send(event, "用法：/图库 打标签 [序号或sha前几位] <标签1> <标签2> ...")
             else:
                 # 第一个参数是图标识（数字序号或 sha 前缀）还是标签？
                 target = None
@@ -2349,7 +2349,7 @@ class ComfyUIDrawPlugin(Star):
                     tag_start = 1
                 tags = rest[tag_start:]
                 if not tags:
-                    await self._send(event, "请至少给一个标签，如：/gallery tag 合照 我们的合照")
+                    await self._send(event, "请至少给一个标签，如：/图库 打标签 合照")
                     event.stop_event()
                     return
                 # 解析 target 到 sha
@@ -2366,7 +2366,7 @@ class ComfyUIDrawPlugin(Star):
                                         or row.get("user_id") == owner):
                                 sha = row["sha256"]
                         if not sha:
-                            await self._send(event, "这张图还没入库（图库里没有它的记录）。请先收藏该图（/gallery save），或指定 /gallery tag <序号> <标签> 来打标签。")
+                            await self._send(event, "这张图还没入库（图库里没有它的记录）。请先收藏该图（/图库 保存），或指定 /图库 打标签 <序号> <标签> 来打标签。")
                             event.stop_event()
                             return
                 else:
@@ -2377,7 +2377,7 @@ class ComfyUIDrawPlugin(Star):
                     else:
                         sha = target
                 if not sha:
-                    await self._send(event, "没找到这张图（先发图、或指定 /gallery tag <序号> <标签>）")
+                    await self._send(event, "没找到这张图（先发图、或指定 /图库 打标签 <序号> <标签>）")
                 else:
                     self.gallery.add_tags(sha, tags)
                     await self._send(event, f"已给 [{sha[:16]}] 打标签：{'、'.join(tags)}")
@@ -2385,7 +2385,7 @@ class ComfyUIDrawPlugin(Star):
         elif sub in ("findbytag", "bytag"):
             tag = " ".join(rest).strip()
             if not tag:
-                await self._send(event, "用法：/gallery findByTag <标签>")
+                await self._send(event, "用法：/图库 找标签 <标签>")
             else:
                 rows = self.gallery.recall_by_tag(tag, limit=20, owner=owner)
                 if not rows:
@@ -2395,12 +2395,12 @@ class ComfyUIDrawPlugin(Star):
                     for i, r in enumerate(rows, 1):
                         star = "★" if r["starred"] else ""
                         lines.append(f"{i}. [{r['sha16']}]{star} {r['source']} {r['prompt'][:40]}")
-                    lines.append("\n发图用：/gallery send <序号或sha前几位>")
+                    lines.append("\n发图用：/图库 取图 <序号或sha前几位>")
                     await self._send(event, "\n".join(lines))
 
         elif sub == "send":
             if not rest:
-                await self._send(event, "用法：/gallery send <序号或sha前几位>")
+                await self._send(event, "用法：/图库 取图 <序号或sha前几位>")
             else:
                 arg = rest[0]
                 if arg.isdigit():
@@ -2414,7 +2414,7 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "star":
             if not rest:
-                await self._send(event, "用法：/gallery star <sha前几位>")
+                await self._send(event, "用法：/图库 收藏 <sha前几位>")
             else:
                 ok = self.gallery.star(rest[0], 1)
                 await self._send(event, "已收藏 ★（永不淘汰）。" if ok else "没找到这张图。")
@@ -2426,10 +2426,10 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "del":
             if not rest:
-                await self._send(event, "用法：/gallery del <sha前几位>  （移入回收站，可在 /gallery trash 查看，purge 才真删）")
+                await self._send(event, "用法：/图库 删除 <sha前几位>  （移入回收站，可在 /图库 回收站 查看，清空 才真删）")
             else:
                 ok = self.gallery.delete(rest[0])
-                await self._send(event, "已移入回收站（用 /gallery purge 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
+                await self._send(event, "已移入回收站（用 /图库 清空 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
 
         elif sub == "trash":
             rows = self.gallery.search(trash=True, limit=100, owner=owner)
@@ -2443,14 +2443,14 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "restore":
             if not rest:
-                await self._send(event, "用法：/gallery restore <sha前几位>")
+                await self._send(event, "用法：/图库 恢复 <sha前几位>")
             else:
                 ok = self.gallery.restore(rest[0])
                 await self._send(event, "已恢复。" if ok else "恢复失败（不在回收站或不存在）。")
 
         elif sub == "purge":
             if not rest:
-                await self._send(event, "用法：/gallery purge <sha前几位>  （彻底删除，不可恢复）")
+                await self._send(event, "用法：/图库 清空 <sha前几位>  （彻底删除，不可恢复）")
             else:
                 ok = self.gallery.purge(rest[0])
                 await self._send(event, "已彻底删除。" if ok else "删除失败（不在回收站或不存在）。")
@@ -2485,7 +2485,7 @@ class ComfyUIDrawPlugin(Star):
             # /gallery public|private <序号或sha前几位>
             is_pub = sub == "public"
             if not rest:
-                await self._send(event, f"用法：/gallery {sub} <序号或sha前几位>（设为{'公开' if is_pub else '私有'}）")
+                await self._send(event, f"用法：/图库 {('公开' if is_pub else '私有')} <序号或sha前几位>")
             else:
                 first = rest[0]
                 sha = None
@@ -3029,7 +3029,7 @@ class ComfyUIDrawPlugin(Star):
                 return "recall 模式需要 tag 参数（语义标签，如「合照」）。"
             rows = g.recall_by_tag(tag.strip(), limit=limit, owner=owner)
             if not rows:
-                return f"图库里没有带「{tag.strip()}」标签的图。可先用 /gallery save 或对话里说「收藏这张，标签叫XX」来打标签。"
+                return f"图库里没有带「{tag.strip()}」标签的图。可先用 /图库 保存 或对话里说「收藏这张，标签叫XX」来打标签。"
             if len(rows) == 1:
                 ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
                 return ("已发送该图。" if ok else "找到图但发送失败。")
@@ -3137,7 +3137,7 @@ class ComfyUIDrawPlugin(Star):
                                     or row.get("user_id") == owner):
                             sha = row["sha256"]
             if not sha:
-                return "没找到要操作的那张图。可传序号或 sha 前几位；若引用图尚未入库请先 /gallery save。"
+                return "没找到要操作的那张图。可传序号或 sha 前几位；若引用图尚未入库请先 /图库 保存。"
 
             if mode == "tag":
                 tags = (tag or "").strip().split()
