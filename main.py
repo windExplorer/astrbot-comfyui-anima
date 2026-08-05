@@ -960,6 +960,23 @@ class ComfyUIDrawPlugin(Star):
         return paths
 
     @staticmethod
+    def _strip_inline_negative(s: str) -> str:
+        """把文本里 'Avoid'/'Do not'/'Respect ... exclusions' 软信号之后的内容切掉，
+        只保留其之前的正向与构图约束。未命中软信号则原样返回。
+
+        供 llm_draw 等调用方在「专属过滤覆盖正向」之后再兜底一次，确保任何残留的
+        内联负面词表（尾部大段逗号负向词）都被清干净。
+        """
+        if not s:
+            return ""
+        m = re.search(
+            r"(avoid\b|do not\b|respect[^.]*?exclusions\b)",
+            s,
+            re.IGNORECASE,
+        )
+        return s[: m.start()].strip() if m else s.strip()
+
+    @staticmethod
     def _split_external_prompt(text: str) -> tuple[str, str]:
         """把可能混合「正向/负向」与外部结构化标记的文本拆成 (正向, 负向)。
 
@@ -977,12 +994,15 @@ class ComfyUIDrawPlugin(Star):
         # 负向软信号：命中 'Avoid'/'Do not'/'Respect ... exclusions' 时，软信号之后
         # 视为负面直接删除，只保留软信号之前的正向与构图约束。
         def _cut_inline_negative(s: str) -> str:
-            m = re.search(
-                r"(avoid\b|do not\b|respect[^.]*?exclusions\b)",
-                s,
-                re.IGNORECASE,
-            )
-            return s[: m.start()].strip() if m else s.strip()
+            return ComfyUIDrawPlugin._strip_inline_negative(s)
+
+        # ---- 调试：确认输入与各分支匹配情况（排查"提示词未切分"问题）----
+        logger.info(
+            f"[拆prompt][DBG] 输入长度={len(text)} 前120={text[:120]!r} "
+            f"含Negative标记={bool(re.search(r'negative\\s*prompt\\s*[:：]', text, re.IGNORECASE))} "
+            f"含Avoid/DoNot软信号={bool(re.search(r'(avoid\\b|do not\\b|respect[^.]*?exclusions\\b)', text, re.IGNORECASE))}"
+        )
+        # ------------------------------------------------------------------
 
         # 1) 按 'Negative prompt:' 拆分正/负（大小写与冒号差异均兼容）
         m = re.search(r"negative\s*prompt\s*[:：]", text, re.IGNORECASE)
@@ -996,6 +1016,7 @@ class ComfyUIDrawPlugin(Star):
             # 正向内仍残留负面软信号，这里再切一次，保证正向干净。
             positive = _cut_inline_negative(positive)
             positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
+            logger.info(f"[拆prompt][DBG] 走分支1(有Negative标记) 返回positive前80={positive[:80]!r}")
             # 负面直接删除（不保留，回退到调用方自行提供的 negative_prompt）
             return positive, ""
 
@@ -1003,6 +1024,7 @@ class ComfyUIDrawPlugin(Star):
         #    未命中软信号则原样返回（不误伤常规 /draw 与 AI 对话的自然语言描述）。
         positive = _cut_inline_negative(text)
         positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
+        logger.info(f"[拆prompt][DBG] 走分支2(无Negative标记) 返回positive前80={positive[:80]!r}")
         return positive, ""
 
     @staticmethod
@@ -3002,6 +3024,9 @@ class ComfyUIDrawPlugin(Star):
                 positive = cpos
             if cneg:
                 parsed_neg = cneg
+        # 最终兜底：无论上面走通用拆分还是专属过滤，最后都对正向再做一次软信号切分，
+        # 确保任何残留的 Avoid/Do not 负面词表都被清掉（防漏网）。
+        positive = plugin._strip_inline_negative(positive)
         negative = parsed_neg or (negative_prompt or "")
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
