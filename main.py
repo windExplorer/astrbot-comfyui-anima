@@ -1522,8 +1522,14 @@ class ComfyUIDrawPlugin(Star):
                 if self._cfg("return_queue_position", True):
                     await self._send(event, self._queue_hint(ahead))
 
-                # 等待出图
-                timeout = int(self._cfg("draw_timeout", 300))
+                # 等待出图：动态超时 = 基础超时 + 前面排队任务累加预估耗时。
+                # 排得越靠后，前面任务越多，等待就越久，故按 ahead 逐任务累加，
+                # 避免排在长队后面的任务因固定超时过早被误判为失败。
+                base_timeout = int(self._cfg("draw_timeout", 120))
+                # 每个前面排队任务额外累加的秒数；默认按"每个任务都要完整基础超时"保守估算
+                per_extra = int(self._cfg("queue_extra_timeout", 0)) or base_timeout
+                max_timeout = int(self._cfg("max_draw_timeout", 0)) or (base_timeout + 30 * base_timeout)
+                timeout = min(max_timeout, base_timeout + ahead * per_extra)
                 interval = max(1, int(self._cfg("queue_poll_interval", 2)))
                 history = await client.wait_for_result(prompt_id, timeout, interval)
                 if not history:

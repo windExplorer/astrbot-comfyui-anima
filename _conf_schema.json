@@ -327,13 +327,35 @@
   "draw_timeout": {
     "type": "int",
     "description": "出图超时(秒)",
-    "hint": "等待 ComfyUI 出图的超时时间。",
+    "hint": "等待 ComfyUI 出图的单张基础超时时间。若前面有排队任务，实际等待超时会在此基础上按队列累加（见 queue_extra_timeout）。",
     "slider": {
       "min": 30,
       "max": 600,
       "step": 10
     },
     "default": 120
+  },
+  "queue_extra_timeout": {
+    "type": "int",
+    "description": "每队列任务额外超时(秒)",
+    "hint": "前面每排队一个任务，等待超时额外累加的秒数。默认取 draw_timeout（保守估算每个任务都要完整基础耗时）。填 0 则用默认值。",
+    "slider": {
+      "min": 0,
+      "max": 600,
+      "step": 10
+    },
+    "default": 0
+  },
+  "max_draw_timeout": {
+    "type": "int",
+    "description": "出图超时上限(秒)",
+    "hint": "动态超时的封顶值，防止队列过长导致超时无限放大。填 0 则用默认（基础超时的 31 倍）。",
+    "slider": {
+      "min": 0,
+      "max": 7200,
+      "step": 60
+    },
+    "default": 0
   },
   "queue_poll_interval": {
     "type": "int",

@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.70
+
+- **出图等待超时改为动态累加**：原等待出图的超时是固定值 `draw_timeout`，排队任务越多、排得越靠后的任务越容易在等待时被误判超时失败。
+  - 现改为 `timeout = min(max_draw_timeout, draw_timeout + ahead * queue_extra_timeout)`，按前面排队任务数逐任务累加等待时间。
+  - 新增配置项：`queue_extra_timeout`（每排队一个任务额外累加秒数，默认取 draw_timeout）、`max_draw_timeout`（动态超时封顶，防无限放大，默认基础超时的 31 倍）。
+
 ## v2.2.69
 
 - **图库用户隔离（防串图，重要）**：此前图库的 `search`/`send`/`recall` 等**不按用户过滤**，群聊里任何用户都可能检索/发送到他人保存的图（隐私风险）。本次修复：
