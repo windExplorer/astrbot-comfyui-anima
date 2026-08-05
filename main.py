@@ -2272,6 +2272,7 @@ class ComfyUIDrawPlugin(Star):
             "取图": "send", "发图": "send", "给我": "send", "要图": "send",
             "收藏": "star", "存": "star",
             "取消收藏": "unstar",
+            "收藏列表": "starred", "我的收藏": "starred",
             # 删除相关功能暂时关闭（v2.2.87 起不开放删除/回收站/清空/恢复）
             # "删除": "del", "扔回收站": "del",
             # "回收站": "trash",
@@ -2316,6 +2317,7 @@ class ComfyUIDrawPlugin(Star):
                 "· 找标签 <标签>　按标签取图\n"
                 "· 取图 <序号/sha>　发某张图（序号指列表里的编号）\n"
                 "· 收藏 <sha> / 取消收藏 <sha>　收藏或取消收藏\n"
+                "· 收藏列表 [页码]　查看自己收藏的图（★）\n"
                 "· 公开 <序号/sha> / 私有 <序号/sha>　设置图片可见性（公开后他人可检索）\n"
                 "· 保存 [标签...]　收藏当前这张图\n"
                 # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
@@ -2373,6 +2375,52 @@ class ComfyUIDrawPlugin(Star):
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 列表 <页码>（共 {total_pages} 页）")
                 lines.append("发图用：/图库 取图 <编号或sha前几位>（编号为上方「N.」左侧的数字）")
+                await self._send(event, "\n".join(lines))
+
+        elif sub == "starred":
+            # 收藏列表：只看自己收藏的图（★），分页逻辑与列表一致
+            page_size = 5
+            page = 1
+            if rest:
+                try:
+                    page = max(1, int(rest[0]))
+                except ValueError:
+                    pass
+            eff_owner = "" if all_view else owner
+            total = self.gallery.count_search(starred_only=True, session=session_scope, owner=eff_owner)
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            page = min(page, total_pages)
+            rows = self.gallery.search(
+                starred_only=True, limit=page_size, offset=(page - 1) * page_size,
+                session=session_scope, owner=eff_owner,
+            )
+            if not rows:
+                await self._send(event, "你还没收藏任何图。收藏后可用 /图库 收藏列表 查看。")
+            else:
+                is_admin = bool(getattr(event, "is_admin", lambda: False)())
+                _head = "全库收藏" if all_view else "我的收藏"
+                lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
+                for i, r in enumerate(rows, 1):
+                    _gno = r.get("gidx", i)
+                    _sha16 = (r.get("sha256") or "")[:16] or ""
+                    desc = self._gallery_desc(r, 10)
+                    _ts = r.get("created_at") or 0
+                    try:
+                        _tm = time.strftime("%m-%d %H:%M", time.localtime(float(_ts)))
+                    except Exception:
+                        _tm = "-"
+                    _wf = (r.get("workflow") or "").strip() or "默认"
+                    _sid = (r.get("session_id") or "").strip()
+                    _uid = (r.get("user_id") or "").strip()
+                    _uname = (r.get("user_name") or "").strip()
+                    line = f"{_gno}. ★{desc}\n   [{_sha16}] {_wf} | {_tm}"
+                    if is_admin and (_sid or all_view):
+                        line += f" | sid:{_sid or '-'}"
+                        if all_view:
+                            line += f" | {_uname or _uid or '匿名'}"
+                    lines.append(line)
+                lines.append(f"\n翻页：/图库 收藏列表 <页码>（共 {total_pages} 页）")
+                lines.append("发图用：/图库 取图 <编号或sha前几位>")
                 await self._send(event, "\n".join(lines))
 
         elif sub == "search":
@@ -2614,7 +2662,7 @@ class ComfyUIDrawPlugin(Star):
                 "· tag/打标签 [图] <标签...> 打标签\n"
                 "· findByTag/找标签 <标签> 按标签取图\n"
                 "· send/取图 <序号/sha> 发图\n"
-                "· star/收藏 <sha>　unstar/取消收藏 <sha>\n"
+                "· star/收藏 <sha>　unstar/取消收藏 <sha>　starred/收藏列表 [页码]\n"
                 # "· del/删除 <sha>　trash/回收站　restore/恢复 <sha>　purge/清空 <sha>\n"
                 "· save/保存 [标签...] 收藏当前图\n"
                 "· public/公开 <序号/sha>　private/私有 <序号/sha>　stats/统计",
