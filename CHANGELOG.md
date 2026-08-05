@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.69
+
+- **图库用户隔离（防串图，重要）**：此前图库的 `search`/`send`/`recall` 等**不按用户过滤**，群聊里任何用户都可能检索/发送到他人保存的图（隐私风险）。本次修复：
+  - `images` 表本就含 `user_id` 列，但 `search`/`count_search` 从未用它过滤——现新增 `owner` 参数，按当前用户 `user_id` 过滤（兼容历史无主图）。
+  - 指令 `/gallery list/search/send/tag/findByTag/trash` 与 LLM 工具 `comfyui_gallery` 的 `recall/search/send/list` 全部按当前用户过滤。
+  - 发图 `_gallery_send_image` 增加归属校验：传 sha 直发（含 sha 前缀）前先确认该图属于当前用户，否则拒绝，堵住"知道 sha 前缀就能取他人图"的漏洞。
+  - **修复归档 user_id 恒为空**：原代码用不存在的 `event.user_id` 取用户ID导致归档的图 user_id 全为空（无主图对所有人可见）。已改为 `get_sender_id()`，并给成品图、参考图、收藏图（`archive_user_image`）都正确写入 `user_id`。
+  - 修复 `resolve_ref` 对 list 值调 `os.path.exists` 的 TypeError。
+  - `recall_by_tag` 增加 owner 过滤并补 `AND deleted=0`。
+- **兼容性说明**：升级前已存在的旧图 `user_id` 为空（无主图），本版仍允许所有人检索/发送这些历史图；新产生的图会正确带上用户标识、严格隔离。如需把历史图也收紧，可手动 `UPDATE images SET user_id='<QQ>' WHERE user_id=''` 后生效。
+
 ## v2.2.68
 
 - **队列/开始提示改为朋友式平级口吻**：去掉"收到/请稍候/请等待"等请示、卑微感表达，改为像朋友间自然告知（如"在弄了，稍等一下""前面还有 {n} 个，轮到就给你"），让 AI 更有人样、不低三下气。

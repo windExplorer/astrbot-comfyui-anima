@@ -1064,7 +1064,10 @@ class ComfyUIDrawPlugin(Star):
         try:
             if self.gallery is None:
                 return
-            user_id = getattr(event, "user_id", "") or "" if event is not None else ""
+            # 用户标识：用 get_sender_id() 获取真实用户ID（QQ群里为各用户QQ号），
+            # 不能依赖 event.user_id（该属性通常不存在，会导致 user_id 恒为空、
+            # 图库用户隔离失效、不同用户互相串图）。
+            user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
             user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
             user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
             trigger = getattr(event, "message_str", "") or "" if event is not None else ""
@@ -1270,8 +1273,9 @@ class ComfyUIDrawPlugin(Star):
                     for _ri in init_images:
                         if not _ri or not os.path.exists(_ri):
                             continue
-                        # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回
-                        _final = self.gallery.archive_image(_ri, source=SRC_USER)
+                        # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回；
+                        # 必须带 user_id，否则该图成为"无主图"会串给其他用户。
+                        _final = self.gallery.archive_image(_ri, source=SRC_USER, user_id=user_id, user_name=user_name)
                         # archive_image 现返回归档后路径，反算 sha 作为 ref_sha256（入库/回填用）
                         _sha = _sha256_of(_final) if _final else None
                         if _sha and ref_sha256 is None:
@@ -1593,8 +1597,8 @@ class ComfyUIDrawPlugin(Star):
                                 ref_sha256=(ref_sha256 or ""),
                                 size_bytes=(os.path.getsize(img_path) if os.path.exists(img_path) else None),
                                 cost_sec=(time.time() - _draw_start),
-                                user_id=(getattr(event, "user_id", "") or ""),
-                                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                                user_id=user_id,
+                                user_name=user_name,
                                 trigger_msg=(getattr(event, "message_str", "") or ""),
                                 status=0,
                             )
@@ -2143,8 +2147,15 @@ class ComfyUIDrawPlugin(Star):
         # 2) / 3) 本会话生成 / 收到（ImageStore.resolve_ref 处理）
         return self.gallery.resolve_ref(event, event.session_id or "")
 
-    async def _gallery_send_image(self, event: AstrMessageEvent, sha: str) -> bool:
-        """根据 sha256/前缀拼路径，并发图。返回是否成功。"""
+    async def _gallery_send_image(self, event: AstrMessageEvent, sha: str, owner: str = "") -> bool:
+        """根据 sha256/前缀拼路径，并发图。返回是否成功。
+        owner: 当前用户ID；传入后校验图片归属，防止取到/发到他人图片。"""
+        # 归属校验：按 sha 精确查一条记录，确认属于当前用户（或历史无主图）。
+        row = self.gallery.get_by_sha(sha) if hasattr(self.gallery, "get_by_sha") else None
+        if row is not None and owner:
+            if row.get("user_id") and row.get("user_id") != owner:
+                await self._send(event, "这张图不属于你，无法发送。")
+                return False
         path = self.gallery.path_of(sha)
         if not path:
             await self._send(event, f"没找到这张图（sha={sha[:16]}），可能已被清理或从未入库。")
@@ -2172,6 +2183,9 @@ class ComfyUIDrawPlugin(Star):
 
         # 跨会话范围（关闭 cross_session 时仅当前会话）
         session_scope = None if self._cfg("gallery", {}).get("cross_session") else (event.session_id or "")
+        # 用户隔离标识：始终按当前用户过滤，避免群聊里不同用户互相看到对方的图。
+        # owner 为空（如事件拿不到发送者）时不隔离，仅作兜底。
+        owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if sub == "list":
             n = 10
@@ -2180,7 +2194,7 @@ class ComfyUIDrawPlugin(Star):
                     n = max(1, min(int(rest[0]), 50))
                 except ValueError:
                     pass
-            rows = self.gallery.search(limit=n, session=session_scope)
+            rows = self.gallery.search(limit=n, session=session_scope, owner=owner)
             if not rows:
                 await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
             else:
@@ -2201,7 +2215,7 @@ class ComfyUIDrawPlugin(Star):
             if not kw:
                 await self._send(event, "用法：/gallery search <关键词>")
             else:
-                rows = self.gallery.search(keyword=kw, limit=20, session=session_scope)
+                rows = self.gallery.search(keyword=kw, limit=20, session=session_scope, owner=owner)
                 if not rows:
                     await self._send(event, f"没找到含「{kw}」的图。")
                 else:
@@ -2237,14 +2251,14 @@ class ComfyUIDrawPlugin(Star):
                     # 指代消解：默认指向"这张图"
                     p = await self._gallery_resolve_ref(event)
                     if p:
-                        # 用文件反查 sha：遍历 images 找相同绝对路径
-                        for r in self.gallery.search(limit=1000):
+                        # 用文件反查 sha：遍历当前用户的图找相同绝对路径
+                        for r in self.gallery.search(limit=1000, owner=owner):
                             if self.gallery.path_of(r["sha256"]) == p:
                                 sha = r["sha256"]
                                 break
                 else:
                     if isinstance(target, int):
-                        rows = self.gallery.search(limit=1000, session=session_scope)
+                        rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
                         if 1 <= target <= len(rows):
                             sha = rows[target - 1]["sha256"]
                     else:
@@ -2260,7 +2274,7 @@ class ComfyUIDrawPlugin(Star):
             if not tag:
                 await self._send(event, "用法：/gallery findByTag <标签>")
             else:
-                rows = self.gallery.recall_by_tag(tag, limit=20)
+                rows = self.gallery.recall_by_tag(tag, limit=20, owner=owner)
                 if not rows:
                     await self._send(event, f"没有带「{tag}」标签的图。")
                 else:
@@ -2277,13 +2291,13 @@ class ComfyUIDrawPlugin(Star):
             else:
                 arg = rest[0]
                 if arg.isdigit():
-                    rows = self.gallery.search(limit=1000, session=session_scope)
+                    rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
                     if 1 <= int(arg) <= len(rows):
-                        await self._gallery_send_image(event, rows[int(arg) - 1]["sha256"])
+                        await self._gallery_send_image(event, rows[int(arg) - 1]["sha256"], owner=owner)
                     else:
                         await self._send(event, "序号越界了。")
                 else:
-                    await self._gallery_send_image(event, arg)
+                    await self._gallery_send_image(event, arg, owner=owner)
 
         elif sub == "star":
             if not rest:
@@ -2305,7 +2319,7 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, "已移入回收站（用 /gallery purge 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
 
         elif sub == "trash":
-            rows = self.gallery.search(trash=True, limit=100)
+            rows = self.gallery.search(trash=True, limit=100, owner=owner)
             if not rows:
                 await self._send(event, "回收站是空的。")
             else:
@@ -2335,7 +2349,8 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, "没找到要收藏的图（当前/上条消息没有图，本会话也没生成过图）。")
             else:
                 tags = rest
-                sha = self.gallery.archive_user_image(p, tags=tags)
+                uname = getattr(event, "get_sender_name", lambda: "")() or ""
+                sha = self.gallery.archive_user_image(p, tags=tags, user_id=owner, user_name=uname)
                 if sha:
                     extra = (" 标签：" + "、".join(tags)) if tags else ""
                     await self._send(event, f"已收藏这张图 [{sha[:16]}]{extra}")
@@ -2853,15 +2868,17 @@ class ComfyUIDrawPlugin(Star):
         g = plugin.gallery
         cross = bool(plugin._cfg("gallery", {}).get("cross_session"))
         session = None if cross else (getattr(event, "session_id", "") or "")
+        # 用户隔离：始终按当前用户过滤，避免把别人的图发给当前用户。
+        owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if mode == "recall":
             if not tag or not tag.strip():
                 return "recall 模式需要 tag 参数（语义标签，如「合照」）。"
-            rows = g.recall_by_tag(tag.strip(), limit=limit)
+            rows = g.recall_by_tag(tag.strip(), limit=limit, owner=owner)
             if not rows:
                 return f"图库里没有带「{tag.strip()}」标签的图。可先用 /gallery save 或对话里说「收藏这张，标签叫XX」来打标签。"
             if len(rows) == 1:
-                ok = await plugin._gallery_send_image(event, rows[0]["sha256"])
+                ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
                 return ("已发送该图。" if ok else "找到图但发送失败。")
             # 多张：列出让用户选（按确认口径）
             lines = [f"带「{tag.strip()}」的图有 {len(rows)} 张，回复编号即可发对应那张："]
@@ -2885,11 +2902,11 @@ class ComfyUIDrawPlugin(Star):
                         keyword = str(extracted["keyword"]).strip()
                 if not keyword or not keyword.strip():
                     return "search 模式需要 keyword 参数（提示词关键词）。"
-            rows = g.search(keyword=keyword.strip(), limit=limit, session=session)
+            rows = g.search(keyword=keyword.strip(), limit=limit, session=session, owner=owner)
             if not rows:
                 return f"没找到含「{keyword.strip()}」的图。"
             if len(rows) == 1:
-                ok = await plugin._gallery_send_image(event, rows[0]["sha256"])
+                ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
                 return ("已发送该图。" if ok else "找到图但发送失败。")
             lines = [f"检索「{keyword.strip()}」的结果："]
             for i, r in enumerate(rows, 1):
@@ -2902,7 +2919,8 @@ class ComfyUIDrawPlugin(Star):
             if not p:
                 return "没有可收藏的图（当前/上条消息没有图，本会话也没生成过图）。"
             tags = tag.split() if tag else []
-            sha = g.archive_user_image(p, tags=tags)
+            uname = getattr(event, "get_sender_name", lambda: "")() or ""
+            sha = g.archive_user_image(p, tags=tags, user_id=owner, user_name=uname)
             if not sha:
                 return "收藏失败（图库可能未启用）。"
             extra = (" 标签：" + "、".join(tags)) if tags else ""
@@ -2913,16 +2931,16 @@ class ComfyUIDrawPlugin(Star):
             if not arg:
                 return "send 模式需要 keyword 参数传序号（如「3」）或 sha 前几位。"
             if arg.isdigit():
-                rows = g.search(limit=1000, session=session)
+                rows = g.search(limit=1000, session=session, owner=owner)
                 if 1 <= int(arg) <= len(rows):
-                    ok = await plugin._gallery_send_image(event, rows[int(arg) - 1]["sha256"])
+                    ok = await plugin._gallery_send_image(event, rows[int(arg) - 1]["sha256"], owner=owner)
                     return ("已发送。" if ok else "发送失败。")
                 return "序号越界。"
-            ok = await plugin._gallery_send_image(event, arg)
+            ok = await plugin._gallery_send_image(event, arg, owner=owner)
             return ("已发送。" if ok else "没找到这张图。")
 
         elif mode == "list":
-            rows = g.search(limit=limit, session=session)
+            rows = g.search(limit=limit, session=session, owner=owner)
             if not rows:
                 return "画廊还是空的～先画点图或收藏点图吧。"
             lines = ["最近的图片："]

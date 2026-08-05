@@ -336,9 +336,10 @@ class ImageStore:
         logger.info(f"[图库] 已归档 {source} 图: {dest.name}")
         return str(dest)
 
-    def archive_user_image(self, src_path: str, tags=None) -> str | None:
-        """方案 B：收藏用户在聊天里发来的图（或任意来源图）到 refs/。返回 sha256。"""
-        _final = self.archive_image(src_path, source=SRC_USER)
+    def archive_user_image(self, src_path: str, tags=None, user_id: str = "", user_name: str = "") -> str | None:
+        """方案 B：收藏用户在聊天里发来的图（或任意来源图）到 refs/。返回 sha256。
+        必须传 user_id，否则会成为"无主图"串给其他用户。"""
+        _final = self.archive_image(src_path, source=SRC_USER, user_id=user_id, user_name=user_name)
         if not _final:
             return None
         # 从最终路径反算 sha（与归档时一致），供调用方做收藏/召回标识。
@@ -526,8 +527,10 @@ class ImageStore:
         type: str | None = None,
         starred_only: bool = False,
         trash: bool = False,
+        owner: str = "",
     ) -> int:
-        """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。"""
+        """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
+        owner: 用户隔离标识，与 search 保持一致。"""
         if not self.enabled() or not _HAS_SQLITE:
             return 0
         conn = self._conn_get()
@@ -540,6 +543,9 @@ class ImageStore:
             sql += " AND deleted=0"
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
+        if owner:
+            sql += " AND (user_id IS NULL OR user_id='' OR user_id=?)"
+            args.append(owner)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
@@ -568,9 +574,12 @@ class ImageStore:
         trash: bool = False,
         limit: int = 20,
         offset: int = 0,
+        owner: str = "",
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
+        owner: 用户隔离标识。传入当前用户ID后，只检索该用户的图片（含历史无主图，
+        即 user_id 为空或相等的），避免跨用户串图。
         """
         if not self.enabled() or not _HAS_SQLITE:
             return []
@@ -584,6 +593,10 @@ class ImageStore:
             sql += " AND deleted=0"
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
+        # 用户隔离：只返回当前用户的图；空 owner 表示"库维护/全库"场景不过滤。
+        if owner:
+            sql += " AND (user_id IS NULL OR user_id='' OR user_id=?)"
+            args.append(owner)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
@@ -606,22 +619,35 @@ class ImageStore:
             return []
         return [self._row_to_dict(r) for r in rows]
 
-    def recall_by_tag(self, tag: str, limit: int = 20) -> list[dict]:
-        """按语义标签召回。命中多张返回列表（由调用方列出让用户选）。"""
+    def recall_by_tag(self, tag: str, limit: int = 20, owner: str = "") -> list[dict]:
+        """按语义标签召回。命中多张返回列表（由调用方列出让用户选）。
+        owner: 用户隔离标识；传入后只召回该用户（含历史无主图）的图片。"""
         if not self.enabled() or not _HAS_SQLITE or not tag or not tag.strip():
             return []
         conn = self._conn_get()
         kw = f"%{tag.strip()}%"
         try:
-            rows = conn.execute(
-                """
-                SELECT i.* FROM images i
-                JOIN image_tags t ON i.sha256 = t.sha256
-                WHERE t.tag LIKE ?
-                ORDER BY i.created_at DESC LIMIT ?
-                """,
-                (kw, int(limit)),
-            ).fetchall()
+            if owner:
+                rows = conn.execute(
+                    """
+                    SELECT i.* FROM images i
+                    JOIN image_tags t ON i.sha256 = t.sha256
+                    WHERE t.tag LIKE ? AND i.deleted=0
+                      AND (i.user_id IS NULL OR i.user_id='' OR i.user_id=?)
+                    ORDER BY i.created_at DESC LIMIT ?
+                    """,
+                    (kw, owner, int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT i.* FROM images i
+                    JOIN image_tags t ON i.sha256 = t.sha256
+                    WHERE t.tag LIKE ? AND i.deleted=0
+                    ORDER BY i.created_at DESC LIMIT ?
+                    """,
+                    (kw, int(limit)),
+                ).fetchall()
         except Exception as e:
             logger.warning(f"[图库] 标签召回失败: {e}")
             return []
@@ -645,14 +671,22 @@ class ImageStore:
             except Exception:
                 g_last_generated = {}
                 g_last_received = {}
-        # 2) 本会话最近生成的图
+        # 2) 本会话最近生成的图（值为 list[路径]，取最近一张存在的）
         gen = g_last_generated.get(sid) if g_last_generated else None
-        if gen and os.path.exists(gen):
-            return gen
-        # 3) 本会话最近收到的图
+        for gp in reversed(gen if isinstance(gen, list) else ([gen] if gen else [])):
+            try:
+                if gp and os.path.exists(gp):
+                    return gp
+            except Exception:
+                continue
+        # 3) 本会话最近收到的图（值为 list[路径]，取最近一张存在的）
         recv = g_last_received.get(sid) if g_last_received else None
-        if recv and os.path.exists(recv):
-            return recv
+        for rp in reversed(recv if isinstance(recv, list) else ([recv] if recv else [])):
+            try:
+                if rp and os.path.exists(rp):
+                    return rp
+            except Exception:
+                continue
         return None
 
     # ------------------------------------------------------------------ #
