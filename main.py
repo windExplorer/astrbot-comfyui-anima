@@ -2138,6 +2138,16 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 指令：/gallery 图片画廊与语义标签召回
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _gallery_desc(row: dict, n: int = 40) -> str:
+        """图库列表描述：标签优先；无标签时用用户发送的消息（trigger_msg）前 n 字，
+        无触发消息则回退取提示词前 n 字。"""
+        if row.get("tags"):
+            return " #" + " #".join(row["tags"])
+        msg = (row.get("trigger_msg") or "").strip()
+        text = msg if msg else (row.get("prompt") or "").strip()
+        return " " + text[:n]
+
     async def _gallery_resolve_ref(self, event: AstrMessageEvent) -> str | None:
         """指代消解（async 版）：找出当前语境下「这张图」的本地路径。
 
@@ -2287,11 +2297,8 @@ class ComfyUIDrawPlugin(Star):
                 lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
                     _gno = r.get("gidx", i)  # 全局编号（跨分页稳定）
-                    # 标签优先；无标签则取提示词前 10 个字
-                    if r.get("tags"):
-                        desc = " #" + " #".join(r["tags"])
-                    else:
-                        desc = " " + (r.get("prompt") or "").strip()[:10]
+                    # 描述：标签优先；无标签用用户发送的消息前 10 字（无消息则回退提示词）
+                    desc = self._gallery_desc(r, 10)
                     # 出图时间：created_at 时间戳转本地时间
                     _ts = r.get("created_at") or 0
                     try:
@@ -2408,7 +2415,7 @@ class ComfyUIDrawPlugin(Star):
                     lines = [f"带「{tag}」的图（共 {len(rows)} 张）："]
                     for i, r in enumerate(rows, 1):
                         star = "★" if r["starred"] else ""
-                        lines.append(f"{i}. [{r['sha16']}]{star} {r['source']} {r['prompt'][:40]}")
+                        lines.append(f"{i}. [{r['sha16']}]{star} {r['source']} {self._gallery_desc(r, 40)}")
                     lines.append("\n发图用：/图库 取图 <序号或sha前几位>")
                     await self._send(event, "\n".join(lines))
 
@@ -3055,7 +3062,7 @@ class ComfyUIDrawPlugin(Star):
             lines = [f"带「{tag.strip()}」的图有 {len(rows)} 张，回复编号即可发对应那张："]
             for i, r in enumerate(rows, 1):
                 star = "★" if r["starred"] else ""
-                lines.append(f"{i}. [{r['sha16']}]{star} {r['prompt'][:40]}")
+                lines.append(f"{i}. [{r['sha16']}]{star} {plugin._gallery_desc(r, 40)}")
             return "\n".join(lines)
 
         elif mode == "search":
@@ -3081,7 +3088,7 @@ class ComfyUIDrawPlugin(Star):
                 return ("已发送该图。" if ok else "找到图但发送失败。")
             lines = [f"检索「{keyword.strip()}」的结果："]
             for i, r in enumerate(rows, 1):
-                lines.append(f"{i}. [{r['sha16']}] {r['prompt'][:40]}")
+                lines.append(f"{i}. [{r['sha16']}] {plugin._gallery_desc(r, 40)}")
             lines.append("回复编号即可发对应那张。")
             return "\n".join(lines)
 

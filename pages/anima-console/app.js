@@ -1120,7 +1120,9 @@
           var t = new Date(Number(img.created_at) * 1000);
           add("出图时间", t.toLocaleString("zh-CN", { hour12: false }));
         }
-        if (img.user_name || img.user_id) add("用户", [img.user_name, img.user_id].filter(Boolean).join(" · "));
+        if (img.user_name) add("用户名", img.user_name);
+        if (img.user_id) add("用户ID", img.user_id);
+        if (img.session_id) add("会话ID", img.session_id);
         if (img.trigger_msg) add("触发消息", img.trigger_msg);
         if (img.status === 1) add("状态", "失败");
         else if (img.status === 0) add("状态", "成功");
