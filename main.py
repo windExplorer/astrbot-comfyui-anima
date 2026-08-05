@@ -2205,6 +2205,7 @@ class ComfyUIDrawPlugin(Star):
             "统计": "stats", "状态": "stats",
             "公开": "public",
             "私有": "private",
+            "帮助": "help", "怎么用": "help", "说明": "help",
         }
         sub = _sub_zh.get(raw_sub, raw_sub)
         rest = parts[1:]
@@ -2215,7 +2216,24 @@ class ComfyUIDrawPlugin(Star):
         # owner 为空（如事件拿不到发送者）时不隔离，仅作兜底。
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
-        if sub == "list":
+        if sub in ("help", "帮助"):
+            await self._send(
+                event,
+                "📚 图库指令说明（支持 /gallery 与 /图库 两种入口）：\n"
+                "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
+                "· 搜索 <关键词>　按画面描述检索\n"
+                "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
+                "· 找标签 <标签>　按标签取图\n"
+                "· 取图 <序号/sha>　发某张图（序号指列表里的编号）\n"
+                "· 收藏 <sha> / 取消收藏 <sha>　收藏或取消收藏\n"
+                "· 公开 <序号/sha> / 私有 <序号/sha>　设置图片可见性（公开后他人可检索）\n"
+                "· 保存 [标签...]　收藏当前这张图\n"
+                "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
+                "· 回收站　查看回收站\n"
+                "· 统计　查看图库统计信息\n\n"
+                "示例：/图库 列表 2　/图库 取图 1　/图库 打标签 合照　/图库 公开 1",
+            )
+        elif sub == "list":
             # 列表分页：每页 5 条，参数为页码（默认第 1 页）
             page_size = 5
             page = 1
