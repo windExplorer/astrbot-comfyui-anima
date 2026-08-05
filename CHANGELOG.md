@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.0.3
+
+- **修复：专属过滤不再依赖 `source` 字段**。此前「陪伴插件提示词专属过滤」(`filter_companion_prompt`) 要求 `source` 命中「我会永远陪着你」才生效，但伴侣插件很难把 source 透传过来，导致开启开关也没用。现改为**仅由开关控制**——只要开启就对 `comfyui_draw` 传入的提示词做过滤。
+- **增强通用兜底 `_split_external_prompt`**：无论是否含 `Negative prompt:` 标记，都会再次用 `Avoid` / `Do not` / `Respect ... exclusions` 软信号切分，把残留在正向段内的负面词表（如尾部大段逗号负向词表）清理掉，正向只保留构图描述与约束。
+
 ## v3.0.2
 
 - **外部提示词统一「只取正向」**：`_split_external_prompt` 增强为对**所有来源**生效（不带 source 也处理）——正向与构图约束全部保留，负面直接删除（不输出到负向节点，回退调用方自带的 negative_prompt）。新增 `_clean_prompt_markers` 统一清理方括号分节标题（`[User image request]`、`[Scene, style and final preset]`）、`[section compacted]` 占位符与控制字符，**保留中文描图**；无 `Negative prompt:` 标记时，用 `Avoid` / `Do not` / `Respect ... exclusions` 软信号切分，软信号之后视为负面直接删除，无标记的自然语言描述原样返回。

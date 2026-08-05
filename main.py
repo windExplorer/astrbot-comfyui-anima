@@ -974,6 +974,16 @@ class ComfyUIDrawPlugin(Star):
         """
         if not text:
             return "", ""
+        # 负向软信号：命中 'Avoid'/'Do not'/'Respect ... exclusions' 时，软信号之后
+        # 视为负面直接删除，只保留软信号之前的正向与构图约束。
+        def _cut_inline_negative(s: str) -> str:
+            m = re.search(
+                r"(avoid\b|do not\b|respect[^.]*?exclusions\b)",
+                s,
+                re.IGNORECASE,
+            )
+            return s[: m.start()].strip() if m else s.strip()
+
         # 1) 按 'Negative prompt:' 拆分正/负（大小写与冒号差异均兼容）
         m = re.search(r"negative\s*prompt\s*[:：]", text, re.IGNORECASE)
         if m:
@@ -982,22 +992,16 @@ class ComfyUIDrawPlugin(Star):
             positive = re.sub(
                 r"^\s*positive\s*prompt\s*[:：]\s*", "", positive, flags=re.IGNORECASE
             ).strip()
+            # 有的调用方把 Avoid/Do not 负向词表放在 'Negative prompt:' 之前，
+            # 正向内仍残留负面软信号，这里再切一次，保证正向干净。
+            positive = _cut_inline_negative(positive)
             positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
             # 负面直接删除（不保留，回退到调用方自行提供的 negative_prompt）
             return positive, ""
 
         # 2) 无 'Negative prompt:' 标记：兜底处理方括号标题 + 内联负向软信号。
-        #    命中 'Avoid'/'Do not'/'Respect ... exclusions' 时，软信号之后视为负面直接删除，
-        #    只保留软信号之前的正向与构图约束；未命中则原样返回。
-        neg_start = re.search(
-            r"(avoid\b|do not\b|respect[^.]*?exclusions\b)",
-            text,
-            re.IGNORECASE,
-        )
-        if neg_start:
-            positive = text[: neg_start.start()].strip()
-        else:
-            positive = text.strip()
+        #    未命中软信号则原样返回（不误伤常规 /draw 与 AI 对话的自然语言描述）。
+        positive = _cut_inline_negative(text)
         positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
         return positive, ""
 
@@ -2990,11 +2994,9 @@ class ComfyUIDrawPlugin(Star):
         # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
         # （通用处理始终生效：保留正向+构图约束、负面直接删除、清理方括号标题）
         positive, parsed_neg = plugin._split_external_prompt(prompt)
-        # 伴侣插件专属过滤仅当配置开关开启时启用（默认关闭，避免影响常规调用）
-        if (
-            source and source.strip() == SOURCE_COMPANION_PLUGIN
-            and plugin._cfg("filter_companion_prompt", False)
-        ):
+        # 专属过滤仅由配置开关控制（**不依赖 source 字段**）：伴侣插件很难把 source
+        # 透传过来，因此只要用户开启了「陪伴插件提示词专属过滤」，就对该 prompt 做过滤。
+        if plugin._cfg("filter_companion_prompt", False):
             cpos, cneg = plugin._format_companion_prompt(prompt)
             if cpos:
                 positive = cpos
