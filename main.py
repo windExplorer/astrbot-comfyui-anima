@@ -2176,16 +2176,37 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, "这张图文件丢失了，可能已被 LRU 清理。")
             return False
 
-    @filter.command("gallery")
+    @filter.command("gallery", alias={"图库"})
     async def cmd_gallery(self, event: AstrMessageEvent):
-        """图片画廊与语义标签召回。用法见子命令。"""
+        """图片画廊与语义标签召回。支持 /gallery 与 /图库 两种入口，子命令见提示。"""
         if self.gallery is None:
             await self._send(event, "图库未启用或初始化失败，请检查配置。")
             event.stop_event()
             return
         args = self._strip_command(event.message_str, "gallery") or ""
+        # 兼容中文入口 /图库：_strip_command 只认 /gallery，这里额外剥一次 /图库
+        args = self._strip_command(args, "图库")
         parts = args.split()
-        sub = (parts[0] or "").lower() if parts else "list"
+        raw_sub = (parts[0] or "").lower() if parts else "list"
+        # 中文子命令归一化：把中文别名映射到标准子命令，方便中文用户直接说中文
+        _sub_zh = {
+            "列表": "list", "查看": "list",
+            "搜索": "search", "查找": "search", "搜": "search",
+            "标签": "tag", "打标": "tag", "打标签": "tag",
+            "找标签": "findbytag", "按标签": "findbytag", "查标签": "findbytag",
+            "取图": "send", "发图": "send", "给我": "send", "要图": "send",
+            "收藏": "star", "存": "star",
+            "取消收藏": "unstar",
+            "删除": "del", "扔回收站": "del",
+            "回收站": "trash",
+            "恢复": "restore",
+            "清空": "purge", "彻底删": "purge",
+            "保存": "save", "入库": "save",
+            "统计": "stats", "状态": "stats",
+            "公开": "public",
+            "私有": "private",
+        }
+        sub = _sub_zh.get(raw_sub, raw_sub)
         rest = parts[1:]
 
         # 跨会话范围（关闭 cross_session 时仅当前会话）
@@ -2413,9 +2434,16 @@ class ComfyUIDrawPlugin(Star):
         else:
             await self._send(
                 event,
-                "未知子命令。可用：list [n] | search <关键词> | tag [图] <标签...> | "
-                "findByTag <标签> | send <序号/sha> | star <sha> | unstar <sha> | "
-                "del <sha> | save [标签...] | public|private <序号/sha> | stats",
+                "未知子命令。可用：\n"
+                "· list/列表 [n] 查看最近图\n"
+                "· search/搜索 <关键词> 检索\n"
+                "· tag/打标签 [图] <标签...> 打标签\n"
+                "· findByTag/找标签 <标签> 按标签取图\n"
+                "· send/取图 <序号/sha> 发图\n"
+                "· star/收藏 <sha>　unstar/取消收藏 <sha>\n"
+                "· del/删除 <sha>　trash/回收站　restore/恢复 <sha>　purge/清空 <sha>\n"
+                "· save/保存 [标签...] 收藏当前图\n"
+                "· public/公开 <序号/sha>　private/私有 <序号/sha>　stats/统计",
             )
         event.stop_event()
 

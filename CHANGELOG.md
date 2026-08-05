@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.73
+
+- **图库指令支持中文**：
+  - `/gallery` 增加中文别名入口 `/图库`（`filter.command(alias=...)`）。
+  - 子命令全部支持中文说法：列表/list、搜索/search、打标签/tag、找标签/findByTag、取图/send、收藏/star、取消收藏/unstar、删除/del、回收站/trash、恢复/restore、清空/purge、保存/save、统计/stats、公开/public、私有/private。
+  - 例如：`/图库 列表 5`、`/图库 取图 1`、`/图库 打标签 合照`、`/图库 公开 1`。
+  - 未知子命令提示改为中文用法说明。
+
 ## v2.2.72
 
 - **修复「引用图片打标签识别不准」**：此前指代消解（/gallery tag 不带序号时）用 `path_of(sha) == 路径字符串全等` 反查，但引用图返回的是 temp 路径、归档图是 gallery/refs 路径，两者目录不同永远不相等，导致反查失败、提示"没找到这张图"。
