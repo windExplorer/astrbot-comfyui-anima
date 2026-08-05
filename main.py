@@ -2216,17 +2216,25 @@ class ComfyUIDrawPlugin(Star):
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if sub == "list":
-            n = 10
+            # 列表分页：每页 5 条，参数为页码（默认第 1 页）
+            page_size = 5
+            page = 1
             if rest:
                 try:
-                    n = max(1, min(int(rest[0]), 50))
+                    page = max(1, int(rest[0]))
                 except ValueError:
                     pass
-            rows = self.gallery.search(limit=n, session=session_scope, owner=owner)
+            total = self.gallery.count_search(session=session_scope, owner=owner)
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            page = min(page, total_pages)
+            rows = self.gallery.search(
+                limit=page_size, offset=(page - 1) * page_size,
+                session=session_scope, owner=owner,
+            )
             if not rows:
                 await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
             else:
-                lines = ["最近的图片："]
+                lines = [f"图库（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
                     tags = (" #" + " #".join(r["tags"])) if r["tags"] else ""
                     star = "★" if r["starred"] else ""
@@ -2235,7 +2243,8 @@ class ComfyUIDrawPlugin(Star):
                         f"{r['w']}×{r['h']} 用{r['use_count']}次{tags}\n"
                         f"   {r['prompt'][:60]}"
                     )
-                lines.append("\n发图用：/gallery send <序号或sha前几位>")
+                lines.append(f"\n翻页：/gallery list <页码>（共 {total_pages} 页）")
+                lines.append("发图用：/gallery send <序号或sha前几位>")
                 await self._send(event, "\n".join(lines))
 
         elif sub == "search":
