@@ -2582,7 +2582,8 @@ class ComfyUIDrawPlugin(Star):
                 f"· 总张数：{st.get('total', 0)}",
                 f"· 收藏：{st.get('starred', 0)}　带标签：{st.get('tagged', 0)}",
                 f"· 生图/参考/用户收藏：{st.get('gen',0)}/{st.get('ref',0)}/{st.get('user',0)}",
-                f"· 有效占用：{st.get('size_mb', 0)} MB（回收站 {st.get('trash_size_mb', 0)} MB）/ 上限 {st.get('max_total_mb', 0)} MB",
+                # 删除相关功能关闭：不向普通用户展示回收站占用
+                f"· 有效占用：{st.get('size_mb', 0)} MB / 上限 {st.get('max_total_mb', 0)} MB",
             ]
             await self._send(event, "\n".join(lines))
 
@@ -3203,8 +3204,7 @@ class ComfyUIDrawPlugin(Star):
             return (
                 f"图库：共 {st.get('total',0)} 张（生图{st.get('gen',0)}/参考{st.get('ref',0)}/"
                 f"用户{st.get('user',0)}），收藏 {st.get('starred',0)}，带标签 {st.get('tagged',0)}；"
-                f"有效占用 {st.get('size_mb',0)} MB（回收站 {st.get('trash_size_mb',0)} MB）"
-                f"/ 上限 {st.get('max_total_mb',0)} MB"
+                f"有效占用 {st.get('size_mb',0)} MB / 上限 {st.get('max_total_mb',0)} MB"
             )
 
         elif mode in ("tag", "public", "private"):
