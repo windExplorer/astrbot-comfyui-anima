@@ -1193,6 +1193,10 @@ class ComfyUIDrawPlugin(Star):
         _draw_start = time.time()
         # 图生图参考图的 sha256（归档成品图时回填到 ref_sha256 字段）
         ref_sha256 = None
+        # 用户标识（成品图归档用）：用 get_sender_id() 取真实用户ID，避免归档成"无主图"
+        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
+        user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
         if not positive or not positive.strip():
             await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
