@@ -2158,12 +2158,19 @@ class ComfyUIDrawPlugin(Star):
         """根据 sha256/前缀拼路径，并发图。返回是否成功。
         owner: 当前用户ID；传入后校验图片归属，防止取到/发到他人图片。"""
         # 归属校验：按 sha 精确查一条记录。
-        # 允许发送：公开图（is_public=1）任何人可发；私有图仅本人（或历史无主图）。
+        # 允许发送：公开图（is_public=1）任何人可发；私有图仅本人；
+        # 历史无主图（user_id 为空）仅管理员可发（管理员 owner 判空走全库）。
         row = self.gallery.get_by_sha(sha) if hasattr(self.gallery, "get_by_sha") else None
-        if row is not None and owner:
-            if not row.get("is_public") and row.get("user_id") and row.get("user_id") != owner:
-                await self._send(event, "这张图是私有的，不属于你，无法发送。")
-                return False
+        if row is not None:
+            if owner:
+                if not row.get("is_public") and (row.get("user_id") or "") != owner:
+                    await self._send(event, "这张图是私有的，不属于你，无法发送。")
+                    return False
+            else:
+                # owner 为空（管理员/全库场景）：无主图或公开图可发，他人私有图不可发
+                if not row.get("is_public") and row.get("user_id"):
+                    await self._send(event, "这张图是私有的，不属于当前用户，无法发送。")
+                    return False
         path = self.gallery.path_of(sha)
         if not path:
             await self._send(event, f"没找到这张图（sha={sha[:16]}），可能已被清理或从未入库。")
@@ -2275,6 +2282,7 @@ class ComfyUIDrawPlugin(Star):
                 _head = "全库图" if all_view else "图库"
                 lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
+                    _gno = r.get("gidx", i)  # 全局编号（跨分页稳定）
                     # 标签优先；无标签则取提示词前 10 个字
                     if r.get("tags"):
                         desc = " #" + " #".join(r["tags"])
@@ -2291,7 +2299,7 @@ class ComfyUIDrawPlugin(Star):
                     _uid = (r.get("user_id") or "").strip()
                     _uname = (r.get("user_name") or "").strip()
                     star = "★" if r.get("starred") else ""
-                    line = f"{i}. {star}{desc}\n   {_wf} | {_tm}"
+                    line = f"{_gno}. {star}{desc}\n   {_wf} | {_tm}"
                     if is_admin and (_sid or all_view):
                         line += f" | sid:{_sid or '-'}"
                         if all_view:
@@ -2371,13 +2379,15 @@ class ComfyUIDrawPlugin(Star):
                             return
                 else:
                     if isinstance(target, int):
-                        rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
-                        if 1 <= target <= len(rows):
-                            sha = rows[target - 1]["sha256"]
+                        # 数字 = 全局编号（列表里显示的编号），编号和 sha 都能操作
+                        eff_owner = "" if all_view else owner
+                        r = self.gallery.get_by_global_no(target, owner=eff_owner)
+                        if r:
+                            sha = r["sha256"]
                     else:
                         sha = target
                 if not sha:
-                    await self._send(event, "没找到这张图（先发图、或指定 /图库 打标签 <序号> <标签>）")
+                    await self._send(event, "没找到这张图（先发图、或指定 /图库 打标签 <编号> <标签>）")
                 else:
                     self.gallery.add_tags(sha, tags)
                     await self._send(event, f"已给 [{sha[:16]}] 打标签：{'、'.join(tags)}")
@@ -2400,17 +2410,19 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "send":
             if not rest:
-                await self._send(event, "用法：/图库 取图 <序号或sha前几位>")
+                await self._send(event, "用法：/图库 取图 <编号或sha前几位>")
             else:
                 arg = rest[0]
                 if arg.isdigit():
-                    rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
-                    if 1 <= int(arg) <= len(rows):
-                        await self._gallery_send_image(event, rows[int(arg) - 1]["sha256"], owner=owner)
+                    # 数字 = 全局编号（列表里显示的编号）
+                    eff_owner = "" if all_view else owner
+                    r = self.gallery.get_by_global_no(int(arg), owner=eff_owner)
+                    if r:
+                        await self._gallery_send_image(event, r["sha256"], owner=eff_owner)
                     else:
-                        await self._send(event, "序号越界了。")
+                        await self._send(event, "编号越界了。")
                 else:
-                    await self._gallery_send_image(event, arg, owner=owner)
+                    await self._gallery_send_image(event, arg, owner=("" if all_view else owner))
 
         elif sub == "star":
             if not rest:
@@ -2490,9 +2502,11 @@ class ComfyUIDrawPlugin(Star):
                 first = rest[0]
                 sha = None
                 if first.isdigit():
-                    rows = self.gallery.search(limit=1000, session=session_scope, owner=owner)
-                    if 1 <= int(first) <= len(rows):
-                        sha = rows[int(first) - 1]["sha256"]
+                    # 数字 = 全局编号（列表里显示的编号）
+                    eff_owner = "" if all_view else owner
+                    r = self.gallery.get_by_global_no(int(first), owner=eff_owner)
+                    if r:
+                        sha = r["sha256"]
                     else:
                         await self._send(event, "序号越界了。")
                 else:
@@ -3084,11 +3098,11 @@ class ComfyUIDrawPlugin(Star):
             if not arg:
                 return "send 模式需要 keyword 参数传序号（如「3」）或 sha 前几位。"
             if arg.isdigit():
-                rows = g.search(limit=1000, session=session, owner=owner)
-                if 1 <= int(arg) <= len(rows):
-                    ok = await plugin._gallery_send_image(event, rows[int(arg) - 1]["sha256"], owner=owner)
+                r = g.get_by_global_no(int(arg), owner=owner)
+                if r:
+                    ok = await plugin._gallery_send_image(event, r["sha256"], owner=owner)
                     return ("已发送。" if ok else "发送失败。")
-                return "序号越界。"
+                return "编号越界。"
             ok = await plugin._gallery_send_image(event, arg, owner=owner)
             return ("已发送。" if ok else "没找到这张图。")
 
@@ -3096,10 +3110,10 @@ class ComfyUIDrawPlugin(Star):
             rows = g.search(limit=limit, session=session, owner=owner)
             if not rows:
                 return "画廊还是空的～先画点图或收藏点图吧。"
-            lines = ["最近的图片："]
+            lines = ["最近的图片（回复编号即可发图）："]
             for i, r in enumerate(rows, 1):
                 t = (" #" + " #".join(r["tags"])) if r["tags"] else ""
-                lines.append(f"{i}. [{r['sha16']}]{'★' if r['starred'] else ''} {r['source']}{t}")
+                lines.append(f"{r.get('gidx', i)}. [{r['sha16']}]{'★' if r['starred'] else ''} {r['source']}{t}")
             return "\n".join(lines)
 
         elif mode == "stats":
@@ -3116,11 +3130,11 @@ class ComfyUIDrawPlugin(Star):
             arg = (keyword or "").strip()
             sha = None
             if arg and arg.isdigit():
-                rows = g.search(limit=1000, session=session, owner=owner)
-                if 1 <= int(arg) <= len(rows):
-                    sha = rows[int(arg) - 1]["sha256"]
+                r = g.get_by_global_no(int(arg), owner=owner)
+                if r:
+                    sha = r["sha256"]
                 else:
-                    return "序号越界。"
+                    return "编号越界。"
             elif arg:
                 row = g.get_by_sha(arg)
                 if row:

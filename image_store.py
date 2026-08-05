@@ -572,7 +572,7 @@ class ImageStore:
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
         if owner:
-            sql += " AND (is_public=1 OR user_id IS NULL OR user_id='' OR user_id=?)"
+            sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
@@ -621,10 +621,11 @@ class ImageStore:
             sql += " AND deleted=0"
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
-        # 可见性过滤：公开图(is_public=1)所有人可见；私有图仅本人 + 历史无主图。
-        # owner 为空（库维护/全库场景）不过滤。
+        # 可见性过滤：公开图(is_public=1)所有人可见；私有图仅本人。
+        # 历史无主图（user_id 为空）不对普通用户暴露，仅管理员（owner 为空/全库模式）可见。
+        # owner 为空（管理员/全库/库维护场景）不过滤。
         if owner:
-            sql += " AND (is_public=1 OR user_id IS NULL OR user_id='' OR user_id=?)"
+            sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
@@ -646,7 +647,46 @@ class ImageStore:
         except Exception as e:
             logger.warning(f"[图库] 检索失败: {e}")
             return []
-        return [self._row_to_dict(r) for r in rows]
+        out = []
+        for _i, r in enumerate(rows):
+            d = self._row_to_dict(r)
+            # 全局编号：基于当前过滤+排序的全局位置（offset 之前的 + 本页位置），跨分页稳定
+            d["gidx"] = offset + _i + 1
+            out.append(d)
+        return out
+
+    def get_by_global_no(self, no: int, owner: str = "", keyword: str = "") -> dict | None:
+        """按「全局编号」取一条记录（编号基于与 search 相同的过滤+排序，1 起始）。
+        用于用户在列表里看到编号后，直接输入编号操作图片。返回 dict 或 None。"""
+        if not self.enabled() or not _HAS_SQLITE or no < 1:
+            return None
+        conn = self._conn_get()
+        sql = "SELECT * FROM images WHERE 1=1"
+        args: list = []
+        sql += " AND deleted=0"
+        sql += " AND status=0"
+        if owner:
+            sql += " AND (is_public=1 OR user_id=?)"
+            args.append(owner)
+        if keyword and keyword.strip():
+            kw = f"%{keyword.strip()}%"
+            sql += (
+                " AND (prompt LIKE ? OR prompt_raw LIKE ? OR workflow LIKE ?"
+                " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
+            )
+            args += [kw, kw, kw, kw]
+        sql += " ORDER BY created_at DESC LIMIT 1 OFFSET ?"
+        args.append(int(no) - 1)
+        try:
+            row = conn.execute(sql, args).fetchone()
+        except Exception as e:
+            logger.warning(f"[图库] 按编号取图失败: {e}")
+            return None
+        if not row:
+            return None
+        d = self._row_to_dict(row)
+        d["gidx"] = int(no)
+        return d
 
     def recall_by_tag(self, tag: str, limit: int = 20, owner: str = "") -> list[dict]:
         """按语义标签召回。命中多张返回列表（由调用方列出让用户选）。
@@ -662,7 +702,7 @@ class ImageStore:
                     SELECT i.* FROM images i
                     JOIN image_tags t ON i.sha256 = t.sha256
                     WHERE t.tag LIKE ? AND i.deleted=0
-                      AND (i.is_public=1 OR i.user_id IS NULL OR i.user_id='' OR i.user_id=?)
+                      AND (i.is_public=1 OR i.user_id=?)
                     ORDER BY i.created_at DESC LIMIT ?
                     """,
                     (kw, owner, int(limit)),
@@ -680,7 +720,12 @@ class ImageStore:
         except Exception as e:
             logger.warning(f"[图库] 标签召回失败: {e}")
             return []
-        return [self._row_to_dict(r) for r in rows]
+        out = []
+        for _i, r in enumerate(rows):
+            d = self._row_to_dict(r)
+            d["gidx"] = _i + 1  # 标签召回列表从 1 编号，便于用户按编号操作
+            out.append(d)
+        return out
 
     def resolve_ref(self, event, session: str | None = None) -> str | None:
         """指代消解：找出当前语境下「这张图」对应的本地路径。
