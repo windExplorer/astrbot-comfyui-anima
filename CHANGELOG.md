@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.82
+
+- **让 `session_id` 过滤真正生效（跨会话配置落地）**：此前 `search`/`count_search`/`get_by_global_no` 收到 `session` 参数后直接忽略（仅兼容签名不参与 SQL），导致 `cross_session=false`（默认）时"仅检索当前会话"的语义没有落地——实际查了所有会话、仅靠 `user_id` 隔离。本次修复：
+  - `search`/`count_search`/`get_by_global_no` 在 `session` 非空时新增 `AND session_id=?` 过滤，`cross_session=false` 时 `/图库` 与 `comfyui_gallery` 列表/搜索/计数仅命中当前会话内的图。
+  - `get_by_global_no` 新增 `session` 参数，且 `main.py` 中所有按编号取图（取图/打标签/公开/私有/send）调用都传入与列表一致的 `session`，避免"列表带会话过滤、按编号取图却不带"导致的编号错位。
+  - 为 `images` 表补 `idx_images_session` 索引，`session_id` 已纳入建表语句（旧库仍由 ALTER 兼容补列）。
+- **权限语义保持不变**：`session_id` 仅作为检索范围缩小，不替代权限判断——`owner`（`user_id` 归属）与 `is_public` 过滤始终保留。只有当事人（图库归属的那个 `user_id`）能取到/发送自己的私有图，公开图除外；`session_id` 仍作为来源元数据被记录，供管理员审计展示所属会话。
+
 ## v2.2.81
 
 - **严重修复：出图无法归档入库（v2.2.69~v2.2.80 受影响）**：`_do_draw` 主方法中**未定义 `user_id`/`user_name` 变量**，但成品归档（`archive_image`）和参考图归档引用了它们，导致每次归档时抛 `NameError` 被吞掉 → 出图不写库、WebUI 出图日志与图库均看不到、`/图库 列表` 提示"没出过任何图"。

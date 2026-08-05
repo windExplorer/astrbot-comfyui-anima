@@ -113,7 +113,9 @@ class ImageStore:
                     trigger_msg TEXT DEFAULT NULL,
                     status     INTEGER NOT NULL DEFAULT 0,
                     deleted    INTEGER NOT NULL DEFAULT 0,
-                    deleted_at REAL DEFAULT NULL
+                    deleted_at REAL DEFAULT NULL,
+                    is_public  INTEGER NOT NULL DEFAULT 0,
+                    session_id TEXT DEFAULT ''
                 )
                 """
             )
@@ -145,6 +147,9 @@ class ImageStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_images_month ON images(month)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_images_session ON images(session_id)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tags_tag ON image_tags(tag)"
@@ -558,7 +563,9 @@ class ImageStore:
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
         owner: 用户隔离标识，与 search 保持一致。
-        session: 兼容 search 的参数签名（images 表无 session_id 列，暂不按会话过滤）。"""
+        session: 会话ID；非空时额外按 session_id 过滤（用于「仅当前会话」视图，
+        cross_session=false 场景）。注意：这只是检索范围，不改变权限——
+        owner（user_id 归属）与 is_public 过滤始终保留。"""
         if not self.enabled() or not _HAS_SQLITE:
             return 0
         conn = self._conn_get()
@@ -574,6 +581,11 @@ class ImageStore:
         if owner:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
+        if session:
+            # 会话范围过滤：非空时仅统计当前会话内的图。
+            # 仅作为检索范围缩小，不替代 owner 权限过滤。
+            sql += " AND session_id=?"
+            args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
@@ -608,6 +620,8 @@ class ImageStore:
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
         owner: 用户隔离标识。传入当前用户ID后，只检索该用户的图片（含历史无主图，
         即 user_id 为空或相等的），避免跨用户串图。
+        session: 会话ID；非空时额外按 session_id 过滤（用于「仅当前会话」视图，
+        cross_session=false 场景）。这是检索范围缩小，不改变 owner 权限语义。
         """
         if not self.enabled() or not _HAS_SQLITE:
             return []
@@ -627,6 +641,11 @@ class ImageStore:
         if owner:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
+        if session:
+            # 会话范围过滤：非空时仅检索当前会话内的图（cross_session=false）。
+            # 仅缩小检索范围，不替代 owner（user_id）权限隔离。
+            sql += " AND session_id=?"
+            args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (
@@ -655,9 +674,10 @@ class ImageStore:
             out.append(d)
         return out
 
-    def get_by_global_no(self, no: int, owner: str = "", keyword: str = "") -> dict | None:
+    def get_by_global_no(self, no: int, owner: str = "", keyword: str = "", session=None) -> dict | None:
         """按「全局编号」取一条记录（编号基于与 search 相同的过滤+排序，1 起始）。
-        用于用户在列表里看到编号后，直接输入编号操作图片。返回 dict 或 None。"""
+        用于用户在列表里看到编号后，直接输入编号操作图片。返回 dict 或 None。
+        session: 会话ID；须与 search 传同值，保证编号在带会话过滤的列表里也能对齐。"""
         if not self.enabled() or not _HAS_SQLITE or no < 1:
             return None
         conn = self._conn_get()
@@ -668,6 +688,9 @@ class ImageStore:
         if owner:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
+        if session:
+            sql += " AND session_id=?"
+            args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
             sql += (

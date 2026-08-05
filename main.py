@@ -2385,7 +2385,7 @@ class ComfyUIDrawPlugin(Star):
                     if isinstance(target, int):
                         # 数字 = 全局编号（列表里显示的编号），编号和 sha 都能操作
                         eff_owner = "" if all_view else owner
-                        r = self.gallery.get_by_global_no(target, owner=eff_owner)
+                        r = self.gallery.get_by_global_no(target, owner=eff_owner, session=session_scope)
                         if r:
                             sha = r["sha256"]
                     else:
@@ -2420,7 +2420,7 @@ class ComfyUIDrawPlugin(Star):
                 if arg.isdigit():
                     # 数字 = 全局编号（列表里显示的编号）
                     eff_owner = "" if all_view else owner
-                    r = self.gallery.get_by_global_no(int(arg), owner=eff_owner)
+                    r = self.gallery.get_by_global_no(int(arg), owner=eff_owner, session=session_scope)
                     if r:
                         await self._gallery_send_image(event, r["sha256"], owner=eff_owner)
                     else:
@@ -2508,7 +2508,7 @@ class ComfyUIDrawPlugin(Star):
                 if first.isdigit():
                     # 数字 = 全局编号（列表里显示的编号）
                     eff_owner = "" if all_view else owner
-                    r = self.gallery.get_by_global_no(int(first), owner=eff_owner)
+                    r = self.gallery.get_by_global_no(int(first), owner=eff_owner, session=session_scope)
                     if r:
                         sha = r["sha256"]
                     else:
@@ -3102,7 +3102,7 @@ class ComfyUIDrawPlugin(Star):
             if not arg:
                 return "send 模式需要 keyword 参数传序号（如「3」）或 sha 前几位。"
             if arg.isdigit():
-                r = g.get_by_global_no(int(arg), owner=owner)
+                r = g.get_by_global_no(int(arg), owner=owner, session=session)
                 if r:
                     ok = await plugin._gallery_send_image(event, r["sha256"], owner=owner)
                     return ("已发送。" if ok else "发送失败。")
@@ -3134,7 +3134,7 @@ class ComfyUIDrawPlugin(Star):
             arg = (keyword or "").strip()
             sha = None
             if arg and arg.isdigit():
-                r = g.get_by_global_no(int(arg), owner=owner)
+                r = g.get_by_global_no(int(arg), owner=owner, session=session)
                 if r:
                     sha = r["sha256"]
                 else:
