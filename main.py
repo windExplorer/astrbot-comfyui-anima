@@ -2190,7 +2190,10 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, f"没找到这张图（sha={sha[:16]}），可能已被清理或从未入库。")
             return False
         try:
-            await event.send(Image(file=path))
+            # 必须包成 MessageChain 再 send：AstrBot 新版 event.send 期望消息链，
+            # 直接传裸 Image 组件在 comfyui_gallery 工具场景会报
+            # "'Image' object has no attribute 'chain'"。
+            await event.send(MessageChain([Image(file=path)]))
             self.gallery.send(sha)
             return True
         except Exception as _e:

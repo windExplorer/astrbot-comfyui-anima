@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.85
+
+- **修复 comfyui_gallery 取图发送失败**：`_gallery_send_image` 原来直接 `event.send(Image(file=...))` 传裸 `Image` 组件，在 AstrBot 新版（v4.27.x）的 LLM 工具调用场景（`comfyui_gallery` 的 recall/search/send）会报 `'Image' object has no attribute 'chain'`，导致"找到图但发送失败"。已改为 `event.send(MessageChain([Image(file=...)]))`，与 `_send`/`comfyui_draw` 的既有正确用法一致。
+
 ## v2.2.84
 
 - **图库列表描述改用用户消息**：发给用户的图库列表（`/图库 列表` / `/图库 找标签` / `comfyui_gallery` 召回与检索）中，图片无标签时，描述由「提示词前 N 字」改为「用户发送的消息（trigger_msg）前 N 字」——因为提示词可能被 Danbooru 翻译成英文标签，对用户不直观，而用户当时的原始消息更易辨认。无触发消息时回退取提示词。新增辅助方法 `_gallery_desc` 统一处理。
