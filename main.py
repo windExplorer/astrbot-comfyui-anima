@@ -2272,10 +2272,11 @@ class ComfyUIDrawPlugin(Star):
             "取图": "send", "发图": "send", "给我": "send", "要图": "send",
             "收藏": "star", "存": "star",
             "取消收藏": "unstar",
-            "删除": "del", "扔回收站": "del",
-            "回收站": "trash",
-            "恢复": "restore",
-            "清空": "purge", "彻底删": "purge",
+            # 删除相关功能暂时关闭（v2.2.87 起不开放删除/回收站/清空/恢复）
+            # "删除": "del", "扔回收站": "del",
+            # "回收站": "trash",
+            # "恢复": "restore",
+            # "清空": "purge", "彻底删": "purge",
             "保存": "save", "入库": "save",
             "统计": "stats", "状态": "stats",
             "公开": "public",
@@ -2317,8 +2318,8 @@ class ComfyUIDrawPlugin(Star):
                 "· 收藏 <sha> / 取消收藏 <sha>　收藏或取消收藏\n"
                 "· 公开 <序号/sha> / 私有 <序号/sha>　设置图片可见性（公开后他人可检索）\n"
                 "· 保存 [标签...]　收藏当前这张图\n"
-                "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
-                "· 回收站　查看回收站\n"
+                # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
+                # "· 回收站　查看回收站\n"
                 "· 统计　查看图库统计信息\n"
                 "· 全部 列表/搜索（管理员）　查看所有用户的图片（带 sid/用户名）\n\n"
                 "示例：/图库 列表 2　/图库 取图 1　/图库 打标签 合照　/图库 公开 1",
@@ -2515,49 +2516,50 @@ class ComfyUIDrawPlugin(Star):
                     self.gallery.star(_sha, 0)
                     await self._send(event, "已取消收藏。")
 
-        elif sub == "del":
-            if not rest:
-                await self._send(event, "用法：/图库 删除 <编号或sha前几位>  （移入回收站，可在 /图库 回收站 查看，清空 才真删）")
-            else:
-                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
-                if _err:
-                    await self._send(event, _err)
-                else:
-                    ok = self.gallery.delete(_sha)
-                    await self._send(event, "已移入回收站（用 /图库 清空 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
-
-        elif sub == "trash":
-            rows = self.gallery.search(trash=True, limit=100, owner=owner)
-            if not rows:
-                await self._send(event, "回收站是空的。")
-            else:
-                lines = [f"回收站（{len(rows)} 张，purge 才真删）："]
-                for i, r in enumerate(rows, 1):
-                    lines.append(f"{i}. {r['sha256'][:16]} 「{(r.get('prompt') or '')[:24]}」")
-                await self._send(event, "\n".join(lines))
-
-        elif sub == "restore":
-            if not rest:
-                await self._send(event, "用法：/图库 恢复 <编号或sha前几位>")
-            else:
-                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
-                if _err:
-                    await self._send(event, _err)
-                else:
-                    ok = self.gallery.restore(_sha)
-                    await self._send(event, "已恢复。" if ok else "恢复失败（不在回收站或不存在）。")
-
-        elif sub == "purge":
-            if not rest:
-                await self._send(event, "用法：/图库 清空 <编号或sha前几位>  （彻底删除，不可恢复）")
-            else:
-                _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
-                if _err:
-                    await self._send(event, _err)
-                else:
-                    ok = self.gallery.purge(_sha)
-                    await self._send(event, "已彻底删除。" if ok else "删除失败（不在回收站或不存在）。")
-
+        # 删除相关功能暂时关闭（v2.2.87 起不开放删除/回收站/清空/恢复）
+        # elif sub == "del":
+        #     if not rest:
+        #         await self._send(event, "用法：/图库 删除 <编号或sha前几位>  （移入回收站，可在 /图库 回收站 查看，清空 才真删）")
+        #     else:
+        #         _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+        #         if _err:
+        #             await self._send(event, _err)
+        #         else:
+        #             ok = self.gallery.delete(_sha)
+        #             await self._send(event, "已移入回收站（用 /图库 清空 彻底删除）。" if ok else "删除失败（已收藏的图不可删，或不存在）。")
+        #
+        # elif sub == "trash":
+        #     rows = self.gallery.search(trash=True, limit=100, owner=owner)
+        #     if not rows:
+        #         await self._send(event, "回收站是空的。")
+        #     else:
+        #         lines = [f"回收站（{len(rows)} 张，purge 才真删）："]
+        #         for i, r in enumerate(rows, 1):
+        #             lines.append(f"{i}. {r['sha256'][:16]} 「{(r.get('prompt') or '')[:24]}」")
+        #         await self._send(event, "\n".join(lines))
+        #
+        # elif sub == "restore":
+        #     if not rest:
+        #         await self._send(event, "用法：/图库 恢复 <编号或sha前几位>")
+        #     else:
+        #         _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+        #         if _err:
+        #             await self._send(event, _err)
+        #         else:
+        #             ok = self.gallery.restore(_sha)
+        #             await self._send(event, "已恢复。" if ok else "恢复失败（不在回收站或不存在）。")
+        #
+        # elif sub == "purge":
+        #     if not rest:
+        #         await self._send(event, "用法：/图库 清空 <编号或sha前几位>  （彻底删除，不可恢复）")
+        #     else:
+        #         _sha, _err = self._resolve_op_target(event, rest[0], owner, all_view)
+        #         if _err:
+        #             await self._send(event, _err)
+        #         else:
+        #             ok = self.gallery.purge(_sha)
+        #             await self._send(event, "已彻底删除。" if ok else "删除失败（不在回收站或不存在）。")
+        #
         elif sub == "save":
             # /gallery save [标签...]：收藏当前/上一条消息的图（方案B）
             p = await self._gallery_resolve_ref(event)
@@ -2612,7 +2614,7 @@ class ComfyUIDrawPlugin(Star):
                 "· findByTag/找标签 <标签> 按标签取图\n"
                 "· send/取图 <序号/sha> 发图\n"
                 "· star/收藏 <sha>　unstar/取消收藏 <sha>\n"
-                "· del/删除 <sha>　trash/回收站　restore/恢复 <sha>　purge/清空 <sha>\n"
+                # "· del/删除 <sha>　trash/回收站　restore/恢复 <sha>　purge/清空 <sha>\n"
                 "· save/保存 [标签...] 收藏当前图\n"
                 "· public/公开 <序号/sha>　private/私有 <序号/sha>　stats/统计",
             )
