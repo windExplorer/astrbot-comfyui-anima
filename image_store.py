@@ -128,6 +128,7 @@ class ImageStore:
                 ("deleted", "INTEGER NOT NULL DEFAULT 0"),
                 ("deleted_at", "REAL DEFAULT NULL"),
                 ("is_public", "INTEGER NOT NULL DEFAULT 0"),
+                ("session_id", "TEXT DEFAULT ''"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -221,6 +222,7 @@ class ImageStore:
         cost_sec: float = None,
         user_id: str = "",
         user_name: str = "",
+        session_id: str = "",
         trigger_msg: str = "",
         status: int = 0,
     ) -> str | None:
@@ -274,15 +276,15 @@ class ImageStore:
                         "UPDATE images SET prompt=?, prompt_raw=?, workflow=?, "
                         "loras=?, seed=?, w=?, h=?, denoise=?, is_img2img=?, "
                         "ref_sha256=?, source=?, size_bytes=?, cost_sec=?, "
-                        "user_id=?, user_name=?, trigger_msg=?, status=? "
+                        "user_id=?, user_name=?, session_id=?, trigger_msg=?, status=? "
                         "WHERE sha256=?",
                         (
                             prompt, prompt_raw, workflow, loras_json,
                             seed, w, h, denoise,
                             1 if is_img2img else 0, ref_sha256 or "",
                             source, size_bytes, cost_sec,
-                            user_id or "", user_name or "", trigger_msg or "",
-                            status, sha,
+                            user_id or "", user_name or "", session_id or "",
+                            trigger_msg or "", status, sha,
                         ),
                     )
                 conn.commit()
@@ -318,8 +320,8 @@ class ImageStore:
                 (sha256, ext, month, prompt, prompt_raw, workflow, loras,
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
                  use_count, starred, created_at, size_bytes, cost_sec,
-                 user_id, user_name, trigger_msg, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)
+                 user_id, user_name, session_id, trigger_msg, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -327,7 +329,7 @@ class ImageStore:
                     seed, w, h, denoise,
                     1 if is_img2img else 0, ref_sha256 or "", source,
                     time.time(), size_bytes, cost_sec,
-                    user_id or "", user_name or "", trigger_msg or "", status,
+                    user_id or "", user_name or "", session_id or "", trigger_msg or "", status,
                 ),
             )
             conn.commit()
@@ -337,10 +339,10 @@ class ImageStore:
         logger.info(f"[图库] 已归档 {source} 图: {dest.name}")
         return str(dest)
 
-    def archive_user_image(self, src_path: str, tags=None, user_id: str = "", user_name: str = "") -> str | None:
+    def archive_user_image(self, src_path: str, tags=None, user_id: str = "", user_name: str = "", session_id: str = "") -> str | None:
         """方案 B：收藏用户在聊天里发来的图（或任意来源图）到 refs/。返回 sha256。
         必须传 user_id，否则会成为"无主图"串给其他用户。"""
-        _final = self.archive_image(src_path, source=SRC_USER, user_id=user_id, user_name=user_name)
+        _final = self.archive_image(src_path, source=SRC_USER, user_id=user_id, user_name=user_name, session_id=session_id)
         if not _final:
             return None
         # 从最终路径反算 sha（与归档时一致），供调用方做收藏/召回标识。
@@ -536,6 +538,7 @@ class ImageStore:
             "cost_sec": row["cost_sec"],
             "user_id": row["user_id"],
             "user_name": row["user_name"],
+            "session_id": row["session_id"] if "session_id" in row.keys() else "",
             "trigger_msg": row["trigger_msg"],
             "status": row["status"],
             "deleted": bool(row["deleted"]),

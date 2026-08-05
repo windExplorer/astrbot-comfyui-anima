@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.77
+
+- **图库列表精简展示**：`/图库 列表` 每条只显示「序号 + 标签（无标签取提示词前10字）+ 工作流 + 出图时间」，不再展示 sha 全称/source/尺寸/use_count/完整 prompt。管理员（`event.is_admin()`）额外显示该图所属会话 `sid`（审计信息）。owner 隔离对管理员同样生效——管理员也只看自己的图，不会全量看所有用户。
+- **新增 session_id 字段**：`images` 表加 `session_id` 列，归档（成品/参考图/收藏图）时写入，用于管理员审计展示所属会话。
+
 ## v2.2.76
 
 - **修复 /图库 列表分页 TypeError**：`/图库 列表` 调用 `count_search(session=...)`，但 `count_search` 无 `session` 参数导致崩溃。已为 `count_search` 增加 `session` 参数（签名与 `search` 对齐；images 表无 session_id 列，暂不按会话过滤，仅防调用报错）。

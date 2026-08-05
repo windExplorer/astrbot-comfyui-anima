@@ -1275,7 +1275,7 @@ class ComfyUIDrawPlugin(Star):
                             continue
                         # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回；
                         # 必须带 user_id，否则该图成为"无主图"会串给其他用户。
-                        _final = self.gallery.archive_image(_ri, source=SRC_USER, user_id=user_id, user_name=user_name)
+                        _final = self.gallery.archive_image(_ri, source=SRC_USER, user_id=user_id, user_name=user_name, session_id=(getattr(event, "session_id", "") or ""))
                         # archive_image 现返回归档后路径，反算 sha 作为 ref_sha256（入库/回填用）
                         _sha = _sha256_of(_final) if _final else None
                         if _sha and ref_sha256 is None:
@@ -1605,6 +1605,7 @@ class ComfyUIDrawPlugin(Star):
                                 cost_sec=(time.time() - _draw_start),
                                 user_id=user_id,
                                 user_name=user_name,
+                                session_id=(getattr(event, "session_id", "") or ""),
                                 trigger_msg=(getattr(event, "message_str", "") or ""),
                                 status=0,
                             )
@@ -2252,15 +2253,28 @@ class ComfyUIDrawPlugin(Star):
             if not rows:
                 await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
             else:
+                # 是否管理员（管理员额外展示所属会话 sid）
+                is_admin = bool(getattr(event, "is_admin", lambda: False)())
                 lines = [f"图库（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
-                    tags = (" #" + " #".join(r["tags"])) if r["tags"] else ""
-                    star = "★" if r["starred"] else ""
-                    lines.append(
-                        f"{i}. [{r['sha16']}]{star} {r['source']} "
-                        f"{r['w']}×{r['h']} 用{r['use_count']}次{tags}\n"
-                        f"   {r['prompt'][:60]}"
-                    )
+                    # 标签优先；无标签则取提示词前 10 个字
+                    if r.get("tags"):
+                        desc = " #" + " #".join(r["tags"])
+                    else:
+                        desc = " " + (r.get("prompt") or "").strip()[:10]
+                    # 出图时间：created_at 时间戳转本地时间
+                    _ts = r.get("created_at") or 0
+                    try:
+                        _tm = time.strftime("%m-%d %H:%M", time.localtime(float(_ts)))
+                    except Exception:
+                        _tm = "-"
+                    _wf = (r.get("workflow") or "").strip() or "默认"
+                    _sid = (r.get("session_id") or "").strip()
+                    star = "★" if r.get("starred") else ""
+                    line = f"{i}. {star}{desc}\n   {_wf} | {_tm}"
+                    if is_admin and _sid:
+                        line += f" | sid:{_sid}"
+                    lines.append(line)
                 lines.append(f"\n翻页：/gallery list <页码>（共 {total_pages} 页）")
                 lines.append("发图用：/gallery send <序号或sha前几位>")
                 await self._send(event, "\n".join(lines))
@@ -2411,7 +2425,7 @@ class ComfyUIDrawPlugin(Star):
             else:
                 tags = rest
                 uname = getattr(event, "get_sender_name", lambda: "")() or ""
-                sha = self.gallery.archive_user_image(p, tags=tags, user_id=owner, user_name=uname)
+                sha = self.gallery.archive_user_image(p, tags=tags, user_id=owner, user_name=uname, session_id=(getattr(event, "session_id", "") or ""))
                 if sha:
                     extra = (" 标签：" + "、".join(tags)) if tags else ""
                     await self._send(event, f"已收藏这张图 [{sha[:16]}]{extra}")
@@ -3021,7 +3035,7 @@ class ComfyUIDrawPlugin(Star):
                 return "没有可收藏的图（当前/上条消息没有图，本会话也没生成过图）。"
             tags = tag.split() if tag else []
             uname = getattr(event, "get_sender_name", lambda: "")() or ""
-            sha = g.archive_user_image(p, tags=tags, user_id=owner, user_name=uname)
+            sha = g.archive_user_image(p, tags=tags, user_id=owner, user_name=uname, session_id=(getattr(event, "session_id", "") or ""))
             if not sha:
                 return "收藏失败（图库可能未启用）。"
             extra = (" 标签：" + "、".join(tags)) if tags else ""
