@@ -552,6 +552,44 @@ class ImageStore:
             "tags": self.tags_of(row["sha256"]),
         }
 
+    def _gidx_rank(
+        self,
+        conn,
+        created_at: float,
+        sha256: str,
+        owner: str = "",
+        session=None,
+        trash: bool = False,
+    ) -> int:
+        """计算某条记录在「基础过滤」下的全局序号（1 起始，用于 gidx）。
+
+        「基础过滤」= deleted/status + owner(user_id)，**不含** session/keyword/tag。
+        排序与 get_by_global_no 完全一致（created_at DESC, sha256 DESC 作为次级键），
+        因此算出的编号不依赖当前检索范围（会话）或关键词，可直接作为图库唯一编号，
+        供 `/图库 取图 <编号>` 或 comfyui_gallery send 无状态定位到同一张图。
+
+        说明：session 不参与编号——权限隔离核心是 owner（user_id），同一用户在不同
+        会话生成的图本就允许本人取用；编号只保证「同一 owner 下的全局唯一位置」，
+        与 recall（无 session）和 search（带 session）的列表口径统一。
+        """
+        where = "deleted=1" if trash else "deleted=0"
+        args: list = [1] if trash else []
+        where += " AND status=0"
+        if owner:
+            where += " AND (is_public=1 OR user_id=?)"
+            args.append(owner)
+        # 计算「按 created_at DESC, sha256 DESC 排序时排在该条之前」的条数
+        where += " AND (created_at > ? OR (created_at = ? AND sha256 > ?))"
+        args += [created_at, created_at, sha256]
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM images WHERE {where}", args
+            ).fetchone()
+            return int(row["c"]) + 1 if row else 1
+        except Exception as e:
+            logger.warning(f"[图库] 计算全局序号失败: {e}")
+            return 1
+
     def count_search(
         self,
         keyword: str = "",
@@ -658,7 +696,7 @@ class ImageStore:
             args.append(type)
         if starred_only:
             sql += " AND starred=1"
-        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"
         args.append(int(limit))
         args.append(int(offset))
         try:
@@ -667,17 +705,27 @@ class ImageStore:
             logger.warning(f"[图库] 检索失败: {e}")
             return []
         out = []
-        for _i, r in enumerate(rows):
+        for r in rows:
             d = self._row_to_dict(r)
-            # 全局编号：基于当前过滤+排序的全局位置（offset 之前的 + 本页位置），跨分页稳定
-            d["gidx"] = offset + _i + 1
+            # 全局唯一编号：基于「基础过滤（不含 keyword/tag）」的排序位置，
+            # 与 get_by_global_no 定位一致 → 编号独立于当前搜索词，可直接无状态取图。
+            d["gidx"] = self._gidx_rank(
+                conn, r["created_at"] or 0, r["sha256"],
+                owner=owner, session=session, trash=trash,
+            )
             out.append(d)
         return out
 
     def get_by_global_no(self, no: int, owner: str = "", keyword: str = "", session=None) -> dict | None:
-        """按「全局编号」取一条记录（编号基于与 search 相同的过滤+排序，1 起始）。
-        用于用户在列表里看到编号后，直接输入编号操作图片。返回 dict 或 None。
-        session: 会话ID；须与 search 传同值，保证编号在带会话过滤的列表里也能对齐。"""
+        """按「全局编号」取一条记录。
+
+        编号基于「基础过滤（deleted/status/owner，不含 session/keyword/tag）」的
+        排序（created_at DESC, sha256 DESC），与 search/recall 返回的 gidx 完全一致。
+        因此：无论用户从「列表」「搜索」还是「找标签」里看到的编号，都能定位到同一张图，
+        无需携带当时的搜索关键词或会话范围（无状态可取图）。
+
+        keyword / session 参数仅作兼容保留，不再参与定位（避免与 gidx 的基础过滤口径不一致）。
+        """
         if not self.enabled() or not _HAS_SQLITE or no < 1:
             return None
         conn = self._conn_get()
@@ -688,17 +736,7 @@ class ImageStore:
         if owner:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
-        if session:
-            sql += " AND session_id=?"
-            args.append(session)
-        if keyword and keyword.strip():
-            kw = f"%{keyword.strip()}%"
-            sql += (
-                " AND (prompt LIKE ? OR prompt_raw LIKE ? OR workflow LIKE ?"
-                " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
-            )
-            args += [kw, kw, kw, kw]
-        sql += " ORDER BY created_at DESC LIMIT 1 OFFSET ?"
+        sql += " ORDER BY created_at DESC, sha256 DESC LIMIT 1 OFFSET ?"
         args.append(int(no) - 1)
         try:
             row = conn.execute(sql, args).fetchone()
@@ -724,9 +762,9 @@ class ImageStore:
                     """
                     SELECT i.* FROM images i
                     JOIN image_tags t ON i.sha256 = t.sha256
-                    WHERE t.tag LIKE ? AND i.deleted=0
+                    WHERE t.tag LIKE ? AND i.deleted=0 AND i.status=0
                       AND (i.is_public=1 OR i.user_id=?)
-                    ORDER BY i.created_at DESC LIMIT ?
+                    ORDER BY i.created_at DESC, i.sha256 DESC LIMIT ?
                     """,
                     (kw, owner, int(limit)),
                 ).fetchall()
@@ -735,8 +773,8 @@ class ImageStore:
                     """
                     SELECT i.* FROM images i
                     JOIN image_tags t ON i.sha256 = t.sha256
-                    WHERE t.tag LIKE ? AND i.deleted=0
-                    ORDER BY i.created_at DESC LIMIT ?
+                    WHERE t.tag LIKE ? AND i.deleted=0 AND i.status=0
+                    ORDER BY i.created_at DESC, i.sha256 DESC LIMIT ?
                     """,
                     (kw, int(limit)),
                 ).fetchall()
@@ -744,9 +782,12 @@ class ImageStore:
             logger.warning(f"[图库] 标签召回失败: {e}")
             return []
         out = []
-        for _i, r in enumerate(rows):
+        for r in rows:
             d = self._row_to_dict(r)
-            d["gidx"] = _i + 1  # 标签召回列表从 1 编号，便于用户按编号操作
+            # 与 search 一致：gidx = 基础过滤下的全局唯一编号，可无状态定位
+            d["gidx"] = self._gidx_rank(
+                conn, r["created_at"] or 0, r["sha256"], owner=owner, session=None, trash=False
+            )
             out.append(d)
         return out
 

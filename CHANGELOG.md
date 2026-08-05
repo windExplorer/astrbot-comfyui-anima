@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v2.2.86
+
+- **修复图库列表序号与取图定位不一致**：此前 `/图库 列表` 用全局编号，但 `/图库 搜索`、`/图库 找标签`、`comfyui_gallery` 召回/检索列表用「结果集局部序号 1-N」，而取图（`/图库 取图` / `comfyui_gallery` send）用 `get_by_global_no`（按全局排序定位），导致「列表里看到第 3 张，取图却取到全局第 3 条」，序号对不上。
+  - 修复：图库编号统一为「基础过滤（owner/user_id）下、按 created_at DESC + sha256 排序」的**全局唯一编号**（新增 `ImageStore._gidx_rank`）。编号不依赖搜索关键词、标签或会话范围，因此从「列表/搜索/找标签」任何一个入口看到的编号，`get_by_global_no(编号)` 都能无状态定位到同一张图。
+  - 所有图库列表（列表/搜索/找标签/comfyui_gallery 的 list/recall/search）统一展示该全局唯一编号 + sha16。
+- **列表补充展示 sha16**：`/图库 列表` 之前不展示 sha 但提示「可用 sha 取图」，现在每行展示 `[sha前16位]`，提示与实际可操作项一致；`/图库 取图 <编号或sha前几位>` 两种方式都真正可用。
+- 权限语义不变：编号只基于 owner（user_id）隔离，同用户不同会话的图编号口径统一、本人均可取用；`session_id` 仍作为元数据记录。
+
 ## v2.2.85
 
 - **修复 comfyui_gallery 取图发送失败**：`_gallery_send_image` 原来直接 `event.send(Image(file=...))` 传裸 `Image` 组件，在 AstrBot 新版（v4.27.x）的 LLM 工具调用场景（`comfyui_gallery` 的 recall/search/send）会报 `'Image' object has no attribute 'chain'`，导致"找到图但发送失败"。已改为 `event.send(MessageChain([Image(file=...)]))`，与 `_send`/`comfyui_draw` 的既有正确用法一致。
