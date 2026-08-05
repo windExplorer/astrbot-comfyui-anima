@@ -996,12 +996,22 @@ class ComfyUIDrawPlugin(Star):
         def _cut_inline_negative(s: str) -> str:
             return ComfyUIDrawPlugin._strip_inline_negative(s)
 
-        # ---- 调试：确认输入与各分支匹配情况（排查"提示词未切分"问题）----
+        # ---- 调试：完整展示「原始提示词」与「过滤后正向提示词」，便于人工对比 ----
+        def _dbg_block(tag: str, body: str) -> list[str]:
+            lines = []
+            # 超长内容按 400 字符分段，避免单行日志被截断/过长
+            for i in range(0, max(1, len(body)), 400):
+                seg = body[i:i + 400]
+                lines.append(f"[拆prompt][DBG] {tag}段{i // 400}: {seg}")
+            return lines
+
         logger.info(
-            f"[拆prompt][DBG] 输入长度={len(text)} 前120={text[:120]!r} "
+            f"[拆prompt][DBG] 输入长度={len(text)} "
             f"含Negative标记={bool(re.search(r'negative\\s*prompt\\s*[:：]', text, re.IGNORECASE))} "
             f"含Avoid/DoNot软信号={bool(re.search(r'(avoid\\b|do not\\b|respect[^.]*?exclusions\\b)', text, re.IGNORECASE))}"
         )
+        for ln in _dbg_block("原始输入", text):
+            logger.info(ln)
         # ------------------------------------------------------------------
 
         # 1) 按 'Negative prompt:' 拆分正/负（大小写与冒号差异均兼容）
@@ -1016,7 +1026,9 @@ class ComfyUIDrawPlugin(Star):
             # 正向内仍残留负面软信号，这里再切一次，保证正向干净。
             positive = _cut_inline_negative(positive)
             positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
-            logger.info(f"[拆prompt][DBG] 走分支1(有Negative标记) 返回positive前80={positive[:80]!r}")
+            logger.info("[拆prompt][DBG] === 走分支1(有Negative标记) 过滤后正向提示词 ===")
+            for ln in _dbg_block("过滤后", positive):
+                logger.info(ln)
             # 负面直接删除（不保留，回退到调用方自行提供的 negative_prompt）
             return positive, ""
 
@@ -1024,7 +1036,9 @@ class ComfyUIDrawPlugin(Star):
         #    未命中软信号则原样返回（不误伤常规 /draw 与 AI 对话的自然语言描述）。
         positive = _cut_inline_negative(text)
         positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
-        logger.info(f"[拆prompt][DBG] 走分支2(无Negative标记) 返回positive前80={positive[:80]!r}")
+        logger.info("[拆prompt][DBG] === 走分支2(无Negative标记) 过滤后正向提示词 ===")
+        for ln in _dbg_block("过滤后", positive):
+            logger.info(ln)
         return positive, ""
 
     @staticmethod
