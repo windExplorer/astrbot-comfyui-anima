@@ -42,9 +42,30 @@ class ComfyUIClient:
             return await resp.json()
 
     async def queue_prompt(self, prompt: dict, client_id: str | None = None) -> dict:
-        """提交工作流，返回 {"prompt_id": "...", ...}。"""
+        """提交工作流，返回 {"prompt_id": "...", ...}。
+
+        中转站（middle station）会在成功响应头里带 `X-Queue-Position`，
+        表示「该任务入队那一刻，前方还有几个任务（含正在运行的）」。这里顺带
+        解析并塞进返回 dict 的 `_queue_position` 字段（int，未提供时为 None），
+        供调用方优先用于排队提示；直连 ComfyUI 时没有该头则为 None，调用方
+        会回退到本地队列统计。
+        """
         payload = {"prompt": prompt, "client_id": client_id or self.client_id}
-        return await self._post("/prompt", payload)
+        session = await self._session_get()
+        async with session.post(self.base_url + "/prompt", json=payload) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            # 兼容 dict 或其它可映射结构
+            if isinstance(data, dict):
+                pos = resp.headers.get("X-Queue-Position")
+                if pos is not None and str(pos).strip() not in ("", "-1"):
+                    try:
+                        data["_queue_position"] = int(str(pos).strip())
+                    except ValueError:
+                        data["_queue_position"] = None
+                else:
+                    data["_queue_position"] = None
+            return data
 
     async def upload_image(self, path: str, image_type: str = "input") -> dict:
         """上传一张本地图片到 ComfyUI 的 /upload/image，返回接口 JSON 中的图片引用信息。

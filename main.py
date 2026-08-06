@@ -1834,9 +1834,17 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 pass
 
-            # 本地队列：本次提交之前已排队的任务数即为"前面还有几位"（只提示一次，
-            # 不调用 ComfyUI 的 /queue 接口）。
-            ahead = self._local_queue_ahead(srv_key)
+            # 排队位置：优先用中转站响应头 `X-Queue-Position`（其语义即"入队那一刻
+            # 前方还有几个任务，含正在运行的"），因为它由中转站统一调度，最准确。
+            # 直连 ComfyUI（后端地址不经过中转站）时没有该响应头，则回退到本地队列
+            # 统计（按本插件提交顺序估算"前面还有几位"）。
+            pos = result.get("_queue_position")
+            if pos is not None:
+                ahead = int(pos)
+                logger.info(f"[队列] 中转站 X-Queue-Position={ahead}（来自响应头）")
+            else:
+                ahead = self._local_queue_ahead(srv_key)
+                logger.info(f"[队列] 无中转站 X-Queue-Position 响应头，回退本地队列 ahead={ahead}")
             try:
                 self._local_queue_add(srv_key, prompt_id)
                 if self._cfg("return_queue_position", True):
