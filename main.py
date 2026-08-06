@@ -2867,6 +2867,8 @@ class ComfyUIDrawPlugin(Star):
                         continue
                     if self.gallery.star(_sha, 1):
                         ok_n += 1
+                        if len(targets) == 1:
+                            await self._send(event, f"已收藏 ★（{t}）")
                     else:
                         skip_n += 1
                         await self._send(event, f"「{t}」：没找到这张图，已跳过。")
@@ -2887,6 +2889,8 @@ class ComfyUIDrawPlugin(Star):
                         continue
                     self.gallery.star(_sha, 0)
                     ok_n += 1
+                    if len(targets) == 1:
+                        await self._send(event, f"已取消收藏（{t}）。")
                 if len(targets) > 1:
                     await self._send(event, f"已取消收藏 {ok_n} 张，跳过 {skip_n} 张。")
 
