@@ -228,16 +228,42 @@
     },
     "default": []
   },
+  "img2img_fallback": {
+    "type": "string",
+    "description": "图生图取不到参考图时的处理方式",
+    "hint": "判定为图生图、但取不到任何参考图（例如调用方/伴侣插件传入的图片路径在本机不存在）时的行为。可选：prompt（给用户提示重发图，不降级，默认）/ txt2img（回退为文生图，且按原风格回退：真人图生图→真人文生图，动漫图生图→动漫文生图）。",
+    "default": "prompt",
+    "options": ["prompt", "txt2img"]
+  },
+  "default_style_priority": {
+    "type": "string",
+    "description": "未指定工作流时的风格优先级",
+    "hint": "用户未明确指定工作流时，默认优先使用「动漫」还是「真人」风格的工作流。可选：anime（动漫优先，默认）/ real（真人优先）。例如设为 real 时，文生图默认先取「真人文生图工作流」，图生图默认先取「真人图生图工作流」。",
+    "default": "anime",
+    "options": ["anime", "real"]
+  },
   "default_workflow": {
     "type": "string",
-    "description": "默认工作流名（文生图）",
-    "hint": "文生图时使用的默认工作流。留空则用第一个工作流。",
+    "description": "默认动漫文生图工作流名",
+    "hint": "用户未指定工作流时，文生图默认使用的「动漫」风格工作流（当风格优先级=anime 时优先）。留空则回退到第一个工作流。",
+    "default": ""
+  },
+  "default_workflow_real": {
+    "type": "string",
+    "description": "默认真人文生图工作流名",
+    "hint": "用户未指定工作流时，文生图默认使用的「真人」风格工作流（当风格优先级=real 时优先）。留空则回退到「默认动漫文生图」。",
     "default": ""
   },
   "default_img2img_workflow": {
     "type": "string",
-    "description": "默认工作流名（图生图）",
-    "hint": "图生图时使用的默认工作流。留空则回退到上方「默认工作流名（文生图）」。",
+    "description": "默认动漫图生图工作流名",
+    "hint": "用户未指定工作流时，图生图默认使用的「动漫」风格工作流（当风格优先级=anime 时优先）。留空则回退到「默认动漫文生图」。",
+    "default": ""
+  },
+  "default_img2img_workflow_real": {
+    "type": "string",
+    "description": "默认真人图生图工作流名",
+    "hint": "用户未指定工作流时，图生图默认使用的「真人」风格工作流（当风格优先级=real 时优先）。留空则回退到「默认动漫图生图」。",
     "default": ""
   },
   "danbooru": {
@@ -317,12 +343,12 @@
     "hint": "开启后 AI 对话中可自动调用画图工具（comfyui_draw / comfyui_img2img）。关闭后仅支持指令画图（/draw、/img2img、/画xxx 等），避免与伴侣插件等第三方插件重复触发。",
     "default": true
   },
-  "filter_companion_prompt": {
-    "type": "bool",
-    "description": "陪伴插件提示词专属过滤",
-    "hint": "开启后，对所有经 AI 工具（comfyui_draw）传入的提示词做专属过滤——抽取用户诉求与构图连续性段落，过滤掉时间/日程/位置/情绪等与出图无关的事实、元指令，以及 Avoid/Do not 等负面约束（**不依赖 source 字段**，伴侣插件通常传不过来源标记）。关闭时（默认）仍会做通用兜底：正向与构图约束保留、负面直接删除、清理方括号分节标题。",
-    "default": false
-  },
+    "filter_companion_prompt": {
+      "type": "bool",
+      "description": "伴侣插件提示词过滤（总开关）",
+      "hint": "默认关闭——原生调用与伴侣插件调用都**完全原样透传**，不做任何提示词改写。开启后：伴侣插件（带 source 标记）调用时自动做完整过滤（通用拆分清洗 + 专属过滤，抽取用户诉求与构图连续性，过滤时间/日程/位置/情绪等无关事实与 Avoid/Do not 负面约束）；原生调用同样归属此过滤功能，由本开关统一控制。关闭即完全不过滤。",
+      "default": false
+    },
   "llm_model": {
     "type": "string",
     "description": "指定用于「理解指令并调用工具」的大模型",

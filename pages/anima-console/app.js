@@ -67,6 +67,10 @@
     dialogMessage: $("dialogMessage"),
     imageDialog: $("imageDialog"),
     imageDialogImg: $("imageDialogImg"),
+    imageDialogResultFig: $("imageDialogResultFig"),
+    imageDialogRefImg: $("imageDialogRefImg"),
+    imageDialogRefFig: $("imageDialogRefFig"),
+    imageDialogCaption1: $("imageDialogCaption1"),
     imageDialogInfo: $("imageDialogInfo"),
   };
 
@@ -517,9 +521,37 @@
     return h;
   }
 
+  // 需要从「已配置工作流名」动态生成下拉的默认工作流配置项
+  var DYNAMIC_WORKFLOW_KEYS = [
+    "default_workflow",
+    "default_workflow_real",
+    "default_img2img_workflow",
+    "default_img2img_workflow_real"
+  ];
+
+  // 取当前已配置的工作流名列表（用于默认工作流下拉）
+  function getWorkflowNames() {
+    var wfs = (state.config && Array.isArray(state.config.workflows)) ? state.config.workflows : [];
+    var names = [];
+    wfs.forEach(function (w) {
+      if (w && w.name) names.push(String(w.name));
+    });
+    return names;
+  }
+
   // 渲染单个基础字段（bool / string / int / float / text / 带 slider）
   function renderField(path, field, value) {
     var type = field.type || "string";
+    // 默认工作流类配置项：从已配置工作流名动态生成下拉（避免手敲出错）
+    if (DYNAMIC_WORKFLOW_KEYS.indexOf(path) >= 0 && type === "string") {
+      var names = getWorkflowNames();
+      var opts = '<option value="">（未设置，回退第一个工作流）</option>';
+      names.forEach(function (n) {
+        opts += '<option value="' + escapeHtml(n) + '"' + (n === String(value || "") ? " selected" : "") + '>' + escapeHtml(n) + '</option>';
+      });
+      var inner = '<select data-path="' + escapeHtml(path) + '">' + opts + '</select>';
+      return '<div class="cfg-field"><div class="cfg-field-head">' + inner + '</div>' + fieldHintHtml(field) + '</div>';
+    }
     var inner = "";
     if (type === "bool") {
       inner = '<label class="switch"><input type="checkbox" data-path="' + escapeHtml(path) + '" ' +
@@ -541,6 +573,16 @@
         inner = '<input type="number" data-path="' + escapeHtml(path) + '" value="' + numVal +
           '" step="' + (type === "float" ? "any" : "1") + '" />';
       }
+    } else if (Array.isArray(field.options) && field.options.length) {
+      // 带可选项的 string 配置（如 default_style_priority / img2img_fallback）：渲染下拉
+      var cur = value == null ? "" : String(value);
+      var opts = "";
+      field.options.forEach(function (o) {
+        var label = (typeof o === "object" && o.label != null) ? String(o.label) : String(o);
+        var val = (typeof o === "object" && o.value != null) ? String(o.value) : String(o);
+        opts += '<option value="' + escapeHtml(val) + '"' + (val === cur ? " selected" : "") + '>' + escapeHtml(label) + '</option>';
+      });
+      inner = '<select data-path="' + escapeHtml(path) + '">' + opts + '</select>';
     } else {
       inner = '<input type="text" data-path="' + escapeHtml(path) + '" value="' +
         escapeHtml(value == null ? "" : String(value)) + '" />';
@@ -785,15 +827,25 @@
         .join(" ").toLowerCase().indexOf(q) >= 0;
     });
     if (!rows.length) {
-      els.recBody.innerHTML = '<tr><td colspan="9" class="empty">没有匹配的出图记录</td></tr>';
+      els.recBody.innerHTML = '<tr><td colspan="10" class="empty">没有匹配的出图记录</td></tr>';
       return;
     }
     els.recBody.innerHTML = rows.map(function (r) {
       var isFail = Number(r.status) === 1;
       var recSha = r.sha || r.sha256 || "";
       var canOpen = (recSha && r.ext !== "fail");
+      var refSha = r.ref_sha256 || (r.ref && r.ref.sha256) || "";
+      var i2iBadge = (r.is_img2img || refSha)
+        ? '<span class="badge i2i" title="图生图">图生图</span>'
+        : "";
+      var refThumb = refSha
+        ? '<img class="rec-thumb ref" src="' + THUMB_PLACEHOLDER + '" data-sha="' + escapeHtml(refSha) + '" data-open="' + escapeHtml(recSha) + '" data-refsha="' + escapeHtml(refSha) + '" alt="参考图" title="点击并排查看（结果 + 参考图）" loading="lazy" />'
+        : "";
       var thumb = canOpen
-        ? '<img class="rec-thumb" src="' + THUMB_PLACEHOLDER + '" data-sha="' + escapeHtml(recSha) + '" data-open="' + escapeHtml(recSha) + '" alt="预览" title="点击查看大图" loading="lazy" />'
+        ? '<div class="rec-thumb-pair">' +
+            '<img class="rec-thumb" src="' + THUMB_PLACEHOLDER + '" data-sha="' + escapeHtml(recSha) + '" data-open="' + escapeHtml(recSha) + '" alt="预览" title="点击查看大图" loading="lazy" />' +
+            refThumb +
+          '</div>' + i2iBadge
         : '<div class="rec-thumb empty-thumb">' + (isFail ? "失败" : "—") + '</div>';
       var t = (r.created_at ? new Date(Number(r.created_at) * 1000) : null);
       var time = t ? t.toLocaleString("zh-CN", { hour12: false }) : "—";
@@ -808,11 +860,13 @@
             ? '<span class="badge warn">已删(回收站)</span>'
             : '<span class="badge ok">成功</span>');
       var msg = (r.trigger_msg || "").slice(0, 40);
+      var wfName = (r.workflow || (r.wf && r.wf.name) || "").slice(0, 24);
       return '<tr>' +
         '<td>' + thumb + '</td>' +
         '<td>' + escapeHtml(time) + '</td>' +
         '<td>' + escapeHtml(user) + '</td>' +
         '<td>' + escapeHtml(msg) + '</td>' +
+        '<td class="rec-wf">' + escapeHtml(wfName || "—") + '</td>' +
         '<td>' + escapeHtml(wh) + '</td>' +
         '<td>' + escapeHtml(size) + '</td>' +
         '<td>' + escapeHtml(cost) + '</td>' +
@@ -823,7 +877,10 @@
     // 懒加载缩略图
     observeThumbs();
     Array.prototype.forEach.call(els.recBody.querySelectorAll("[data-open]"), function (img) {
-      img.addEventListener("click", function () { openImage(img.getAttribute("data-open")); });
+      img.addEventListener("click", function () {
+        var refSha = img.getAttribute("data-refsha");
+        openImage(img.getAttribute("data-open"), refSha ? { refSha: refSha } : {});
+      });
     });
   }
 
@@ -1089,13 +1146,18 @@
     });
   }
 
-  async function openImage(sha) {
+  async function openImage(sha, opts) {
+    opts = opts || {};
     try {
       // 大图经 bridge 拉取 data_url（浏览器 <img> 直连裸路径会 404/401）。
       // gallery/image?meta=1 走 bridge 返回 { data_url, mime, meta }，其中 data_url
       // 是原图 base64，赋给 <img> src 即可显示，不走 AstrBot 插件路由。
       els.imageDialogImg.src = "";
       els.imageDialogImg.classList.add("img-loading");
+      // 默认：单图模式（文生图），不显示任何标签
+      if (els.imageDialogCaption1) els.imageDialogCaption1.hidden = true;
+      els.imageDialogRefFig.hidden = true;
+      els.imageDialogRefImg.src = "";
       els.imageDialogInfo.innerHTML = '<div class="empty">加载中…</div>';
       els.imageDialog.showModal();
       var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha) + "&meta=1");
@@ -1106,8 +1168,9 @@
       }
       els.imageDialogImg.classList.remove("img-loading");
       // meta 元数据（meta=1 返回 JSON，含 data_url 兜底 + 元数据）
+      var img = null;
       try {
-        var img = data && data.meta ? data.meta : (data || {});
+        img = data && data.meta ? data.meta : (data || {});
         var info = [];
         var add = function (k, v) { if (v != null && v !== "") info.push("<div><span class='k'>" + escapeHtml(k) + "</span><span class='v'>" + escapeHtml(String(v)) + "</span></div>"); };
         add("SHA", (img.sha256 || sha).slice(0, 20) + "…");
@@ -1132,6 +1195,29 @@
         els.imageDialogInfo.innerHTML = info.join("");
       } catch (e) {
         els.imageDialogInfo.innerHTML = '<div class="empty error">信息加载失败：' + escapeHtml(e.message || "") + '</div>';
+      }
+      // 图生图：并排展示参考图（源图）与结果图。只有确实有参考图时才显示
+      // "结果图/参考图"两个标签；文生图或参考图缺失时保持单图干净展示。
+      var refSha = (img && img.ref_sha256) ? String(img.ref_sha256) : (opts.refSha || null);
+      if (refSha) {
+        els.imageDialogCaption1.textContent = "结果图";
+        els.imageDialogCaption1.hidden = false;
+        els.imageDialogRefFig.hidden = false;
+        els.imageDialogRefImg.src = "";
+        // 参考图先经 bridge 取 data_url（更小、直连免 token），失败再回退裸路径
+        try {
+          var rdata = await apiGet("gallery/image?sha=" + encodeURIComponent(refSha) + "&meta=1");
+          if (rdata && rdata.data_url) {
+            els.imageDialogRefImg.src = rdata.data_url;
+          } else {
+            els.imageDialogRefImg.src = imageUrl(refSha);
+          }
+        } catch (e) {
+          els.imageDialogRefImg.src = imageUrl(refSha);
+        }
+      } else {
+        els.imageDialogCaption1.hidden = true;
+        els.imageDialogRefFig.hidden = true;
       }
     } catch (e) {
       showToast("打开图片失败：" + (e.message || ""), "error");

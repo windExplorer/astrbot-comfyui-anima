@@ -87,6 +87,7 @@
                     <th>出图时间</th>
                     <th>用户</th>
                     <th>触发消息</th>
+                    <th>工作流</th>
                     <th>尺寸</th>
                     <th>大小</th>
                     <th>耗时</th>
@@ -190,8 +191,19 @@
       <form method="dialog" class="image-dialog-form">
         <button id="imageDialogClose" class="image-close" type="submit" aria-label="关闭预览">&times;</button>
         <div class="image-dialog-body">
-          <div class="image-dialog-imgwrap">
-            <img id="imageDialogImg" src="" alt="" />
+          <div class="image-dialog-imgs" id="imageDialogImgs">
+            <figure class="image-dialog-fig" id="imageDialogResultFig">
+              <figcaption id="imageDialogCaption1" class="fig-cap" hidden>结果图</figcaption>
+              <div class="image-dialog-imgwrap">
+                <img id="imageDialogImg" src="" alt="" />
+              </div>
+            </figure>
+            <figure class="image-dialog-fig" id="imageDialogRefFig" hidden>
+              <figcaption class="fig-cap ref">参考图</figcaption>
+              <div class="image-dialog-imgwrap">
+                <img id="imageDialogRefImg" src="" alt="参考图" />
+              </div>
+            </figure>
           </div>
           <aside id="imageDialogInfo" class="image-info"></aside>
         </div>

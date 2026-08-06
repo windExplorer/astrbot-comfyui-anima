@@ -809,10 +809,39 @@ class ComfyUIDrawPlugin(Star):
         if not workflows:
             raise ValueError("未配置任何工作流，请先在插件配置中添加。")
         if not name:
+            # 未指定工作流时，按「风格优先级」配置决定动漫/真人谁优先：
+            #   anime（默认）：动漫默认优先，真人默认兜底
+            #   real：真人默认优先，动漫默认兜底
+            style_priority = (self._cfg("default_style_priority", "anime") or "anime").strip().lower()
             if is_img2img:
-                name = self._cfg("default_img2img_workflow", "") or self._cfg("default_workflow", "")
+                if style_priority == "real":
+                    name = (
+                        self._cfg("default_img2img_workflow_real", "")
+                        or self._cfg("default_img2img_workflow", "")
+                        or self._cfg("default_workflow_real", "")
+                        or self._cfg("default_workflow", "")
+                    )
+                else:
+                    name = (
+                        self._cfg("default_img2img_workflow", "")
+                        or self._cfg("default_img2img_workflow_real", "")
+                        or self._cfg("default_workflow", "")
+                        or self._cfg("default_workflow_real", "")
+                    )
             else:
-                name = self._cfg("default_workflow", "")
+                if style_priority == "real":
+                    name = (
+                        self._cfg("default_workflow_real", "")
+                        or self._cfg("default_workflow", "")
+                    )
+                else:
+                    name = (
+                        self._cfg("default_workflow", "")
+                        or self._cfg("default_workflow_real", "")
+                    )
+            logger.info(
+                f"[绘图] 未指定工作流，按风格优先级={style_priority} 选定默认工作流={name or '（均无配置，回退第一个）'}"
+            )
         if name:
             # 1) 精确匹配工作流名称
             for w in workflows:
@@ -996,7 +1025,8 @@ class ComfyUIDrawPlugin(Star):
         def _cut_inline_negative(s: str) -> str:
             return ComfyUIDrawPlugin._strip_inline_negative(s)
 
-        # ---- 调试：完整展示「原始提示词」与「过滤后正向提示词」，便于人工对比 ----
+        # ---- 调试（降级为 DEBUG，不污染 INFO 日志）：完整展示「原始提示词」与
+        #      「过滤后正向提示词」，便于人工对比；仅写 webui.log（DEBUG 级） ----
         def _dbg_block(tag: str, body: str) -> list[str]:
             lines = []
             # 超长内容按 400 字符分段，避免单行日志被截断/过长
@@ -1005,13 +1035,13 @@ class ComfyUIDrawPlugin(Star):
                 lines.append(f"[拆prompt][DBG] {tag}段{i // 400}: {seg}")
             return lines
 
-        logger.info(
+        logger.debug(
             f"[拆prompt][DBG] 输入长度={len(text)} "
             f"含Negative标记={bool(re.search(r'negative\\s*prompt\\s*[:：]', text, re.IGNORECASE))} "
             f"含Avoid/DoNot软信号={bool(re.search(r'(avoid\\b|do not\\b|respect[^.]*?exclusions\\b)', text, re.IGNORECASE))}"
         )
         for ln in _dbg_block("原始输入", text):
-            logger.info(ln)
+            logger.debug(ln)
         # ------------------------------------------------------------------
 
         # 1) 按 'Negative prompt:' 拆分正/负（大小写与冒号差异均兼容）
@@ -1026,9 +1056,9 @@ class ComfyUIDrawPlugin(Star):
             # 正向内仍残留负面软信号，这里再切一次，保证正向干净。
             positive = _cut_inline_negative(positive)
             positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
-            logger.info("[拆prompt][DBG] === 走分支1(有Negative标记) 过滤后正向提示词 ===")
+            logger.debug("[拆prompt][DBG] === 走分支1(有Negative标记) 过滤后正向提示词 ===")
             for ln in _dbg_block("过滤后", positive):
-                logger.info(ln)
+                logger.debug(ln)
             # 负面直接删除（不保留，回退到调用方自行提供的 negative_prompt）
             return positive, ""
 
@@ -1036,9 +1066,9 @@ class ComfyUIDrawPlugin(Star):
         #    未命中软信号则原样返回（不误伤常规 /draw 与 AI 对话的自然语言描述）。
         positive = _cut_inline_negative(text)
         positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
-        logger.info("[拆prompt][DBG] === 走分支2(无Negative标记) 过滤后正向提示词 ===")
+        logger.debug("[拆prompt][DBG] === 走分支2(无Negative标记) 过滤后正向提示词 ===")
         for ln in _dbg_block("过滤后", positive):
-            logger.info(ln)
+            logger.debug(ln)
         return positive, ""
 
     @staticmethod
@@ -1484,6 +1514,10 @@ class ComfyUIDrawPlugin(Star):
 
         try:
             wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img)
+            logger.info(
+                f"[绘图] 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
+                f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
+            )
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
             # 配置类问题：原因是插件自己给出的可读文案，直接说明
@@ -2341,38 +2375,40 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("workflows")
     async def cmd_workflows(self, event: AstrMessageEvent):
-        """列出工作流，或设置默认工作流：/workflows set 名称 | /workflows set_img2img 名称"""
+        """列出工作流，或设置默认工作流：/workflows set 动漫文生图 | set_real 真人文生图 | set_img2img 动漫图生图 | set_img2img_real 真人图生图"""
         args = self._strip_command(event.message_str, "workflows")
-        # set_img2img 优先匹配（防止被 set 正则吞掉后缀）
+        # set_img2img_real / set_img2img / set_real / set 按长度优先匹配，防止被 set 正则吞掉后缀
+        m_i2i_real = re.match(r"set_img2img_real\s+(\S+)", (args or "").strip())
         m_i2i = re.match(r"set_img2img\s+(\S+)", (args or "").strip())
+        m_real = re.match(r"set_real\s+(\S+)", (args or "").strip())
         m = re.match(r"set\s+(\S+)", (args or "").strip())
-        if m_i2i:
-            name = m_i2i.group(1)
+        if m_i2i_real:
+            key, label = "default_img2img_workflow_real", "真人图生图"
+        elif m_i2i:
+            key, label = "default_img2img_workflow", "动漫图生图"
+        elif m_real:
+            key, label = "default_workflow_real", "真人文生图"
+        elif m:
+            key, label = "default_workflow", "动漫文生图"
+        else:
+            key, label, name = None, None, None
+        if key:
+            name = (m_i2i_real or m_i2i or m_real or m).group(1)
             try:
                 self._resolve_workflow(name)
             except ValueError as e:
                 await self._send(event, str(e))
                 return
-            self.config["default_img2img_workflow"] = name
+            self.config[key] = name
             self.config.save_config()
-            await self._send(event, f"已将图生图默认工作流设为「{name}」。")
-            event.stop_event()
-            return
-        if m and not m_i2i:
-            name = m.group(1)
-            try:
-                self._resolve_workflow(name)
-            except ValueError as e:
-                await self._send(event, str(e))
-                return
-            self.config["default_workflow"] = name
-            self.config.save_config()
-            await self._send(event, f"已将文生图默认工作流设为「{name}」。")
+            await self._send(event, f"已将「{label}」默认工作流设为「{name}」。")
             event.stop_event()
             return
         workflows = self._workflows()
         default = self._cfg("default_workflow", "")
+        default_real = self._cfg("default_workflow_real", "")
         default_i2i = self._cfg("default_img2img_workflow", "")
+        default_i2i_real = self._cfg("default_img2img_workflow_real", "")
         if not workflows:
             await self._send(event, "尚未配置任何工作流。")
             event.stop_event()
@@ -2382,9 +2418,13 @@ class ComfyUIDrawPlugin(Star):
             wname = w.get("name")
             tags = []
             if wname == default:
-                tags.append("文生图默认")
+                tags.append("动漫文生图默认")
+            if wname == default_real:
+                tags.append("真人文生图默认")
             if wname == default_i2i:
-                tags.append("图生图默认")
+                tags.append("动漫图生图默认")
+            if wname == default_i2i_real:
+                tags.append("真人图生图默认")
             tag = f"（{'，'.join(tags)}）" if tags else ""
             anima = " [Anima]" if w.get("is_anima") else ""
             lines.append(f"- {wname}{anima}{tag}")
@@ -3189,7 +3229,11 @@ class ComfyUIDrawPlugin(Star):
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
         got_explicit_image = False
-        if image and image.strip():
+        # wants_img2img：只要调用方/LLM 显式传了 image 参数，就算解析失败也认为
+        # 用户「意图是图生图」。避免因参考图路径本机不可达，被静默降级成文生图
+        # 跑去跑默认工作流瞎画（本会话 v3.1.x 修复的根因）。
+        wants_img2img = bool(image and image.strip())
+        if wants_img2img:
             img_url = image.strip()
             logger.info(f"[取图] llm_draw image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
@@ -3198,7 +3242,11 @@ class ComfyUIDrawPlugin(Star):
                 got_explicit_image = True
                 logger.info(f"[取图] image 参数下载成功: {p}")
             else:
-                logger.warning(f"[取图] image 参数下载失败: {img_url}")
+                logger.warning(
+                    f"[取图] image 参数下载/解析失败，无法作为参考图: {img_url!r}"
+                    f" —— 该路径在本机不存在（调用方/伴侣插件传来的可能是另一容器或已清理的 temp 路径）。"
+                    f" 若本应走图生图，请让调用方传入当前服务器上真实可用的图片路径或 URL。"
+                )
 
         # ② 从事件中自动提取图片（本次消息/引用里的图，是"用户确实发了图"的最可靠信号）
         event_images: list[str] = []
@@ -3215,8 +3263,8 @@ class ComfyUIDrawPlugin(Star):
                 seen.add(ep)
                 init_images.append(ep)
 
-        # ③ 判定图生图：LLM 显式传图 OR 本次消息/引用里有图
-        is_img2img = got_explicit_image or bool(event_images)
+        # ③ 判定图生图：LLM/调用方显式传图（无论成败） OR 本次消息/引用里有图
+        is_img2img = wants_img2img or got_explicit_image or bool(event_images)
 
         # ④ 已判定图生图、但参考图还没拿到（图没进 event，如引用图解析失败）时，
         #    才用历史/会话/生成图兜底补一张参考图。纯文生图绝不进入这里。
@@ -3239,14 +3287,18 @@ class ComfyUIDrawPlugin(Star):
             if init_images:
                 logger.info(f"[取图] llm_draw 图生图补图兜底（历史/会话/生成图）: {init_images}")
             else:
-                logger.info("[取图] llm_draw 已判定图生图但未取到参考图，尝试无图提交")
+                logger.info("[取图] llm_draw 已判定图生图但兜底仍未取到参考图，将提示用户重发图")
 
         if init_images:
             logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
         elif is_img2img:
-            logger.info("[取图] llm_draw 图生图模式但无参考图可用")
+            logger.info(
+                f"[取图] llm_draw 意图为图生图但无参考图可用"
+                f"（用户/调用方指定的图生图工作流={img2img_workflow or workflow or '默认'}），"
+                f"将不下发，提示用户重发图"
+            )
         else:
-            logger.info("[取图] llm_draw 文生图模式（未取图）")
+            logger.info("[取图] llm_draw 文生图模式（未取图，无图生图意图）")
 
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
@@ -3255,32 +3307,87 @@ class ComfyUIDrawPlugin(Star):
         #   image + 都没传            → 默认图生图工作流
         #   无 image                  → workflow 或默认文生图工作流
         # is_img2img 已在取图段判定（LLM 显式传 image OR 本次消息/引用有图）。
-        # 若判定为图生图但最终没拿到任何参考图，降级为文生图，避免无图还走图生图工作流
-        # （导致去找 LoadImage 节点而报错）。
+        # 图生图意图、但取不到参考图时，行为由配置 img2img_fallback 决定：
+        #   · prompt（默认）：提示用户重发图，绝不用默认工作流瞎画一张无关图。
+        #   · txt2img：回退为文生图，按原图生图风格对应的「文生图默认工作流」来画
+        #     （真人图生图 → 真人文生图，动漫图生图 → 动漫文生图），保证风格一致。
+        img2img_fallback = (plugin._cfg("img2img_fallback", "prompt") or "prompt").strip().lower()
         if is_img2img and not init_images:
-            logger.warning("[取图] llm_draw 图生图模式但无参考图，降级为文生图提交")
-            is_img2img = False
+            if img2img_fallback == "txt2img":
+                logger.warning(
+                    f"[取图] llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
+                    f"但取不到任何参考图，按配置 img2img_fallback=txt2img 回退为文生图"
+                )
+                # 回退为文生图：原图生图是动漫还是真人，回退到对应的「文生图默认工作流」，
+                # 保证风格一致（真人图生图→真人文生图，动漫图生图→动漫文生图）。
+                was_img2img = True
+                is_img2img = False
+                requested_i2i = (img2img_workflow or workflow or "").strip()
+                cfg_i2i_anime = (plugin._cfg("default_img2img_workflow", "") or "").strip()
+                cfg_i2i_real = (plugin._cfg("default_img2img_workflow_real", "") or "").strip()
+                cfg_t2i_anime = (plugin._cfg("default_workflow", "") or "").strip()
+                cfg_t2i_real = (plugin._cfg("default_workflow_real", "") or "").strip()
+                if requested_i2i and requested_i2i.lower() == cfg_i2i_real.lower() and cfg_t2i_real:
+                    fallback_wf = cfg_t2i_real
+                elif requested_i2i and requested_i2i.lower() == cfg_i2i_anime.lower() and cfg_t2i_anime:
+                    fallback_wf = cfg_t2i_anime
+                else:
+                    # 无法判断具体风格：按全局风格优先级选对应的文生图默认工作流
+                    _prio = (plugin._cfg("default_style_priority", "anime") or "anime").strip().lower()
+                    fallback_wf = cfg_t2i_real if _prio == "real" else cfg_t2i_anime
+                logger.info(
+                    f"[取图] llm_draw 回退文生图：原图生图工作流={requested_i2i or '默认'}, "
+                    f"回退到文生图工作流={fallback_wf or '（均无配置，走默认）'}"
+                )
+            else:
+                logger.warning(
+                    f"[取图] llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
+                    f"但取不到任何参考图，终止并提示用户重发图（img2img_fallback=prompt，不降级为文生图）"
+                )
+                return "图生图需要一张参考图，但没能从本次消息/引用/历史里取到图片。请先发送一张图片（或引用一张图）再说明要怎么变换它，例如「把这张图变成夜晚」。"
+        else:
+            was_img2img = False
+
         if is_img2img and img2img_workflow and img2img_workflow.strip():
             resolved_wf = img2img_workflow.strip()
         elif is_img2img and workflow and workflow.strip():
             resolved_wf = workflow.strip()
         else:
             resolved_wf = (workflow or "").strip() or None
+        # 回退为文生图时：不沿用原图生图工作流名（那可能是图生图工作流、有 LoadImage
+        # 但无图注入会报错），改用工步计算好的对应风格文生图工作流；未配置则 None（走默认）。
+        if was_img2img and not is_img2img:
+            resolved_wf = fallback_wf or None
+        logger.info(
+            f"[llm_draw] 工作流决策：is_img2img={is_img2img}, "
+            f"指定 img2img_workflow={img2img_workflow!r}, 指定 workflow={workflow!r}, "
+            f"最终选用工作流={resolved_wf or '默认文生图'}"
+        )
 
-        # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
-        # （通用处理始终生效：保留正向+构图约束、负面直接删除、清理方括号标题）
-        positive, parsed_neg = plugin._split_external_prompt(prompt)
-        # 专属过滤仅由配置开关控制（**不依赖 source 字段**）：伴侣插件很难把 source
-        # 透传过来，因此只要用户开启了「陪伴插件提示词专属过滤」，就对该 prompt 做过滤。
-        if plugin._cfg("filter_companion_prompt", False):
+        # 提示词过滤总开关（默认关闭）：
+        # - 关闭（默认）：无论原生调用还是伴侣插件调用，都**完全不做任何提示词改写**，
+        #   原始提示词原样透传给 ComfyUI（连通用拆分/清洗都不做）。
+        # - 开启：仅当调用方为伴侣插件（source == SOURCE_COMPANION_PLUGIN，
+        #   即 astrbot_plugin_private_companion）时，自动做完整过滤——先按通用规则
+        #   拆分正/负向并清洗方括号分节标记，再做专属过滤（抽取用户诉求与构图连续性，
+        #   过滤时间/日程/位置/情绪等无关事实与元指令、Avoid/Do not 负面约束）。
+        #   原生调用（/draw、AI 对话、Agent 等）即使开启开关也归属同一过滤功能，
+        #   由本总开关统一控制，这里同走过滤分支即可。
+        _filter_on = plugin._cfg("filter_companion_prompt", False)
+        is_companion_src = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+        logger.info(
+            f"[llm_draw] 提示词过滤开关={_filter_on}, 来源={source!r}, 是否伴侣插件={is_companion_src}"
+        )
+        if _filter_on:
+            positive, parsed_neg = plugin._split_external_prompt(prompt)
             cpos, cneg = plugin._format_companion_prompt(prompt)
             if cpos:
                 positive = cpos
             if cneg:
                 parsed_neg = cneg
-        # 最终兜底：无论上面走通用拆分还是专属过滤，最后都对正向再做一次软信号切分，
-        # 确保任何残留的 Avoid/Do not 负面词表都被清掉（防漏网）。
-        positive = plugin._strip_inline_negative(positive)
+            positive = plugin._strip_inline_negative(positive)
+        else:
+            positive, parsed_neg = prompt.strip(), ""
         negative = parsed_neg or (negative_prompt or "")
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
@@ -3678,11 +3785,14 @@ class ComfyUIDrawPlugin(Star):
             lines.append(f"- {name}{img_tag}{anima}")
 
         default = self._cfg("default_workflow", "")
+        default_real = self._cfg("default_workflow_real", "")
         default_i2i = self._cfg("default_img2img_workflow", "")
-        if default:
-            lines.append(f"\n文生图默认工作流: {default}")
-        if default_i2i:
-            lines.append(f"图生图默认工作流: {default_i2i}")
+        default_i2i_real = self._cfg("default_img2img_workflow_real", "")
+        lines.append("\n默认工作流：")
+        lines.append(f"- 动漫文生图: {default or '（未设置，回退第一个）'}")
+        lines.append(f"- 真人文生图: {default_real or '（未设置，回退动漫文生图）'}")
+        lines.append(f"- 动漫图生图: {default_i2i or '（未设置，回退动漫文生图）'}")
+        lines.append(f"- 真人图生图: {default_i2i_real or '（未设置，回退动漫图生图）'}")
 
         return "\n".join(lines)
 
