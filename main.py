@@ -3229,11 +3229,15 @@ class ComfyUIDrawPlugin(Star):
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
         got_explicit_image = False
-        # wants_img2img：只要调用方/LLM 显式传了 image 参数，就算解析失败也认为
-        # 用户「意图是图生图」。避免因参考图路径本机不可达，被静默降级成文生图
-        # 跑去跑默认工作流瞎画（本会话 v3.1.x 修复的根因）。
-        wants_img2img = bool(image and image.strip())
-        if wants_img2img:
+        # wants_img2img：只要调用方/LLM 显式传了 image 参数、或显式指定了
+        # img2img_workflow，就算参考图没拿到也认为「意图是图生图」。避免：
+        #   - image 路径本机不可达 → 静默降级成文生图跑默认工作流瞎画；
+        #   - 只指定了 img2img_workflow（如"再来一次图生图"）却没传图 → 被当成
+        #     文生图、img2img_workflow 被忽略、默认走文生图工作流。
+        wants_img2img = bool(image and image.strip()) or bool(
+            img2img_workflow and img2img_workflow.strip()
+        )
+        if bool(image and image.strip()):
             img_url = image.strip()
             logger.info(f"[取图] llm_draw image 参数: {img_url}")
             p = await _image_to_local_path(img_url)

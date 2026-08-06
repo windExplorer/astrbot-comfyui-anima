@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.1.8
+
+- **修复「只指定 img2img_workflow 却没传参考图」被静默当作文生图**：`comfyui_draw` 的图生图意图判定此前只看 `image` 参数；当 LLM/调用方只传了 `img2img_workflow`（如用户说「再来一次图生图」但没带图）而没传 `image`、消息里也无图时，会被误判为 `is_img2img=False`，导致 `img2img_workflow` 被忽略、直接跑默认文生图工作流。现改为：指定了 `img2img_workflow` 同样视为「图生图意图」，取不到参考图时进入 `img2img_fallback` 处理（默认 `prompt` 提示重发图；设 `txt2img` 则按风格回退对应文生图），不再静默乱画。
+
 ## v3.1.7
 
 - **大图弹窗：图生图的「结果图 + 参考图」改为横向并排，同一屏可见**：此前两张图受宽度限制会换行变成上下排列，用户要求能在一屏里同时看到两张图。现改为强制横向并排（`image-dialog-imgs` 设 `flex-wrap:nowrap`，图生图时两张图各占 50%、各自 `object-fit:contain` 保持比例），右侧信息面板保持不变。
