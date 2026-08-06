@@ -66,6 +66,7 @@
     dialogTitle: $("dialogTitle"),
     dialogMessage: $("dialogMessage"),
     imageDialog: $("imageDialog"),
+    imageDialogImgs: $("imageDialogImgs"),
     imageDialogImg: $("imageDialogImg"),
     imageDialogResultFig: $("imageDialogResultFig"),
     imageDialogRefImg: $("imageDialogRefImg"),
@@ -1158,6 +1159,7 @@
       if (els.imageDialogCaption1) els.imageDialogCaption1.hidden = true;
       els.imageDialogRefFig.hidden = true;
       els.imageDialogRefImg.src = "";
+      if (els.imageDialogImgs) els.imageDialogImgs.dataset.pair = "0";
       els.imageDialogInfo.innerHTML = '<div class="empty">加载中…</div>';
       els.imageDialog.showModal();
       var data = await apiGet("gallery/image?sha=" + encodeURIComponent(sha) + "&meta=1");
@@ -1204,6 +1206,7 @@
         els.imageDialogCaption1.hidden = false;
         els.imageDialogRefFig.hidden = false;
         els.imageDialogRefImg.src = "";
+        if (els.imageDialogImgs) els.imageDialogImgs.dataset.pair = "1";
         // 参考图先经 bridge 取 data_url（更小、直连免 token），失败再回退裸路径
         try {
           var rdata = await apiGet("gallery/image?sha=" + encodeURIComponent(refSha) + "&meta=1");
