@@ -797,50 +797,66 @@ class ComfyUIDrawPlugin(Star):
         # 未显式启用则使用第一个
         return servers[0]
 
-    def _resolve_workflow(self, name: str | None = None, is_img2img: bool = False) -> dict:
+    def _pick_default_workflow_name(self, is_img2img: bool) -> str:
+        """按「风格优先级 + 文生图/图生图」选择默认工作流名。
+
+        规则（对应配置 default_style_priority，默认 anime）：
+          - 文生图（is_img2img=False）：anime→动漫文生图优先；real→真人文生图优先。
+          - 图生图（is_img2img=True）：anime→动漫图生图优先；real→真人图生图优先。
+        返回空串表示均未配置（调用方再回退第一个工作流）。
+        """
+        style_priority = (self._cfg("default_style_priority", "anime") or "anime").strip().lower()
+        if is_img2img:
+            if style_priority == "real":
+                return (
+                    self._cfg("default_img2img_workflow_real", "")
+                    or self._cfg("default_img2img_workflow", "")
+                    or self._cfg("default_workflow_real", "")
+                    or self._cfg("default_workflow", "")
+                )
+            return (
+                self._cfg("default_img2img_workflow", "")
+                or self._cfg("default_img2img_workflow_real", "")
+                or self._cfg("default_workflow", "")
+                or self._cfg("default_workflow_real", "")
+            )
+        if style_priority == "real":
+            return (
+                self._cfg("default_workflow_real", "")
+                or self._cfg("default_workflow", "")
+            )
+        return (
+            self._cfg("default_workflow", "")
+            or self._cfg("default_workflow_real", "")
+        )
+
+    def _resolve_workflow(
+        self,
+        name: str | None = None,
+        is_img2img: bool = False,
+        fallback_on_missing: bool = False,
+    ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
         匹配优先级：
           1) 精确匹配工作流名称（name 字段）
           2) 回退：按文件名匹配（workflow_name 字段，兼容带/不带 .json 后缀）
-          3) 上述都失败 → 找不到报错
+          3) 仍未匹配：
+             - fallback_on_missing=False（默认，供 /draw --wf、/workflows set 等
+               校验用户显式指定的工作流名）→ 抛 ValueError，便于调用方提示用户。
+             - fallback_on_missing=True（绘图真正入口 _do_draw，可能收到伴侣/LLM
+               传入的无效工作流名）→ 容错回退到按「风格优先级 + 文生图/图生图」
+               配置的默认工作流；默认未配置则用第一个。
         """
         workflows = self._workflows()
         if not workflows:
             raise ValueError("未配置任何工作流，请先在插件配置中添加。")
         if not name:
-            # 未指定工作流时，按「风格优先级」配置决定动漫/真人谁优先：
-            #   anime（默认）：动漫默认优先，真人默认兜底
-            #   real：真人默认优先，动漫默认兜底
-            style_priority = (self._cfg("default_style_priority", "anime") or "anime").strip().lower()
-            if is_img2img:
-                if style_priority == "real":
-                    name = (
-                        self._cfg("default_img2img_workflow_real", "")
-                        or self._cfg("default_img2img_workflow", "")
-                        or self._cfg("default_workflow_real", "")
-                        or self._cfg("default_workflow", "")
-                    )
-                else:
-                    name = (
-                        self._cfg("default_img2img_workflow", "")
-                        or self._cfg("default_img2img_workflow_real", "")
-                        or self._cfg("default_workflow", "")
-                        or self._cfg("default_workflow_real", "")
-                    )
-            else:
-                if style_priority == "real":
-                    name = (
-                        self._cfg("default_workflow_real", "")
-                        or self._cfg("default_workflow", "")
-                    )
-                else:
-                    name = (
-                        self._cfg("default_workflow", "")
-                        or self._cfg("default_workflow_real", "")
-                    )
+            # 未指定工作流时，按「风格优先级 + 文生图/图生图」选默认
+            name = self._pick_default_workflow_name(is_img2img)
             logger.info(
-                f"[绘图] 未指定工作流，按风格优先级={style_priority} 选定默认工作流={name or '（均无配置，回退第一个）'}"
+                f"[绘图] 未指定工作流，按风格优先级={self._cfg('default_style_priority', 'anime')} "
+                f"{'图生图' if is_img2img else '文生图'}选定默认工作流={name or '（均无配置，回退第一个）'}"
             )
         if name:
             # 1) 精确匹配工作流名称
@@ -868,9 +884,31 @@ class ComfyUIDrawPlugin(Star):
                 # 加上 .json 后缀匹配（如 "sd.json" 匹配 "sd"）
                 if not fn.endswith(".json") and fn + ".json" == name_lower:
                     return w
-            # 全部失败：报错并列出可用工作流名，方便用户/AI 校正
+            # 全部失败
             avail = "、".join((w.get("name") or "(未命名)") for w in workflows)
-            raise ValueError(f"找不到名为「{name}」的工作流。可用工作流：{avail}。")
+            if not fallback_on_missing:
+                raise ValueError(f"找不到名为「{name}」的工作流。可用工作流：{avail}。")
+            # 容错回退：按「风格优先级 + 文生图/图生图」默认工作流，未配置则第一个
+            fallback = self._pick_default_workflow_name(is_img2img)
+            if fallback:
+                for w in workflows:
+                    if (
+                        w.get("name") == fallback
+                        or (w.get("workflow_name") or "").strip().lower() == fallback.strip().lower()
+                    ):
+                        logger.warning(
+                            f"[绘图] 找不到工作流「{name}」（可用：{avail}），"
+                            f"容错回退到默认工作流「{w.get('name') or fallback}」"
+                        )
+                        return w
+                logger.warning(
+                    f"[绘图] 找不到工作流「{name}」，且默认工作流「{fallback}」也未匹配，回退第一个"
+                )
+                return workflows[0]
+            logger.warning(
+                f"[绘图] 找不到工作流「{name}」且未配置默认工作流，回退第一个（可用：{avail}）"
+            )
+            return workflows[0]
         return workflows[0]
 
     # ------------------------------------------------------------------ #
@@ -1514,7 +1552,9 @@ class ComfyUIDrawPlugin(Star):
             return
 
         try:
-            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img)
+            # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
+            # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
+            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True)
             logger.info(
                 f"[绘图] 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
                 f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
