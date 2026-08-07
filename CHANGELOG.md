@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.1.10
+
+- **修复 WebUI 底部 toast 提示被屏幕遮住一部分**：`bottom:32px` 抬高到 `56px`、`z-index` 提到 `99999`，并加 `max-width`/自动换行，避免长文本溢出或贴边被遮挡。
+- **修复大图弹窗图片被截断、展示不全**：此前 `.image-dialog-imgwrap` 用 `flex:1 1 0`（basis 0）配合 `align-items:stretch`，会被强制拉伸/压缩，加上 `overflow:hidden` 导致长图/高图被截断。现改为图片按 `max-height` 完整自适应显示（`flex:0 1 auto` + `align-items:flex-start`），弹窗体 `overflow:auto` 兜底，图生图并排两张图也各自 `object-fit:contain` 完整展示。
+
 ## v3.1.9
 
 - **排队位置优先读取中转站响应头 `X-Queue-Position`，直连 ComfyUI 时回退本地队列**：`ComfyUIClient.queue_prompt` 现解析中转站成功响应头 `X-Queue-Position`（语义＝「入队那一刻前方还有几个任务，含正在运行的」）并随返回体带回；`_do_draw` 提交后优先用它作为排队提示与动态超时估算的 `ahead`，日志区分「来自中转站响应头 / 回退本地队列」。由于后端地址不一定是中转站（可能是直连 ComfyUI），未带该响应头时自动回退到原有的本地队列统计，两端逻辑互不影响。
