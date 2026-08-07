@@ -3248,14 +3248,6 @@ class ComfyUIDrawPlugin(Star):
 
         # ① image 参数：LLM 传入的参考图 URL（显式图生图意图）
         got_explicit_image = False
-        # wants_img2img：只要调用方/LLM 显式传了 image 参数、或显式指定了
-        # img2img_workflow，就算参考图没拿到也认为「意图是图生图」。避免：
-        #   - image 路径本机不可达 → 静默降级成文生图跑默认工作流瞎画；
-        #   - 只指定了 img2img_workflow（如"再来一次图生图"）却没传图 → 被当成
-        #     文生图、img2img_workflow 被忽略、默认走文生图工作流。
-        wants_img2img = bool(image and image.strip()) or bool(
-            img2img_workflow and img2img_workflow.strip()
-        )
         if bool(image and image.strip()):
             img_url = image.strip()
             logger.info(f"[取图] llm_draw image 参数: {img_url}")
@@ -3286,8 +3278,19 @@ class ComfyUIDrawPlugin(Star):
                 seen.add(ep)
                 init_images.append(ep)
 
-        # ③ 判定图生图：LLM/调用方显式传图（无论成败） OR 本次消息/引用里有图
-        is_img2img = wants_img2img or got_explicit_image or bool(event_images)
+        # ③ 判定图生图意图，区分「强 / 弱」信号：
+        #   · strong_img2img：显式传了 image 参数（无论解析成败——路径不可达也是明确
+        #     的图生图意图），或本次消息/引用里真有图 —— 确有图生图意图。
+        #   · weak_img2img：只显式指定了 img2img_workflow，但既没传 image、消息里也没图。
+        #     这常见于伴侣插件文生图也顺带带上默认图生图工作流，并不代表真要走图生图；
+        #     不能仅凭它判成图生图（否则伴侣文生图会被误判、中断）。
+        #   强信号无参考图 → 走 img2img_fallback（prompt 提示 or txt2img 回退）；
+        #   弱信号无参考图 → 直接回退对应风格文生图，避免误中断调用方（如伴侣）。
+        strong_img2img = bool(image and image.strip()) or bool(event_images)
+        weak_img2img = (
+            bool(img2img_workflow and img2img_workflow.strip()) and not strong_img2img
+        )
+        is_img2img = strong_img2img or weak_img2img
 
         # ④ 已判定图生图、但参考图还没拿到（图没进 event，如引用图解析失败）时，
         #    才用历史/会话/生成图兜底补一张参考图。纯文生图绝不进入这里。
@@ -3336,30 +3339,50 @@ class ComfyUIDrawPlugin(Star):
         #     （真人图生图 → 真人文生图，动漫图生图 → 动漫文生图），保证风格一致。
         img2img_fallback = (plugin._cfg("img2img_fallback", "prompt") or "prompt").strip().lower()
         if is_img2img and not init_images:
-            if img2img_fallback == "txt2img":
+            # 计算「回退到对应风格文生图」所需的 fallback_wf（供 txt2img 与弱信号共用）
+            _req_i2i = (img2img_workflow or workflow or "").strip()
+            _cfg_i2i_anime = (plugin._cfg("default_img2img_workflow", "") or "").strip()
+            _cfg_i2i_real = (plugin._cfg("default_img2img_workflow_real", "") or "").strip()
+            _cfg_t2i_anime = (plugin._cfg("default_workflow", "") or "").strip()
+            _cfg_t2i_real = (plugin._cfg("default_workflow_real", "") or "").strip()
+            _prio = (plugin._cfg("default_style_priority", "anime") or "anime").strip().lower()
+
+            # 弱信号：只指定了 img2img_workflow、但既没传 image、消息里也没图。
+            # 这常见于伴侣插件文生图也顺带带上默认图生图工作流，调用方根本没有参考图
+            # 可重发。此时不中断，直接回退对应风格文生图，避免误伤伴侣文生图。
+            if weak_img2img:
+                logger.warning(
+                    f"[取图] llm_draw 仅指定 img2img_workflow（={_req_i2i or '默认'}）但无参考图，"
+                    f"判定为文生图回退，避免误中断调用方（weak 信号）"
+                )
+                was_img2img = True
+                is_img2img = False
+                if _req_i2i and _req_i2i.lower() == _cfg_i2i_real.lower() and _cfg_t2i_real:
+                    fallback_wf = _cfg_t2i_real
+                elif _req_i2i and _req_i2i.lower() == _cfg_i2i_anime.lower() and _cfg_t2i_anime:
+                    fallback_wf = _cfg_t2i_anime
+                else:
+                    fallback_wf = _cfg_t2i_real if _prio == "real" else _cfg_t2i_anime
+                logger.info(
+                    f"[取图] llm_draw 弱信号回退文生图：原图生图工作流={_req_i2i or '默认'}, "
+                    f"回退到文生图工作流={fallback_wf or '（均无配置，走默认）'}"
+                )
+            elif img2img_fallback == "txt2img":
                 logger.warning(
                     f"[取图] llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
                     f"但取不到任何参考图，按配置 img2img_fallback=txt2img 回退为文生图"
                 )
-                # 回退为文生图：原图生图是动漫还是真人，回退到对应的「文生图默认工作流」，
-                # 保证风格一致（真人图生图→真人文生图，动漫图生图→动漫文生图）。
                 was_img2img = True
                 is_img2img = False
-                requested_i2i = (img2img_workflow or workflow or "").strip()
-                cfg_i2i_anime = (plugin._cfg("default_img2img_workflow", "") or "").strip()
-                cfg_i2i_real = (plugin._cfg("default_img2img_workflow_real", "") or "").strip()
-                cfg_t2i_anime = (plugin._cfg("default_workflow", "") or "").strip()
-                cfg_t2i_real = (plugin._cfg("default_workflow_real", "") or "").strip()
-                if requested_i2i and requested_i2i.lower() == cfg_i2i_real.lower() and cfg_t2i_real:
-                    fallback_wf = cfg_t2i_real
-                elif requested_i2i and requested_i2i.lower() == cfg_i2i_anime.lower() and cfg_t2i_anime:
-                    fallback_wf = cfg_t2i_anime
+                if _req_i2i and _req_i2i.lower() == _cfg_i2i_real.lower() and _cfg_t2i_real:
+                    fallback_wf = _cfg_t2i_real
+                elif _req_i2i and _req_i2i.lower() == _cfg_i2i_anime.lower() and _cfg_t2i_anime:
+                    fallback_wf = _cfg_t2i_anime
                 else:
                     # 无法判断具体风格：按全局风格优先级选对应的文生图默认工作流
-                    _prio = (plugin._cfg("default_style_priority", "anime") or "anime").strip().lower()
-                    fallback_wf = cfg_t2i_real if _prio == "real" else cfg_t2i_anime
+                    fallback_wf = _cfg_t2i_real if _prio == "real" else _cfg_t2i_anime
                 logger.info(
-                    f"[取图] llm_draw 回退文生图：原图生图工作流={requested_i2i or '默认'}, "
+                    f"[取图] llm_draw 回退文生图：原图生图工作流={_req_i2i or '默认'}, "
                     f"回退到文生图工作流={fallback_wf or '（均无配置，走默认）'}"
                 )
             else:
