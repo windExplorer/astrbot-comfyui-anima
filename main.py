@@ -3458,9 +3458,10 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
-            # 图片与固定小报告（尺寸/大小/耗时/时间）已由插件主动 event.send 发出，
-            # 模型无需也不应再补述文件信息。只回一句极简事实，明确指示简短收尾即可。
-            return "图片已发送给用户（含文件详情）。请用一句话简短收尾即可，不要重复文件信息。"
+            # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
+            # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
+            # 技术元数据复述给用户；只做极简收尾指示即可。
+            return "图片已发送给用户。请用一句话简短、自然地收尾即可；不要描述图片的文件名、尺寸、大小、耗时、格式或任何技术细节。"
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
@@ -4070,7 +4071,8 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
-            # 图片与固定小报告（尺寸/大小/耗时/时间）已由插件主动 event.send 发出，
-            # 模型无需也不应再补述文件信息。只回一句极简事实，明确指示简短收尾即可。
-            return "图片已发送给用户（含文件详情）。请用一句话简短收尾即可，不要重复文件信息。"
+            # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
+            # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
+            # 技术元数据复述给用户；只做极简收尾指示即可。
+            return "图片已发送给用户。请用一句话简短、自然地收尾即可；不要描述图片的文件名、尺寸、大小、耗时、格式或任何技术细节。"
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
