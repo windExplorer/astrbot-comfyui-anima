@@ -1852,14 +1852,6 @@ class ComfyUIDrawPlugin(Star):
 
         # 提交到 ComfyUI（client 已在工作流加载时创建）
         srv_key = self._server_key(server)
-        # 先给用户一条即时反馈，避免请求被中转站/ComfyUI 排队阻塞期间长时间无响应
-        # （尤其经过中转站时 POST /prompt 可能同步等待前面任务推进才返回）。真正的
-        # 排队位置会在提交返回后按 X-Queue-Position/本地队列再发一次更精确的提示。
-        if notify_pending and self._cfg("return_queue_position", True):
-            try:
-                await self._send(event, random.choice(_QUEUE_HINTS_GENERATING))
-            except Exception as e:
-                logger.debug(f"[队列] 提交前即时提示发送失败（忽略）: {e}")
         try:
             try:
                 result = await client.queue_prompt(prompt)
@@ -1896,9 +1888,10 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"[队列] 无中转站 X-Queue-Position 响应头，回退本地队列 ahead={ahead}")
             try:
                 self._local_queue_add(srv_key, prompt_id)
-                # 有排队（ahead>0）时才补发「前面还有 N 位」的精确位置提示；
-                # ahead==0（没排队）则无需重复，提交前已发过「正在处理」即时反馈。
-                if self._cfg("return_queue_position", True) and ahead > 0:
+                # 提交后统一发一条提示：无队列（ahead<=0）→「稍等，马上来」；
+                # 有队列（ahead>0）→「前面排着 N 个」。只发这一条，避免与提交前
+                # 提示重复。伴侣 proactive（notify_pending=False）不发。
+                if self._cfg("return_queue_position", True) and notify_pending:
                     await self._send(event, self._queue_hint(ahead))
 
                 # 等待出图：动态超时 = 基础超时 + 前面排队任务累加预估耗时。
