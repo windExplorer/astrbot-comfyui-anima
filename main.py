@@ -2035,8 +2035,23 @@ class ComfyUIDrawPlugin(Star):
                             gbucket.append(img_path)
                         if len(gbucket) > 5:
                             g_last_generated["__global__"] = gbucket[-5:]
+                    # webp 兼容：ComfyUI 输出常为 webp，而部分适配器（onebot/QQ 等）
+                    # 在 Agent 工具场景下对 webp 内联推送失败，会被 AstrBot 转成
+                    # `<pc_history_media ...>` 占位、图片丢失。故发送前用 Pillow 转一个
+                    # png 临时副本用于 event.send / 伴侣发图；归档仍保留原 webp（内容
+                    # 寻址不变），图生图兜底缓存也用原 webp。
+                    _send_img_path = img_path
+                    if _PILImage is not None and str(img_path).lower().endswith(".webp"):
+                        try:
+                            with _PILImage.open(img_path) as _im:
+                                _png_tmp = self.temp_dir / f"{uuid.uuid4().hex}.png"
+                                _im.convert("RGB").save(_png_tmp, "PNG")
+                                _send_img_path = str(_png_tmp)
+                                logger.info(f"[出图] webp 已转 png 发送副本: {_send_img_path}")
+                        except Exception as _e:
+                            logger.warning(f"[出图] webp 转 png 发送副本失败（用原图发送）: {_e}")
                     # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
-                    yield event.image_result(img_path), img_path
+                    yield event.image_result(_send_img_path), _send_img_path
 
                     # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
                     try:

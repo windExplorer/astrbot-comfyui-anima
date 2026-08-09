@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.3.1
+
+- **修复生成的 webp 图片推送失败、只剩 `<pc_history_media images="1" />` 占位符**：ComfyUI 输出常为 webp，而部分适配器（onebot/QQ 等）在 Agent 工具场景下对 webp 内联推送失败，AstrBot 会把该图片转成历史媒体占位、导致图片没发出来（图库仍正常归档）。现改为：`_do_draw` 出图后，若文件为 webp 且环境有 Pillow，发送前先用 Pillow 转一个 **png 临时副本**用于 `event.send` / 伴侣发图；**归档仍保留原 webp**（内容寻址不变），图生图兜底缓存也用原 webp。
+
 ## v3.3.0
 
 - **修复 WebUI 底部出现空白悬浮小块**：底部提示 toast 在未显示时仅靠 `translateY(160%)` 移出屏幕，空容器仍会露出一小块。现改为默认 `opacity:0; visibility:hidden`，`.show` 时显示，不显示时彻底不可见。
