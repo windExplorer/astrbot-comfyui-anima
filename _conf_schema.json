@@ -103,8 +103,7 @@
             "default": "default"
           },
           "aliases": {
-            "type": "string",
-            "multiline": true,
+            "type": "text",
             "description": "工作流别名",
             "hint": "外部传入的、会命中本工作流的其它名字（如伴侣插件传的 anime_selfie_workflow、ComfyUI default）。多个用逗号或换行隔开，每个别名一个。匹配大小写不敏感。",
             "default": ""

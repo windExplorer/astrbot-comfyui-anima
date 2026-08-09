@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.2.7
+
+- **修正工作流别名 `aliases` 字段类型**：v3.2.6 将 `aliases` 设为 `type: "string"` + `multiline`，但 WebUI 渲染 textarea 实际是依赖 `type: "text"`（与 LoRA 的「提示词预设」一致），导致该字段在界面上仍是单行、无法换行输入。已改为 `type: "text"`，现可在 WebUI 与原生后台正确显示为多行 textarea，支持逗号或换行填写多个别名。
+
 ## v3.2.6
 
 - **「工作流别名」改为每个工作流条目内的字段**：在工作流列表每个条目的「工作流名称」表单项下方新增「工作流别名」（`aliases`，textarea 多行）——把外部调用方（如伴侣插件）传入的、会命中本工作流的其它名字填进来，多个用逗号或换行隔开，如 `anime_selfie_workflow`、`ComfyUI default`。`_resolve_workflow` 匹配前会先遍历各工作流的别名（大小写不敏感、忽略首尾空白），命中即映射到该工作流的真实名称；未命中仍按原逻辑回退默认工作流。WebUI 渲染为多行 textarea，支持换行输入。（替代此前 v3.2.5 的全局 `workflow_aliases` 配置项，已移除该全局项。）
