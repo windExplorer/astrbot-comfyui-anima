@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.3.4
+
+- **修复 v3.3.3 的语法错误（main.py:561）**：`_llm_generate_closing` 的提示词字符串里含全角引号 `"图已生成"`，导致 Python 解析报错 "invalid syntax. Perhaps you forgot a comma"。已改为无引号的措辞「也不要使用机械刻板的口吻」，语法正常。
+
 ## v3.3.3
 
 - **AI 对话画图：收尾改为 LLM 生成的自然语言，并抑制尾随重复文本**。根因：伴侣插件（6.0.10）的 `suppress_empty_photo_tool_followup_before_send` 依赖 `event._private_companion_photo_tool_sent` 标志来丢弃画图后的尾随重复文本，但该标志只被伴侣自己的 `pc_generate_photo` 设置，外部 `comfyui_draw`/`comfyui_img2img` 发图不会设置，导致本插件的固定文本被当作尾随重复发送。现改为：
