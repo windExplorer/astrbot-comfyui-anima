@@ -692,8 +692,13 @@ class ImageStore:
             )
             args += [kw, kw, kw, kw]
         if type:
-            sql += " AND source=?"
-            args.append(type)
+            # type=img2img 按「图生图」过滤（is_img2img=1），因为图生图成品图的
+            # source 仍是 gen，不能用 source 匹配；其余 gen/ref/user 按 source 过滤。
+            if type == "img2img":
+                sql += " AND is_img2img=1"
+            else:
+                sql += " AND source=?"
+                args.append(type)
         if starred_only:
             sql += " AND starred=1"
         sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"

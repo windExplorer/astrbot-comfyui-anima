@@ -213,11 +213,21 @@ body{
 .gal-stats{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px;font-size:.82rem;color:var(--text-secondary)}
 .gal-stats strong{color:var(--text);margin-right:4px}
 .gal-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
-.gal-toolbar input[type="search"],.gal-toolbar select{
-  padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);
-  background:var(--bg-card);color:var(--text);font-size:.82rem
+.gal-toolbar input[type="search"]{
+  padding:7px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--bg-card);color:var(--text);font-size:.82rem;min-width:200px
 }
-.gal-toolbar input:focus,.gal-toolbar select:focus{outline:none;border-color:var(--accent)}
+.gal-toolbar select{
+  padding:7px 30px 7px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--bg-card);color:var(--text);font-size:.82rem;cursor:pointer;
+  appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--text-muted) 50%),linear-gradient(135deg,var(--text-muted) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%;
+  background-size:5px 5px;background-repeat:no-repeat;
+  padding-right:30px
+}
+.gal-toolbar select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-light)}
+.gal-toolbar input:focus{outline:none;border-color:var(--accent)}
 .gal-toolbar label{font-size:.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer}
 .gal-toolbar button{
   padding:7px 18px;border:none;border-radius:var(--radius-sm);
@@ -304,39 +314,38 @@ body{
 .badge-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:4px;border-radius:9px;background:var(--danger);color:#fff;font-size:.68rem;font-weight:600;vertical-align:middle}
 .trash-stat{color:var(--danger)}
 
-/* image big-view dialog with info panel */
+/* image big-view dialog：全屏 + 半透明蒙层 + 右侧固定信息面板 */
 .image-dialog{
-  border:none;border-radius:16px;max-width:min(1240px,96vw);width:auto;padding:0;margin:auto;
-  background:var(--bg-raised);box-shadow:0 24px 60px rgba(0,0,0,.45);color:var(--text);
-  overflow:hidden
+  border:none;width:100vw;height:100vh;max-width:none;max-height:none;padding:0;margin:auto;
+  background:var(--bg-raised);color:var(--text);overflow:hidden
 }
-.image-dialog::backdrop{background:rgba(0,0,0,.6);backdrop-filter:blur(3px)}
-.image-dialog-form{margin:0;display:flex;flex-direction:column}
-.image-close{position:absolute;top:12px;right:14px;z-index:2;width:34px;height:34px;border:none;border-radius:50%;
-  background:rgba(0,0,0,.45);color:#fff;font-size:1.3rem;line-height:1;cursor:pointer;
+.image-dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
+.image-dialog-form{margin:0;display:flex;flex-direction:column;height:100vh}
+.image-close{position:fixed;top:14px;right:16px;z-index:5;width:38px;height:38px;border:none;border-radius:50%;
+  background:rgba(0,0,0,.5);color:#fff;font-size:1.4rem;line-height:1;cursor:pointer;
   display:flex;align-items:center;justify-content:center;transition:background .15s}
-.image-close:hover{background:rgba(0,0,0,.7)}
-.image-dialog-body{display:flex;max-height:88vh;overflow:auto}
-.image-dialog-imgs{display:flex;gap:16px;align-items:flex-start;justify-content:center;flex:1 1 auto;padding:20px;flex-wrap:nowrap;min-width:0}
+.image-close:hover{background:rgba(0,0,0,.75)}
+.image-dialog-body{display:flex;height:100vh;overflow:hidden}
+.image-dialog-imgs{display:flex;gap:18px;align-items:center;justify-content:center;flex:1 1 auto;padding:24px;flex-wrap:nowrap;min-width:0}
 .image-dialog-fig{margin:0;display:flex;flex-direction:column;gap:10px;min-width:0;max-width:100%}
 .image-dialog-fig .fig-cap{align-self:center;font-size:.74rem;font-weight:700;padding:3px 14px;border-radius:12px;background:#2a2c36;color:#cfd2dc;letter-spacing:.3px}
 .image-dialog-fig .fig-cap.ref{background:#5b3a8e;color:#fff}
 .image-dialog-imgwrap{background:#0c0d11;display:flex;align-items:center;justify-content:center;
-  min-width:0;border-radius:10px;overflow:hidden}
-.image-dialog-imgwrap img{max-width:min(860px,74vw);max-height:80vh;width:auto;height:auto;display:block;object-fit:contain;cursor:default}
+  min-width:0;border-radius:10px;overflow:hidden;flex:0 1 auto}
+.image-dialog-imgwrap img{max-width:calc(100% - 48px);max-height:calc(100vh - 96px);width:auto;height:auto;display:block;object-fit:contain;cursor:default}
 /* 图生图：结果图 + 参考图横向并排，各占一半，同一屏可见 */
 .image-dialog-imgs[data-pair="1"] .image-dialog-fig{flex:1 1 50%;min-width:0;max-width:50%}
-.image-dialog-imgs[data-pair="1"] .image-dialog-imgwrap{max-height:78vh}
-.image-dialog-imgs[data-pair="1"] .image-dialog-imgwrap img{max-width:100%;max-height:74vh;width:auto;height:auto;object-fit:contain}
-.image-info{padding:20px;width:320px;max-height:88vh;overflow:auto;font-size:.82rem;line-height:1.7;
-  border-left:1px solid var(--border)}
+.image-dialog-imgs[data-pair="1"] .image-dialog-imgwrap{max-height:calc(100vh - 96px)}
+.image-dialog-imgs[data-pair="1"] .image-dialog-imgwrap img{max-width:100%;max-height:calc(100vh - 100px);width:auto;height:auto;object-fit:contain}
+.image-info{padding:20px;width:340px;flex:0 0 340px;height:100vh;overflow:auto;font-size:.82rem;line-height:1.7;
+  border-left:1px solid var(--border);box-sizing:border-box}
 .image-info > div{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
 .image-info .k{flex:0 0 64px;color:var(--text-muted)}
 .image-info .v{flex:1;color:var(--text);word-break:break-word;white-space:pre-wrap}
 @media (max-width:680px){
   .image-dialog-body{flex-direction:column}
   .image-dialog-imgwrap img{max-width:92vw}
-  .image-info{width:auto;border-left:none;border-top:1px solid var(--border)}
+  .image-info{width:100%;flex:0 0 auto;height:auto;max-height:40vh;border-left:none;border-top:1px solid var(--border)}
 }
 
 
