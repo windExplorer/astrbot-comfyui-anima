@@ -102,6 +102,13 @@
             "hint": "指令 /draw --wf 和 AI 调用时引用此名。",
             "default": "default"
           },
+          "aliases": {
+            "type": "string",
+            "multiline": true,
+            "description": "工作流别名",
+            "hint": "外部传入的、会命中本工作流的其它名字（如伴侣插件传的 anime_selfie_workflow、ComfyUI default）。多个用逗号或换行隔开，每个别名一个。匹配大小写不敏感。",
+            "default": ""
+          },
           "server_name": {
             "type": "string",
             "description": "绑定服务器",
@@ -264,13 +271,6 @@
     "type": "string",
     "description": "默认真人图生图工作流名",
     "hint": "用户未指定工作流时，图生图默认使用的「真人」风格工作流（当风格优先级=real 时优先）。留空则回退到「默认动漫图生图」。",
-    "default": ""
-  },
-  "workflow_aliases": {
-    "type": "string",
-    "multiline": true,
-    "description": "工作流别名映射",
-    "hint": "把外部传入的、本插件不存在的工作流名（如伴侣插件传的 anime_selfie_workflow、ComfyUI default）映射到真实工作流。每行/每条用「别名=真实工作流名」格式，多个用逗号或换行隔开，如：anime_selfie_workflow=动漫\\nComfyUI default=动漫。匹配不到别名的未知工作流仍会回退到默认工作流。",
     "default": ""
   },
   "danbooru": {

@@ -831,30 +831,28 @@ class ComfyUIDrawPlugin(Star):
         )
 
     def _alias_workflow_name(self, name: str) -> str:
-        """把外部传入的工作流名按「工作流别名」配置映射为真实工作流名。
+        """把外部传入的工作流名按「每个工作流配置里的 aliases 字段」映射为真实工作流名。
 
-        配置 workflow_aliases：多条「别名=真实工作流名」，逗号或换行分隔，如：
-            anime_selfie_workflow=动漫
-            ComfyUI default=动漫
-        别名匹配大小写不敏感、忽略首尾空白；未匹配则原样返回 name。
+        每个工作流 items 里都有一个「工作流别名」textarea（aliases 字段，逗号或换行分隔
+        多个别名）。传入名命中某个工作流的任一别名（大小写不敏感、忽略首尾空白）时，
+        返回该工作流的真实 name；未命中则原样返回 name。
         """
         if not name:
             return name
-        raw = (self._cfg("workflow_aliases", "") or "").strip()
-        if not raw:
-            return name
         needle = name.strip().lower()
-        for line in raw.replace("\r", "\n").split("\n"):
-            for item in line.split(","):
-                item = item.strip()
-                if not item or "=" not in item:
-                    continue
-                alias, _, real = item.partition("=")
-                if alias.strip().lower() == needle and real.strip():
-                    logger.info(
-                        f"[绘图] 工作流别名命中：{alias.strip()!r} → {real.strip()!r}"
-                    )
-                    return real.strip()
+        for w in self._workflows():
+            wf_name = (w.get("name") or "").strip()
+            raw = (w.get("aliases") or "").strip()
+            if not raw:
+                continue
+            for line in raw.replace("\r", "\n").split("\n"):
+                for item in line.split(","):
+                    alias = item.strip()
+                    if alias and alias.lower() == needle:
+                        logger.info(
+                            f"[绘图] 工作流别名命中：{alias!r} → {wf_name or '(未命名)'}"
+                        )
+                        return wf_name or name
         return name
 
     def _resolve_workflow(
