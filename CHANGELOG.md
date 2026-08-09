@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.3.2
+
+- **修复 AI 对话画图后「队列提示 / 小报告」文本被重复发送**：伴侣插件（6.0.10）的 `suppress_empty_photo_tool_followup_before_send` 会用「图片工具已发图」标志（`event._private_companion_photo_tool_sent`）来丢弃画图后的尾随重复文本，但该标志**只被伴侣插件自己的 `pc_generate_photo` 工具设置**，本插件 `comfyui_draw` 发图不会设置，导致抑制失效、本插件的固定文本被当作尾随消息重复发送。现改为：`comfyui_draw` 在原生/Agent 对话发图成功后，**同样设置 `event._private_companion_photo_tool_sent=True`**，让伴侣插件识别「图片已发」，从而抑制尾随重复文本。副作用：伴侣插件会丢弃画图后模型追加的一句自然语言收尾（保留本插件的小报告收尾）。
+
 ## v3.3.1
 
 - **修复生成的 webp 图片推送失败、只剩 `<pc_history_media images="1" />` 占位符**：ComfyUI 输出常为 webp，而部分适配器（onebot/QQ 等）在 Agent 工具场景下对 webp 内联推送失败，AstrBot 会把该图片转成历史媒体占位、导致图片没发出来（图库仍正常归档）。现改为：`_do_draw` 出图后，若文件为 webp 且环境有 Pillow，发送前先用 Pillow 转一个 **png 临时副本**用于 `event.send` / 伴侣发图；**归档仍保留原 webp**（内容寻址不变），图生图兜底缓存也用原 webp。

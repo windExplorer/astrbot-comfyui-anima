@@ -3560,6 +3560,13 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
+            # 通知伴侣插件"图片工具已成功发图"，让其抑制/丢弃本轮的尾随重复文本
+            # （伴侣插件的 suppress_empty_photo_tool_followup_before_send 依赖此标志）。
+            # 否则本插件发的小报告等文本会被伴侣插件当成尾随消息再发一遍，造成重复。
+            try:
+                setattr(event, "_private_companion_photo_tool_sent", True)
+            except Exception as _e:
+                logger.debug(f"[出图] 设置伴侣插件 photo_tool_sent 标志失败（忽略）: {_e}")
             # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
             # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
             # 技术元数据复述给用户；只做极简收尾指示即可。
