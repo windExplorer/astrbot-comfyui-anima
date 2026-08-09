@@ -1197,7 +1197,9 @@
         else if (img.status === 0) add("状态", "成功");
         if (img.starred) add("收藏", "★ 已收藏");
         if (img.seed != null) add("Seed", img.seed);
-        add("提示词", img.prompt_raw || img.prompt || "（无）");
+        // 提示词单独一项，允许在面板内独立滚动（其他信息项固定显示，不随面板整体滚动）
+        var promptV = img.prompt_raw || img.prompt || "（无）";
+        info.push("<div class='info-prompt'><span class='k'>提示词</span><span class='v'>" + escapeHtml(String(promptV)) + "</span></div>");
         els.imageDialogInfo.innerHTML = info.join("");
       } catch (e) {
         els.imageDialogInfo.innerHTML = '<div class="empty error">信息加载失败：' + escapeHtml(e.message || "") + '</div>';

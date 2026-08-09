@@ -337,15 +337,18 @@ body{
 .image-dialog-imgs[data-pair="1"] .image-dialog-fig{flex:1 1 50%;min-width:0;max-width:50%}
 .image-dialog-imgs[data-pair="1"] .image-dialog-imgwrap{max-height:calc(100vh - 96px)}
 .image-dialog-imgs[data-pair="1"] .image-dialog-imgwrap img{max-width:100%;max-height:calc(100vh - 100px);width:auto;height:auto;object-fit:contain}
-.image-info{padding:20px;width:340px;flex:0 0 340px;height:100vh;overflow:auto;font-size:.82rem;line-height:1.7;
-  border-left:1px solid var(--border);box-sizing:border-box}
-.image-info > div{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.image-info{padding:20px;width:380px;flex:0 0 380px;height:100vh;overflow:hidden;font-size:.82rem;line-height:1.7;
+  border-left:1px solid var(--border);box-sizing:border-box;display:flex;flex-direction:column}
+.image-info > div{display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);flex:0 0 auto}
 .image-info .k{flex:0 0 64px;color:var(--text-muted)}
 .image-info .v{flex:1;color:var(--text);word-break:break-word;white-space:pre-wrap}
+/* 提示词单独滚动：占满剩余高度，仅该区域滚动，其余信息固定 */
+.image-info .info-prompt{flex:1 1 auto;min-height:60px;align-items:stretch}
+.image-info .info-prompt .v{overflow:auto;max-height:100%;padding-right:4px;white-space:pre-wrap;min-width:0}
 @media (max-width:680px){
   .image-dialog-body{flex-direction:column}
   .image-dialog-imgwrap img{max-width:92vw}
-  .image-info{width:100%;flex:0 0 auto;height:auto;max-height:40vh;border-left:none;border-top:1px solid var(--border)}
+  .image-info{width:100%;flex:0 0 auto;height:auto;max-height:40vh;overflow:auto;border-left:none;border-top:1px solid var(--border)}
 }
 
 
