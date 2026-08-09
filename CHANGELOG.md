@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.3.3
+
+- **AI 对话画图：收尾改为 LLM 生成的自然语言，并抑制尾随重复文本**。根因：伴侣插件（6.0.10）的 `suppress_empty_photo_tool_followup_before_send` 依赖 `event._private_companion_photo_tool_sent` 标志来丢弃画图后的尾随重复文本，但该标志只被伴侣自己的 `pc_generate_photo` 设置，外部 `comfyui_draw`/`comfyui_img2img` 发图不会设置，导致本插件的固定文本被当作尾随重复发送。现改为：
+  - `comfyui_draw`/`comfyui_img2img` 发图成功后设置 `event._private_companion_photo_tool_sent=True`，让伴侣插件识别"图片已发"并抑制尾随重复。
+  - 新增 `_llm_generate_closing`：用「指定模型」(llm_model) 基于画图 prompt 生成一句简短、自然、有温度的收尾并发给用户（替代固定的随机小报告）；LLM 未配置/失败时回退通用收尾「画好啦，看看合不合心意～」。
+  - `_do_draw` 新增 `notify_done` 参数：LLM 工具路径（comfyui_draw/comfyui_img2img）传 `notify_pending=False, notify_done=False`，不再发固定的队列提示/小报告（避免与 LLM 收尾冲突、被伴侣插件重复）；`/draw` 指令路径保留队列提示和小报告。
+
 ## v3.3.2
 
 - **修复 AI 对话画图后「队列提示 / 小报告」文本被重复发送**：伴侣插件（6.0.10）的 `suppress_empty_photo_tool_followup_before_send` 会用「图片工具已发图」标志（`event._private_companion_photo_tool_sent`）来丢弃画图后的尾随重复文本，但该标志**只被伴侣插件自己的 `pc_generate_photo` 工具设置**，本插件 `comfyui_draw` 发图不会设置，导致抑制失效、本插件的固定文本被当作尾随消息重复发送。现改为：`comfyui_draw` 在原生/Agent 对话发图成功后，**同样设置 `event._private_companion_photo_tool_sent=True`**，让伴侣插件识别「图片已发」，从而抑制尾随重复文本。副作用：伴侣插件会丢弃画图后模型追加的一句自然语言收尾（保留本插件的小报告收尾）。
