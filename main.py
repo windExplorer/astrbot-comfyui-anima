@@ -830,6 +830,33 @@ class ComfyUIDrawPlugin(Star):
             or self._cfg("default_workflow_real", "")
         )
 
+    def _alias_workflow_name(self, name: str) -> str:
+        """把外部传入的工作流名按「工作流别名」配置映射为真实工作流名。
+
+        配置 workflow_aliases：多条「别名=真实工作流名」，逗号或换行分隔，如：
+            anime_selfie_workflow=动漫
+            ComfyUI default=动漫
+        别名匹配大小写不敏感、忽略首尾空白；未匹配则原样返回 name。
+        """
+        if not name:
+            return name
+        raw = (self._cfg("workflow_aliases", "") or "").strip()
+        if not raw:
+            return name
+        needle = name.strip().lower()
+        for line in raw.replace("\r", "\n").split("\n"):
+            for item in line.split(","):
+                item = item.strip()
+                if not item or "=" not in item:
+                    continue
+                alias, _, real = item.partition("=")
+                if alias.strip().lower() == needle and real.strip():
+                    logger.info(
+                        f"[绘图] 工作流别名命中：{alias.strip()!r} → {real.strip()!r}"
+                    )
+                    return real.strip()
+        return name
+
     def _resolve_workflow(
         self,
         name: str | None = None,
@@ -839,6 +866,7 @@ class ComfyUIDrawPlugin(Star):
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
         匹配优先级：
+          0) 若传入名命中了「工作流别名」配置（workflow_aliases），先映射为真实工作流名
           1) 精确匹配工作流名称（name 字段）
           2) 回退：按文件名匹配（workflow_name 字段，兼容带/不带 .json 后缀）
           3) 仍未匹配：
@@ -851,6 +879,11 @@ class ComfyUIDrawPlugin(Star):
         workflows = self._workflows()
         if not workflows:
             raise ValueError("未配置任何工作流，请先在插件配置中添加。")
+        if name:
+            # 0) 先按「工作流别名」把外部传入名映射为真实工作流名
+            alias_target = self._alias_workflow_name(name)
+            if alias_target and alias_target != name:
+                name = alias_target
         if not name:
             # 未指定工作流时，按「风格优先级 + 文生图/图生图」选默认
             name = self._pick_default_workflow_name(is_img2img)

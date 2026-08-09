@@ -584,6 +584,10 @@
         opts += '<option value="' + escapeHtml(val) + '"' + (val === cur ? " selected" : "") + '>' + escapeHtml(label) + '</option>';
       });
       inner = '<select data-path="' + escapeHtml(path) + '">' + opts + '</select>';
+    } else if (field.multiline) {
+      // 多行 string 配置（如 workflow_aliases 别名映射）：textarea，支持换行输入
+      inner = '<textarea data-path="' + escapeHtml(path) + '" rows="4">' +
+        escapeHtml(value == null ? "" : String(value)) + '</textarea>';
     } else {
       inner = '<input type="text" data-path="' + escapeHtml(path) + '" value="' +
         escapeHtml(value == null ? "" : String(value)) + '" />';
