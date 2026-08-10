@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.3.7
+
+- **调整 `convert_webp_to_png` 配置项位置**：从默认工作流配置中间移到「出图行为」分组（`return_queue_position` 旁），避免与工作流配置混排。
+
 ## v3.3.6
 
 - **webp 转 png 发送副本改为配置开关**：新增 `convert_webp_to_png`（bool，默认 false）。开启时，出图发送前用 Pillow 把 webp 转成 png 临时副本再发送（归档仍保留原 webp）；默认关闭，直接用原图发送。
