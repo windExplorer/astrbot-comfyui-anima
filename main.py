@@ -2037,11 +2037,12 @@ class ComfyUIDrawPlugin(Star):
                             g_last_generated["__global__"] = gbucket[-5:]
                     # webp 兼容：ComfyUI 输出常为 webp，而部分适配器（onebot/QQ 等）
                     # 在 Agent 工具场景下对 webp 内联推送失败，会被 AstrBot 转成
-                    # `<pc_history_media ...>` 占位、图片丢失。故发送前用 Pillow 转一个
-                    # png 临时副本用于 event.send / 伴侣发图；归档仍保留原 webp（内容
-                    # 寻址不变），图生图兜底缓存也用原 webp。
+                    # `<pc_history_media ...>` 占位、图片丢失。可配置 convert_webp_to_png
+                    # 在发送前用 Pillow 转一个 png 临时副本用于 event.send / 伴侣发图；
+                    # 归档仍保留原 webp（内容寻址不变），图生图兜底缓存也用原 webp。
+                    # 默认关闭（关闭时直接用原图发送）。
                     _send_img_path = img_path
-                    if _PILImage is not None and str(img_path).lower().endswith(".webp"):
+                    if self._cfg("convert_webp_to_png", False) and _PILImage is not None and str(img_path).lower().endswith(".webp"):
                         try:
                             with _PILImage.open(img_path) as _im:
                                 _png_tmp = self.temp_dir / f"{uuid.uuid4().hex}.png"

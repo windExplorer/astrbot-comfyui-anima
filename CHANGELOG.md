@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.3.6
+
+- **webp 转 png 发送副本改为配置开关**：新增 `convert_webp_to_png`（bool，默认 false）。开启时，出图发送前用 Pillow 把 webp 转成 png 临时副本再发送（归档仍保留原 webp）；默认关闭，直接用原图发送。
+
 ## v3.3.5
 
 - **回退 v3.3.2 / v3.3.3 的「AI 对话画图 LLM 收尾 + photo_tool_sent 抑制尾随」方案**（实测效果不理想）。代码回退到 v3.3.1 行为：`comfyui_draw`/`comfyui_img2img` 发图时仍做 **webp→png 发送副本**，保留原有队列提示、小报告（`_DRAW_DONE_HINTS`）与 `event.send` 发图逻辑；移除 `_llm_generate_closing`、`notify_done` 参数、`_private_companion_photo_tool_sent` 标志设置。若 AI 对话画图仍出现文本重复，根因在伴侣插件 6.0.10 的 `suppress_empty_photo_tool_followup` 只覆盖自家 photo 工具，需从伴侣插件侧解决。
