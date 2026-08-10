@@ -418,6 +418,12 @@
     "hint": "部分适配器（onebot/QQ 等）在 Agent 工具场景下对 webp 图片内联推送失败，可能导致图片没发出来。开启后，出图发送前会用 Pillow 把 webp 转成 png 临时副本再发送（归档仍保留原 webp）。默认关闭。",
     "default": false
   },
+  "show_draw_report": {
+    "type": "bool",
+    "description": "出图完成后输出文件信息",
+    "hint": "出图完成后是否发送一条包含尺寸/大小/耗时/时间的小报告。默认关闭（关闭则不输出文件信息）。",
+    "default": false
+  },
   "gallery": {
     "type": "object",
     "description": "图片画廊与语义标签召回",

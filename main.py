@@ -2055,32 +2055,34 @@ class ComfyUIDrawPlugin(Star):
                     yield event.image_result(_send_img_path), _send_img_path
 
                     # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
-                    try:
-                        _st = os.stat(img_path)
-                        _ftime = time.strftime(
-                            "%m-%d %H:%M:%S", time.localtime(_st.st_mtime)
-                        )
-                        _kb = _st.st_size / 1024.0
-                        _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
-                        # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
-                        if _PILImage is not None:
-                            try:
-                                with _PILImage.open(img_path) as _im:
-                                    _wh = f"{_im.width}×{_im.height}"
-                            except Exception:
+                    # 受配置 show_draw_report 控制（默认关闭，关闭则不输出文件信息）。
+                    if self._cfg("show_draw_report", False):
+                        try:
+                            _st = os.stat(img_path)
+                            _ftime = time.strftime(
+                                "%m-%d %H:%M:%S", time.localtime(_st.st_mtime)
+                            )
+                            _kb = _st.st_size / 1024.0
+                            _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
+                            # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
+                            if _PILImage is not None:
+                                try:
+                                    with _PILImage.open(img_path) as _im:
+                                        _wh = f"{_im.width}×{_im.height}"
+                                except Exception:
+                                    _wh = f"{w}×{h}"
+                            else:
                                 _wh = f"{w}×{h}"
-                        else:
-                            _wh = f"{w}×{h}"
-                        _cost = time.time() - _draw_start
-                        await self._send(
-                            event,
-                            random.choice(_DRAW_DONE_HINTS).format(
-                                ftime=_ftime, wh=_wh, size=_size,
-                                cost=f"{_cost:.1f}",
-                            ),
-                        )
-                    except Exception as _e:
-                        logger.warning(f"[出图报告] 发送小报告失败（不影响出图）: {_e}")
+                            _cost = time.time() - _draw_start
+                            await self._send(
+                                event,
+                                random.choice(_DRAW_DONE_HINTS).format(
+                                    ftime=_ftime, wh=_wh, size=_size,
+                                    cost=f"{_cost:.1f}",
+                                ),
+                            )
+                        except Exception as _e:
+                            logger.warning(f"[出图报告] 发送小报告失败（不影响出图）: {_e}")
             finally:
                 # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
                 self._local_queue_remove(srv_key, prompt_id)
