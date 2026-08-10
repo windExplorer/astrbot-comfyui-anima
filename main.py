@@ -547,36 +547,6 @@ class ComfyUIDrawPlugin(Star):
                     return None
             return None
 
-    async def _llm_generate_closing(self, event: AstrMessageEvent, prompt_text: str) -> str | None:
-        """用「指定模型」(llm_model) 生成一句简短、自然的收尾（画图完成后的补充语）。
-
-        基于本次画图 prompt 生成一句贴合画面/语境、有温度的收尾，替代固定的随机小报告。
-        未配置 llm_model 或调用失败时返回 None，由调用方回退到固定小报告。
-        """
-        model = self._cfg("llm_model", "").strip()
-        if not model:
-            return None
-        user_text = (prompt_text or "").strip()
-        prompt = (
-            "你是陪伴式 AI 画师。刚为用户画好了一张图，请用一句简短、自然、有温度的中文"
-            "口语向用户交付这张图（一两句话即可，20~40 字），语气贴合语境，不要啰嗦、不要"
-            "复述绘图技术参数（尺寸/大小/耗时/工作流/seed 等），也不要使用机械刻板的口吻。"
-            "参考本次画面内容：\n\n"
-            f"{user_text}\n\n"
-            "直接输出这句收尾（不要引号、不要多余说明）："
-        )
-        try:
-            llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
-            text = (getattr(llm_resp, "completion_text", "") or "").strip()
-        except Exception as e:
-            logger.warning(f"[出图] llm_model 生成收尾失败，回退固定小报告: {e}")
-            return None
-        if not text:
-            return None
-        # 只取第一行（避免模型输出多句/带解释）
-        first = text.split("\n")[0].strip()
-        return first if first else None
-
     def _get_data_dir(self) -> Path:
         """获取插件专属数据目录（兼容新旧 AstrBot 版本）。"""
         plugin_name = "astrbot_plugin_comfyui_anima"
@@ -1597,7 +1567,6 @@ class ComfyUIDrawPlugin(Star):
         is_img2img: bool = False,
         denoise: float | None = None,
         notify_pending: bool = True,
-        notify_done: bool = True,
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
@@ -2085,34 +2054,32 @@ class ComfyUIDrawPlugin(Star):
                     yield event.image_result(_send_img_path), _send_img_path
 
                     # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
-                    # notify_done=False（LLM 工具路径）时由调用方发 LLM 收尾，不再发固定小报告。
-                    if notify_done:
-                        try:
-                            _st = os.stat(img_path)
-                            _ftime = time.strftime(
-                                "%m-%d %H:%M:%S", time.localtime(_st.st_mtime)
-                            )
-                            _kb = _st.st_size / 1024.0
-                            _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
-                            # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
-                            if _PILImage is not None:
-                                try:
-                                    with _PILImage.open(img_path) as _im:
-                                        _wh = f"{_im.width}×{_im.height}"
-                                except Exception:
-                                    _wh = f"{w}×{h}"
-                            else:
+                    try:
+                        _st = os.stat(img_path)
+                        _ftime = time.strftime(
+                            "%m-%d %H:%M:%S", time.localtime(_st.st_mtime)
+                        )
+                        _kb = _st.st_size / 1024.0
+                        _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
+                        # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
+                        if _PILImage is not None:
+                            try:
+                                with _PILImage.open(img_path) as _im:
+                                    _wh = f"{_im.width}×{_im.height}"
+                            except Exception:
                                 _wh = f"{w}×{h}"
-                            _cost = time.time() - _draw_start
-                            await self._send(
-                                event,
-                                random.choice(_DRAW_DONE_HINTS).format(
-                                    ftime=_ftime, wh=_wh, size=_size,
-                                    cost=f"{_cost:.1f}",
-                                ),
-                            )
-                        except Exception as _e:
-                            logger.warning(f"[出图报告] 发送小报告失败（不影响出图）: {_e}")
+                        else:
+                            _wh = f"{w}×{h}"
+                        _cost = time.time() - _draw_start
+                        await self._send(
+                            event,
+                            random.choice(_DRAW_DONE_HINTS).format(
+                                ftime=_ftime, wh=_wh, size=_size,
+                                cost=f"{_cost:.1f}",
+                            ),
+                        )
+                    except Exception as _e:
+                        logger.warning(f"[出图报告] 发送小报告失败（不影响出图）: {_e}")
             finally:
                 # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
                 self._local_queue_remove(srv_key, prompt_id)
@@ -3572,11 +3539,9 @@ class ComfyUIDrawPlugin(Star):
             init_images=init_images or None,
             is_img2img=is_img2img,
             denoise=denoise if denoise >= 0 else None,
-            # LLM 工具路径统一不发队列提示/固定小报告：发图后本函数主动 event.send 图片
-            # 并用 LLM 生成一句收尾，同时设置伴侣插件的 photo_tool_sent 标志来抑制尾随重复；
-            # 若再发固定文本会与上述机制冲突/被伴侣插件重复。指令 /draw 路径不走这里。
-            notify_pending=False,
-            notify_done=False,
+            # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
+            # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
+            notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
         ):
             if not img_node:
                 img_node = node
@@ -3595,26 +3560,6 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
-            # 通知伴侣插件"图片工具已成功发图"，让其抑制/丢弃本轮的尾随重复文本
-            # （伴侣插件 suppress_empty_photo_tool_followup_before_send 依赖此标志）。
-            try:
-                setattr(event, "_private_companion_photo_tool_sent", True)
-            except Exception as _e:
-                logger.debug(f"[出图] 设置伴侣插件 photo_tool_sent 标志失败（忽略）: {_e}")
-            # 用 LLM 生成一句自然收尾并发出去（替代固定的随机小报告）。LLM 生成失败时
-            # 回退到固定小报告，保证用户仍有完成反馈。
-            _closing = await self._llm_generate_closing(event, prompt)
-            if _closing:
-                try:
-                    await event.send(MessageChain([Plain(_closing)]))
-                except Exception as _e:
-                    logger.warning(f"[出图] 发送 LLM 收尾失败: {_e}")
-            else:
-                logger.info("[出图] llm_model 未配置/生成收尾失败，发送通用收尾")
-                try:
-                    await event.send(MessageChain([Plain("画好啦，看看合不合心意～")]))
-                except Exception as _e:
-                    logger.debug(f"[出图] 发送通用收尾失败（忽略）: {_e}")
             # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
             # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
             # 技术元数据复述给用户；只做极简收尾指示即可。
@@ -4206,10 +4151,6 @@ class ComfyUIDrawPlugin(Star):
             init_images=init_images,
             is_img2img=True,
             denoise=denoise if denoise >= 0 else None,
-            # LLM 工具路径统一不发队列提示/固定小报告（发图后本函数 event.send 图片并用
-            # LLM 生成收尾 + 设置伴侣插件 photo_tool_sent 标志抑制尾随重复）。
-            notify_pending=False,
-            notify_done=False,
         ):
             # 本插件只负责生图与返回，不再主动 event.send（避免与调用方重复发图）：
             # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
@@ -4232,24 +4173,6 @@ class ComfyUIDrawPlugin(Star):
                 await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
             except Exception as _e:
                 logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
-            # 通知伴侣插件"图片工具已成功发图"，让其抑制/丢弃本轮的尾随重复文本。
-            try:
-                setattr(event, "_private_companion_photo_tool_sent", True)
-            except Exception as _e:
-                logger.debug(f"[出图] 设置伴侣插件 photo_tool_sent 标志失败（忽略）: {_e}")
-            # 用 LLM 生成一句自然收尾并发出去（替代固定的随机小报告）；失败回退固定小报告。
-            _closing = await self._llm_generate_closing(event, prompt)
-            if _closing:
-                try:
-                    await event.send(MessageChain([Plain(_closing)]))
-                except Exception as _e:
-                    logger.warning(f"[出图] 发送 LLM 收尾失败: {_e}")
-            else:
-                logger.info("[出图] llm_model 未配置/生成收尾失败，发送通用收尾")
-                try:
-                    await event.send(MessageChain([Plain("画好啦，看看合不合心意～")]))
-                except Exception as _e:
-                    logger.debug(f"[出图] 发送通用收尾失败（忽略）: {_e}")
             # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
             # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
             # 技术元数据复述给用户；只做极简收尾指示即可。
