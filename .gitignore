@@ -206,7 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# å‚è€ƒé¡¹ç›®ï¼ˆä»…æœ¬åœ°å¯¹ç…§ç”¨ï¼Œä¸å…¥åº“ï¼‰
+# å‚è¢ãƒé¡¹ç›„1¤7¼ˆä»…æœ¬åœ°å„1¤7ç…§ç”¨ï¼Œä¸å…¥åº“ï¼„1¤7
 astrbot_plugin_GPT_SoVITS-main/
 AstrBot-master/
 astrbot_plugin_comfyui_hub-master/
@@ -216,5 +216,8 @@ astrbot_plugin_private_companion/
 astrbot_plugin_comfyui_anima.zip
 build_log.txt
 
-# å‚è€ƒé¡¹ç›®ï¼ˆä»…æœ¬åœ°å¯¹ç…§ç”¨ï¼Œä¸å…¥åº“ï¼‰
+# å‚è¢ãƒé¡¹ç›„1¤7¼ˆä»…æœ¬åœ°å„1¤7ç…§ç”¨ï¼Œä¸å…¥åº“ï¼„1¤7
 References/
+
+# Reasonix ±¾µØÔªÊı¾İ£¨»á»°±êÌâµÈ£¬²»Èë¿â£©
+.reasonix/
