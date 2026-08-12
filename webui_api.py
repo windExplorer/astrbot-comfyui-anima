@@ -365,8 +365,9 @@ class WebUIApi:
                     cover_url = str(images[0].get("url") or "").strip()
             if cover_url:
                 try:
+                    cover_timeout = aiohttp.ClientTimeout(total=15)
                     async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
-                        async with sess.get(cover_url, timeout=timeout, proxy=proxy) as resp:
+                        async with sess.get(cover_url, timeout=cover_timeout, proxy=proxy) as resp:
                             if resp.status == 200:
                                 img_data = await resp.read()
                                 if img_data and len(img_data) >= 64:

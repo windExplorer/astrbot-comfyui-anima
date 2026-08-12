@@ -289,10 +289,11 @@
     return Promise.race([promise, timeout]).finally(function () { clearTimeout(timer); });
   }
 
-  async function bridgeRequest(br, path, method, body) {
+  async function bridgeRequest(br, path, method, body, timeoutMs) {
     var url = new URL(path, "https://astrbot-plugin-page.local/");
     var routePath = url.pathname.replace(/^\/+/, "");
     var candidates = bridgeEndpointCandidates(routePath);
+    var tmo = (timeoutMs && timeoutMs > 0) ? timeoutMs : 6000;
     console.log("[anima-console] bridgeRequest 开始:", method, path, "候选路径(", candidates.length, "):", candidates.map(function (c) { return c.style + "=" + c.endpoint; }));
     var errors = [];
     var attempts = [];
@@ -305,7 +306,7 @@
       for (var i = 0; i < candidates.length; i++) {
         var t0 = performance.now();
         try {
-          var p = await withTimeout(br.apiGet(candidates[i].endpoint, Object.keys(params).length ? params : undefined), 6000, "GET " + candidates[i].endpoint);
+          var p = await withTimeout(br.apiGet(candidates[i].endpoint, Object.keys(params).length ? params : undefined), tmo, "GET " + candidates[i].endpoint);
           recordAttempt(candidates[i].style, candidates[i].endpoint, performance.now() - t0, "命中");
           if (isRouteMissingPayload(p)) { errors.push((p.message || p.error || "未找到该路由")); continue; }
           cachedPageEndpointStyle = candidates[i].style;
@@ -329,7 +330,7 @@
     for (var j = 0; j < candidates.length; j++) {
       var t1 = performance.now();
       try {
-        var r = await withTimeout(br.apiPost(candidates[j].endpoint, payload), 6000, "POST " + candidates[j].endpoint);
+        var r = await withTimeout(br.apiPost(candidates[j].endpoint, payload), tmo, "POST " + candidates[j].endpoint);
         recordAttempt(candidates[j].style, candidates[j].endpoint, performance.now() - t1, "命中");
         if (isRouteMissingPayload(r)) { errors.push((r.message || r.error || "未找到该路由")); continue; }
         cachedPageEndpointStyle = candidates[j].style;
@@ -352,7 +353,7 @@
     var method = (options.method || "GET").toUpperCase();
     var payload;
     if (br && isUsableBridge(br)) {
-      payload = await bridgeRequest(br, path, method, options.body);
+      payload = await bridgeRequest(br, path, method, options.body, options.timeout);
     } else {
       // fetch 兜底（仅 debug_http=1 时伴侣插件才走；这里直接抛，引导用后台打开）
       throw new Error("未检测到 AstrBot 官方插件 Page 桥接，请从 AstrBot 后台的插件拓展页打开");
@@ -1308,7 +1309,7 @@
 
   function fetchLoraRemote(btn, url) {
     setButtonBusy(btn, true, "抓取中…", "抓取");
-    apiPost("lora/fetch", { url: url }).then(function (d) {
+    apiRaw("lora/fetch", { method: "POST", body: { url: url }, timeout: 60000 }).then(function (d) {
       setButtonBusy(btn, false, "抓取中…", "抓取");
       if (!d) return;
       var idx = +btn.dataset.idx;
