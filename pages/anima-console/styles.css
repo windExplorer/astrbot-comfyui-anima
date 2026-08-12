@@ -271,13 +271,15 @@ body{
 .dialog-actions button.danger:hover{background:var(--danger);color:#fff}
 
 /* QQ list dialog */
-#qqListDialog{border:none;border-radius:var(--radius);padding:24px;background:var(--bg-card);box-shadow:var(--shadow-md);max-width:420px;width:90vw}
+#qqListDialog{border:none;border-radius:var(--radius);padding:24px;background:var(--bg-card);box-shadow:var(--shadow-md);max-width:420px;width:90vw;margin:auto}
+#qqListDialog[open]{display:flex;flex-direction:column}
 #qqListDialog::backdrop{background:rgba(0,0,0,.4)}
 #qqListDialog h2{font-size:1.05rem;font-weight:700;margin:0 0 4px}
 #qqListDialog .kicker{margin:0 0 2px}
 .qq-list-body{max-height:50vh;overflow-y:auto;margin-top:12px;display:flex;flex-direction:column;gap:6px}
 .qq-list-row{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg-raised);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:.85rem}
 .qq-list-id{color:var(--text)}
+.qq-list-count{color:var(--text-muted);font-size:.8rem;flex:none;margin-left:12px}
 /* uid 更多按钮 */
 .uid-cell{white-space:normal}
 .stats-table .uid{color:var(--text-muted);font-size:.8rem;white-space:nowrap}

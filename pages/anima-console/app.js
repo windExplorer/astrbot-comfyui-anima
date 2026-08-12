@@ -1017,8 +1017,9 @@
         uidHtml = '<span class="uid">' + ids.map(function (x) { return escapeHtml(x); }).join(", ") + '</span>';
       } else {
         var shown = ids.slice(0, 3).map(function (x) { return escapeHtml(x); }).join(", ");
+        var countsJson = JSON.stringify(r.user_id_counts || {});
         uidHtml = '<span class="uid"><span class="uid-shown">' + shown + '</span>'
-          + '<button type="button" class="uid-more" data-qids="' + escapeHtml(JSON.stringify(ids)) + '" data-qname="' + escapeHtml(r.user_name) + '">查看更多</button></span>';
+          + '<button type="button" class="uid-more" data-qids="' + escapeHtml(JSON.stringify(ids)) + '" data-qcounts="' + escapeHtml(countsJson) + '" data-qname="' + escapeHtml(r.user_name) + '">查看更多</button></span>';
       }
       html += '<tr><td class="rank">' + r.rank + '</td>'
         + '<td class="user">' + escapeHtml(r.user_name) + '</td>'
@@ -1032,19 +1033,23 @@
     holder.querySelectorAll(".uid-more").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var ids = [];
+        var counts = {};
         try { ids = JSON.parse(btn.dataset.qids); } catch (e) { ids = []; }
-        openQqList(btn.dataset.qname || "QQ 列表", ids);
+        try { counts = JSON.parse(btn.dataset.qcounts || "{}"); } catch (e) { counts = {}; }
+        openQqList(btn.dataset.qname || "QQ 列表", ids, counts);
       });
     });
   }
 
   // 打开 QQ 列表弹窗
-  function openQqList(title, ids) {
+  function openQqList(title, ids, counts) {
     if (!els.qqListDialog) return;
     els.qqListTitle.textContent = title + " 的 QQ 列表";
     var rowsHtml = "";
     ids.forEach(function (id) {
-      rowsHtml += '<div class="qq-list-row"><span class="qq-list-id">' + escapeHtml(id) + '</span></div>';
+      var c = (counts && Object.prototype.hasOwnProperty.call(counts, id)) ? counts[id] : "";
+      rowsHtml += '<div class="qq-list-row"><span class="qq-list-id">' + escapeHtml(id) + '</span>'
+        + '<span class="qq-list-count">' + (c === "" ? "" : c + " 张") + '</span></div>';
     });
     els.qqListBody.innerHTML = rowsHtml || '<div class="empty">无记录</div>';
     els.qqListDialog.showModal();

@@ -1106,12 +1106,14 @@ class ImageStore:
                 owner_rows = []
                 merged_count = 0
                 merged_ids = []
+                merged_counts: dict[str, int] = {}
                 merged_last = 0.0
                 for r in ranked:
                     if r["user_name"] in names:
                         merged_count += r["count"]
                         if r["user_id"]:
                             merged_ids.append(r["user_id"])
+                            merged_counts[r["user_id"]] = merged_counts.get(r["user_id"], 0) + r["count"]
                         if r["last_ts"] > merged_last:
                             merged_last = r["last_ts"]
                     else:
@@ -1122,6 +1124,7 @@ class ImageStore:
                     owner_rows.append({
                         "user_id": ",".join(merged_ids_dedup) if merged_ids_dedup else "",
                         "user_ids": merged_ids_dedup,
+                        "user_id_counts": merged_counts,
                         "user_name": disp_name,
                         "count": merged_count,
                         "last_ts": merged_last,
@@ -1135,6 +1138,7 @@ class ImageStore:
                     "rank": i,
                     "user_id": r["user_id"],
                     "user_ids": r.get("user_ids") or ([r["user_id"]] if r["user_id"] else []),
+                    "user_id_counts": r.get("user_id_counts") or {},
                     "user_name": r["user_name"],
                     "count": r["count"],
                 })
