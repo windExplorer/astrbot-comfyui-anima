@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.5.7
+
+- **修复插件安装失败（KeyError: 'type'）**：上一版把配置分区元数据写进了 `_conf_schema.json`，AstrBot 加载插件时会把它当配置 schema 递归解析、报 `'type'` 错误导致安装失败。现已把分区映射移到前端硬编码，`_conf_schema.json` 保持纯配置 schema（所有节点均有 `type`）。
+
 ## v3.5.6
 
 - **新增插件独立代理配置 `http_proxy`**：插件访问外部网络（C 站抓取等）可单独配置代理地址（如 `http://127.0.0.1:7890`），不再依赖 AstrBot 全局代理；优先使用本插件配置，其次 AstrBot 全局 `http_proxy`，最后环境变量兜底。

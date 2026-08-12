@@ -687,8 +687,16 @@
       els.cfgSaveBtn.disabled = true;
       return;
     }
-    // 分区元数据（_groups 仅展示用，不作为配置项）
-    var groupsMeta = (schema._groups && schema._groups.items) || {};
+    // 分区元数据（前端硬编码，仅 WebUI 展示用；不放 schema 避免 AstrBot 当配置解析报 'type' 错误）
+    var CFG_GROUPS = {
+      "服务器与模型": { description: "ComfyUI 服务器、工作流与 LoRA 库", icon: "server", keys: ["comfyui_servers", "workflows", "loras"] },
+      "默认工作流": { description: "未指定工作流时的默认选择与风格优先级", icon: "workflow", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback"] },
+      "AI 对话与 LLM": { description: "AI 对话调用的 LLM 工具开关与专用模型", icon: "ai", keys: ["enable_llm_tools", "llm_model"] },
+      "出图行为": { description: "出图等待、轮询、webp 转换与小报告等行为", icon: "image", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report"] },
+      "网络与代理": { description: "外部网络访问（如 C 站抓取）的代理设置", icon: "network", keys: ["http_proxy"] },
+      "权限与图库": { description: "发图白名单与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "gallery"] }
+    };
+    var groupsMeta = CFG_GROUPS || {};
     // 收集所有已分区 key
     var groupedKeys = {};
     Object.keys(groupsMeta).forEach(function (gname) {
