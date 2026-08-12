@@ -75,6 +75,9 @@
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
     dialogMessage: $("dialogMessage"),
+    qqListDialog: $("qqListDialog"),
+    qqListTitle: $("qqListTitle"),
+    qqListBody: $("qqListBody"),
     imageDialog: $("imageDialog"),
     imageDialogImgs: $("imageDialogImgs"),
     imageDialogImg: $("imageDialogImg"),
@@ -1006,14 +1009,45 @@
     html += '<table class="stats-table"><thead><tr><th>排名</th><th>用户</th><th>QQ</th><th>数量</th><th>占比</th></tr></thead><tbody>';
     rows.forEach(function (r) {
       var pct = Math.round((r.count / maxCount) * 100);
+      var ids = (Array.isArray(r.user_ids) && r.user_ids.length) ? r.user_ids : (r.user_id ? [r.user_id] : []);
+      var uidHtml;
+      if (!ids.length) {
+        uidHtml = '<span class="uid">—</span>';
+      } else if (ids.length <= 3) {
+        uidHtml = '<span class="uid">' + ids.map(function (x) { return escapeHtml(x); }).join(", ") + '</span>';
+      } else {
+        var shown = ids.slice(0, 3).map(function (x) { return escapeHtml(x); }).join(", ");
+        uidHtml = '<span class="uid"><span class="uid-shown">' + shown + '</span>'
+          + '<button type="button" class="uid-more" data-qids="' + escapeHtml(JSON.stringify(ids)) + '" data-qname="' + escapeHtml(r.user_name) + '">查看更多</button></span>';
+      }
       html += '<tr><td class="rank">' + r.rank + '</td>'
         + '<td class="user">' + escapeHtml(r.user_name) + '</td>'
-        + '<td class="uid">' + escapeHtml(r.user_id || "—") + '</td>'
+        + '<td class="uid-cell">' + uidHtml + '</td>'
         + '<td class="count">' + r.count + '</td>'
         + '<td class="bar-cell"><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + pct + '%</span></td></tr>';
     });
     html += '</tbody></table>';
     holder.innerHTML = html;
+    // 绑定「查看更多」按钮
+    holder.querySelectorAll(".uid-more").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var ids = [];
+        try { ids = JSON.parse(btn.dataset.qids); } catch (e) { ids = []; }
+        openQqList(btn.dataset.qname || "QQ 列表", ids);
+      });
+    });
+  }
+
+  // 打开 QQ 列表弹窗
+  function openQqList(title, ids) {
+    if (!els.qqListDialog) return;
+    els.qqListTitle.textContent = title + " 的 QQ 列表";
+    var rowsHtml = "";
+    ids.forEach(function (id) {
+      rowsHtml += '<div class="qq-list-row"><span class="qq-list-id">' + escapeHtml(id) + '</span></div>';
+    });
+    els.qqListBody.innerHTML = rowsHtml || '<div class="empty">无记录</div>';
+    els.qqListDialog.showModal();
   }
 
   async function loadStatsTrend() {
@@ -1021,7 +1055,7 @@
     if (!holder) return;
     holder.innerHTML = '<div class="empty">正在加载趋势…</div>';
     try {
-      var data = await apiGet("stats/trend", { days: 1 });
+      var data = await apiGet("stats/trend", { hours: 24 });
       state.statsTrend = data || { buckets: [] };
       renderStatsTrend();
     } catch (e) {

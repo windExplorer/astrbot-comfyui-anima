@@ -12,6 +12,7 @@
   --accent: #7c4dff;
   --accent-hover: #651fff;
   --accent-light: #ede0ff;
+  --chart-num: #0d9488;
   --danger: #e53935;
   --danger-hover: #c62828;
   --danger-light: #ffebee;
@@ -40,6 +41,7 @@
     --accent: #b388ff;
     --accent-hover: #d1c4ff;
     --accent-light: #2a2040;
+    --chart-num: #2dd4bf;
     --danger: #ef5350;
     --danger-hover: #e57373;
     --danger-light: #3a1c1e;
@@ -268,6 +270,20 @@ body{
 .dialog-actions button.danger{border-color:var(--danger);color:var(--danger)}
 .dialog-actions button.danger:hover{background:var(--danger);color:#fff}
 
+/* QQ list dialog */
+#qqListDialog{border:none;border-radius:var(--radius);padding:24px;background:var(--bg-card);box-shadow:var(--shadow-md);max-width:420px;width:90vw}
+#qqListDialog::backdrop{background:rgba(0,0,0,.4)}
+#qqListDialog h2{font-size:1.05rem;font-weight:700;margin:0 0 4px}
+#qqListDialog .kicker{margin:0 0 2px}
+.qq-list-body{max-height:50vh;overflow-y:auto;margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.qq-list-row{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg-raised);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:.85rem}
+.qq-list-id{color:var(--text)}
+/* uid 更多按钮 */
+.uid-cell{white-space:normal}
+.stats-table .uid{color:var(--text-muted);font-size:.8rem;white-space:nowrap}
+.uid-more{background:none;border:1px solid var(--border);color:var(--accent);border-radius:4px;padding:1px 8px;font-size:.75rem;cursor:pointer;margin-left:6px;vertical-align:middle}
+.uid-more:hover{border-color:var(--accent);background:var(--accent-light)}
+
 /* empty / error */
 .empty{padding:32px 16px;text-align:center;color:var(--text-muted);font-size:.88rem}
 .empty.error{color:var(--danger)}
@@ -398,4 +414,4 @@ body{
 .trend-svg .x-axis text{fill:var(--text-muted)}
 .trend-svg .y-axis text{fill:var(--text-muted)}
 .trend-svg .dot{fill:var(--accent, #8b5cf6);cursor:pointer}
-.trend-svg .dot-label{font-size:9px;fill:var(--accent, #8b5cf6);font-weight:700;pointer-events:none}
+.trend-svg .dot-label{font-size:9px;fill:var(--chart-num, #0d9488);font-weight:700;pointer-events:none}

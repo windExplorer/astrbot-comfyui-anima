@@ -1118,9 +1118,10 @@ class ImageStore:
                         owner_rows.append(r)
                 if merged_count > 0:
                     disp_name = next(iter(names))
-                    merged_ids_str = ",".join(dict.fromkeys(merged_ids)) if merged_ids else ""
+                    merged_ids_dedup = list(dict.fromkeys(merged_ids))
                     owner_rows.append({
-                        "user_id": merged_ids_str,
+                        "user_id": ",".join(merged_ids_dedup) if merged_ids_dedup else "",
+                        "user_ids": merged_ids_dedup,
                         "user_name": disp_name,
                         "count": merged_count,
                         "last_ts": merged_last,
@@ -1133,6 +1134,7 @@ class ImageStore:
                 out.append({
                     "rank": i,
                     "user_id": r["user_id"],
+                    "user_ids": r.get("user_ids") or ([r["user_id"]] if r["user_id"] else []),
                     "user_name": r["user_name"],
                     "count": r["count"],
                 })
