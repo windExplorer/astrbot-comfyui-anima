@@ -1059,10 +1059,14 @@ class ImageStore:
     # ------------------------------------------------------------------ #
     # 用户生图统计（WebUI「统计」页）
     # ------------------------------------------------------------------ #
-    def user_ranking(self, days: int | None = None, limit: int = 50) -> dict:
+    def user_ranking(self, days: int | None = None, limit: int = 50,
+                     merge_alsoknown: list[str] | None = None) -> dict:
         """按用户统计生图数量排行（只统计成功生成的成品图 source='gen' 且 status=0）。
 
         days: None=全部；0=今天（自然日，本地时区）；其他正整数=最近 N 天（含今天）。
+        merge_alsoknown: 可选。给出一组「其他插件/别名」名称（如 ["PrivateCompanion"]），
+        命中 user_name 的这些记录会被合并成一行（user_id 用逗号拼接、count 求和），
+        便于把同一插件/非真人来源的分散记录整合。传空列表/None 则不合并。
         返回 {"scope": str, "total": int, "rows": [{user_id, user_name, count, rank}]}
         """
         if not self.enabled() or not _HAS_SQLITE:
@@ -1077,7 +1081,7 @@ class ImageStore:
                 where += " AND created_at>=?"
                 params.append(since)
             rows = conn.execute(
-                f"SELECT user_id, user_name, COUNT(*) AS c FROM images "
+                f"SELECT user_id, user_name, COUNT(*) AS c, MAX(created_at) AS last_ts FROM images "
                 f"WHERE {where} GROUP BY user_id ORDER BY c DESC, MAX(created_at) DESC "
                 f"LIMIT ?",
                 (*params, int(limit)),
@@ -1087,36 +1091,72 @@ class ImageStore:
                 tuple(params),
             ).fetchone()["c"]
             ranked = []
-            for i, r in enumerate(rows, start=1):
+            for r in rows:
                 uid = r["user_id"] or ""
                 uname = (r["user_name"] or "").strip() or uid or "未知用户"
                 ranked.append({
-                    "rank": i,
                     "user_id": uid,
                     "user_name": uname,
                     "count": int(r["c"]),
+                    "last_ts": float(r["last_ts"] or 0),
+                })
+            # 可选：把「其他插件/别名」命中的记录合并成一行
+            if merge_alsoknown:
+                names = {str(x).strip() for x in merge_alsoknown if str(x).strip()}
+                owner_rows = []
+                merged_count = 0
+                merged_ids = []
+                merged_last = 0.0
+                for r in ranked:
+                    if r["user_name"] in names:
+                        merged_count += r["count"]
+                        if r["user_id"]:
+                            merged_ids.append(r["user_id"])
+                        if r["last_ts"] > merged_last:
+                            merged_last = r["last_ts"]
+                    else:
+                        owner_rows.append(r)
+                if merged_count > 0:
+                    disp_name = next(iter(names))
+                    merged_ids_str = ",".join(dict.fromkeys(merged_ids)) if merged_ids else ""
+                    owner_rows.append({
+                        "user_id": merged_ids_str,
+                        "user_name": disp_name,
+                        "count": merged_count,
+                        "last_ts": merged_last,
+                    })
+                owner_rows.sort(key=lambda x: (-x["count"], -x["last_ts"]))
+                ranked = owner_rows[: int(limit)]
+            # 重新编号 rank
+            out = []
+            for i, r in enumerate(ranked, start=1):
+                out.append({
+                    "rank": i,
+                    "user_id": r["user_id"],
+                    "user_name": r["user_name"],
+                    "count": r["count"],
                 })
             scope = "all" if days is None else ("today" if days == 0 else f"{days}d")
-            return {"scope": scope, "total": int(total), "rows": ranked}
+            return {"scope": scope, "total": int(total), "rows": out}
         except Exception as e:
             logger.warning(f"[图库] 用户排行统计失败: {e}")
             return {"scope": "all", "total": 0, "rows": []}
 
-    def hourly_trend(self, days: int = 1) -> dict:
-        """近 N 天（默认 1 天）用户生图数量面积图数据：按本地时区小时分桶。
+    def hourly_trend(self, hours: int = 24) -> dict:
+        """近 N 小时（默认 24 小时滚动窗口）用户生图数量面积图数据：按本地时区小时分桶。
 
-        返回 {"scope": "1d", "buckets": [{"hour": "2026-08-12 00:00", "ts": 秒, "count": n}]}
-        桶从 (今天 0 点 - (days-1) 天) 开始，逐小时递增，未生图的时段也补 0。
+        返回 {"scope": "24h", "buckets": [{"hour": "17:00", "ts": 秒, "count": n}]}
+        桶从 (当前整点 - (hours-1) 小时) 开始，逐小时递增到当前整点，未生图的时段也补 0。
+        例如现在是 17 点，24 小时窗口从昨天 17 点开始，到今天 17 点结束。
         """
         if not self.enabled() or not _HAS_SQLITE:
-            return {"scope": "1d", "buckets": []}
+            return {"scope": "24h", "buckets": []}
         conn = self._conn_get()
         try:
             now = time.time()
-            lt = time.localtime(now)
-            day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-            start_ts = day_start - (max(1, int(days)) - 1) * 86400.0
+            hours = max(1, min(int(hours), 24 * 7))
             end_ts = now
+            start_ts = end_ts - hours * 3600.0
             rows = conn.execute(
                 "SELECT created_at AS t FROM images "
                 "WHERE source=? AND status=0 AND deleted=0 AND created_at>=? AND created_at<=? "
@@ -1129,20 +1169,21 @@ class ImageStore:
                 t = float(r["t"])
                 bucket = int(t // 3600) * 3600
                 bucket_count[bucket] = bucket_count.get(bucket, 0) + 1
-            # 生成连续桶（含 0 值补全）
+            # 生成连续桶（含 0 值补全）：从 (当前整点 - (hours-1)) 到当前整点
+            cur_hour = int(now // 3600) * 3600
+            b0 = cur_hour - (hours - 1) * 3600
+            b1 = cur_hour
             buckets = []
-            b0 = int(start_ts // 3600) * 3600
-            b1 = int(end_ts // 3600) * 3600
             b = b0
             while b <= b1:
                 lt_b = time.localtime(b)
                 buckets.append({
-                    "hour": time.strftime("%m-%d %H:00", lt_b),
+                    "hour": time.strftime("%H:00", lt_b),
                     "ts": b,
                     "count": bucket_count.get(b, 0),
                 })
                 b += 3600
-            return {"scope": f"{max(1, int(days))}d", "buckets": buckets}
+            return {"scope": f"{hours}h", "buckets": buckets}
         except Exception as e:
             logger.warning(f"[图库] 小时趋势统计失败: {e}")
             return {"scope": "1d", "buckets": []}

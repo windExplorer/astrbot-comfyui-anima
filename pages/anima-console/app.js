@@ -67,6 +67,7 @@
     galPageInfo: $("galPageInfo"),
     // stats
     statsRefreshBtn: $("statsRefreshBtn"),
+    statsMergeBtn: $("statsMergeBtn"),
     statsRanking: $("statsRanking"),
     statsTrendChart: $("statsTrendChart"),
     statsTrendInfo: $("statsTrendInfo"),
@@ -967,6 +968,7 @@
 
   // ====== STATS ======
   var statsScope = "today";
+  var statsMerge = false;
 
   function setStatsScope(scope) {
     statsScope = scope;
@@ -981,7 +983,7 @@
     if (!holder) return;
     holder.innerHTML = '<div class="empty">正在加载统计…</div>';
     try {
-      var data = await apiGet("stats/ranking", { days: statsScope });
+      var data = await apiGet("stats/ranking", { days: statsScope, merge: statsMerge ? "1" : "0" });
       state.statsRanking = data || { rows: [] };
       renderStatsRanking();
     } catch (e) {
@@ -1054,7 +1056,7 @@
     });
     var line = pts.map(function (p, i) { return (i ? " L" : "M") + p.x.toFixed(1) + " " + p.y.toFixed(1); }).join("");
     var area = line + " L" + (PAD.l + (n - 1) * stepX).toFixed(1) + " " + (PAD.t + ih) + " L" + PAD.l + " " + (PAD.t + ih) + " Z";
-    // X 轴刻度：最多显示 12 个
+    // X 轴刻度：最多显示 12 个（hour 已是 HH:00，无日期）
     var tickEvery = Math.max(1, Math.ceil(n / 12));
     var ticks = "";
     for (var i = 0; i < n; i += tickEvery) {
@@ -1070,6 +1072,16 @@
       yticks += '<text x="' + (PAD.l - 6) + '" y="' + (yy + 4).toFixed(1) + '" text-anchor="end">' + val + '</text>';
       yticks += '<line x1="' + PAD.l + '" y1="' + yy.toFixed(1) + '" x2="' + (W - PAD.r) + '" y2="' + yy.toFixed(1) + '" class="grid"/>';
     });
+    // 数据点：全部带悬浮 title（HH:00 - N 张）；非 0 的点上方显示数量文本
+    var dots = "";
+    var labels = "";
+    pts.forEach(function (p) {
+      var t = '<title>' + escapeHtml(p.b.hour + " - " + p.b.count + " 张") + '</title>';
+      dots += '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="3" class="dot">' + t + '</circle>';
+      if (p.b.count > 0) {
+        labels += '<text x="' + p.x.toFixed(1) + '" y="' + (p.y - 8).toFixed(1) + '" text-anchor="middle" class="dot-label">' + p.b.count + '</text>';
+      }
+    });
     var svg = '<svg class="trend-svg" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="近一天生图数量面积图">'
       + '<defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">'
       + '<stop offset="0%" stop-color="var(--accent, #8b5cf6)" stop-opacity="0.45"/>'
@@ -1079,6 +1091,8 @@
       + '<path d="' + area + '" fill="url(#trendFill)"/>'
       + '<path d="' + line + '" fill="none" stroke="var(--accent, #8b5cf6)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
       + '<g class="x-axis">' + ticks + '</g>'
+      + '<g class="dots">' + dots + '</g>'
+      + '<g class="dot-labels">' + labels + '</g>'
       + '</svg>';
     holder.innerHTML = svg;
   }
@@ -1096,6 +1110,13 @@
   document.querySelectorAll(".stats-scope .scope-tab").forEach(function (b) {
     b.addEventListener("click", function () { setStatsScope(b.dataset.scope); });
   });
+  if (els.statsMergeBtn) {
+    statsMerge = els.statsMergeBtn.checked;
+    els.statsMergeBtn.addEventListener("change", function () {
+      statsMerge = els.statsMergeBtn.checked;
+      loadStatsRanking();
+    });
+  }
 
   els.logLevel.addEventListener("change", renderLogs);
   els.logSearch.addEventListener("input", renderLogs);

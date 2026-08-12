@@ -190,32 +190,34 @@ class WebUIApi:
     # 用户生图统计
     # -------------------------------------------------------------- #
     async def stats_ranking(self):
-        """用户生图数量排行。query: days=today|3|7|all（默认 all）。"""
+        """用户生图数量排行。query: days=today|3|7|all（默认 all）；merge=1 时合并其他插件记录。"""
         g = self._gallery()
         if g is None:
             return json_response({"scope": "all", "total": 0, "rows": []})
         try:
             days_raw = request.query.get("days", "all")
             days = {"today": 0, "3": 3, "7": 7, "all": None}.get(str(days_raw).strip().lower(), None)
-            return json_response(g.user_ranking(days=days))
+            merge = request.query.get("merge", "0") == "1"
+            merge_names = ["PrivateCompanion"] if merge else None
+            return json_response(g.user_ranking(days=days, merge_alsoknown=merge_names))
         except Exception as e:
             return error_response(f"统计排行失败: {e}")
 
     async def stats_trend(self):
-        """近一天用户生图数量面积图数据（按小时分桶）。query: days=1（默认）。"""
+        """近 24 小时用户生图数量面积图数据（按小时分桶，滚动窗口）。query: hours=24（默认）。"""
         g = self._gallery()
         if g is None:
-            return json_response({"scope": "1d", "buckets": []})
+            return json_response({"scope": "24h", "buckets": []})
         try:
             try:
-                days = request.query.get("days", 1, type=int)
+                hours = request.query.get("hours", 24, type=int)
             except Exception:
-                days = 1
-            if days < 1:
-                days = 1
-            if days > 7:
-                days = 7
-            return json_response(g.hourly_trend(days=days))
+                hours = 24
+            if hours < 1:
+                hours = 1
+            if hours > 24 * 7:
+                hours = 24 * 7
+            return json_response(g.hourly_trend(hours=hours))
         except Exception as e:
             return error_response(f"统计趋势失败: {e}")
 
