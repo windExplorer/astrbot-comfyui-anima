@@ -84,6 +84,13 @@
     qqListDialog: $("qqListDialog"),
     qqListTitle: $("qqListTitle"),
     qqListBody: $("qqListBody"),
+    editDialog: $("editDialog"),
+    editKicker: $("editKicker"),
+    editTitle: $("editTitle"),
+    editBody: $("editBody"),
+    editMsg: $("editMsg"),
+    editSaveBtn: $("editSaveBtn"),
+    editCancelBtn: $("editCancelBtn"),
     imageDialog: $("imageDialog"),
     imageDialogImgs: $("imageDialogImgs"),
     imageDialogImg: $("imageDialogImg"),
@@ -816,6 +823,7 @@
     try {
       data = await apiGet("records", {
         failed: els.recFailedOnly.checked ? 1 : 0,
+        keyword: els.recSearch.value.trim(),
         page: page,
         size: state.recPageSize,
       });
@@ -856,12 +864,7 @@
   }
 
   function renderRecords() {
-    var q = els.recSearch.value.trim().toLowerCase();
-    var rows = state.records.filter(function (r) {
-      if (!q) return true;
-      return [r.user_name, r.trigger_msg, r.prompt, r.prompt_raw]
-        .join(" ").toLowerCase().indexOf(q) >= 0;
-    });
+    var rows = state.records;
     if (!rows.length) {
       els.recBody.innerHTML = '<tr><td colspan="10" class="empty">没有匹配的出图记录</td></tr>';
       return;
@@ -1181,7 +1184,7 @@
       return;
     }
     if (!wfs.length) {
-      holder.innerHTML = '<div class="empty">尚未配置任何工作流。可到「配置」页的 workflows 中添加。</div>';
+      holder.innerHTML = '<div class="workflows-toolbar"><button id="workflowsAddBtn" type="button">+ 新增工作流</button></div><div class="empty">尚未配置任何工作流，点「新增工作流」添加。</div>';
       return;
     }
     var loras = (state.config && Array.isArray(state.config.loras)) ? state.config.loras : [];
@@ -1219,10 +1222,7 @@
     html += '</div>';
     holder.innerHTML = html;
     holder.querySelectorAll(".wf-edit").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        switchView("config");
-        showToast("请在「配置 - workflows」段编辑「" + (state.config.workflows[+btn.dataset.idx] || {}).name + "」后保存", "info");
-      });
+      btn.addEventListener("click", function () { openWorkflowEditor(+btn.dataset.idx); });
     });
   }
 
@@ -1249,7 +1249,7 @@
       return;
     }
     if (!loras.length) {
-      holder.innerHTML = '<div class="empty">尚未配置任何 LoRA。可到「配置」页的 LoRA 库中添加，或在此点「新增」。</div>';
+      holder.innerHTML = '<div class="loras-toolbar"><button id="lorasAddBtn" type="button">+ 新增 LoRA</button></div><div class="empty">尚未配置任何 LoRA，点「新增 LoRA」添加。</div>';
       return;
     }
     var html = '<div class="loras-toolbar"><button id="lorasAddBtn" type="button">+ 新增 LoRA</button></div><div class="loras-card-grid">';
@@ -1288,19 +1288,17 @@
     });
     // 事件
     holder.querySelectorAll(".lora-edit").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        switchView("config");
-        var key = "loras";
-        showToast("请在「配置 - loras」段编辑「" + (state.config.loras[+btn.dataset.idx] || {}).name + "」后保存", "info");
-      });
+      btn.addEventListener("click", function () { openLoraEditor(+btn.dataset.idx); });
     });
     holder.querySelectorAll(".lora-fetch").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var l = state.config.loras[+btn.dataset.idx] || {};
         var cur = (l.civitai_url || "").trim();
-        var url = prompt("输入 C 站 LoRA 链接（自动抓取封面图/触发词/描述）：", cur);
-        if (!url || !url.trim()) return;
-        fetchLoraRemote(btn, url);
+        if (!cur) {
+          showToast("该 LoRA 尚未配置 C 站链接，请先在编辑中填写链接后再抓取", "info");
+          return;
+        }
+        fetchLoraRemote(btn, cur);
       });
     });
     holder.querySelectorAll(".lora-upload").forEach(function (btn) {
@@ -1368,6 +1366,128 @@
     return apiPost("config", { config: { loras: state.config.loras } });
   }
 
+  // ====== 通用编辑弹窗 ======
+  function openEditDialog(kicker, title, bodyHtml, onSave) {
+    if (!els.editDialog) return;
+    els.editKicker.textContent = kicker;
+    els.editTitle.textContent = title;
+    els.editBody.innerHTML = bodyHtml;
+    els.editMsg.textContent = "";
+    els.editDialog._onSave = onSave;
+    els.editDialog.showModal();
+  }
+
+  var BM_OPTIONS = ["", "anima", "z-image-turbo", "krea2", "illustrious"];
+
+  function bmSelectHtml(name, cur) {
+    var opts = BM_OPTIONS.map(function (o) {
+      return '<option value="' + escapeHtml(o) + '"' + (String(o) === String(cur || "") ? " selected" : "") + '>' +
+        (o ? escapeHtml(o) : "（通用）") + '</option>';
+    }).join("");
+    return '<select data-f="' + name + '">' + opts + '</select>';
+  }
+
+  function fieldHtml(label, html) {
+    return '<div class="edit-field"><label>' + escapeHtml(label) + '</label>' + html + '</div>';
+  }
+  function inputHtml(name, val, ph) {
+    return '<input type="text" data-f="' + escapeHtml(name) + '" value="' + escapeHtml(val == null ? "" : String(val)) + '" placeholder="' + escapeHtml(ph || "") + '">';
+  }
+  function textareaHtml(name, val, rows) {
+    return '<textarea data-f="' + escapeHtml(name) + '" rows="' + (rows || 3) + '">' + escapeHtml(val == null ? "" : String(val)) + '</textarea>';
+  }
+
+  function collectForm() {
+    var out = {};
+    els.editBody.querySelectorAll("[data-f]").forEach(function (el) {
+      out[el.dataset.f] = el.tagName === "SELECT" ? el.value : el.value;
+    });
+    return out;
+  }
+
+  function openLoraEditor(idx) {
+    var loras = (state.config && Array.isArray(state.config.loras)) ? state.config.loras : [];
+    var isNew = idx < 0 || idx >= loras.length;
+    var l = isNew ? {} : (loras[idx] || {});
+    var body = fieldHtml("名称（引用键）", inputHtml("name", l.name, "如 安魂曲"))
+      + fieldHtml("底模", bmSelectHtml("base_model", l.base_model))
+      + fieldHtml("别名（触发关键词，逗号分隔）", inputHtml("keywords", l.keywords, "如 曲, 凄美"))
+      + fieldHtml("触发词（每行一个）", textareaHtml("trigger_words", l.trigger_words, 3))
+      + fieldHtml("描述（供 LLM 理解）", textareaHtml("description", l.description, 3))
+      + fieldHtml("C 站链接", inputHtml("civitai_url", l.civitai_url, "https://civitai.com/models/xxx"))
+      + fieldHtml("封面图文件名", inputHtml("image", l.image, "存于 lora_assets/，可上传"))
+      + fieldHtml("默认权重", inputHtml("weight", l.weight, "1.0"))
+      + fieldHtml("模型文件名", inputHtml("model_name", l.model_name, "xxx.safetensors"));
+    openEditDialog("LoRA", (isNew ? "新增" : "编辑") + " LoRA", body, function () {
+      var v = collectForm();
+      if (!v.name || !v.name.trim()) { els.editMsg.textContent = "名称必填"; return; }
+      v.name = v.name.trim();
+      if (isNew) {
+        loras.push(v);
+      } else {
+        loras[idx] = Object.assign({}, loras[idx], v);
+      }
+      state.config.loras = loras;
+      saveLorasState().then(function () {
+        els.editDialog.close();
+        showToast("LoRA 已保存", "success");
+        renderLoras();
+      }).catch(function (e) {
+        els.editMsg.textContent = "保存失败：" + (e && e.message ? e.message : "未知错误");
+      });
+    });
+  }
+
+  function openWorkflowEditor(idx) {
+    var wfs = (state.config && Array.isArray(state.config.workflows)) ? state.config.workflows : [];
+    var isNew = idx < 0 || idx >= wfs.length;
+    var w = isNew ? {} : (wfs[idx] || {});
+    var body = fieldHtml("名称", inputHtml("name", w.name, "如 sd"))
+      + fieldHtml("底模", bmSelectHtml("base_model", w.base_model))
+      + fieldHtml("别名（逗号/换行分隔）", textareaHtml("aliases", w.aliases, 2))
+      + fieldHtml("绑定服务器", inputHtml("server_name", w.server_name, "如 server1"))
+      + fieldHtml("工作流文件名", inputHtml("workflow_name", w.workflow_name, "如 sd.json"))
+      + fieldHtml("Anima 工作流", '<input type="checkbox" data-f="is_anima_cb"' + (w.is_anima ? " checked" : "") + '>')
+      + fieldHtml("默认 LoRA（每行 名称|权重|启用|底模）", textareaHtml("loras_text", w.loras_text, 3));
+    openEditDialog("WORKFLOW", (isNew ? "新增" : "编辑") + " 工作流", body, function () {
+      var v = collectForm();
+      if (!v.name || !v.name.trim()) { els.editMsg.textContent = "名称必填"; return; }
+      v.name = v.name.trim();
+      var cb = els.editBody.querySelector('[data-f="is_anima_cb"]');
+      v.is_anima = !!(cb && cb.checked);
+      delete v.is_anima_cb;
+      if (isNew) {
+        wfs.push(v);
+      } else {
+        wfs[idx] = Object.assign({}, wfs[idx], v);
+      }
+      state.config.workflows = wfs;
+      apiPost("config", { config: { workflows: state.config.workflows } }).then(function () {
+        els.editDialog.close();
+        showToast("工作流已保存", "success");
+        renderWorkflows();
+      }).catch(function (e) {
+        els.editMsg.textContent = "保存失败：" + (e && e.message ? e.message : "未知错误");
+      });
+    });
+  }
+
+  if (els.editCancelBtn) {
+    els.editCancelBtn.addEventListener("click", function () { if (els.editDialog) els.editDialog.close(); });
+  }
+  if (els.editSaveBtn) {
+    els.editSaveBtn.addEventListener("click", function () {
+      if (els.editDialog && typeof els.editDialog._onSave === "function") {
+        els.editDialog._onSave();
+      }
+    });
+  }
+  // 新增按钮：LoRA / 工作流
+  document.addEventListener("click", function (e) {
+    if (e.target && e.target.id === "lorasAddBtn") { openLoraEditor(-1); }
+    if (e.target && e.target.id === "workflowsAddBtn") { openWorkflowEditor(-1); }
+  });
+
   if (els.lorasRefreshBtn) {
     els.lorasRefreshBtn.addEventListener("click", function () {
       loadConfig().then(function () { renderLoras(); });
@@ -1379,7 +1499,15 @@
   els.logRefreshBtn.addEventListener("click", function () {
     if (logTabState === "records") loadRecords(); else loadLogs();
   });
-  els.recSearch.addEventListener("input", renderRecords);
+  els.recSearch.addEventListener("input", (function () {
+    var timer = null;
+    return function () {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        loadRecordsPage(1, true);
+      }, 350);
+    };
+  })());
   els.recFailedOnly.addEventListener("change", loadRecords);
   if (els.recPrevBtn) {
     els.recPrevBtn.addEventListener("click", function () {

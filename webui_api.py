@@ -133,10 +133,11 @@ class WebUIApi:
                 page = 1
             if size < 1 or size > 200:
                 size = 40
+            kw = (request.query.get("keyword", "") or "").strip()
             rows = self.plugin.gallery.recent_records(
-                limit=size, only_failed=only_failed, offset=(page - 1) * size
+                limit=size, only_failed=only_failed, offset=(page - 1) * size, keyword=kw
             )
-            total = self.plugin.gallery.count_records(only_failed=only_failed)
+            total = self.plugin.gallery.count_records(only_failed=only_failed, keyword=kw)
             # 记录列表只返回元数据（含 sha），不内联缩略图 base64——避免一多就超时。
             # 缩略图由前端经 bridge 调 gallery_thumb 按需懒加载拉取单张 data URL。
             for r in rows:

@@ -272,6 +272,20 @@
       </form>
     </dialog>
 
+    <!-- LoRA / 工作流 编辑弹窗 -->
+    <dialog id="editDialog" class="edit-dialog" aria-label="编辑">
+      <form id="editForm">
+        <p class="kicker" id="editKicker">EDIT</p>
+        <h2 id="editTitle">编辑</h2>
+        <div id="editBody" class="edit-body"></div>
+        <div class="edit-msg" id="editMsg" aria-live="polite"></div>
+        <div class="dialog-actions">
+          <button type="button" id="editCancelBtn">取消</button>
+          <button type="button" id="editSaveBtn" class="primary">保存</button>
+        </div>
+      </form>
+    </dialog>
+
     <!-- 图片大图查看（点击图片打开，展示信息） -->
     <dialog id="imageDialog" class="image-dialog" aria-label="图片详情">
       <form method="dialog" class="image-dialog-form">

@@ -420,6 +420,8 @@ body{
 
 /* ====== LoRA 卡片视图 ====== */
 .loras-toolbar{display:flex;justify-content:flex-end;margin-bottom:14px}
+.loras-toolbar button,.workflows-toolbar button{border:1px solid var(--accent);background:var(--accent-light);color:var(--accent);font-weight:600;padding:8px 18px;border-radius:var(--radius-sm);cursor:pointer;font-size:.85rem;transition:all .15s}
+.loras-toolbar button:hover,.workflows-toolbar button:hover{background:var(--accent);color:#fff}
 .loras-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
 .lora-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow-sm)}
 .lora-cover{aspect-ratio:1/1;background:var(--bg-raised);display:flex;align-items:center;justify-content:center;overflow:hidden}
@@ -454,3 +456,19 @@ body{
 .wf-card-actions{display:flex;gap:8px;margin-top:auto;padding-top:8px}
 .wf-card-actions button{font-size:.78rem;padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);cursor:pointer}
 .wf-card-actions button:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ====== 编辑弹窗 ====== */
+#editDialog{border:none;border-radius:var(--radius);padding:24px;background:var(--bg-card);box-shadow:var(--shadow-md);max-width:520px;width:92vw;margin:auto}
+#editDialog[open]{display:flex;flex-direction:column}
+#editDialog::backdrop{background:rgba(0,0,0,.4)}
+#editDialog h2{font-size:1.05rem;font-weight:700;margin:0 0 4px}
+#editDialog .kicker{margin:0 0 2px}
+.edit-body{display:flex;flex-direction:column;gap:10px;margin-top:14px;max-height:60vh;overflow-y:auto;padding-right:4px}
+.edit-field{display:flex;flex-direction:column;gap:4px}
+.edit-field label{font-size:.78rem;color:var(--text-muted);font-weight:600}
+.edit-field input[type="text"],.edit-field input:not([type]),.edit-field select,.edit-field textarea{font-size:.85rem;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);width:100%;box-sizing:border-box;font-family:inherit}
+.edit-field textarea{resize:vertical}
+.edit-field input:focus,.edit-field select:focus,.edit-field textarea:focus{outline:none;border-color:var(--accent)}
+.edit-msg{font-size:.8rem;color:var(--danger);min-height:1em;margin-top:8px}
+#editSaveBtn.primary{border-color:var(--accent);background:var(--accent);color:#fff}
+#editSaveBtn.primary:hover{background:var(--accent-hover)}
