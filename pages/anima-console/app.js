@@ -16,6 +16,10 @@
     galPage: 1,
     galTotal: 0,
     galPageSize: 40,
+    // stats
+    statsScope: "today",
+    statsRanking: { rows: [] },
+    statsTrend: { buckets: [] },
   };
 
   const $ = function (id) { return document.getElementById(id); };
@@ -61,6 +65,11 @@
     galPrevBtn: $("galPrevBtn"),
     galNextBtn: $("galNextBtn"),
     galPageInfo: $("galPageInfo"),
+    // stats
+    statsRefreshBtn: $("statsRefreshBtn"),
+    statsRanking: $("statsRanking"),
+    statsTrendChart: $("statsTrendChart"),
+    statsTrendInfo: $("statsTrendInfo"),
     // dialogs
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
@@ -475,6 +484,10 @@
         });
       }
       if (!state.galResults.length) galSearch();
+    }
+    if (name === "stats") {
+      if (!state.statsRanking.rows.length) loadStatsRanking();
+      if (!state.statsTrend.buckets.length) loadStatsTrend();
     }
   }
 
@@ -951,6 +964,137 @@
       if (!state.logs.length) loadLogs();
     }
   }
+
+  // ====== STATS ======
+  var statsScope = "today";
+
+  function setStatsScope(scope) {
+    statsScope = scope;
+    document.querySelectorAll(".stats-scope .scope-tab").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.scope === scope);
+    });
+    loadStatsRanking();
+  }
+
+  async function loadStatsRanking() {
+    var holder = els.statsRanking;
+    if (!holder) return;
+    holder.innerHTML = '<div class="empty">正在加载统计…</div>';
+    try {
+      var data = await apiGet("stats/ranking", { days: statsScope });
+      state.statsRanking = data || { rows: [] };
+      renderStatsRanking();
+    } catch (e) {
+      holder.innerHTML = '<div class="empty error">加载排行失败：' + escapeHtml(e.message) + '</div>';
+    }
+  }
+
+  function renderStatsRanking() {
+    var holder = els.statsRanking;
+    if (!holder) return;
+    var rows = (state.statsRanking.rows || []);
+    var total = state.statsRanking.total || 0;
+    if (!rows.length) {
+      holder.innerHTML = '<div class="empty">暂无生图记录。生成图片后这里会出现排行。</div>';
+      return;
+    }
+    var scopeLabel = { today: "今天", "3": "近 3 天", "7": "近 7 天", all: "全部" }[statsScope] || "全部";
+    var maxCount = rows[0].count || 1;
+    var html = '<div class="stats-meta">' + scopeLabel + ' 共生成 <b>' + total + '</b> 张图</div>';
+    html += '<table class="stats-table"><thead><tr><th>排名</th><th>用户</th><th>数量</th><th>占比</th></tr></thead><tbody>';
+    rows.forEach(function (r) {
+      var pct = Math.round((r.count / maxCount) * 100);
+      html += '<tr><td class="rank">' + r.rank + '</td>'
+        + '<td class="user">' + escapeHtml(r.user_name) + '</td>'
+        + '<td class="count">' + r.count + '</td>'
+        + '<td class="bar-cell"><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + pct + '%</span></td></tr>';
+    });
+    html += '</tbody></table>';
+    holder.innerHTML = html;
+  }
+
+  async function loadStatsTrend() {
+    var holder = els.statsTrendChart;
+    if (!holder) return;
+    holder.innerHTML = '<div class="empty">正在加载趋势…</div>';
+    try {
+      var data = await apiGet("stats/trend", { days: 1 });
+      state.statsTrend = data || { buckets: [] };
+      renderStatsTrend();
+    } catch (e) {
+      holder.innerHTML = '<div class="empty error">加载趋势失败：' + escapeHtml(e.message) + '</div>';
+      if (els.statsTrendInfo) els.statsTrendInfo.textContent = "";
+    }
+  }
+
+  function renderStatsTrend() {
+    var holder = els.statsTrendChart;
+    if (!holder) return;
+    var buckets = state.statsTrend.buckets || [];
+    if (!buckets.length) {
+      holder.innerHTML = '<div class="empty">暂无趋势数据。</div>';
+      if (els.statsTrendInfo) els.statsTrendInfo.textContent = "";
+      return;
+    }
+    var maxCount = 1;
+    var sum = 0;
+    buckets.forEach(function (b) { if (b.count > maxCount) maxCount = b.count; sum += b.count; });
+    if (els.statsTrendInfo) els.statsTrendInfo.textContent = "共 " + sum + " 张";
+    // 面积图：用 SVG 折线 + 渐变填充
+    var W = 860, H = 220, PAD = { l: 34, r: 10, t: 14, b: 26 };
+    var n = buckets.length;
+    var iw = W - PAD.l - PAD.r;
+    var ih = H - PAD.t - PAD.b;
+    var stepX = n > 1 ? iw / (n - 1) : iw;
+    var pts = buckets.map(function (b, i) {
+      var x = PAD.l + i * stepX;
+      var y = PAD.t + ih - (b.count / maxCount) * ih;
+      return { x: x, y: y, b: b };
+    });
+    var line = pts.map(function (p, i) { return (i ? " L" : "M") + p.x.toFixed(1) + " " + p.y.toFixed(1); }).join("");
+    var area = line + " L" + (PAD.l + (n - 1) * stepX).toFixed(1) + " " + (PAD.t + ih) + " L" + PAD.l + " " + (PAD.t + ih) + " Z";
+    // X 轴刻度：最多显示 12 个
+    var tickEvery = Math.max(1, Math.ceil(n / 12));
+    var ticks = "";
+    for (var i = 0; i < n; i += tickEvery) {
+      var tx = PAD.l + i * stepX;
+      var ty = PAD.t + ih + 16;
+      ticks += '<text x="' + tx.toFixed(1) + '" y="' + ty + '" text-anchor="middle">' + escapeHtml(buckets[i].hour) + '</text>';
+    }
+    // Y 轴刻度：0 / 中 / 最大
+    var yticks = "";
+    [0, 0.5, 1].forEach(function (f) {
+      var yy = PAD.t + ih - f * ih;
+      var val = Math.round(f * maxCount);
+      yticks += '<text x="' + (PAD.l - 6) + '" y="' + (yy + 4).toFixed(1) + '" text-anchor="end">' + val + '</text>';
+      yticks += '<line x1="' + PAD.l + '" y1="' + yy.toFixed(1) + '" x2="' + (W - PAD.r) + '" y2="' + yy.toFixed(1) + '" class="grid"/>';
+    });
+    var svg = '<svg class="trend-svg" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="近一天生图数量面积图">'
+      + '<defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">'
+      + '<stop offset="0%" stop-color="var(--accent, #8b5cf6)" stop-opacity="0.45"/>'
+      + '<stop offset="100%" stop-color="var(--accent, #8b5cf6)" stop-opacity="0.05"/>'
+      + '</linearGradient></defs>'
+      + '<g class="y-axis">' + yticks + '</g>'
+      + '<path d="' + area + '" fill="url(#trendFill)"/>'
+      + '<path d="' + line + '" fill="none" stroke="var(--accent, #8b5cf6)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+      + '<g class="x-axis">' + ticks + '</g>'
+      + '</svg>';
+    holder.innerHTML = svg;
+  }
+
+  if (els.statsRefreshBtn) {
+    els.statsRefreshBtn.addEventListener("click", function () {
+      setButtonBusy(els.statsRefreshBtn, true, "刷新中…", "刷新");
+      Promise.all([loadStatsRanking(), loadStatsTrend()])
+        .catch(function () {})
+        .then(function () {
+          setButtonBusy(els.statsRefreshBtn, false, "刷新中…", "刷新");
+        });
+    });
+  }
+  document.querySelectorAll(".stats-scope .scope-tab").forEach(function (b) {
+    b.addEventListener("click", function () { setStatsScope(b.dataset.scope); });
+  });
 
   els.logLevel.addEventListener("change", renderLogs);
   els.logSearch.addEventListener("input", renderLogs);

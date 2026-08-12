@@ -1057,6 +1057,109 @@ class ImageStore:
         }
 
     # ------------------------------------------------------------------ #
+    # 用户生图统计（WebUI「统计」页）
+    # ------------------------------------------------------------------ #
+    def user_ranking(self, days: int | None = None, limit: int = 50) -> dict:
+        """按用户统计生图数量排行（只统计成功生成的成品图 source='gen' 且 status=0）。
+
+        days: None=全部；0=今天（自然日，本地时区）；其他正整数=最近 N 天（含今天）。
+        返回 {"scope": str, "total": int, "rows": [{user_id, user_name, count, rank}]}
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return {"scope": "all", "total": 0, "rows": []}
+        conn = self._conn_get()
+        try:
+            since = self._stats_since_ts(days)
+            params: list = []
+            where = "source=? AND status=0 AND deleted=0"
+            params.append(SRC_GEN)
+            if since is not None:
+                where += " AND created_at>=?"
+                params.append(since)
+            rows = conn.execute(
+                f"SELECT user_id, user_name, COUNT(*) AS c FROM images "
+                f"WHERE {where} GROUP BY user_id ORDER BY c DESC, MAX(created_at) DESC "
+                f"LIMIT ?",
+                (*params, int(limit)),
+            ).fetchall()
+            total = conn.execute(
+                f"SELECT COUNT(*) AS c FROM images WHERE {where}",
+                tuple(params),
+            ).fetchone()["c"]
+            ranked = []
+            for i, r in enumerate(rows, start=1):
+                uid = r["user_id"] or ""
+                uname = (r["user_name"] or "").strip() or uid or "未知用户"
+                ranked.append({
+                    "rank": i,
+                    "user_id": uid,
+                    "user_name": uname,
+                    "count": int(r["c"]),
+                })
+            scope = "all" if days is None else ("today" if days == 0 else f"{days}d")
+            return {"scope": scope, "total": int(total), "rows": ranked}
+        except Exception as e:
+            logger.warning(f"[图库] 用户排行统计失败: {e}")
+            return {"scope": "all", "total": 0, "rows": []}
+
+    def hourly_trend(self, days: int = 1) -> dict:
+        """近 N 天（默认 1 天）用户生图数量面积图数据：按本地时区小时分桶。
+
+        返回 {"scope": "1d", "buckets": [{"hour": "2026-08-12 00:00", "ts": 秒, "count": n}]}
+        桶从 (今天 0 点 - (days-1) 天) 开始，逐小时递增，未生图的时段也补 0。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return {"scope": "1d", "buckets": []}
+        conn = self._conn_get()
+        try:
+            now = time.time()
+            lt = time.localtime(now)
+            day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+            start_ts = day_start - (max(1, int(days)) - 1) * 86400.0
+            end_ts = now
+            rows = conn.execute(
+                "SELECT created_at AS t FROM images "
+                "WHERE source=? AND status=0 AND deleted=0 AND created_at>=? AND created_at<=? "
+                "ORDER BY created_at ASC",
+                (SRC_GEN, start_ts, end_ts),
+            ).fetchall()
+            # 统计每个整点桶的计数
+            bucket_count: dict[int, int] = {}
+            for r in rows:
+                t = float(r["t"])
+                bucket = int(t // 3600) * 3600
+                bucket_count[bucket] = bucket_count.get(bucket, 0) + 1
+            # 生成连续桶（含 0 值补全）
+            buckets = []
+            b0 = int(start_ts // 3600) * 3600
+            b1 = int(end_ts // 3600) * 3600
+            b = b0
+            while b <= b1:
+                lt_b = time.localtime(b)
+                buckets.append({
+                    "hour": time.strftime("%m-%d %H:00", lt_b),
+                    "ts": b,
+                    "count": bucket_count.get(b, 0),
+                })
+                b += 3600
+            return {"scope": f"{max(1, int(days))}d", "buckets": buckets}
+        except Exception as e:
+            logger.warning(f"[图库] 小时趋势统计失败: {e}")
+            return {"scope": "1d", "buckets": []}
+
+    @staticmethod
+    def _stats_since_ts(days: int | None) -> float | None:
+        """根据天数参数返回统计起始时间戳（本地时区）。None=全部；0=今天 0 点；N=最近 N 天 0 点。"""
+        if days is None:
+            return None
+        now = time.time()
+        lt = time.localtime(now)
+        day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        if days == 0:
+            return day_start
+        return day_start - (max(1, int(days)) - 1) * 86400.0
+
+    # ------------------------------------------------------------------ #
     # LRU 淘汰
     # ------------------------------------------------------------------ #
     def _compute_sizes(self, conn) -> tuple[int, int]:

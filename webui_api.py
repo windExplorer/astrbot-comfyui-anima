@@ -186,6 +186,39 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"统计失败: {e}")
 
+    # -------------------------------------------------------------- #
+    # 用户生图统计
+    # -------------------------------------------------------------- #
+    async def stats_ranking(self):
+        """用户生图数量排行。query: days=today|3|7|all（默认 all）。"""
+        g = self._gallery()
+        if g is None:
+            return json_response({"scope": "all", "total": 0, "rows": []})
+        try:
+            days_raw = request.query.get("days", "all")
+            days = {"today": 0, "3": 3, "7": 7, "all": None}.get(str(days_raw).strip().lower(), None)
+            return json_response(g.user_ranking(days=days))
+        except Exception as e:
+            return error_response(f"统计排行失败: {e}")
+
+    async def stats_trend(self):
+        """近一天用户生图数量面积图数据（按小时分桶）。query: days=1（默认）。"""
+        g = self._gallery()
+        if g is None:
+            return json_response({"scope": "1d", "buckets": []})
+        try:
+            try:
+                days = request.query.get("days", 1, type=int)
+            except Exception:
+                days = 1
+            if days < 1:
+                days = 1
+            if days > 7:
+                days = 7
+            return json_response(g.hourly_trend(days=days))
+        except Exception as e:
+            return error_response(f"统计趋势失败: {e}")
+
     async def gallery_search(self):
         g = self._gallery()
         if g is None:
@@ -533,6 +566,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/purge", api.gallery_purge, ["POST"], "图库彻底删除"),
         (f"{prefix}/gallery/tags", api.gallery_tags, ["POST"], "图库打标签"),
         (f"{prefix}/gallery/backup", api.backup_db, ["GET"], "备份图库数据库"),
+        (f"{prefix}/stats/ranking", api.stats_ranking, ["GET"], "用户生图排行"),
+        (f"{prefix}/stats/trend", api.stats_trend, ["GET"], "生图小时趋势"),
     ]
     registered = []
     for path, handler, methods, desc in routes:
