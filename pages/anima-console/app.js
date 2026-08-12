@@ -91,6 +91,8 @@
     editMsg: $("editMsg"),
     editSaveBtn: $("editSaveBtn"),
     editCancelBtn: $("editCancelBtn"),
+    loraImgDialog: $("loraImgDialog"),
+    loraImgFull: $("loraImgFull"),
     imageDialog: $("imageDialog"),
     imageDialogImgs: $("imageDialogImgs"),
     imageDialogImg: $("imageDialogImg"),
@@ -1338,16 +1340,15 @@
       var img = (l.image || "").trim() || "";
       var cUrl = (l.civitai_url || "").trim() || "";
       html += '<div class="lora-card" data-idx="' + idx + '">'
-        + loraCoverHtml(name, img)
+        + '<div class="lora-cover-wrap"><button type="button" class="lora-cover-btn" data-img="' + escapeHtml(img) + '" data-idx="' + idx + '" title="点击查看大图">' + loraCoverHtml(name, img) + '</button></div>'
         + '<div class="lora-card-body">'
         + '<div class="lora-card-title">' + escapeHtml(name) + '</div>'
         + '<div class="lora-card-alias">别名：' + escapeHtml(aliases) + '</div>'
         + '<div class="lora-card-meta"><span class="lora-badge">' + escapeHtml(bm) + '</span>'
-        + (cUrl ? '<a class="lora-civ-link" href="' + escapeHtml(cUrl) + '" target="_blank" rel="noopener">C站</a>' : '')
+        + (cUrl ? '<a class="lora-civ-link" href="' + escapeHtml(cUrl) + '" target="_blank" rel="noopener noreferrer">C站 ↗</a>' : '')
         + '</div>'
-        + (tw ? '<div class="lora-card-tw">触发词：' + escapeHtml(tw.replace(/\n/g, " / ")) + '</div>' : '')
-        + (desc ? '<div class="lora-card-desc">' + escapeHtml(desc) + '</div>' : '')
         + '<div class="lora-card-actions">'
+        + '<button type="button" class="lora-detail" data-idx="' + idx + '">详情</button>'
         + '<button type="button" class="lora-edit" data-idx="' + idx + '">编辑</button>'
         + '<button type="button" class="lora-fetch" data-idx="' + idx + '">抓取</button>'
         + '<button type="button" class="lora-upload" data-idx="' + idx + '">上传封面</button>'
@@ -1363,6 +1364,19 @@
       }).catch(function () {});
     });
     // 事件
+    holder.querySelectorAll(".lora-cover-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var fname = btn.dataset.img || "";
+        if (!fname) {
+          showToast("该 LoRA 没有封面图，可先上传封面", "info");
+          return;
+        }
+        openLoraImage(fname);
+      });
+    });
+    holder.querySelectorAll(".lora-detail").forEach(function (btn) {
+      btn.addEventListener("click", function () { openLoraDetail(+btn.dataset.idx); });
+    });
     holder.querySelectorAll(".lora-edit").forEach(function (btn) {
       btn.addEventListener("click", function () { openLoraEditor(+btn.dataset.idx); });
     });
@@ -1438,6 +1452,52 @@
     input.click();
   }
 
+  // 打开 LoRA 封面大图弹窗
+  function openLoraImage(fname) {
+    if (!els.loraImgDialog || !els.loraImgFull) return;
+    els.loraImgFull.src = "";
+    els.loraImgFull.classList.add("img-loading");
+    els.loraImgDialog.showModal();
+    apiGet("lora/image", { name: fname }).then(function (d) {
+      els.loraImgFull.classList.remove("img-loading");
+      if (d && d.url) {
+        els.loraImgFull.src = d.url;
+      } else {
+        showToast("封面图不存在或已删除", "error");
+        els.loraImgDialog.close();
+      }
+    }).catch(function () {
+      els.loraImgFull.classList.remove("img-loading");
+      showToast("加载封面大图失败", "error");
+      els.loraImgDialog.close();
+    });
+  }
+
+  // 打开 LoRA 详情弹窗（触发词/描述）
+  function openLoraDetail(idx) {
+    var l = (state.config && state.config.loras && state.config.loras[idx]) || {};
+    var tw = (l.trigger_words || "").trim();
+    var desc = (l.description || "").trim();
+    var alias = (l.keywords || "").trim();
+    var bm = (l.base_model || "").trim() || "通用";
+    var cUrl = (l.civitai_url || "").trim();
+    var lines = [];
+    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">名称</span><span>' + escapeHtml(l.name || "—") + '</span></div>');
+    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">别名</span><span>' + escapeHtml(alias || "—") + '</span></div>');
+    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">底模</span><span>' + escapeHtml(bm) + '</span></div>');
+    var twHtml = tw ? escapeHtml(tw).replace(/\n/g, "<br>") : "—";
+    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">触发词</span><span>' + twHtml + '</span></div>');
+    var descHtml = desc ? escapeHtml(desc).replace(/\n/g, "<br>") : "—";
+    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">描述</span><span>' + descHtml + '</span></div>');
+    if (cUrl) {
+      lines.push('<div class="lora-detail-row"><span class="lora-detail-k">C 站</span><a href="' + escapeHtml(cUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(cUrl) + ' ↗</a></div>');
+    }
+    openEditDialog("LoRA 详情", (l.name || "LoRA") + " 信息", '<div class="lora-detail-box">' + lines.join("") + '</div>', null);
+    // 详情只读：隐藏保存按钮，仅保留关闭
+    if (els.editSaveBtn) els.editSaveBtn.style.display = "none";
+    if (els.editCancelBtn) els.editCancelBtn.textContent = "关闭";
+  }
+
   function saveLorasState() {
     return apiPost("config", { config: { loras: state.config.loras } });
   }
@@ -1450,6 +1510,8 @@
     els.editBody.innerHTML = bodyHtml;
     els.editMsg.textContent = "";
     els.editDialog._onSave = onSave;
+    // onSave 为空 = 只读弹窗（如详情），隐藏保存按钮
+    if (els.editSaveBtn) els.editSaveBtn.style.display = onSave ? "" : "none";
     els.editDialog.showModal();
   }
 
@@ -1482,6 +1544,8 @@
   }
 
   function openLoraEditor(idx) {
+    if (els.editSaveBtn) els.editSaveBtn.style.display = "";
+    if (els.editCancelBtn) els.editCancelBtn.textContent = "取消";
     var loras = (state.config && Array.isArray(state.config.loras)) ? state.config.loras : [];
     var isNew = idx < 0 || idx >= loras.length;
     var l = isNew ? {} : (loras[idx] || {});
@@ -1515,6 +1579,8 @@
   }
 
   function openWorkflowEditor(idx) {
+    if (els.editSaveBtn) els.editSaveBtn.style.display = "";
+    if (els.editCancelBtn) els.editCancelBtn.textContent = "取消";
     var wfs = (state.config && Array.isArray(state.config.workflows)) ? state.config.workflows : [];
     var isNew = idx < 0 || idx >= wfs.length;
     var w = isNew ? {} : (wfs[idx] || {});

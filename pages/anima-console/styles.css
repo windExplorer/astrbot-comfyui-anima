@@ -436,9 +436,13 @@ body{
 .loras-toolbar button:hover,.workflows-toolbar button:hover{background:var(--accent);color:#fff}
 .loras-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
 .lora-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow-sm)}
-.lora-cover{aspect-ratio:1/1;background:var(--bg-raised);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.lora-cover{aspect-ratio:3/4;background:var(--bg-raised);display:flex;align-items:center;justify-content:center;overflow:hidden}
 .lora-cover img{width:100%;height:100%;object-fit:cover;display:block}
 .lora-cover-empty{color:var(--text-muted);font-size:.85rem}
+.lora-cover-wrap{margin-bottom:0}
+.lora-cover-btn{display:block;width:100%;padding:0;border:none;background:none;cursor:zoom-in}
+.lora-cover-btn:hover .lora-cover img{opacity:.88}
+.lora-cover-btn:hover .lora-cover-empty{color:var(--accent)}
 .lora-card-body{padding:12px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
 .lora-card-title{font-weight:700;font-size:.95rem}
 .lora-card-alias{font-size:.8rem;color:var(--text-muted)}
@@ -493,3 +497,17 @@ body{
 .edit-toggle input:checked + .toggle-slider{background:var(--accent, #8b5cf6)}
 .edit-toggle input:checked + .toggle-slider::after{transform:translateX(18px)}
 .edit-toggle .toggle-label{line-height:1.4}
+
+/* LoRA 详情弹窗 */
+.lora-detail-box{display:flex;flex-direction:column;gap:10px;margin-top:14px;max-height:55vh;overflow-y:auto;padding-right:4px}
+.lora-detail-row{display:flex;align-items:flex-start;gap:12px;font-size:.85rem}
+.lora-detail-k{flex:none;min-width:56px;color:var(--text-muted);font-weight:600}
+.lora-detail-row a{color:var(--accent);word-break:break-all}
+
+/* LoRA 封面大图弹窗 */
+#loraImgDialog{border:none;background:none;padding:0;margin:auto;max-width:92vw}
+#loraImgDialog::backdrop{background:rgba(0,0,0,.78)}
+#loraImgDialog form{position:relative;margin:0}
+#loraImgDialog img{max-width:92vw;max-height:88vh;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.lora-img-close{position:absolute;top:-40px;right:0;background:rgba(0,0,0,.5);color:#fff;border:none;width:32px;height:32px;border-radius:50%;font-size:1.1rem;cursor:pointer;line-height:1}
+.lora-img-close:hover{background:rgba(0,0,0,.75)}

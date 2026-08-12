@@ -312,14 +312,26 @@ class WebUIApi:
 
             # 从链接解析模型 id / 版本 id
             api_url = None
+            # 优先识别路径中的 /model-versions/数字；C 站也常见 ?modelVersionId=xxx 查询参数
+            mvid_path = re.search(r"/model-versions/(\d+)", url)
             m = re.search(r"/models/(\d+)", url)
-            mv = re.search(r"/model-versions/(\d+)", url)
-            if mv:
-                api_url = f"https://civitai.com/api/v1/model-versions/{mv.group(1)}"
+            # 查询参数 modelVersionId（父页面仅型号链接常见）
+            mvid_query = ""
+            try:
+                from urllib.parse import parse_qs, urlparse as _urlparse
+
+                _qs = parse_qs(_urlparse(url).query)
+                if _qs.get("modelVersionId"):
+                    mvid_query = _qs["modelVersionId"][0]
+            except Exception:
+                mvid_query = ""
+            target_version_id = mvid_query or (mvid_path.group(1) if mvid_path else "")
+            if mvid_path:
+                api_url = f"https://civitai.com/api/v1/model-versions/{mvid_path.group(1)}"
             elif m:
                 api_url = f"https://civitai.com/api/v1/models/{m.group(1)}"
             else:
-                return error_response("无法从链接中识别 C 站模型 ID（需包含 /models/数字 或 /model-versions/数字）")
+                return error_response("无法从链接中识别 C 站模型 ID（需包含 /models/数字、/model-versions/数字 或 ?modelVersionId=）")
             headers = {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -371,7 +383,16 @@ class WebUIApi:
                 versions = data.get("modelVersions") or []
             elif isinstance(data, dict) and ("trainedWords" in data or "images" in data):
                 versions = [data]
-            version = versions[0] if versions else None
+            version = None
+            if versions:
+                if target_version_id and len(versions) > 1:
+                    # 用户链接指定了具体版本：按 id 精确匹配（避免多版本时取错底模）
+                    for _v in versions:
+                        if str(_v.get("id") or "") == str(target_version_id):
+                            version = _v
+                            break
+                if version is None:
+                    version = versions[0]
             # 触发词/底模/描述
             trigger_words = ""
             base_model = ""
