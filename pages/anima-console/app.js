@@ -1448,7 +1448,7 @@
       + fieldHtml("别名（逗号/换行分隔）", textareaHtml("aliases", w.aliases, 2))
       + fieldHtml("绑定服务器", inputHtml("server_name", w.server_name, "如 server1"))
       + fieldHtml("工作流文件名", inputHtml("workflow_name", w.workflow_name, "如 sd.json"))
-      + fieldHtml("Anima 工作流", '<input type="checkbox" data-f="is_anima_cb"' + (w.is_anima ? " checked" : "") + '>')
+      + fieldHtml("Anima 工作流", '<label class="edit-toggle"><input type="checkbox" data-f="is_anima_cb"' + (w.is_anima ? " checked" : "") + '><span class="toggle-slider"></span><span class="toggle-label">开启后中文提示词会先翻译为 Danbooru 标签</span></label>')
       + fieldHtml("默认 LoRA（每行 名称|权重|启用|底模）", textareaHtml("loras_text", w.loras_text, 3));
     openEditDialog("WORKFLOW", (isNew ? "新增" : "编辑") + " 工作流", body, function () {
       var v = collectForm();
