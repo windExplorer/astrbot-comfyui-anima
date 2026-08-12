@@ -146,6 +146,18 @@
             "hint": "外部传入的、会命中本工作流的其它名字（如伴侣插件传的 anime_selfie_workflow、ComfyUI default）。多个用逗号或换行隔开，每个别名一个。匹配大小写不敏感。",
             "default": ""
           },
+          "image": {
+            "type": "string",
+            "description": "封面图（本地文件名，可选）",
+            "hint": "封面图文件名（存于插件数据目录 lora_assets/ 下）。通过 WebUI 抓取或上传后自动填充；WebUI 卡片展示该图，未设置时显示默认占位图。",
+            "default": ""
+          },
+          "civitai_url": {
+            "type": "string",
+            "description": "C 站链接（可选，用于抓取封面）",
+            "hint": "Civitai 模型页面链接（含 ?modelVersionId= 会精确匹配版本）。WebUI 卡片点「抓取封面」可自动下载该模型的封面图到本地并填入 image。",
+            "default": ""
+          },
           "server_name": {
             "type": "string",
             "description": "绑定服务器",

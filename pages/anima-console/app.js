@@ -1282,7 +1282,10 @@
       }).map(function (l) { return (l.name || ""); }).filter(Boolean);
       var availStr = avail.length ? avail.slice(0, 6).join("、") + (avail.length > 6 ? " …" : "") : "无匹配 LoRA";
       var loraCfg = (w.loras_text || "").trim() ? "已配默认 LoRA" : "未配默认 LoRA";
+      var wImg = (w.image || "").trim() || "";
+      var wCiv = (w.civitai_url || "").trim() || "";
       html += '<div class="wf-card" data-idx="' + idx + '">'
+        + '<div class="lora-cover-wrap"><button type="button" class="lora-cover-btn wf-cover-btn" data-img="' + escapeHtml(wImg) + '" data-idx="' + idx + '" title="点击查看大图">' + loraCoverHtml(name, wImg) + '</button></div>'
         + '<div class="wf-card-head"><span class="wf-card-title">' + escapeHtml(name) + '</span>'
         + (isAnima ? '<span class="wf-badge anima">Anima</span>' : '')
         + '</div>'
@@ -1291,12 +1294,15 @@
         + '<span class="lora-badge">' + escapeHtml(bm) + '</span>'
         + '<span class="wf-srv">' + escapeHtml(srv) + '</span>'
         + (wfName ? '<span class="wf-file">' + escapeHtml(wfName) + '</span>' : '')
+        + (wCiv ? '<a class="lora-civ-link" href="' + escapeHtml(wCiv) + '" target="_blank" rel="noopener noreferrer">C站 ↗</a>' : '')
         + '</div>'
         + '<div class="wf-card-loracfg">' + escapeHtml(loraCfg) + '</div>'
         + '<div class="wf-card-avail">可用 LoRA：' + escapeHtml(availStr) + '</div>'
         + '<div class="wf-card-actions">'
         + '<button type="button" class="wf-edit" data-idx="' + idx + '">编辑</button>'
         + '<button type="button" class="wf-copy" data-idx="' + idx + '" title="复制该工作流创建新工作流">复制</button>'
+        + '<button type="button" class="wf-cover-fetch" data-idx="' + idx + '" title="从 C 站抓取封面">抓封面</button>'
+        + '<button type="button" class="wf-cover-upload" data-idx="' + idx + '" title="上传封面图片">传封面</button>'
         + '<button type="button" class="wf-del danger" data-idx="' + idx + '">删除</button>'
         + '</div>'
         + '</div>';
@@ -1321,6 +1327,26 @@
           renderWorkflows();
         }).catch(function (e) { showToast(e.message || "删除失败", "error"); });
       });
+    });
+    // 工作流封面：加载图 / 看大图 / 抓封面 / 传封面
+    holder.querySelectorAll("[data-lora-img]").forEach(function (img) {
+      var fname = img.dataset.loraImg;
+      apiGet("lora/image", { name: fname }).then(function (d) {
+        if (d && d.url) img.src = d.url;
+      }).catch(function () {});
+    });
+    holder.querySelectorAll(".wf-cover-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var fname = btn.dataset.img || "";
+        if (!fname) { showToast("该工作流没有封面图，可先上传或抓取封面", "info"); return; }
+        openLoraImage(fname);
+      });
+    });
+    holder.querySelectorAll(".wf-cover-fetch").forEach(function (btn) {
+      btn.addEventListener("click", function () { fetchWorkflowCover(btn); });
+    });
+    holder.querySelectorAll(".wf-cover-upload").forEach(function (btn) {
+      btn.addEventListener("click", function () { uploadWorkflowCover(btn); });
     });
   }
 
@@ -1429,6 +1455,66 @@
         }).catch(function (e) { showToast(e.message || "删除失败", "error"); });
       });
     });
+  }
+
+  // 抓取工作流封面：调 C 站接口（返回 image 文件名，仅存封面），写入工作流配置
+  function fetchWorkflowCover(btn) {
+    var idx = +btn.dataset.idx;
+    var w = (state.config && state.config.workflows && state.config.workflows[idx]) || {};
+    var cur = (w.civitai_url || "").trim();
+    if (!cur) {
+      showToast("该工作流尚未配置 C 站链接，请先在编辑中填写链接后再抓封面", "info");
+      return;
+    }
+    setButtonBusy(btn, true, "抓取中…", "抓封面");
+    apiRaw("lora/fetch", { method: "POST", body: { url: cur }, timeout: 60000 }).then(function (d) {
+      setButtonBusy(btn, false, "抓取中…", "抓封面");
+      if (!d) return;
+      if (d.image) {
+        w.image = d.image;
+        apiPost("config", { config: { workflows: state.config.workflows } }).then(function () {
+          showToast("封面已抓取并保存", "success");
+          renderWorkflows();
+        }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
+      } else {
+        showToast("未获取到封面图（C 站可能无预览图）", "info");
+      }
+    }).catch(function (e) {
+      setButtonBusy(btn, false, "抓取中…", "抓封面");
+      showToast("抓取失败：" + (e && e.message ? e.message : "网络错误"), "error");
+    });
+  }
+
+  // 上传工作流封面
+  function uploadWorkflowCover(btn) {
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var b64 = String(reader.result).split(",")[1] || "";
+        setButtonBusy(btn, true, "上传中…", "传封面");
+        apiPost("lora/upload_image", { filename: file.name, data: b64 }).then(function (d) {
+          setButtonBusy(btn, false, "上传中…", "传封面");
+          if (!d || !d.name) return;
+          var idx = +btn.dataset.idx;
+          var w = state.config.workflows[idx] || {};
+          w.image = d.name;
+          apiPost("config", { config: { workflows: state.config.workflows } }).then(function () {
+            showToast("封面已上传并保存", "success");
+            renderWorkflows();
+          }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
+        }).catch(function (e) {
+          setButtonBusy(btn, false, "上传中…", "传封面");
+          showToast("上传失败：" + (e && e.message ? e.message : "未知错误"), "error");
+        });
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
   }
 
   function fetchLoraRemote(btn, url) {
@@ -1658,6 +1744,8 @@
       + fieldHtml("绑定服务器", inputHtml("server_name", w.server_name, "如 server1"))
       + fieldHtml("工作流文件名", inputHtml("workflow_name", w.workflow_name, "如 sd.json"))
       + fieldHtml("Anima 工作流", '<label class="edit-toggle"><input type="checkbox" data-f="is_anima_cb"' + (w.is_anima ? " checked" : "") + '><span class="toggle-slider"></span><span class="toggle-label">开启后中文提示词会先翻译为 Danbooru 标签</span></label>')
+      + fieldHtml("C 站链接（用于抓取封面）", inputHtml("civitai_url", w.civitai_url, "https://civitai.com/models/xxx"))
+      + fieldHtml("封面图文件名", inputHtml("image", w.image, "存于 lora_assets/，可抓取或上传"))
       + fieldHtml("默认 LoRA（每行 名称|权重|启用|底模）", textareaHtml("loras_text", w.loras_text, 3));
     openEditDialog("WORKFLOW", (isNew ? "新增" : "编辑") + " 工作流", body, function () {
       var v = collectForm();
