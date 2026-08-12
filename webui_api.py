@@ -250,7 +250,29 @@ class WebUIApi:
             return error_response("图片不存在", status_code=404)
         try:
             mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-            data = await asyncio.to_thread(path.read_bytes)
+            # 压缩缩略图（最大宽/高 640px），避免原图 base64 过大导致前端 <img> 无法显示/卡顿
+            data = None
+            try:
+                from PIL import Image as _PImage
+                import io as _io
+
+                with _PImage.open(path) as _im:
+                    _im.thumbnail((640, 640))
+                    _buf = _io.BytesIO()
+                    _fmt = _im.format or "JPEG"
+                    if _fmt.upper() == "PNG":
+                        _im.save(_buf, "PNG")
+                        mime = "image/png"
+                    else:
+                        if _im.mode in ("RGBA", "P", "LA"):
+                            _im = _im.convert("RGB")
+                        _im.save(_buf, "JPEG", quality=82)
+                        mime = "image/jpeg"
+                    data = _buf.getvalue()
+            except Exception:
+                data = None
+            if data is None:
+                data = await asyncio.to_thread(path.read_bytes)
             b64 = base64.b64encode(data).decode("ascii")
             return json_response({"name": fname, "url": f"data:{mime};base64,{b64}"})
         except Exception as e:
@@ -479,12 +501,38 @@ class WebUIApi:
                                 ext_by_magic = ".gif"
                             if ext_by_magic and len(_img_data) >= 64:
                                 image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext_by_magic}"
-                                (self._lora_assets_dir() / image_name).write_bytes(_img_data)
-                                break
+                                try:
+                                    _dest = self._lora_assets_dir() / image_name
+                                    _dest.write_bytes(_img_data)
+                                    if not _dest.exists() or _dest.stat().st_size < 64:
+                                        # 写失败/空文件
+                                        try:
+                                            from astrbot.api import logger as _log
+                                            _log.warning(f"[LoRA抓取] 封面写入异常: {_dest}")
+                                        except Exception:
+                                            pass
+                                        image_name = ""
+                                        continue
+                                    # 写入成功，记录实际路径供排查
+                                    try:
+                                        from astrbot.api import logger as _log
+                                        _log.info(f"[LoRA抓取] 封面已保存: {_dest}")
+                                    except Exception:
+                                        pass
+                                    break
+                                except Exception as _we:
+                                    try:
+                                        from astrbot.api import logger as _log
+                                        _log.warning(f"[LoRA抓取] 封面写入失败: {_we}")
+                                    except Exception:
+                                        pass
+                                    image_name = ""
+                                    continue
                         except Exception:
                             continue
             return json_response({
                 "image": image_name,
+                "save_dir": str(self._lora_assets_dir()) if image_name else "",
                 "trigger_words": trigger_words,
                 "description": description[:2000],
                 "base_model": base_model,

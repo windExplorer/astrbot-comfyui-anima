@@ -1408,8 +1408,14 @@
     holder.querySelectorAll("[data-lora-img]").forEach(function (img) {
       var fname = img.dataset.loraImg;
       apiGet("lora/image", { name: fname }).then(function (d) {
-        if (d && d.url) img.src = d.url;
-      }).catch(function () {});
+        if (d && d.url) {
+          img.src = d.url;
+        } else {
+          console.warn("[anima-console] lora/image 返回无 url:", fname, d);
+        }
+      }).catch(function (e) {
+        console.warn("[anima-console] lora/image 加载失败:", fname, e && e.message ? e.message : e);
+      });
     });
     // 事件
     holder.querySelectorAll(".lora-cover-btn").forEach(function (btn) {
@@ -1473,7 +1479,7 @@
       if (d.image) {
         w.image = d.image;
         apiPost("config", { config: { workflows: state.config.workflows } }).then(function () {
-          showToast("封面已抓取并保存", "success");
+          showToast("封面已抓取并保存" + (d.save_dir ? "（" + d.save_dir + "）" : ""), "success");
           renderWorkflows();
         }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
       } else {
@@ -1546,7 +1552,7 @@
       }
       l.civitai_url = url;
       saveLorasState().then(function () {
-        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」（标题已并入别名）" + (noCover ? "；未获取到有效封面（可能该版本无图片预览或只有视频）" : ""), noCover ? "info" : "success");
+        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」" + (noCover ? "；未获取到有效封面（可能该版本无图片预览或只有视频）" : (d && d.save_dir ? "，封面已存 " + d.save_dir : "")), noCover ? "info" : "success");
         renderLoras();
       });
     }).catch(function (e) {
