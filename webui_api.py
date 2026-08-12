@@ -334,12 +334,29 @@ class WebUIApi:
             except Exception:
                 proxy = None
             # 环境变量代理交给 aiohttp trust_env
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
-                async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
-                    if resp.status != 200:
-                        return error_response(f"C 站 API 请求失败: HTTP {resp.status}")
-                    data = await resp.json()
+            timeout = aiohttp.ClientTimeout(total=10)
+            try:
+                async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                    async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
+                        if resp.status != 200:
+                            return error_response(f"C 站 API 请求失败: HTTP {resp.status}")
+                        data = await resp.json()
+            except asyncio.TimeoutError:
+                try:
+                    from astrbot.api import logger as _log
+                    _log.warning(f"[LoRA抓取] C站 API 超时: {api_url}")
+                except Exception:
+                    pass
+                return error_response("C 站 API 请求超时（10s 未响应）。请检查网络/代理是否可达 civitai.com，或稍后重试；也可手动填写描述与触发词。")
+            except aiohttp.ClientConnectorError as e:
+                try:
+                    from astrbot.api import logger as _log
+                    _log.warning(f"[LoRA抓取] C站连接失败: {api_url} proxy={proxy} err={e}")
+                except Exception:
+                    pass
+                return error_response(f"无法连接 C 站 API（连接失败：{e.host if getattr(e, 'host', None) else '未知'}）。请检查网络/代理配置。")
+            except aiohttp.ClientError as e:
+                return error_response(f"C 站 API 请求出错（{type(e).__name__}: {e or '未知网络错误'}）。请检查网络后重试。")
             # 统一取 modelVersions 列表（models 接口）或单版本对象（model-versions 接口）
             versions = []
             if isinstance(data, dict) and data.get("modelVersions"):
@@ -386,7 +403,8 @@ class WebUIApi:
                 "fetched": bool(version),
             })
         except Exception as e:
-            return error_response(f"抓取失败: {e}")
+            detail = str(e) or type(e).__name__ or "未知错误"
+            return error_response(f"抓取失败: {detail}")
 
     async def gallery_search(self):
         g = self._gallery()
