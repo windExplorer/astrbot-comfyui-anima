@@ -419,7 +419,7 @@ class WebUIApi:
                 trigger_words = "\n".join(str(x) for x in tw if x)
                 base_model = str(version.get("baseModel") or "").strip()
                 description = str(data.get("description") or version.get("description") or "").strip()
-            # 封面图：优先选「竖图」（宽≤高，C 站封面默认偏竖/方形），否则取第一张
+            # 封面图：只选「图片」条目（排除视频），优先竖图（宽≤高），否则取第一张
             image_name = ""
             cover_url = ""
             if version:
@@ -428,6 +428,10 @@ class WebUIApi:
                 for _im in images:
                     if not isinstance(_im, dict):
                         continue
+                    # C 站 images 条目有 type 字段：图片=image，视频=video；缺省视为图片
+                    itype = str(_im.get("type") or "image").lower()
+                    if itype and itype not in ("image", "photo"):
+                        continue  # 跳过视频/其它类型
                     u = str(_im.get("url") or "").strip()
                     if not u:
                         continue
@@ -436,6 +440,10 @@ class WebUIApi:
                         h = int(_im.get("height") or 0)
                     except (TypeError, ValueError):
                         w = h = 0
+                    # 若 URL 明确指向视频后缀也跳过
+                    path_low = urlparse(u).path.lower()
+                    if path_low.endswith((".mp4", ".mov", ".webm", ".avi", ".m4v")):
+                        continue
                     candidates.append((u, w, h))
                 if candidates:
                     cover_url = candidates[0][0]
@@ -450,12 +458,22 @@ class WebUIApi:
                         async with sess.get(cover_url, timeout=cover_timeout, proxy=proxy) as resp:
                             if resp.status == 200:
                                 img_data = await resp.read()
-                                if img_data and len(img_data) >= 64:
-                                    ext = os.path.splitext(urlparse(cover_url).path)[1] or ".jpg"
-                                    if ext.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-                                        ext = ".jpg"
-                                    image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext}"
+                                # 用 magic bytes 识别真实图片格式；非图片（如视频/HTML）直接丢弃
+                                ext_by_magic = ""
+                                if img_data[:3] == b"\xff\xd8\xff":
+                                    ext_by_magic = ".jpg"
+                                elif img_data[:8] == b"\x89PNG\r\n\x1a\n":
+                                    ext_by_magic = ".png"
+                                elif img_data[:4] == b"RIFF" and img_data[8:12] == b"WEBP":
+                                    ext_by_magic = ".webp"
+                                elif img_data[:4] == b"GIF8":
+                                    ext_by_magic = ".gif"
+                                if ext_by_magic and len(img_data) >= 64:
+                                    image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext_by_magic}"
                                     (self._lora_assets_dir() / image_name).write_bytes(img_data)
+                                else:
+                                    # 不是合法图片（视频/错误内容），丢弃
+                                    image_name = ""
                 except Exception:
                     image_name = ""
             return json_response({

@@ -1477,7 +1477,7 @@
           renderWorkflows();
         }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
       } else {
-        showToast("未获取到封面图（C 站可能无预览图）", "info");
+        showToast("未获取到有效封面（该版本可能无图片预览、只有视频，或网络问题）", "info");
       }
     }).catch(function (e) {
       setButtonBusy(btn, false, "抓取中…", "抓封面");
@@ -1524,7 +1524,8 @@
       if (!d) return;
       var idx = +btn.dataset.idx;
       var l = state.config.loras[idx] || {};
-      if (d.image) l.image = d.image;
+      var noCover = false;
+      if (d.image) l.image = d.image; else noCover = true;
       if (d.trigger_words) l.trigger_words = d.trigger_words;
       if (d.description) l.description = d.description;
       // C 站标题并入别名（若不存在）：别名现在是换行分隔（textarea），兼容旧逗号分隔
@@ -1545,7 +1546,7 @@
       }
       l.civitai_url = url;
       saveLorasState().then(function () {
-        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」（标题已并入别名）", "success");
+        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」（标题已并入别名）" + (noCover ? "；未获取到有效封面（可能该版本无图片预览或只有视频）" : ""), noCover ? "info" : "success");
         renderLoras();
       });
     }).catch(function (e) {
