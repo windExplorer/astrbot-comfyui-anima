@@ -446,6 +446,7 @@ body{
 .lora-card-body{padding:12px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
 .lora-card-title{font-weight:700;font-size:.95rem}
 .lora-card-alias{font-size:.8rem;color:var(--text-muted)}
+.lora-card-alias .alias-more{color:var(--accent);font-weight:600;margin-left:2px}
 .lora-card-meta{display:flex;align-items:center;gap:8px}
 .lora-badge{display:inline-block;font-size:.72rem;padding:2px 8px;border-radius:10px;background:var(--accent-light);color:var(--accent);font-weight:600}
 .lora-civ-link{font-size:.75rem;color:var(--accent);text-decoration:none}

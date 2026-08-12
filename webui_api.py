@@ -397,6 +397,7 @@ class WebUIApi:
             trigger_words = ""
             base_model = ""
             description = ""
+            title = str((data.get("name") if isinstance(data, dict) else "") or "").strip()
             if version:
                 tw = version.get("trainedWords") or []
                 trigger_words = "\n".join(str(x) for x in tw if x)
@@ -429,6 +430,7 @@ class WebUIApi:
                 "trigger_words": trigger_words,
                 "description": description[:2000],
                 "base_model": base_model,
+                "title": title,
                 "fetched": bool(version),
             })
         except Exception as e:

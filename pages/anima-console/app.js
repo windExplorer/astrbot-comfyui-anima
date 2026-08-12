@@ -1333,7 +1333,8 @@
     var html = '<div class="loras-toolbar"><button id="lorasAddBtn" type="button">+ 新增 LoRA</button></div><div class="loras-card-grid">';
     loras.forEach(function (l, idx) {
       var name = (l.name || "");
-      var aliases = (l.keywords || "").split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean).join(" / ") || "—";
+      var aliases = (l.keywords || "").split(/[,，\n\r]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+      var aliasFirst = aliases.length ? aliases[0] : "—";
       var bm = (l.base_model || "").trim() || "通用";
       var tw = (l.trigger_words || "").trim() || "";
       var desc = (l.description || "").trim() || "";
@@ -1343,7 +1344,7 @@
         + '<div class="lora-cover-wrap"><button type="button" class="lora-cover-btn" data-img="' + escapeHtml(img) + '" data-idx="' + idx + '" title="点击查看大图">' + loraCoverHtml(name, img) + '</button></div>'
         + '<div class="lora-card-body">'
         + '<div class="lora-card-title">' + escapeHtml(name) + '</div>'
-        + '<div class="lora-card-alias">别名：' + escapeHtml(aliases) + '</div>'
+        + '<div class="lora-card-alias">别名：' + escapeHtml(aliasFirst) + (aliases.length > 1 ? ' <span class="alias-more">+' + (aliases.length - 1) + '</span>' : '') + '</div>'
         + '<div class="lora-card-meta"><span class="lora-badge">' + escapeHtml(bm) + '</span>'
         + (cUrl ? '<a class="lora-civ-link" href="' + escapeHtml(cUrl) + '" target="_blank" rel="noopener noreferrer">C站 ↗</a>' : '')
         + '</div>'
@@ -1406,13 +1407,25 @@
       if (d.image) l.image = d.image;
       if (d.trigger_words) l.trigger_words = d.trigger_words;
       if (d.description) l.description = d.description;
+      // C 站标题并入别名（若不存在）：别名现在是换行分隔（textarea），兼容旧逗号分隔
+      if (d.title) {
+        var oldKw = String(l.keywords || "").trim();
+        var existed = false;
+        (oldKw.split(/[,，\n\r]+/).map(function (s) { return s.trim(); }).filter(Boolean)).forEach(function (a) {
+          if (a === d.title) existed = true;
+        });
+        if (!existed) {
+          if (oldKw) l.keywords = oldKw + "\n" + d.title;
+          else l.keywords = d.title;
+        }
+      }
       if (d.base_model) {
         var bm = String(d.base_model).toLowerCase();
         if (["anima", "z-image-turbo", "krea2", "illustrious"].indexOf(bm) >= 0) l.base_model = bm;
       }
       l.civitai_url = url;
       saveLorasState().then(function () {
-        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」，请到配置页确认后保存", "success");
+        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」（标题已并入别名）", "success");
         renderLoras();
       });
     }).catch(function (e) {
@@ -1494,7 +1507,7 @@
     var cUrl = (l.civitai_url || "").trim();
     var lines = [];
     lines.push('<div class="lora-detail-row"><span class="lora-detail-k">名称</span><span>' + escapeHtml(l.name || "—") + '</span></div>');
-    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">别名</span><span>' + escapeHtml(alias || "—") + '</span></div>');
+    lines.push('<div class="lora-detail-row"><span class="lora-detail-k">别名</span><span>' + (alias ? escapeHtml(alias).replace(/\n/g, "<br>") : "—") + '</span></div>');
     lines.push('<div class="lora-detail-row"><span class="lora-detail-k">底模</span><span>' + escapeHtml(bm) + '</span></div>');
     var twHtml = tw ? escapeHtml(tw).replace(/\n/g, "<br>") : "—";
     lines.push('<div class="lora-detail-row"><span class="lora-detail-k">触发词</span><span>' + twHtml + '</span></div>');
@@ -1562,7 +1575,7 @@
     var l = isNew ? {} : (loras[idx] || {});
     var body = fieldHtml("名称（引用键）", inputHtml("name", l.name, "如 安魂曲"))
       + fieldHtml("底模", bmSelectHtml("base_model", l.base_model))
-      + fieldHtml("别名（触发关键词，逗号分隔）", inputHtml("keywords", l.keywords, "如 曲, 凄美"))
+      + fieldHtml("别名（每行一个，供 LLM 区分）", textareaHtml("keywords", l.keywords, 3))
       + fieldHtml("触发词（每行一个）", textareaHtml("trigger_words", l.trigger_words, 3))
       + fieldHtml("描述（供 LLM 理解）", textareaHtml("description", l.description, 3))
       + fieldHtml("C 站链接", inputHtml("civitai_url", l.civitai_url, "https://civitai.com/models/xxx"))
