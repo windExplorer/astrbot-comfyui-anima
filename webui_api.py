@@ -453,11 +453,8 @@ class WebUIApi:
                         continue
                     candidates.append((u, w, h))
                 if candidates:
+                    # 与 C 站页面一致：版本内「第一张图」即作者设置的封面/主图
                     cover_url = candidates[0][0]
-                    for _u, _w, _h in candidates:
-                        if _w and _h and _w <= _h:
-                            cover_url = _u
-                            break
                     # 逐个尝试候选图，直到下载到合法图片（避免单张 403/非图片就放弃）
                     img_headers = dict(headers)
                     img_headers["Referer"] = "https://civitai.com/"
