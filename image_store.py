@@ -149,6 +149,9 @@ class ImageStore:
                 "CREATE INDEX IF NOT EXISTS idx_images_month ON images(month)"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_images_session ON images(session_id)"
             )
             conn.execute(
@@ -1081,7 +1084,7 @@ class ImageStore:
                 where += " AND created_at>=?"
                 params.append(since)
             rows = conn.execute(
-                f"SELECT user_id, user_name, COUNT(*) AS c, MAX(created_at) AS last_ts FROM images "
+                f"SELECT user_id, MAX(user_name) AS user_name, COUNT(*) AS c, MAX(created_at) AS last_ts FROM images "
                 f"WHERE {where} GROUP BY user_id ORDER BY c DESC, MAX(created_at) DESC "
                 f"LIMIT ?",
                 (*params, int(limit)),
@@ -1141,6 +1144,7 @@ class ImageStore:
                     "user_id_counts": r.get("user_id_counts") or {},
                     "user_name": r["user_name"],
                     "count": r["count"],
+                    "last_ts": r.get("last_ts", 0),
                 })
             scope = "all" if days is None else ("today" if days == 0 else f"{days}d")
             return {"scope": scope, "total": int(total), "rows": out}
