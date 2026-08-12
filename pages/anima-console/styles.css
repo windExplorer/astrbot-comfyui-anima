@@ -456,6 +456,8 @@ body{
 .lora-card-actions{display:flex;gap:8px;margin-top:auto;padding-top:8px}
 .lora-card-actions button{font-size:.78rem;padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);cursor:pointer}
 .lora-card-actions button:hover{border-color:var(--accent);color:var(--accent)}
+.lora-card-actions button.danger{border-color:var(--danger);color:var(--danger)}
+.lora-card-actions button.danger:hover{background:var(--danger);color:#fff}
 
 /* ====== 工作流卡片视图 ====== */
 .workflows-toolbar{display:flex;justify-content:flex-end;margin-bottom:14px}
@@ -473,6 +475,8 @@ body{
 .wf-card-actions{display:flex;gap:8px;margin-top:auto;padding-top:8px}
 .wf-card-actions button{font-size:.78rem;padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);cursor:pointer}
 .wf-card-actions button:hover{border-color:var(--accent);color:var(--accent)}
+.wf-card-actions button.danger{border-color:var(--danger);color:var(--danger)}
+.wf-card-actions button.danger:hover{background:var(--danger);color:#fff}
 
 /* ====== 编辑弹窗 ====== */
 #editDialog{border:none;border-radius:var(--radius);padding:24px;background:var(--bg-card);box-shadow:var(--shadow-md);max-width:520px;width:92vw;margin:auto}

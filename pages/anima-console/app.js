@@ -1294,13 +1294,33 @@
         + '</div>'
         + '<div class="wf-card-loracfg">' + escapeHtml(loraCfg) + '</div>'
         + '<div class="wf-card-avail">可用 LoRA：' + escapeHtml(availStr) + '</div>'
-        + '<div class="wf-card-actions"><button type="button" class="wf-edit" data-idx="' + idx + '">编辑</button></div>'
+        + '<div class="wf-card-actions">'
+        + '<button type="button" class="wf-edit" data-idx="' + idx + '">编辑</button>'
+        + '<button type="button" class="wf-copy" data-idx="' + idx + '" title="复制该工作流创建新工作流">复制</button>'
+        + '<button type="button" class="wf-del danger" data-idx="' + idx + '">删除</button>'
+        + '</div>'
         + '</div>';
     });
     html += '</div>';
     holder.innerHTML = html;
     holder.querySelectorAll(".wf-edit").forEach(function (btn) {
       btn.addEventListener("click", function () { openWorkflowEditor(+btn.dataset.idx); });
+    });
+    holder.querySelectorAll(".wf-copy").forEach(function (btn) {
+      btn.addEventListener("click", function () { copyWorkflow(+btn.dataset.idx); });
+    });
+    holder.querySelectorAll(".wf-del").forEach(function (btn) {
+      btn.addEventListener("click", async function () {
+        var wfs = state.config.workflows;
+        var w = wfs[+btn.dataset.idx] || {};
+        var ok = await confirmAction("删除工作流", "确定要删除工作流「" + (w.name || "") + "」吗？此操作不可恢复！");
+        if (!ok) return;
+        wfs.splice(+btn.dataset.idx, 1);
+        apiPost("config", { config: { workflows: wfs } }).then(function () {
+          showToast("工作流已删除", "success");
+          renderWorkflows();
+        }).catch(function (e) { showToast(e.message || "删除失败", "error"); });
+      });
     });
   }
 
@@ -1353,6 +1373,7 @@
         + '<button type="button" class="lora-edit" data-idx="' + idx + '">编辑</button>'
         + '<button type="button" class="lora-fetch" data-idx="' + idx + '">抓取</button>'
         + '<button type="button" class="lora-upload" data-idx="' + idx + '">上传封面</button>'
+        + '<button type="button" class="lora-del danger" data-idx="' + idx + '">删除</button>'
         + '</div></div></div>';
     });
     html += '</div>';
@@ -1394,6 +1415,19 @@
     });
     holder.querySelectorAll(".lora-upload").forEach(function (btn) {
       btn.addEventListener("click", function () { uploadLoraCover(btn); });
+    });
+    holder.querySelectorAll(".lora-del").forEach(function (btn) {
+      btn.addEventListener("click", async function () {
+        var loras = state.config.loras;
+        var l = loras[+btn.dataset.idx] || {};
+        var ok = await confirmAction("删除 LoRA", "确定要删除 LoRA「" + (l.name || "") + "」吗？此操作不可恢复！");
+        if (!ok) return;
+        loras.splice(+btn.dataset.idx, 1);
+        saveLorasState().then(function () {
+          showToast("LoRA 已删除", "success");
+          renderLoras();
+        }).catch(function (e) { showToast(e.message || "删除失败", "error"); });
+      });
     });
   }
 
@@ -1602,12 +1636,22 @@
     });
   }
 
-  function openWorkflowEditor(idx) {
+  // 复制工作流：深拷贝一份（name 置空）追加到列表，打开新增编辑弹窗
+  function copyWorkflow(idx) {
+    var wfs = (state.config && Array.isArray(state.config.workflows)) ? state.config.workflows : [];
+    var src = wfs[idx];
+    if (!src) return;
+    var copy = JSON.parse(JSON.stringify(src));
+    copy.name = "";
+    openWorkflowEditor(-1, copy);
+  }
+
+  function openWorkflowEditor(idx, prefill) {
     if (els.editSaveBtn) els.editSaveBtn.style.display = "";
     if (els.editCancelBtn) els.editCancelBtn.textContent = "取消";
     var wfs = (state.config && Array.isArray(state.config.workflows)) ? state.config.workflows : [];
     var isNew = idx < 0 || idx >= wfs.length;
-    var w = isNew ? {} : (wfs[idx] || {});
+    var w = prefill ? prefill : (isNew ? {} : (wfs[idx] || {}));
     var body = fieldHtml("名称", inputHtml("name", w.name, "如 sd"))
       + fieldHtml("底模", bmSelectHtml("base_model", w.base_model))
       + fieldHtml("别名（逗号/换行分隔）", textareaHtml("aliases", w.aliases, 2))
