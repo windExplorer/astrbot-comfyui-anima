@@ -74,6 +74,9 @@
     // loras
     lorasRefreshBtn: $("lorasRefreshBtn"),
     lorasGrid: $("lorasGrid"),
+    // workflows
+    workflowsRefreshBtn: $("workflowsRefreshBtn"),
+    workflowsGrid: $("workflowsGrid"),
     // dialogs
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
@@ -499,6 +502,10 @@
     if (name === "loras") {
       if (!state.config || !state.config.loras) loadConfig();
       renderLoras();
+    }
+    if (name === "workflows") {
+      if (!state.config || !state.config.workflows) loadConfig();
+      renderWorkflows();
     }
   }
 
@@ -1161,6 +1168,67 @@
     els.statsMergeBtn.addEventListener("change", function () {
       statsMerge = els.statsMergeBtn.checked;
       loadStatsRanking();
+    });
+  }
+
+  // ====== 工作流卡片视图 ======
+  function renderWorkflows() {
+    var holder = els.workflowsGrid;
+    if (!holder) return;
+    var wfs = (state.config && Array.isArray(state.config.workflows)) ? state.config.workflows : null;
+    if (!wfs) {
+      holder.innerHTML = '<div class="empty">正在加载工作流…</div>';
+      return;
+    }
+    if (!wfs.length) {
+      holder.innerHTML = '<div class="empty">尚未配置任何工作流。可到「配置」页的 workflows 中添加。</div>';
+      return;
+    }
+    var loras = (state.config && Array.isArray(state.config.loras)) ? state.config.loras : [];
+    var html = '<div class="workflows-toolbar"><button id="workflowsAddBtn" type="button">+ 新增工作流</button></div><div class="workflows-card-grid">';
+    wfs.forEach(function (w, idx) {
+      var name = (w.name || "");
+      var aliases = (w.aliases || "").split(/[,，\n]/).map(function (s) { return s.trim(); }).filter(Boolean).join(" / ") || "—";
+      var bm = (w.base_model || "").trim() || "不限底模";
+      var srv = (w.server_name || "").trim() || "默认服务器";
+      var isAnima = !!w.is_anima;
+      var wfName = (w.workflow_name || "").trim() || "";
+      // 可用 LoRA：底模匹配的（复用与后端一致的口径：工作流/ LoRA 底模任一为空=通用）
+      var avail = loras.filter(function (l) {
+        var wbm = (w.base_model || "").trim().toLowerCase();
+        var lbm = (l.base_model || "").trim().toLowerCase();
+        return !wbm || !lbm || wbm === lbm;
+      }).map(function (l) { return (l.name || ""); }).filter(Boolean);
+      var availStr = avail.length ? avail.slice(0, 6).join("、") + (avail.length > 6 ? " …" : "") : "无匹配 LoRA";
+      var loraCfg = (w.loras_text || "").trim() ? "已配默认 LoRA" : "未配默认 LoRA";
+      html += '<div class="wf-card" data-idx="' + idx + '">'
+        + '<div class="wf-card-head"><span class="wf-card-title">' + escapeHtml(name) + '</span>'
+        + (isAnima ? '<span class="wf-badge anima">Anima</span>' : '')
+        + '</div>'
+        + '<div class="wf-card-alias">别名：' + escapeHtml(aliases) + '</div>'
+        + '<div class="wf-card-meta">'
+        + '<span class="lora-badge">' + escapeHtml(bm) + '</span>'
+        + '<span class="wf-srv">' + escapeHtml(srv) + '</span>'
+        + (wfName ? '<span class="wf-file">' + escapeHtml(wfName) + '</span>' : '')
+        + '</div>'
+        + '<div class="wf-card-loracfg">' + escapeHtml(loraCfg) + '</div>'
+        + '<div class="wf-card-avail">可用 LoRA：' + escapeHtml(availStr) + '</div>'
+        + '<div class="wf-card-actions"><button type="button" class="wf-edit" data-idx="' + idx + '">编辑</button></div>'
+        + '</div>';
+    });
+    html += '</div>';
+    holder.innerHTML = html;
+    holder.querySelectorAll(".wf-edit").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        switchView("config");
+        showToast("请在「配置 - workflows」段编辑「" + (state.config.workflows[+btn.dataset.idx] || {}).name + "」后保存", "info");
+      });
+    });
+  }
+
+  if (els.workflowsRefreshBtn) {
+    els.workflowsRefreshBtn.addEventListener("click", function () {
+      loadConfig().then(function () { renderWorkflows(); });
     });
   }
 

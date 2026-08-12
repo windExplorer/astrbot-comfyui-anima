@@ -33,6 +33,7 @@
         <button class="active" data-view="config" type="button">配置</button>
         <button data-view="logs" type="button">日志</button>
         <button data-view="stats" type="button">统计</button>
+        <button data-view="workflows" type="button">工作流</button>
         <button data-view="loras" type="button">LoRA</button>
         <button data-view="gallery" type="button">图库</button>
         <button id="refreshBtn" class="refresh" type="button">刷新数据</button>
@@ -100,11 +101,11 @@
                 <tbody id="recBody"></tbody>
               </table>
               <div id="recEmpty" class="empty">暂无出图记录。出图后这里会自动出现。</div>
-              <div class="gal-pager" id="recPager" hidden>
-                <button id="recPrevBtn" type="button">上一页</button>
-                <span id="recPageInfo" class="pager-info"></span>
-                <button id="recNextBtn" type="button">下一页</button>
-              </div>
+            </div>
+            <div class="gal-pager" id="recPager" hidden>
+              <button id="recPrevBtn" type="button">上一页</button>
+              <span id="recPageInfo" class="pager-info"></span>
+              <button id="recNextBtn" type="button">下一页</button>
             </div>
           </div>
 
@@ -167,6 +168,21 @@
               <div class="empty">正在加载趋势…</div>
             </div>
           </section>
+        </section>
+
+        <!-- ====== 工作流库 ====== -->
+        <section id="workflowsView" class="workspace" aria-labelledby="workflowsTitle">
+          <div class="section-heading wide">
+            <p>WORKFLOWS</p>
+            <h2 id="workflowsTitle">工作流</h2>
+            <span>卡片式查看工作流：名称、别名、底模、服务器、是否 Anima；可编辑、查看可用 LoRA。</span>
+            <div class="section-actions">
+              <button id="workflowsRefreshBtn" type="button">刷新</button>
+            </div>
+          </div>
+          <div id="workflowsGrid" class="workflows-grid" aria-live="polite">
+            <div class="empty">正在加载工作流…</div>
+          </div>
         </section>
 
         <!-- ====== LoRA 库 ====== -->

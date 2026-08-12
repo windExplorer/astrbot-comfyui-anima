@@ -305,7 +305,7 @@ body{
 .logs-toolbar.sub label{font-size:.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:5px;cursor:pointer}
 
 /* records table */
-.records-table-wrap{margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);overflow:auto;max-height:560px}
+.records-table-wrap{margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);overflow:auto;max-height:640px}
 .records-table{width:100%;border-collapse:collapse;font-size:.78rem;min-width:760px}
 .records-table thead th{
   position:sticky;top:0;background:var(--bg-raised);color:var(--text-secondary);
@@ -437,3 +437,20 @@ body{
 .lora-card-actions{display:flex;gap:8px;margin-top:auto;padding-top:8px}
 .lora-card-actions button{font-size:.78rem;padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);cursor:pointer}
 .lora-card-actions button:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ====== 工作流卡片视图 ====== */
+.workflows-toolbar{display:flex;justify-content:flex-end;margin-bottom:14px}
+.workflows-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.wf-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow-sm)}
+.wf-card-head{display:flex;align-items:center;gap:8px}
+.wf-card-title{font-weight:700;font-size:.95rem}
+.wf-badge{font-size:.72rem;padding:2px 8px;border-radius:10px;background:var(--accent-light);color:var(--accent);font-weight:600}
+.wf-card-alias{font-size:.8rem;color:var(--text-muted)}
+.wf-card-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.wf-srv{font-size:.75rem;color:var(--text-secondary);background:var(--bg-raised);padding:2px 8px;border-radius:10px}
+.wf-file{font-size:.75rem;color:var(--text-secondary);font-family:var(--font-mono);background:var(--bg-raised);padding:2px 8px;border-radius:10px}
+.wf-card-loracfg{font-size:.78rem;color:var(--text-secondary)}
+.wf-card-avail{font-size:.78rem;color:var(--text-secondary);word-break:break-all}
+.wf-card-actions{display:flex;gap:8px;margin-top:auto;padding-top:8px}
+.wf-card-actions button{font-size:.78rem;padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);cursor:pointer}
+.wf-card-actions button:hover{border-color:var(--accent);color:var(--accent)}
