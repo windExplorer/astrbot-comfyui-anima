@@ -392,7 +392,23 @@ class WebUIApi:
                             version = _v
                             break
                 if version is None:
-                    version = versions[0]
+                    # 无指定版本：取「最新」版本（按 publishedAt/createdAt 时间戳，若无则回退数组第一个）
+                    def _ver_ts(v):
+                        for f in ("publishedAt", "createdAt", "updatedAt"):
+                            ts = v.get(f)
+                            if ts:
+                                try:
+                                    import datetime
+                                    if isinstance(ts, (int, float)):
+                                        return float(ts)
+                                    return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+                                except Exception:
+                                    try:
+                                        return float(ts)
+                                    except Exception:
+                                        continue
+                        return -1.0
+                    version = max(versions, key=_ver_ts)
             # 触发词/底模/描述
             trigger_words = ""
             base_model = ""
@@ -403,13 +419,30 @@ class WebUIApi:
                 trigger_words = "\n".join(str(x) for x in tw if x)
                 base_model = str(version.get("baseModel") or "").strip()
                 description = str(data.get("description") or version.get("description") or "").strip()
-            # 封面图
+            # 封面图：优先选「竖图」（宽≤高，C 站封面默认偏竖/方形），否则取第一张
             image_name = ""
             cover_url = ""
             if version:
                 images = version.get("images") or []
-                if images:
-                    cover_url = str(images[0].get("url") or "").strip()
+                candidates = []
+                for _im in images:
+                    if not isinstance(_im, dict):
+                        continue
+                    u = str(_im.get("url") or "").strip()
+                    if not u:
+                        continue
+                    try:
+                        w = int(_im.get("width") or 0)
+                        h = int(_im.get("height") or 0)
+                    except (TypeError, ValueError):
+                        w = h = 0
+                    candidates.append((u, w, h))
+                if candidates:
+                    cover_url = candidates[0][0]
+                    for _u, _w, _h in candidates:
+                        if _w and _h and _w <= _h:
+                            cover_url = _u
+                            break
             if cover_url:
                 try:
                     cover_timeout = aiohttp.ClientTimeout(total=15)
