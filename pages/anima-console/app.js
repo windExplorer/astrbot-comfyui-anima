@@ -1472,6 +1472,17 @@
       els.loraImgDialog.close();
     });
   }
+  // 关闭：点击图片 / 关闭按钮 / ESC（ESC 由 dialog 原生支持）；点击遮罩也关闭
+  if (els.loraImgDialog) {
+    if (els.loraImgFull) {
+      els.loraImgFull.addEventListener("click", function () {
+        if (!els.loraImgFull.classList.contains("img-loading")) els.loraImgDialog.close();
+      });
+    }
+    els.loraImgDialog.addEventListener("click", function (e) {
+      if (e.target === els.loraImgDialog) els.loraImgDialog.close();
+    });
+  }
 
   // 打开 LoRA 详情弹窗（触发词/描述）
   function openLoraDetail(idx) {

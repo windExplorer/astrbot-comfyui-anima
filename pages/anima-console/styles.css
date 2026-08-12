@@ -505,9 +505,9 @@ body{
 .lora-detail-row a{color:var(--accent);word-break:break-all}
 
 /* LoRA 封面大图弹窗 */
-#loraImgDialog{border:none;background:none;padding:0;margin:auto;max-width:92vw}
+#loraImgDialog{border:none;background:none;padding:0;margin:auto;max-width:92vw;overflow:visible}
 #loraImgDialog::backdrop{background:rgba(0,0,0,.78)}
 #loraImgDialog form{position:relative;margin:0}
-#loraImgDialog img{max-width:92vw;max-height:88vh;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
-.lora-img-close{position:absolute;top:-40px;right:0;background:rgba(0,0,0,.5);color:#fff;border:none;width:32px;height:32px;border-radius:50%;font-size:1.1rem;cursor:pointer;line-height:1}
-.lora-img-close:hover{background:rgba(0,0,0,.75)}
+#loraImgDialog img{max-width:92vw;max-height:88vh;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.5);cursor:zoom-out}
+.lora-img-close{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;border:none;width:34px;height:34px;border-radius:50%;font-size:1.15rem;cursor:pointer;line-height:1;z-index:2}
+.lora-img-close:hover{background:rgba(0,0,0,.8)}
