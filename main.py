@@ -1578,6 +1578,12 @@ class ComfyUIDrawPlugin(Star):
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
+        # 发图白名单：allow_draw_users 非空时，非白名单用户直接拒绝，不进入生图流程。
+        # 空名单 = 所有用户都允许（含未识别到 user_id 的情况）。
+        if not self._is_draw_allowed(user_id):
+            logger.info(f"[绘图] 用户 {user_id or '(unknown)'} 不在发图白名单，拒绝绘图")
+            await self._send(event, "抱歉，你没有发图权限哦～ 如需使用绘图功能请联系管理员。")
+            return
         if not positive or not positive.strip():
             await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
@@ -2593,6 +2599,24 @@ class ComfyUIDrawPlugin(Star):
 
     def _is_admin(self, event) -> bool:
         return bool(getattr(event, "is_admin", lambda: False)())
+
+    def _is_draw_allowed(self, user_id: str) -> bool:
+        """发图白名单校验：allow_draw_users 配置非空时，仅列表内的用户可绘图/发图。
+
+        配置为逗号或换行分隔的用户 ID 列表，留空表示所有用户都允许
+        （包括未识别到 user_id 的情况，避免误伤）。
+        """
+        if not user_id:
+            return True
+        whitelist = (self._cfg("allow_draw_users", "") or "").strip()
+        if not whitelist:
+            return True
+        allowed = {
+            x.strip()
+            for x in re.split(r"[,，\n\r]+", whitelist)
+            if x.strip()
+        }
+        return user_id in allowed
 
     def _can_operate_image(self, event, row: dict, owner: str = "") -> tuple[bool, str]:
         """图库「修改类操作」（打标签/删除/清空/改可见性等）的归属校验。
