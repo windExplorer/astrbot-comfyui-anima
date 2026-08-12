@@ -71,6 +71,9 @@
     statsRanking: $("statsRanking"),
     statsTrendChart: $("statsTrendChart"),
     statsTrendInfo: $("statsTrendInfo"),
+    // loras
+    lorasRefreshBtn: $("lorasRefreshBtn"),
+    lorasGrid: $("lorasGrid"),
     // dialogs
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
@@ -492,6 +495,10 @@
     if (name === "stats") {
       if (!state.statsRanking.rows.length) loadStatsRanking();
       if (!state.statsTrend.buckets.length) loadStatsTrend();
+    }
+    if (name === "loras") {
+      if (!state.config || !state.config.loras) loadConfig();
+      renderLoras();
     }
   }
 
@@ -1154,6 +1161,148 @@
     els.statsMergeBtn.addEventListener("change", function () {
       statsMerge = els.statsMergeBtn.checked;
       loadStatsRanking();
+    });
+  }
+
+  // ====== LoRA 卡片视图 ======
+  function loraCoverHtml(name, img) {
+    if (img) {
+      return '<div class="lora-cover"><img data-lora-img="' + escapeHtml(img) + '" alt="" loading="lazy"></div>';
+    }
+    return '<div class="lora-cover lora-cover-empty"><span>无封面</span></div>';
+  }
+
+  function renderLoras() {
+    var holder = els.lorasGrid;
+    if (!holder) return;
+    var loras = (state.config && Array.isArray(state.config.loras)) ? state.config.loras : null;
+    if (!loras) {
+      holder.innerHTML = '<div class="empty">正在加载 LoRA 库…</div>';
+      return;
+    }
+    if (!loras.length) {
+      holder.innerHTML = '<div class="empty">尚未配置任何 LoRA。可到「配置」页的 LoRA 库中添加，或在此点「新增」。</div>';
+      return;
+    }
+    var html = '<div class="loras-toolbar"><button id="lorasAddBtn" type="button">+ 新增 LoRA</button></div><div class="loras-card-grid">';
+    loras.forEach(function (l, idx) {
+      var name = (l.name || "");
+      var aliases = (l.keywords || "").split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean).join(" / ") || "—";
+      var bm = (l.base_model || "").trim() || "通用";
+      var tw = (l.trigger_words || "").trim() || "";
+      var desc = (l.description || "").trim() || "";
+      var img = (l.image || "").trim() || "";
+      var cUrl = (l.civitai_url || "").trim() || "";
+      html += '<div class="lora-card" data-idx="' + idx + '">'
+        + loraCoverHtml(name, img)
+        + '<div class="lora-card-body">'
+        + '<div class="lora-card-title">' + escapeHtml(name) + '</div>'
+        + '<div class="lora-card-alias">别名：' + escapeHtml(aliases) + '</div>'
+        + '<div class="lora-card-meta"><span class="lora-badge">' + escapeHtml(bm) + '</span>'
+        + (cUrl ? '<a class="lora-civ-link" href="' + escapeHtml(cUrl) + '" target="_blank" rel="noopener">C站</a>' : '')
+        + '</div>'
+        + (tw ? '<div class="lora-card-tw">触发词：' + escapeHtml(tw.replace(/\n/g, " / ")) + '</div>' : '')
+        + (desc ? '<div class="lora-card-desc">' + escapeHtml(desc) + '</div>' : '')
+        + '<div class="lora-card-actions">'
+        + '<button type="button" class="lora-edit" data-idx="' + idx + '">编辑</button>'
+        + '<button type="button" class="lora-fetch" data-idx="' + idx + '">抓取</button>'
+        + '<button type="button" class="lora-upload" data-idx="' + idx + '">上传封面</button>'
+        + '</div></div></div>';
+    });
+    html += '</div>';
+    holder.innerHTML = html;
+    // 加载封面图
+    holder.querySelectorAll("[data-lora-img]").forEach(function (img) {
+      var fname = img.dataset.loraImg;
+      apiGet("lora/image", { name: fname }).then(function (d) {
+        if (d && d.url) img.src = d.url;
+      }).catch(function () {});
+    });
+    // 事件
+    holder.querySelectorAll(".lora-edit").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        switchView("config");
+        var key = "loras";
+        showToast("请在「配置 - loras」段编辑「" + (state.config.loras[+btn.dataset.idx] || {}).name + "」后保存", "info");
+      });
+    });
+    holder.querySelectorAll(".lora-fetch").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var l = state.config.loras[+btn.dataset.idx] || {};
+        var cur = (l.civitai_url || "").trim();
+        var url = prompt("输入 C 站 LoRA 链接（自动抓取封面图/触发词/描述）：", cur);
+        if (!url || !url.trim()) return;
+        fetchLoraRemote(btn, url);
+      });
+    });
+    holder.querySelectorAll(".lora-upload").forEach(function (btn) {
+      btn.addEventListener("click", function () { uploadLoraCover(btn); });
+    });
+  }
+
+  function fetchLoraRemote(btn, url) {
+    setButtonBusy(btn, true, "抓取中…", "抓取");
+    apiPost("lora/fetch", { url: url }).then(function (d) {
+      setButtonBusy(btn, false, "抓取中…", "抓取");
+      if (!d) return;
+      var idx = +btn.dataset.idx;
+      var l = state.config.loras[idx] || {};
+      if (d.image) l.image = d.image;
+      if (d.trigger_words) l.trigger_words = d.trigger_words;
+      if (d.description) l.description = d.description;
+      if (d.base_model) {
+        var bm = String(d.base_model).toLowerCase();
+        if (["anima", "z-image-turbo", "krea2", "illustrious"].indexOf(bm) >= 0) l.base_model = bm;
+      }
+      l.civitai_url = url;
+      saveLorasState().then(function () {
+        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」，请到配置页确认后保存", "success");
+        renderLoras();
+      });
+    }).catch(function (e) {
+      setButtonBusy(btn, false, "抓取中…", "抓取");
+      showToast("抓取失败：" + (e && e.message ? e.message : "网络错误，请手动填写"), "error");
+    });
+  }
+
+  function uploadLoraCover(btn) {
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var b64 = String(reader.result).split(",")[1] || "";
+        setButtonBusy(btn, true, "上传中…", "上传封面");
+        apiPost("lora/upload_image", { filename: file.name, data: b64 }).then(function (d) {
+          setButtonBusy(btn, false, "上传中…", "上传封面");
+          if (!d || !d.name) return;
+          var idx = +btn.dataset.idx;
+          var l = state.config.loras[idx] || {};
+          l.image = d.name;
+          saveLorasState().then(function () {
+            showToast("封面已上传，请到配置页保存", "success");
+            renderLoras();
+          });
+        }).catch(function (e) {
+          setButtonBusy(btn, false, "上传中…", "上传封面");
+          showToast("上传失败：" + (e && e.message ? e.message : "未知错误"), "error");
+        });
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }
+
+  function saveLorasState() {
+    return apiPost("config", { config: { loras: state.config.loras } });
+  }
+
+  if (els.lorasRefreshBtn) {
+    els.lorasRefreshBtn.addEventListener("click", function () {
+      loadConfig().then(function () { renderLoras(); });
     });
   }
 

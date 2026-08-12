@@ -33,6 +33,7 @@
         <button class="active" data-view="config" type="button">配置</button>
         <button data-view="logs" type="button">日志</button>
         <button data-view="stats" type="button">统计</button>
+        <button data-view="loras" type="button">LoRA</button>
         <button data-view="gallery" type="button">图库</button>
         <button id="refreshBtn" class="refresh" type="button">刷新数据</button>
       </nav>
@@ -166,6 +167,21 @@
               <div class="empty">正在加载趋势…</div>
             </div>
           </section>
+        </section>
+
+        <!-- ====== LoRA 库 ====== -->
+        <section id="lorasView" class="workspace" aria-labelledby="lorasTitle">
+          <div class="section-heading wide">
+            <p>LoRA LIBRARY</p>
+            <h2 id="lorasTitle">LoRA 库</h2>
+            <span>卡片式查看 LoRA：封面图、别名、底模、触发词、描述；可编辑、上传封面或从 C 站链接抓取。</span>
+            <div class="section-actions">
+              <button id="lorasRefreshBtn" type="button">刷新</button>
+            </div>
+          </div>
+          <div id="lorasGrid" class="loras-grid" aria-live="polite">
+            <div class="empty">正在加载 LoRA…</div>
+          </div>
         </section>
 
         <!-- ====== 图库 ====== -->

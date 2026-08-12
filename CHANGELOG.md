@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.5.0
+
+- **LoRA 增加底模（base_model）分类**：LoRA 库与工作流均可选 anima / z-image-turbo / krea2 / illustrious（留空=通用）。工作流与 LoRA 底模匹配校验，`/loralist` 展示底模与不匹配标注。
+- **LoRA 配置扩展**：新增触发词（多行）、描述、C 站链接、封面图字段；`keywords` 语义改为「别名」，与工作流别名统一；`loras_text` 支持 `名称|权重|启用|底模` 四字段（兼容旧格式）。
+- **C 站抓取**：WebUI 填 C 站链接点「抓取」按钮，自动下载封面图到本地 `lora_assets/` 并填入触发词/描述/底模；代理自动使用 AstrBot 的 http_proxy。
+- **comfyui_loras LLM 工具**：AI 对话可查询 LoRA 库（按底模过滤），携带别名/描述/触发词，绘图工具 docstring 要求先查再引用。
+- **WebUI LoRA 卡片视图**：新增「LoRA」页，卡片式展示封面图（无图默认占位图）、别名、底模、触发词、描述，支持编辑/上传封面/抓取。
+- 新增接口：`POST /lora/fetch`、`POST /lora/upload_image`、`GET /lora/image`。
+
 ## v3.4.6
 
 - **统计排行健壮性修复与优化**：同 user_id 改名后排行显示确定的名字（`MAX(user_name)`）；排行输出补 `last_ts` 字段（合并行与普通行一致）；新增 `created_at` 索引，加速近 24 小时趋势查询（图库量大时更明显）。

@@ -374,12 +374,14 @@ class ComfyUIDrawPlugin(Star):
         # 仅用于提示"前面还有几位"。
         self._server_pending: dict[str, list] = {}
 
-        # 插件数据目录：temp/ 存出图，workflow/ 存工作流文件
+        # 插件数据目录：temp/ 存出图，workflow/ 存工作流文件，lora_assets/ 存 LoRA 封面图
         self.data_dir = self._get_data_dir()
         self.temp_dir = self.data_dir / "temp"
         self.workflow_dir = self.data_dir / "workflow"
+        self.lora_assets_dir = self.data_dir / "lora_assets"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.workflow_dir.mkdir(parents=True, exist_ok=True)
+        self.lora_assets_dir.mkdir(parents=True, exist_ok=True)
 
         # 图库：把成品图/参考图/用户收藏图永久归档到 gallery/ 与 refs/（SQLite 索引）
         self.gallery = None
@@ -595,8 +597,22 @@ class ComfyUIDrawPlugin(Star):
         return self._cfg("workflows", []) or []
 
     def _lora_library(self) -> list[dict]:
-        """全局 LoRA 库（配置顶层 loras）。"""
-        return self._cfg("loras", []) or []
+        """全局 LoRA 库（配置顶层 loras）。返回项附带 aliases（供 LLM 区分/引用）。"""
+        out = []
+        for l in (self._cfg("loras", []) or []):
+            item = dict(l)
+            name = (item.get("name") or "").strip()
+            kws = (item.get("keywords") or "").strip()
+            aliases = []
+            if name:
+                aliases.append(name)
+            for a in re.split(r"[,，\n\r]+", kws):
+                a = a.strip()
+                if a and a not in aliases:
+                    aliases.append(a)
+            item["aliases"] = aliases
+            out.append(item)
+        return out
 
     def _loras_of(self, wf: dict) -> list[dict]:
         """解析本工作流实际生效的 LoRA 列表。
@@ -621,6 +637,7 @@ class ComfyUIDrawPlugin(Star):
                         "name": name,
                         "model_name": (lib_l.get("model_name") or "").strip(),
                         "model_only": bool(lib_l.get("model_only", True)),
+                        "base_model": (lib_l.get("base_model") or "").strip() or (l.get("base_model") or "").strip(),
                         "weight": float(l.get("weight", 1.0)),
                         "enabled": bool(l.get("enabled", False)),
                         "load_node": "",
@@ -628,6 +645,8 @@ class ComfyUIDrawPlugin(Star):
                         "strength_model_input": "strength_model",
                         "strength_clip_input": "strength_clip",
                         "keywords": (lib_l.get("keywords") or ""),
+                        "trigger_words": (lib_l.get("trigger_words") or ""),
+                        "description": (lib_l.get("description") or ""),
                         "presets": self._parse_presets(lib_l.get("presets")),
                     }
                 )
@@ -638,6 +657,7 @@ class ComfyUIDrawPlugin(Star):
                         "name": name,
                         "model_name": (l.get("model_name") or "").strip(),
                         "model_only": True,
+                        "base_model": (l.get("base_model") or "").strip(),
                         "weight": float(l.get("weight", 1.0)),
                         "enabled": bool(l.get("enabled", False)),
                         "load_node": "",
@@ -645,10 +665,25 @@ class ComfyUIDrawPlugin(Star):
                         "strength_model_input": "strength_model",
                         "strength_clip_input": "strength_clip",
                         "keywords": (l.get("keywords") or ""),
+                        "trigger_words": (l.get("trigger_words") or ""),
+                        "description": (l.get("description") or ""),
                         "presets": [],
                     }
                 )
         return merged
+
+    def _lora_matches_wf(self, lora: dict, wf: dict) -> bool:
+        """判断 LoRA 是否适用于某工作流（按底模匹配）。
+
+        规则：工作流底模为空（不限）→ 任何 LoRA 都可用；
+        LoRA 底模为空（通用）→ 任何工作流都可用；
+        否则两者 base_model 必须相等。
+        """
+        wf_bm = (wf.get("base_model") or "").strip().lower()
+        lora_bm = (lora.get("base_model") or "").strip().lower()
+        if not wf_bm or not lora_bm:
+            return True
+        return wf_bm == lora_bm
 
     def _apply_lora_presets(
         self, presets: dict[str, str], positive: str, negative: str
@@ -688,7 +723,7 @@ class ComfyUIDrawPlugin(Star):
 
     @staticmethod
     def _parse_loras_text(text: str) -> list[dict]:
-        """解析多行 LoRA 文本为配置列表。每行：名称|权重|0/1（0=禁用）。"""
+        """解析多行 LoRA 文本为配置列表。每行：名称|权重|0/1（0=禁用）|底模（可选）。"""
         out: list[dict] = []
         for line in (text or "").splitlines():
             line = line.strip()
@@ -705,18 +740,20 @@ class ComfyUIDrawPlugin(Star):
             enabled = True
             if len(parts) > 2 and parts[2] != "":
                 enabled = parts[2] not in ("0", "0.0", "false", "False", "禁用", "关")
+            base_model = parts[3] if len(parts) > 3 and parts[3] != "" else ""
             out.append(
                 {
                     "name": name,
                     "weight": weight,
                     "enabled": enabled,
+                    "base_model": base_model,
                 }
             )
         return out
 
     @staticmethod
     def _serialize_loras_text(loras: list[dict]) -> str:
-        """将 LoRA 列表序列化回 名称|权重|0/1 文本（用于 loraon/loraoff 持久化）。"""
+        """将 LoRA 列表序列化回 名称|权重|0/1|底模 文本（用于 loraon/loraoff 持久化）。"""
         lines = []
         for l in loras:
             name = (l.get("name") or "").strip()
@@ -725,7 +762,11 @@ class ComfyUIDrawPlugin(Star):
             weight = l.get("weight", 1.0)
             wstr = str(int(weight)) if float(weight) == int(weight) else str(weight)
             enabled = 1 if l.get("enabled", False) else 0
-            lines.append(f"{name}|{wstr}|{enabled}")
+            bm = (l.get("base_model") or "").strip()
+            if bm:
+                lines.append(f"{name}|{wstr}|{enabled}|{bm}")
+            else:
+                lines.append(f"{name}|{wstr}|{enabled}")
         return "\n".join(lines)
 
     @staticmethod
@@ -2364,17 +2405,27 @@ class ComfyUIDrawPlugin(Star):
         if not loras:
             await self._send(event, f"工作流「{wf.get('name')}」未配置任何 LoRA。")
             return
+        wf_bm = (wf.get("base_model") or "").strip()
         lines = [f"工作流「{wf.get('name')}」的 LoRA 列表："]
+        if wf_bm:
+            lines[0] += f"（底模：{wf_bm}）"
         for l in loras:
             state = "启用" if l.get("enabled") else "禁用"
             model = l.get("model_name") or ""
             mo = l.get("model_only", True)
             presets = l.get("presets") or []
             preset_names = [ (p.get("name") or "").strip() for p in presets if (p.get("name") or "").strip() ]
+            lora_bm = (l.get("base_model") or "").strip()
+            match_tag = ""
+            if wf_bm and lora_bm and lora_bm != wf_bm:
+                match_tag = f"，⚠底模不匹配（LoRA={lora_bm}）"
+            elif lora_bm:
+                match_tag = f"，底模 {lora_bm}"
             lines.append(
                 f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}"
                 + (f"，仅模型" if mo else "，模型+CLIP")
                 + (f"，文件 {model}" if model else "，⚠未配置文件名")
+                + match_tag
                 + "）"
                 + (f"\n    预设：{', '.join(preset_names)}" if preset_names else "")
             )
@@ -3273,7 +3324,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称。仅在消息附带参考图时生效。同样：除非用户明确要求特定风格，否则留空让插件用图生图默认工作流；确需指定时必须用 comfyui_workflows 查询到的确切名称。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
-            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
+            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。指定 LoRA 前必须先调用 comfyui_loras 查询真实列表（可按底模过滤），再从中选确切名称传入；禁止凭记忆或猜测名称。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确附带了图片且需要按该图变换时传入；多数情况用户直接发图时无需传此参数，插件会自动从消息/会话提取图片。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
@@ -3925,6 +3976,70 @@ class ComfyUIDrawPlugin(Star):
         else:
             return "未知 mode。可用：recall / search / save / send / list / stats / tag / public / private。"
 
+    # LLM 工具：comfyui_loras（查询 LoRA 库）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="comfyui_loras")
+    async def llm_loras(
+        self,
+        event: AstrMessageEvent,
+        base_model: str = "",
+        keyword: str = "",
+    ):
+        """查询已配置的 LoRA 库，包括每个 LoRA 的名称、别名、底模、描述与触发词。
+
+        触发时机：在调用 comfyui_draw / comfyui_img2img 并需要指定 LoRA 之前，
+        务必先调用本工具获取真实 LoRA 列表，再从中选择正确的名称传入 loras 参数。
+        不要凭记忆或猜测 LoRA 名称，也不要编造不存在的 LoRA。
+
+        参数：
+        - base_model: 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。
+          当用户指定了工作流/底模时，应传入该底模以只列出可用的 LoRA。
+        - keyword: 可选。按名称/别名模糊匹配查找某个 LoRA。
+        """
+        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
+        if plugin is None:
+            plugin = self
+        lib = plugin._lora_library()
+        if not lib:
+            return "当前未配置任何 LoRA。可在插件配置页的 LoRA 库中添加。"
+        wf_bm = (base_model or "").strip().lower()
+        kw = (keyword or "").strip().lower()
+        rows = []
+        for l in lib:
+            name = (l.get("name") or "").strip()
+            if not name:
+                continue
+            lora_bm = (l.get("base_model") or "").strip().lower()
+            if wf_bm and lora_bm and lora_bm != wf_bm:
+                continue  # 底模不匹配的 LoRA 不列出
+            aliases = l.get("aliases") or []
+            desc = (l.get("description") or "").strip()
+            tw = (l.get("trigger_words") or "").strip()
+            if kw:
+                hay = " ".join([name, *[str(a) for a in aliases], desc, tw]).lower()
+                if kw not in hay:
+                    continue
+            alias_str = ", ".join(str(a) for a in aliases) if aliases else name
+            lines = [f"- {name}（别名：{alias_str}）"]
+            if lora_bm:
+                lines[0] += f" [底模 {lora_bm}]"
+            if desc:
+                lines.append(f"  描述：{desc}")
+            if tw:
+                tw_short = tw.replace("\n", " / ")
+                if len(tw_short) > 200:
+                    tw_short = tw_short[:200] + "…"
+                lines.append(f"  触发词：{tw_short}")
+            rows.append("\n".join(lines))
+        if not rows:
+            if kw:
+                return f"没有找到匹配「{keyword}」的 LoRA。可先调用本工具（不带 keyword）查看全部 LoRA。"
+            return "没有可用的 LoRA。"
+        head = "已配置的 LoRA 列表："
+        if wf_bm:
+            head += f"（底模 {base_model}）"
+        return head + "\n" + "\n".join(rows)
+
     # LLM 工具：comfyui_workflows（查询工作流列表）
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_workflows")
@@ -4036,7 +4151,7 @@ class ComfyUIDrawPlugin(Star):
                 直接给出变换意图文本，不要留空，不要包裹自然语言或 markdown。
             negative_prompt(string): 负向提示词，可选，不填则留空。
             img2img_workflow(string): 图生图工作流名称。★用户明确要求特定画风/风格/类型时，必须先调用 comfyui_workflows 查询真实列表，再从中选确切名称传入；禁止凭记忆或猜测工作流名，否则找不到工作流。用户完全没指定画风时才可留空（插件用图生图默认工作流）。
-            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。
+            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。指定 LoRA 前必须先调用 comfyui_loras 查询真实列表（可按底模过滤），再从中选确切名称传入；禁止凭记忆或猜测名称。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。

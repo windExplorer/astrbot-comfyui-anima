@@ -168,5 +168,19 @@ AI 会调用 `comfyui_draw` 工具，并按你提到的 LoRA 名称启用对应 
 
 > 注入默认按标准 `LoraLoader`（同时处理 model 与 clip）新建。若你的底模加载器输出插槽不是 slot0=MODEL / slot1=CLIP，或想注入其它变体节点，请提前确认。
 
+### 底模（base_model）与 LoRA 匹配（v3.5.0）
+
+- LoRA 库与工作流都新增 `base_model` 字段（可选：`anima` / `z-image-turbo` / `krea2` / `illustrious`，留空 = 通用/不限制）。
+- **匹配规则**：工作流底模为空 → 任何 LoRA 都可用；LoRA 底模为空（通用）→ 任何工作流可用；否则两者底模必须一致。
+- `/loralist --wf xxx` 会显示工作流底模与每个 LoRA 的底模，底模不匹配的会标注 ⚠。
+- AI 对话新增 `comfyui_loras` 工具：LLM 在指定 LoRA 前会先查真实列表（可按底模过滤），避免"指定了但没加上"。
+
+### LoRA 封面图 / C 站抓取（v3.5.0）
+
+- LoRA 库新增字段：`trigger_words`（触发词，多行）、`description`（描述）、`civitai_url`（C 站链接）、`image`（封面图）。
+- 封面图存于插件数据目录 `lora_assets/`，WebUI「LoRA」页以卡片形式展示（未设置封面显示默认占位图）。
+- 「抓取」按钮：填入 C 站链接后点击，自动下载封面图到本地并填入触发词/描述/底模；网络不可用时可手动上传图片、填写描述与触发词。
+- 代理：自动使用 AstrBot 配置的 `http_proxy`（写入环境变量 + 显式读取兜底）。
+
 ## 说明
 - 多个 ComfyUI 服务器请只把其中一个 `enabled` 设为 true，否则会报错提示。

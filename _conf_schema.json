@@ -52,6 +52,13 @@
             "hint": "在工作流与指令里都用这个名字引用，例如 --安魂曲。",
             "default": ""
           },
+          "base_model": {
+            "type": "string",
+            "description": "底模（基座模型）",
+            "hint": "该 LoRA 适用的底模类型，用于与工作流底模匹配、让 LLM 正确选 LoRA。可选：anima / z-image-turbo / krea2 / illustrious；留空 = 通用（任何底模都可用）。",
+            "default": "",
+            "options": ["", "anima", "z-image-turbo", "krea2", "illustrious"]
+          },
           "model_name": {
             "type": "string",
             "description": "模型文件名",
@@ -72,8 +79,32 @@
           },
           "keywords": {
             "type": "string",
-            "description": "触发关键词（可选）",
-            "hint": "逗号分隔。用户输入提示词命中这些词时，自动启用该 LoRA（即便工作流默认未启用）。",
+            "description": "别名（触发关键词，可选）",
+            "hint": "逗号分隔。这是该 LoRA 的别名/触发词，用户输入提示词命中这些词时自动启用该 LoRA（即便工作流默认未启用）；LLM 也用这些别名来区分和引用 LoRA。",
+            "default": ""
+          },
+          "trigger_words": {
+            "type": "text",
+            "description": "触发词（多行，可选）",
+            "hint": "该 LoRA 的完整触发词列表，每行一个（C 站风格类 LoRA 常有多个，如 sketch / monochrome / greyscale）。填写 C 站链接点「抓取」可自动填入。主要用于给 LLM 理解该 LoRA 怎么用、以及展示。",
+            "default": ""
+          },
+          "description": {
+            "type": "text",
+            "description": "LoRA 描述（可选）",
+            "hint": "用一句话描述这个 LoRA 的用途/效果（如「白色水手服少女风格」「复古胶片色调」）。LLM 调用该 LoRA 前会读取此描述来理解其用途。填写 C 站链接点「抓取」可自动填入。",
+            "default": ""
+          },
+          "civitai_url": {
+            "type": "string",
+            "description": "C 站链接（可选）",
+            "hint": "Civitai (C站) 模型的页面链接，如 https://civitai.com/models/12345。在 WebUI 中填写后点「抓取」按钮，可自动下载封面图到本地并填入触发词/描述；网络不可用时请手动上传图片、填写描述与触发词。",
+            "default": ""
+          },
+          "image": {
+            "type": "string",
+            "description": "封面图（本地文件名，可选）",
+            "hint": "封面图文件名（存于插件数据目录 lora_assets/ 下）。通过 WebUI 抓取或上传后自动填充；WebUI 卡片展示该图，未设置时显示默认占位图。",
             "default": ""
           },
           "presets": {
@@ -101,6 +132,13 @@
             "description": "工作流名称",
             "hint": "指令 /draw --wf 和 AI 调用时引用此名。",
             "default": "default"
+          },
+          "base_model": {
+            "type": "string",
+            "description": "底模（基座模型）",
+            "hint": "本工作流使用的底模类型，用于与 LoRA 底模匹配（仅底模一致或 LoRA 通用时该 LoRA 对本工作流可用）。可选：anima / z-image-turbo / krea2 / illustrious；留空 = 不限制（所有 LoRA 都视为可用）。",
+            "default": "",
+            "options": ["", "anima", "z-image-turbo", "krea2", "illustrious"]
           },
           "aliases": {
             "type": "text",

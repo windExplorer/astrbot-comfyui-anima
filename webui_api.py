@@ -34,10 +34,14 @@ import base64
 import io
 import json
 import mimetypes
+import os
+import re
 import time
+import uuid
 from collections import deque
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from astrbot.api.web import error_response, file_response, json_response, request
 
@@ -220,6 +224,167 @@ class WebUIApi:
             return json_response(g.hourly_trend(hours=hours))
         except Exception as e:
             return error_response(f"统计趋势失败: {e}")
+
+    # -------------------------------------------------------------- #
+    # LoRA 封面 / C 站抓取
+    # -------------------------------------------------------------- #
+    def _lora_assets_dir(self) -> Path:
+        d = getattr(self.plugin, "lora_assets_dir", None)
+        if d is None:
+            d = (getattr(self.plugin, "data_dir", None) or Path(os.getcwd())) / "lora_assets"
+        d = Path(d)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def lora_image(self):
+        """返回 LoRA 封面图（lora_assets/ 下的文件）。query: name=文件名。"""
+        fname = (request.query.get("name", "") or "").strip()
+        if not fname:
+            return error_response("缺少 name 参数")
+        # 仅允许文件名，防目录穿越
+        if "/" in fname or "\\" in fname or ".." in fname:
+            return error_response("非法文件名", status_code=400)
+        path = self._lora_assets_dir() / fname
+        if not path.exists() or not path.is_file():
+            return error_response("图片不存在", status_code=404)
+        try:
+            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+            data = await asyncio.to_thread(path.read_bytes)
+            b64 = base64.b64encode(data).decode("ascii")
+            return json_response({"name": fname, "url": f"data:{mime};base64,{b64}"})
+        except Exception as e:
+            return error_response(f"读取图片失败: {e}")
+
+    async def lora_upload_image(self):
+        """上传 LoRA 封面图片（multipart 或 base64），保存到 lora_assets/。"""
+        try:
+            raw = await request.body()
+            # 兼容两种格式：{filename, data(base64)} JSON 或 原始二进制
+            data_bytes = None
+            filename = f"lora_{uuid.uuid4().hex}.png"
+            ctype = (request.headers.get("content-type") or "").lower()
+            if "json" in ctype:
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                fname_in = (payload.get("filename") or "").strip()
+                if fname_in:
+                    filename = os.path.basename(fname_in)
+                b64 = payload.get("data") or payload.get("base64") or ""
+                try:
+                    data_bytes = base64.b64decode(b64)
+                except Exception:
+                    return error_response("base64 数据无效")
+            else:
+                data_bytes = raw
+                fname_in = (request.headers.get("x-filename") or "").strip()
+                if fname_in:
+                    filename = os.path.basename(fname_in)
+                if not (filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))):
+                    filename = filename.rsplit(".", 1)[0] + ".png"
+            if not data_bytes or len(data_bytes) < 16:
+                return error_response("图片数据为空或过小")
+            # 覆盖安全：用时间戳 + 短随机后缀，避免覆盖同名旧图
+            stem = os.path.splitext(filename)[0]
+            ext = os.path.splitext(filename)[1] or ".png"
+            safe_name = re.sub(r"[^\w\-.]", "_", stem)[:60]
+            final_name = f"{safe_name}_{uuid.uuid4().hex[:8]}{ext}"
+            out_path = self._lora_assets_dir() / final_name
+            await asyncio.to_thread(out_path.write_bytes, data_bytes)
+            return json_response({"name": final_name, "msg": "上传成功"})
+        except Exception as e:
+            return error_response(f"上传失败: {e}")
+
+    async def lora_fetch(self):
+        """C 站链接抓取：输入 civitai 链接，抓取封面图（下载到本地）+ 触发词 + 描述 + 底模。
+
+        body: {"url": "https://civitai.com/models/12345" 或含 /model-versions/xxx}
+        返回 {"image": 本地文件名, "trigger_words": str, "description": str, "base_model": str}
+        """
+        try:
+            body = await request.json(default={}) or {}
+            url = (body.get("url") or "").strip()
+            if not url:
+                return error_response("缺少 url 参数")
+            import aiohttp
+
+            # 从链接解析模型 id / 版本 id
+            api_url = None
+            m = re.search(r"/models/(\d+)", url)
+            mv = re.search(r"/model-versions/(\d+)", url)
+            if mv:
+                api_url = f"https://civitai.com/api/v1/model-versions/{mv.group(1)}"
+            elif m:
+                api_url = f"https://civitai.com/api/v1/models/{m.group(1)}"
+            else:
+                return error_response("无法从链接中识别 C 站模型 ID（需包含 /models/数字 或 /model-versions/数字）")
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                )
+            }
+            proxy = None
+            try:
+                from astrbot.api import GLOBAL_CONFIG
+
+                proxy = (GLOBAL_CONFIG.get("http_proxy") or "").strip() or None
+            except Exception:
+                proxy = None
+            # 环境变量代理交给 aiohttp trust_env
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
+                    if resp.status != 200:
+                        return error_response(f"C 站 API 请求失败: HTTP {resp.status}")
+                    data = await resp.json()
+            # 统一取 modelVersions 列表（models 接口）或单版本对象（model-versions 接口）
+            versions = []
+            if isinstance(data, dict) and data.get("modelVersions"):
+                versions = data.get("modelVersions") or []
+            elif isinstance(data, dict) and ("trainedWords" in data or "images" in data):
+                versions = [data]
+            version = versions[0] if versions else None
+            # 触发词/底模/描述
+            trigger_words = ""
+            base_model = ""
+            description = ""
+            if version:
+                tw = version.get("trainedWords") or []
+                trigger_words = "\n".join(str(x) for x in tw if x)
+                base_model = str(version.get("baseModel") or "").strip()
+                description = str(data.get("description") or version.get("description") or "").strip()
+            # 封面图
+            image_name = ""
+            cover_url = ""
+            if version:
+                images = version.get("images") or []
+                if images:
+                    cover_url = str(images[0].get("url") or "").strip()
+            if cover_url:
+                try:
+                    async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                        async with sess.get(cover_url, timeout=timeout, proxy=proxy) as resp:
+                            if resp.status == 200:
+                                img_data = await resp.read()
+                                if img_data and len(img_data) >= 64:
+                                    ext = os.path.splitext(urlparse(cover_url).path)[1] or ".jpg"
+                                    if ext.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                                        ext = ".jpg"
+                                    image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext}"
+                                    (self._lora_assets_dir() / image_name).write_bytes(img_data)
+                except Exception:
+                    image_name = ""
+            return json_response({
+                "image": image_name,
+                "trigger_words": trigger_words,
+                "description": description[:2000],
+                "base_model": base_model,
+                "fetched": bool(version),
+            })
+        except Exception as e:
+            return error_response(f"抓取失败: {e}")
 
     async def gallery_search(self):
         g = self._gallery()
@@ -570,6 +735,9 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/backup", api.backup_db, ["GET"], "备份图库数据库"),
         (f"{prefix}/stats/ranking", api.stats_ranking, ["GET"], "用户生图排行"),
         (f"{prefix}/stats/trend", api.stats_trend, ["GET"], "生图小时趋势"),
+        (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取"),
+        (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
+        (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),
     ]
     registered = []
     for path, handler, methods, desc in routes:
