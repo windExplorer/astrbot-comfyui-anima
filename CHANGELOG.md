@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.5.16
+
+- **C 站封面抓取加固**：多个候选图逐个尝试下载（单张 403/非图片不再导致整体失败）；封面图下载加 `Referer: https://civitai.com/` 头（CDN 可能要求），下载失败写日志。
+- **新增 `civitai_api_key` 配置**：可选填 C 站 API Token，抓取请求带 `Authorization: Bearer`，规避 C 站对无 token 请求的限流/图片列表缺失（明明有预览图却拿不到的一种常见原因）。
+
 ## v3.5.15
 
 - **删除确认弹窗居中**：`confirmDialog` 加 `margin:auto`，弹窗在屏幕水平垂直居中（此前默认左上角）。

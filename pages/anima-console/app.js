@@ -695,7 +695,7 @@
       "默认工作流": { description: "未指定工作流时的默认选择与风格优先级", icon: "workflow", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback"] },
       "AI 对话与 LLM": { description: "AI 对话调用的 LLM 工具开关与专用模型", icon: "ai", keys: ["enable_llm_tools", "llm_model"] },
       "出图行为": { description: "出图等待、轮询、webp 转换与小报告等行为", icon: "image", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report"] },
-      "网络与代理": { description: "外部网络访问（如 C 站抓取）的代理设置", icon: "network", keys: ["http_proxy"] },
+      "网络与代理": { description: "外部网络访问（如 C 站抓取）的代理设置与 C 站 API Key", icon: "network", keys: ["http_proxy", "civitai_api_key"] },
       "权限与图库": { description: "发图白名单与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "gallery"] }
     };
     var groupsMeta = CFG_GROUPS || {};

@@ -338,6 +338,13 @@ class WebUIApi:
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
                 )
             }
+            # 可选：Civitai API Key（避免限流/拿不到图片）
+            try:
+                _ck = ((self.plugin._cfg("civitai_api_key", "")) or "").strip()
+            except Exception:
+                _ck = ""
+            if _ck:
+                headers["Authorization"] = f"Bearer {_ck}"
             proxy = None
             # 优先用插件自己的 http_proxy 配置；其次 AstrBot 全局 http_proxy；环境变量由 trust_env 兜底
             try:
@@ -451,31 +458,34 @@ class WebUIApi:
                         if _w and _h and _w <= _h:
                             cover_url = _u
                             break
-            if cover_url:
-                try:
+                    # 逐个尝试候选图，直到下载到合法图片（避免单张 403/非图片就放弃）
+                    img_headers = dict(headers)
+                    img_headers["Referer"] = "https://civitai.com/"
                     cover_timeout = aiohttp.ClientTimeout(total=15)
-                    async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
-                        async with sess.get(cover_url, timeout=cover_timeout, proxy=proxy) as resp:
-                            if resp.status == 200:
-                                img_data = await resp.read()
-                                # 用 magic bytes 识别真实图片格式；非图片（如视频/HTML）直接丢弃
-                                ext_by_magic = ""
-                                if img_data[:3] == b"\xff\xd8\xff":
-                                    ext_by_magic = ".jpg"
-                                elif img_data[:8] == b"\x89PNG\r\n\x1a\n":
-                                    ext_by_magic = ".png"
-                                elif img_data[:4] == b"RIFF" and img_data[8:12] == b"WEBP":
-                                    ext_by_magic = ".webp"
-                                elif img_data[:4] == b"GIF8":
-                                    ext_by_magic = ".gif"
-                                if ext_by_magic and len(img_data) >= 64:
-                                    image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext_by_magic}"
-                                    (self._lora_assets_dir() / image_name).write_bytes(img_data)
-                                else:
-                                    # 不是合法图片（视频/错误内容），丢弃
-                                    image_name = ""
-                except Exception:
-                    image_name = ""
+                    for _u, _w, _h in candidates:
+                        if not _u:
+                            continue
+                        try:
+                            async with aiohttp.ClientSession(headers=img_headers, trust_env=True) as _sess:
+                                async with _sess.get(_u, timeout=cover_timeout, proxy=proxy) as _resp:
+                                    if _resp.status != 200:
+                                        continue
+                                    _img_data = await _resp.read()
+                            ext_by_magic = ""
+                            if _img_data[:3] == b"\xff\xd8\xff":
+                                ext_by_magic = ".jpg"
+                            elif _img_data[:8] == b"\x89PNG\r\n\x1a\n":
+                                ext_by_magic = ".png"
+                            elif _img_data[:4] == b"RIFF" and _img_data[8:12] == b"WEBP":
+                                ext_by_magic = ".webp"
+                            elif _img_data[:4] == b"GIF8":
+                                ext_by_magic = ".gif"
+                            if ext_by_magic and len(_img_data) >= 64:
+                                image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext_by_magic}"
+                                (self._lora_assets_dir() / image_name).write_bytes(_img_data)
+                                break
+                        except Exception:
+                            continue
             return json_response({
                 "image": image_name,
                 "trigger_words": trigger_words,

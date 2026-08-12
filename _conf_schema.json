@@ -486,6 +486,12 @@
     "hint": "插件访问外部网络（如 C 站 civitai.com 抓取封面图/触发词）使用的代理地址，格式如 http://127.0.0.1:7890。留空则仅尝试 AstrBot 全局 http_proxy 与环境变量；若仍无法访问 C 站，在此配置代理后保存即可。",
     "default": ""
   },
+  "civitai_api_key": {
+    "type": "string",
+    "description": "Civitai API Key（可选，提升抓取稳定/避免限流）",
+    "hint": "可选填 Civitai 账号生成的 API Token（https://civitai.com/settings 的 Account 页面）。C 站对无 token 的 API 请求可能限流或拿不到完整图片列表，配置后抓取更稳定（请求头带 Authorization: Bearer）。",
+    "default": ""
+  },
   "gallery": {
     "type": "object",
     "description": "图片画廊与语义标签召回",
