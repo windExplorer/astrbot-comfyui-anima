@@ -1001,11 +1001,12 @@
     var scopeLabel = { today: "今天", "3": "近 3 天", "7": "近 7 天", all: "全部" }[statsScope] || "全部";
     var maxCount = rows[0].count || 1;
     var html = '<div class="stats-meta">' + scopeLabel + ' 共生成 <b>' + total + '</b> 张图</div>';
-    html += '<table class="stats-table"><thead><tr><th>排名</th><th>用户</th><th>数量</th><th>占比</th></tr></thead><tbody>';
+    html += '<table class="stats-table"><thead><tr><th>排名</th><th>用户</th><th>QQ</th><th>数量</th><th>占比</th></tr></thead><tbody>';
     rows.forEach(function (r) {
       var pct = Math.round((r.count / maxCount) * 100);
       html += '<tr><td class="rank">' + r.rank + '</td>'
         + '<td class="user">' + escapeHtml(r.user_name) + '</td>'
+        + '<td class="uid">' + escapeHtml(r.user_id || "—") + '</td>'
         + '<td class="count">' + r.count + '</td>'
         + '<td class="bar-cell"><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + pct + '%</span></td></tr>';
     });

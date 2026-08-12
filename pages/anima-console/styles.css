@@ -374,6 +374,7 @@ body{
 .stats-table tr:last-child td{border-bottom:none}
 .stats-table .rank{font-weight:700;color:var(--accent);width:52px}
 .stats-table .user{font-weight:600}
+.stats-table .uid{color:var(--text-muted);font-size:.8rem;white-space:nowrap}
 .stats-table .count{font-weight:700;width:64px}
 .stats-table .bar-cell{min-width:160px}
 .stats-table .bar{background:var(--border);border-radius:4px;height:10px;overflow:hidden;display:inline-block;width:120px;vertical-align:middle}
