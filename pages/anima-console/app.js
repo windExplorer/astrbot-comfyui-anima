@@ -687,10 +687,17 @@
       els.cfgSaveBtn.disabled = true;
       return;
     }
-    var html = '<div class="cfg-sections">';
-    keys.forEach(function (key) {
+    // 分区元数据（_groups 仅展示用，不作为配置项）
+    var groupsMeta = (schema._groups && schema._groups.items) || {};
+    // 收集所有已分区 key
+    var groupedKeys = {};
+    Object.keys(groupsMeta).forEach(function (gname) {
+      (groupsMeta[gname].keys || []).forEach(function (k) { groupedKeys[k] = true; });
+    });
+    function renderSection(key) {
       var field = schema[key];
       var val = state.config ? state.config[key] : undefined;
+      var html = '';
       html += '<section class="cfg-section" data-key="' + escapeHtml(key) + '">';
       html += '<div class="cfg-section-title"><h3>' + escapeHtml(key) + '</h3>' +
         (field.description ? '<span>' + escapeHtml(field.description) + '</span>' : '') + '</div>';
@@ -703,11 +710,71 @@
         html += renderField(key, field, val);
       }
       html += '</div></section>';
-    });
+      return html;
+    }
+    var html = '<div class="cfg-sections">';
+    var groupNames = Object.keys(groupsMeta);
+    if (groupNames.length) {
+      // 分区折叠面板
+      html += '<div class="cfg-groups">';
+      groupNames.forEach(function (gname, gi) {
+        var g = groupsMeta[gname] || {};
+        var gkeys = (g.keys || []).filter(function (k) { return schema[k]; });
+        if (!gkeys.length) return;
+        var desc = g.description || "";
+        var icon = g.icon || "folder";
+        var open = gi === 0; // 默认展开第一组
+        html += '<div class="cfg-group' + (open ? " open" : "") + '" data-group="' + escapeHtml(gname) + '">';
+        html += '<button type="button" class="cfg-group-head" aria-expanded="' + (open ? "true" : "false") + '">'
+          + '<span class="cfg-group-icon" aria-hidden="true">' + escapeHtml(icon) + '</span>'
+          + '<span class="cfg-group-title">' + escapeHtml(gname) + '</span>'
+          + (desc ? '<span class="cfg-group-desc">' + escapeHtml(desc) + '</span>' : '')
+          + '<span class="cfg-group-arrow">▸</span>'
+          + '</button>';
+        html += '<div class="cfg-group-body"' + (open ? "" : " hidden") + '>';
+        gkeys.forEach(function (k) { html += renderSection(k); });
+        html += '</div></div>';
+      });
+      // 未分区的兜底
+      var leftover = keys.filter(function (k) { return k !== "_groups" && !groupedKeys[k]; });
+      if (leftover.length) {
+        html += '<div class="cfg-group"><button type="button" class="cfg-group-head" aria-expanded="false">'
+          + '<span class="cfg-group-icon">other</span><span class="cfg-group-title">其他</span><span class="cfg-group-arrow">▸</span>'
+          + '</button><div class="cfg-group-body" hidden>';
+        leftover.forEach(function (k) { html += renderSection(k); });
+        html += '</div></div>';
+      }
+      html += '</div>';
+    } else {
+      // 无分区元数据：平铺（旧行为）
+      keys.forEach(function (k) {
+        if (k === "_groups") return;
+        html += renderSection(k);
+      });
+    }
     html += '</div>';
     els.cfgContent.innerHTML = html;
     els.cfgSaveBtn.disabled = true;
     els.cfgSaveMsg.textContent = "";
+
+    // 分组折叠交互
+    els.cfgContent.querySelectorAll(".cfg-group-head").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var group = btn.closest(".cfg-group");
+        if (!group) return;
+        var isOpen = group.classList.contains("open");
+        var body = group.querySelector(".cfg-group-body");
+        if (isOpen) {
+          group.classList.remove("open");
+          if (body) body.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+        } else {
+          group.classList.add("open");
+          if (body) body.hidden = false;
+          btn.setAttribute("aria-expanded", "true");
+        }
+      });
+    });
 
     // 标记 dirty + slider/number 联动
     var sliders = {};

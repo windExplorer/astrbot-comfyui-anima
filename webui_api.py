@@ -327,12 +327,20 @@ class WebUIApi:
                 )
             }
             proxy = None
+            # 优先用插件自己的 http_proxy 配置；其次 AstrBot 全局 http_proxy；环境变量由 trust_env 兜底
             try:
-                from astrbot.api import GLOBAL_CONFIG
-
-                proxy = (GLOBAL_CONFIG.get("http_proxy") or "").strip() or None
+                plugin_proxy = ((self.plugin._cfg("http_proxy", "")) or "").strip()
             except Exception:
-                proxy = None
+                plugin_proxy = ""
+            if plugin_proxy:
+                proxy = plugin_proxy
+            else:
+                try:
+                    from astrbot.api import GLOBAL_CONFIG
+
+                    proxy = (GLOBAL_CONFIG.get("http_proxy") or "").strip() or None
+                except Exception:
+                    proxy = None
             # 环境变量代理交给 aiohttp trust_env
             timeout = aiohttp.ClientTimeout(total=10)
             try:

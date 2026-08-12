@@ -468,6 +468,12 @@
     "hint": "填写允许使用绘图功能（指令绘图、AI 对话发图）的用户 ID，多个用英文逗号或换行分隔。留空则所有用户都能发图。非白名单用户触发绘图时会收到无权提示且不会真正生图。",
     "default": ""
   },
+  "http_proxy": {
+    "type": "string",
+    "description": "HTTP/HTTPS 代理（用于 C 站抓取等外部请求）",
+    "hint": "插件访问外部网络（如 C 站 civitai.com 抓取封面图/触发词）使用的代理地址，格式如 http://127.0.0.1:7890。留空则仅尝试 AstrBot 全局 http_proxy 与环境变量；若仍无法访问 C 站，在此配置代理后保存即可。",
+    "default": ""
+  },
   "gallery": {
     "type": "object",
     "description": "图片画廊与语义标签召回",
@@ -515,6 +521,57 @@
         "default": 5,
         "description": "图库每页显示数量",
         "hint": "列表/收藏列表每页展示的条目数。有效范围 1~50，超出会自动夹紧。"
+      }
+    }
+  },
+  "_groups": {
+    "description": "配置分区元数据（仅 WebUI 展示用，不属于插件配置）",
+    "type": "object",
+    "items": {
+      "服务器与模型": {
+        "description": "ComfyUI 服务器、工作流与 LoRA 库",
+        "icon": "server",
+        "keys": ["comfyui_servers", "workflows", "loras"]
+      },
+      "默认工作流": {
+        "description": "未指定工作流时的默认选择与风格优先级",
+        "icon": "workflow",
+        "keys": [
+          "default_style_priority",
+          "default_workflow",
+          "default_workflow_real",
+          "default_img2img_workflow",
+          "default_img2img_workflow_real",
+          "img2img_fallback"
+        ]
+      },
+      "AI 对话与 LLM": {
+        "description": "AI 对话调用的 LLM 工具开关与专用模型",
+        "icon": "ai",
+        "keys": ["enable_llm_tools", "llm_model"]
+      },
+      "出图行为": {
+        "description": "出图等待、轮询、webp 转换与小报告等行为",
+        "icon": "image",
+        "keys": [
+          "draw_timeout",
+          "queue_extra_timeout",
+          "max_draw_timeout",
+          "queue_poll_interval",
+          "return_queue_position",
+          "convert_webp_to_png",
+          "show_draw_report"
+        ]
+      },
+      "网络与代理": {
+        "description": "外部网络访问（如 C 站抓取）的代理设置",
+        "icon": "network",
+        "keys": ["http_proxy"]
+      },
+      "权限与图库": {
+        "description": "发图白名单与图片画廊归档",
+        "icon": "lock",
+        "keys": ["allow_draw_users", "gallery"]
       }
     }
   }

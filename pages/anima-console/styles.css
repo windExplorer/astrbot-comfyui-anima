@@ -138,6 +138,18 @@ body{
 .cfg-section-title h3{margin:0;font-size:.95rem;color:var(--text);font-weight:700}
 .cfg-section-title span{font-size:.78rem;color:var(--text-muted)}
 .cfg-section-body{padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+/* 配置分区（可折叠） */
+.cfg-groups{display:flex;flex-direction:column;gap:14px}
+.cfg-group{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-card);overflow:hidden}
+.cfg-group-head{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:14px 16px;background:var(--bg-raised);border:none;cursor:pointer;color:var(--text);font-family:inherit}
+.cfg-group-head:hover{background:var(--accent-light)}
+.cfg-group-icon{font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);background:var(--accent-light);border-radius:6px;padding:3px 8px;font-weight:700;flex:none}
+.cfg-group-title{font-size:.98rem;font-weight:700;color:var(--text)}
+.cfg-group-desc{font-size:.78rem;color:var(--text-muted);flex:1}
+.cfg-group-arrow{color:var(--text-muted);transition:transform .18s;font-size:.85rem}
+.cfg-group.open .cfg-group-arrow{transform:rotate(90deg)}
+.cfg-group-body{padding:12px 14px;display:flex;flex-direction:column;gap:14px;border-top:1px solid var(--border)}
+.cfg-group-body[hidden]{display:none}
 .cfg-group{display:flex;flex-direction:column;gap:12px;padding-left:8px;border-left:2px solid var(--border)}
 .cfg-sub{display:flex;flex-direction:column;gap:5px}
 .cfg-sub h4{margin:0;font-size:.82rem;color:var(--text-secondary);font-weight:600}
