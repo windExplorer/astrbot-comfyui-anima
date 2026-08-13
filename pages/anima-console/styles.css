@@ -138,6 +138,20 @@ body{
 .cfg-section-title h3{margin:0;font-size:.95rem;color:var(--text);font-weight:700}
 .cfg-section-title span{font-size:.78rem;color:var(--text-muted)}
 .cfg-section-body{padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+/* 翻译调试面板 */
+.translate-debug{margin-top:14px}
+.tran-debug-mode-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.tran-debug-mode-row label{font-size:.82rem;color:var(--text-muted)}
+.tran-debug-mode-row select,.tran-debug-mode-row input{max-width:320px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input,var(--bg-card));color:var(--text)}
+.tran-debug-mode-row button{padding:7px 14px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
+.tran-debug-mode-row button:disabled{opacity:.6;cursor:not-allowed}
+.tran-debug-result{margin-top:4px;min-height:44px}
+.tran-debug-item{border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:var(--bg-raised)}
+.tran-debug-item .tran-debug-status{font-weight:700;font-size:.85rem}
+.tran-debug-item.ok .tran-debug-status{color:var(--success,#2f9e44)}
+.tran-debug-item.err .tran-debug-status{color:var(--danger)}
+.tran-debug-detail{margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:.85rem}
+.tran-debug-code{display:block;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 8px;white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,monospace;font-size:.8rem;color:var(--text)}
 /* 配置分区（可折叠） */
 .cfg-groups{display:flex;flex-direction:column;gap:14px}
 .cfg-group{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-card);overflow:hidden}

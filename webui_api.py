@@ -120,6 +120,37 @@ class WebUIApi:
             return error_response(f"保存配置失败: {e}")
 
     # -------------------------------------------------------------- #
+    # 翻译调试
+    # -------------------------------------------------------------- #
+    async def translate_test(self):
+        """翻译调试：用指定模式实际翻译一段文本，返回结果/耗时/错误。
+
+        请求体：{"mode": "danbooru|llm|api", "text": "中文描述"}
+        不修改插件全局/工作流配置，仅作连接与效果验证。
+        """
+        try:
+            body = await request.json(default={}) or {}
+            mode = (body.get("mode") or "").strip().lower()
+            text = (body.get("text") or "").strip()
+            if not mode:
+                return error_response("缺少 mode（danbooru / llm / api）")
+            if not text:
+                return error_response("缺少待翻译文本 text")
+            # 先确认配置：对应模式未启用时给出明确提示
+            if mode == "danbooru" and not (self.plugin._danbooru_cfg() or {}).get("enabled"):
+                return error_response("danbooru 模式未启用：请在插件配置的 danbooru 块开启 enabled")
+            if mode == "api":
+                tcfg = self.plugin._translate_cfg() or {}
+                if not tcfg.get("enabled"):
+                    return error_response("api 模式未启用：请在插件配置的 translate_api 块开启 enabled")
+                if not (tcfg.get("url") or "").strip():
+                    return error_response("api 模式未配置接口地址：请在 translate_api.url 填写")
+            result = await self.plugin.translate_test(mode, text)
+            return json_response(result)
+        except Exception as e:
+            return error_response(f"翻译测试失败: {e}")
+
+    # -------------------------------------------------------------- #
     # 日志
     # -------------------------------------------------------------- #
     async def get_records(self):
@@ -921,6 +952,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取"),
         (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
         (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),
+        (f"{prefix}/translate/test", api.translate_test, ["POST"], "翻译调试（测试三种翻译模式）"),
     ]
     registered = []
     for path, handler, methods, desc in routes:

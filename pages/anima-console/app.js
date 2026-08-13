@@ -694,6 +694,7 @@
       "服务器与模型": { description: "ComfyUI 服务器、工作流与 LoRA 库", icon: "server", keys: ["comfyui_servers", "workflows", "loras"] },
       "默认工作流": { description: "未指定工作流时的默认选择与风格优先级", icon: "workflow", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback"] },
       "AI 对话与 LLM": { description: "AI 对话调用的 LLM 工具开关与专用模型", icon: "ai", keys: ["enable_llm_tools", "llm_model"] },
+      "Anima 翻译": { description: "Anima 工作流中文提示词翻译模式与接口（danbooru / llm / api）", icon: "translate", keys: ["translator_mode", "translate_llm_model", "translate_api", "danbooru"] },
       "出图行为": { description: "出图等待、轮询、webp 转换与小报告等行为", icon: "image", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report"] },
       "网络与代理": { description: "外部网络访问（如 C 站抓取）的代理设置与 C 站 API Key", icon: "network", keys: ["http_proxy", "civitai_api_key"] },
       "权限与图库": { description: "发图白名单与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "gallery"] }
@@ -763,9 +764,62 @@
       });
     }
     html += '</div>';
+
+    // ---- 翻译调试面板（验证三种翻译模式的连接与效果）----
+    html += '<section class="panel cfg-section translate-debug" id="translateDebugPanel">'
+      + '<div class="cfg-section-title"><h3>翻译调试</h3>'
+      + '<span>测试 Anima 翻译模式（danbooru / llm / api）是否连通、返回效果如何。'
+      + '仅做单次调用，不改动任何配置。</span></div>'
+      + '<div class="cfg-section-body">'
+      + '<div class="tran-debug-mode-row">'
+      + '<label for="tranDebugMode">翻译模式</label>'
+      + '<select id="tranDebugMode">'
+      + '<option value="danbooru">danbooru（标签服务器）</option>'
+      + '<option value="llm">llm（大模型翻译）</option>'
+      + '<option value="api">api（通用 HTTP 翻译接口）</option>'
+      + '</select>'
+      + '<label for="tranDebugText">中文描述</label>'
+      + '<input id="tranDebugText" type="text" value="帅气的少年, 水手服少女, 微笑" />'
+      + '<button type="button" id="tranDebugBtn">测试翻译</button>'
+      + '</div>'
+      + '<div id="tranDebugResult" class="tran-debug-result" aria-live="polite"></div>'
+      + '</div></section>';
+
     els.cfgContent.innerHTML = html;
     els.cfgSaveBtn.disabled = true;
     els.cfgSaveMsg.textContent = "";
+
+    // 翻译调试事件
+    var tranBtn = document.getElementById("tranDebugBtn");
+    if (tranBtn) {
+      tranBtn.addEventListener("click", async function () {
+        var mode = document.getElementById("tranDebugMode").value;
+        var text = document.getElementById("tranDebugText").value.trim();
+        var resEl = document.getElementById("tranDebugResult");
+        if (!resEl || !text) return;
+        resEl.innerHTML = '<div class="empty">测试中…</div>';
+        var btn = tranBtn;
+        var oldText = btn.textContent;
+        btn.disabled = true; btn.textContent = "测试中…";
+        try {
+          var r = await apiPost("translate/test", { mode: mode, text: text });
+          if (!r) { resEl.innerHTML = '<div class="empty error">无响应</div>'; return; }
+          if (r.ok) {
+            resEl.innerHTML = '<div class="tran-debug-item ok"><span class="tran-debug-status">✓ 成功</span>'
+              + '<div class="tran-debug-detail"><div><b>耗时：</b>' + escapeHtml(String(r.elapsed_ms)) + ' ms</div>'
+              + '<div><b>结果：</b><code class="tran-debug-code">' + escapeHtml(r.result || "") + '</code></div></div></div>';
+          } else {
+            resEl.innerHTML = '<div class="tran-debug-item err"><span class="tran-debug-status">✗ 失败</span>'
+              + '<div class="tran-debug-detail"><div><b>耗时：</b>' + escapeHtml(String(r.elapsed_ms)) + ' ms</div>'
+              + '<div><b>错误：</b><code class="tran-debug-code">' + escapeHtml(r.error || "未知错误") + '</code></div></div></div>';
+          }
+        } catch (e) {
+          resEl.innerHTML = '<div class="empty error">调用失败：' + escapeHtml(e && e.message ? e.message : String(e)) + '</div>';
+        } finally {
+          btn.disabled = false; btn.textContent = oldText;
+        }
+      });
+    }
 
     // 分组折叠交互
     els.cfgContent.querySelectorAll(".cfg-group-head").forEach(function (btn) {

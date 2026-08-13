@@ -937,35 +937,103 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
-    async def _translate_prompt(self, wf: dict | None, positive: str) -> str:
-        """按翻译模式把中文正向提示词翻译为英文标签。
+    @staticmethod
+    def _split_prompt_segments(text: str) -> list[str]:
+        """把提示词按逗号拆成「片段 + 分隔符」交错的列表，便于只翻译含中文的片段、
+        其余原样保留（含逗号与原有空白），再按原顺序拼接，尽量不改变格式。
 
-        仅当工作流是 Anima（is_anima）且提示词含中文时才有意义；
-        是否调用由本方法内部按模式决定。翻译失败/未配置时返回原提示词（调用方自理）。
+        例如 "帅气的少年, blue eyes, 微笑" ->
+        ["帅气的少年", ", ", "blue eyes", ", ", "微笑"]。
+        """
+        import re as _re
+        parts = _re.split(r"(,\s*)", text or "")
+        # 去掉首尾空片段
+        while parts and parts[0] in ("", ","):
+            parts.pop(0)
+        while parts and parts[-1] in ("", ","):
+            parts.pop()
+        return parts
+
+    async def _translate_segment(self, wf: dict | None, seg: str) -> str:
+        """用指定翻译模式翻译单个提示词片段，返回英文标签串。
+
+        抛异常时由调用方决定是否回退。seg 应为含中文的片段。
         """
         mode = self._resolve_translator_mode(wf)
-        logger.info(f"[翻译] Anima 工作流，翻译模式={mode}")
-        try:
-            if mode == "llm":
-                return await self._translate_llm(positive)
-            if mode == "api":
-                api = self._build_translate_api()
-                if api is None:
-                    logger.warning("[翻译] 翻译模式为 api 但未配置 translate_api，跳过翻译")
-                    return positive
-                return await api.translate(positive)
-            # 默认 danbooru
-            danbooru = self._build_danbooru()
-            if danbooru is None:
-                logger.warning("[翻译] 翻译模式为 danbooru 但未启用 danbooru，跳过翻译")
-                return positive
-            tags = await danbooru.search(positive)
-            if tags and self._danbooru_cfg().get("append_original"):
-                return f"{positive}, {tags}"
-            return tags or positive
-        except Exception as e:
-            logger.warning(f"[翻译] {mode} 翻译失败，将直接使用原始提示词: {e}")
+        if mode == "llm":
+            return await self._translate_llm(seg)
+        if mode == "api":
+            api = self._build_translate_api()
+            if api is None:
+                raise RuntimeError("翻译模式为 api 但未配置 translate_api")
+            return await api.translate(seg)
+        # 默认 danbooru
+        danbooru = self._build_danbooru()
+        if danbooru is None:
+            raise RuntimeError("翻译模式为 danbooru 但未启用 danbooru")
+        tags = await danbooru.search(seg)
+        if tags and self._danbooru_cfg().get("append_original"):
+            return f"{seg}, {tags}"
+        return tags or seg
+
+    async def _translate_prompt(self, wf: dict | None, positive: str) -> str:
+        """按翻译模式翻译提示词中「含中文的片段」，已有英文片段原样保留。
+
+        逐段切分后仅对含中文字符的片段调用翻译，其余英文片段不动，最后按原顺序
+        用逗号拼接。避免整段替换导致英文描述被丢。单个片段翻译失败时该片段
+        保留原文（不影响其余片段）。
+        """
+        if not self._has_chinese(positive):
             return positive
+        mode = self._resolve_translator_mode(wf)
+        logger.info(f"[翻译] Anima 工作流，翻译模式={mode}，仅翻译中文片段")
+        segments = self._split_prompt_segments(positive)
+        out_segments = []
+        changed = False
+        for seg in segments:
+            if self._has_chinese(seg):
+                try:
+                    translated = await self._translate_segment(wf, seg)
+                    if translated and translated.strip():
+                        out_segments.append(translated)
+                        changed = True
+                        continue
+                except Exception as e:
+                    logger.warning(f"[翻译] 片段「{seg}」翻译失败，保留原文: {e}")
+            out_segments.append(seg)
+        # 片段列表已含逗号/空格分隔符，直接拼接即可保持原格式
+        result = "".join(out_segments)
+        if changed:
+            return result
+        return positive
+
+    async def translate_test(self, mode: str, text: str) -> dict:
+        """调试用：用指定模式翻译单段文本，返回结构化结果（结果/耗时/错误）。
+
+        mode 仅用于本次测试，不改变插件全局/工作流配置。
+        """
+        if mode not in ("danbooru", "llm", "api"):
+            return {"ok": False, "mode": mode, "result": "", "elapsed_ms": 0,
+                    "error": f"非法模式 {mode!r}（可选 danbooru / llm / api）"}
+        wf = {"translator_mode": mode}  # 用空工作流 + 指定模式覆盖
+        start = time.time()
+        try:
+            result = await self._translate_segment(wf, text)
+            return {
+                "ok": True,
+                "mode": mode,
+                "result": result,
+                "elapsed_ms": int((time.time() - start) * 1000),
+                "error": "",
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "mode": mode,
+                "result": "",
+                "elapsed_ms": int((time.time() - start) * 1000),
+                "error": f"{type(e).__name__}: {e}",
+            }
 
     def _resolve_server(self, server_name: str | None = None) -> dict:
         servers = self._servers()
