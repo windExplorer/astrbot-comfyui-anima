@@ -449,6 +449,12 @@
         "hint": "把中文提示词放进请求体的哪个字段（POST/表单或 GET query）。",
         "default": "text"
       },
+      "extra_params": {
+        "type": "string",
+        "description": "额外固定参数（JSON）",
+        "hint": "除原文外的其他请求参数，JSON 格式，随请求体或 query 一起发送。可填接口要求的固定参数，如 {\"target_lang\":\"EN\"}、{\"from\":\"zh\",\"to\":\"en\",\"appid\":\"xxx\",\"salt\":\"1\"} 等。值里可用 {text} 占位符表示原文（例如 {\"q\":\"{text}\"}）。",
+        "default": ""
+      },
       "json_body": {
         "type": "bool",
         "description": "使用 JSON 请求体",

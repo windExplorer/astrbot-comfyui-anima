@@ -878,12 +878,25 @@ class ComfyUIDrawPlugin(Star):
             headers = {str(k): str(v) for k, v in headers.items()}
         else:
             headers = {}
+        # 额外固定参数：JSON 字符串或 dict，随请求体/query 一起发送；值可含 {text} 占位符
+        extra_params = cfg.get("extra_params") or {}
+        if isinstance(extra_params, str):
+            try:
+                import json as _json
+                extra_params = _json.loads(extra_params) if extra_params.strip() else {}
+            except Exception:
+                extra_params = {}
+        if isinstance(extra_params, dict):
+            extra_params = {str(k): v for k, v in extra_params.items()}
+        else:
+            extra_params = {}
         return translate_client.TranslateApiClient(
             url,
             method=str(cfg.get("method") or "POST"),
             headers=headers,
             timeout=int(cfg.get("timeout", 60)),
             text_field=str(cfg.get("text_field") or "text"),
+            extra_params=extra_params,
             json_body=bool(cfg.get("json_body", True)),
             result_field=str(cfg.get("result_field") or "translated"),
             append_original=bool(cfg.get("append_original", False)),

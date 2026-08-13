@@ -17,6 +17,9 @@ class TranslateApiClient:
         timeout: int = 60,
         # 请求体字段映射：把当前提示词填入哪个 key
         text_field: str = "text",
+        # 额外固定参数（dict）。POST 时并入 json/表单 body；GET 时并入 query。
+        # 值若含 "{text}" 会被替换为本次原文（用于把原文塞进指定字段）。
+        extra_params: dict | None = None,
         # 请求体是否用 JSON 编码（否则用表单 x-www-form-urlencoded）
         json_body: bool = True,
         # 响应字段映射：翻译结果在返回 JSON 里的路径（点分隔，如 "data.translated"）
@@ -29,6 +32,7 @@ class TranslateApiClient:
         self.headers = headers or {}
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.text_field = text_field
+        self.extra_params = dict(extra_params or {})
         self.json_body = json_body
         self.result_field = result_field
         self.append_original = append_original
@@ -46,19 +50,33 @@ class TranslateApiClient:
                 return ""
         return cur if isinstance(cur, str) else (str(cur) if cur is not None else "")
 
+    @staticmethod
+    def _fill(text: str, value) -> str:
+        """把值里的 "{text}" 占位符替换为原文，其余转字符串。"""
+        return str(value).replace("{text}", text)
+
+    def _build_params(self, text: str) -> dict:
+        """构造完整请求参数：text_field 放原文 + 额外固定参数（含 {text} 占位符替换）。"""
+        params = {self.text_field: text}
+        for k, v in self.extra_params.items():
+            params[k] = self._fill(text, v)
+        return params
+
     async def translate(self, text: str) -> str:
         """返回英文标签串（逗号分隔）。失败时抛异常，由调用方决定是否回退。"""
         if not text or not text.strip():
             return ""
         kwargs: dict = {"headers": self.headers}
+        params = self._build_params(text)
         if self.method == "GET":
-            url = f"{self.url}?{self.text_field}={self._urlencode(text)}"
+            from urllib.parse import urlencode
+            url = f"{self.url}?{urlencode(params)}"
         else:
             url = self.url
             if self.json_body:
-                kwargs["json"] = {self.text_field: text}
+                kwargs["json"] = params
             else:
-                kwargs["data"] = {self.text_field: text}
+                kwargs["data"] = params
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.request(
@@ -74,8 +92,3 @@ class TranslateApiClient:
         if self.append_original and result and text.strip() not in result:
             result = f"{text.strip()}, {result}"
         return result
-
-    @staticmethod
-    def _urlencode(text: str) -> str:
-        from urllib.parse import quote
-        return quote(text, safe="")

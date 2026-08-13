@@ -77,6 +77,8 @@ class Handler(BaseHTTPRequestHandler):
                         "translated": "1girl, cat_ears, sailor_collar, smile, masterpiece"
                     },
                     "source": text,
+                    # 回显收到的所有字段，便于测试 extra_params 是否被发送
+                    "received": body,
                 }
             )
         else:
@@ -114,6 +116,18 @@ class Handler(BaseHTTPRequestHandler):
                     "tags_all": ["1girl", "cat_ears", "sailor_collar", "smile"],
                     "tags_sfw": ["1girl", "cat_ears", "sailor_collar", "smile"],
                     "query": text,
+                }
+            )
+        elif path.rstrip("/") == "/api/translate":
+            qs = parse_qs(parsed.query)
+            # 回显收到的所有 query 参数（转单值），便于测试 extra_params 是否被发送
+            received = {k: v[0] for k, v in qs.items()}
+            self._send_json(
+                {
+                    "data": {
+                        "translated": "1girl, cat_ears, sailor_collar, smile, masterpiece"
+                    },
+                    "received": received,
                 }
             )
         else:
