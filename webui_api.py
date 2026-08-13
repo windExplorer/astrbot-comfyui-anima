@@ -96,6 +96,16 @@ class WebUIApi:
                 return error_response("config 必须是对象")
             # 安全合并：仅覆盖顶层键，保留未提交键
             cfg = self.plugin.config
+            # 兜底：template_list（workflows/loras/comfyui_servers）元素补 __template_key，
+            # 避免历史数据/自定义弹窗保存缺该字段导致 AstrBot 格式校验失败
+            for _tl_key in ("workflows", "loras", "comfyui_servers"):
+                if _tl_key in new_cfg and isinstance(new_cfg[_tl_key], list):
+                    _fixed = []
+                    for _it in new_cfg[_tl_key]:
+                        if isinstance(_it, dict) and not (_it.get("__template_key") or _it.get("template")):
+                            _it["__template_key"] = "default"
+                        _fixed.append(_it)
+                    new_cfg[_tl_key] = _fixed
             for k, v in new_cfg.items():
                 try:
                     cfg[k] = v

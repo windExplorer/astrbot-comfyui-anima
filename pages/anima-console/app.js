@@ -1772,6 +1772,9 @@
       var moCb = els.editBody.querySelector('[data-f="model_only_cb"]');
       v.model_only = moCb ? moCb.checked : true;
       delete v.model_only_cb;
+      // AstrBot 配置校验：template_list 元素需带 __template_key（模板名，schema 里是 default）
+      var tplKeyL = (loras[idx] && loras[idx].__template_key) || "default";
+      v.__template_key = tplKeyL;
       if (isNew) {
         loras.push(v);
       } else {
@@ -1830,6 +1833,9 @@
       var cb = els.editBody.querySelector('[data-f="is_anima_cb"]');
       v.is_anima = !!(cb && cb.checked);
       delete v.is_anima_cb;
+      // AstrBot 配置校验：template_list 元素需带 __template_key（模板名，schema 里是 default）
+      var tplKey = (wfs[idx] && wfs[idx].__template_key) || "default";
+      v.__template_key = tplKey;
       if (isNew) {
         wfs.push(v);
       } else {

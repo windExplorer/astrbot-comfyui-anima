@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.5.28
+
+- **修复保存配置报错「缺少模板选择 …: 需要 __template_key」**：AstrBot 配置校验要求 template_list（workflows/loras/服务器）每个元素带 `__template_key`，此前自定义弹窗保存的数据缺该字段导致校验失败。前端工作流/LoRA 弹窗保存时自动补 `__template_key`，后端 `save_config` 兜底补齐任意来源的缺失项。
+
 ## v3.5.27
 
 - **修复"画真人走动漫工作流"**：未指定工作流时，现在会先按提示词语义自动判断「真人/写实」还是「动漫/二次元」（真人/照片/写实/摄影 vs anime/动漫/二次元/卡通等关键词），命中则选用对应类型的默认工作流（`default_workflow_real` / `default_workflow`，图生图同理用 `default_img2img_workflow_real` / `default_img2img_workflow`）；语义不明才回退到全局 `default_style_priority`。不再出现"说真人却用动漫工作流"。
