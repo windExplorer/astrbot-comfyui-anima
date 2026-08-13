@@ -1760,12 +1760,18 @@
       + fieldHtml("描述（供 LLM 理解）", textareaHtml("description", l.description, 3))
       + fieldHtml("C 站链接", inputHtml("civitai_url", l.civitai_url, "https://civitai.com/models/xxx"))
       + fieldHtml("封面图文件名", inputHtml("image", l.image, "存于 lora_assets/，可上传"))
+      + fieldHtml("提示词预设（每套 [预设名|提示词]，可多套）", textareaHtml("presets", l.presets, 3))
+      + fieldHtml("仅模型节点", '<label class="edit-toggle"><input type="checkbox" data-f="model_only_cb"' + (l.model_only !== false ? " checked" : "") + '><span class="toggle-slider"></span><span class="toggle-label">开启时只叠加 MODEL（兼容性最好）；关闭则同时影响 CLIP</span></label>')
       + fieldHtml("默认权重", inputHtml("weight", l.weight, "1.0"))
       + fieldHtml("模型文件名", inputHtml("model_name", l.model_name, "xxx.safetensors"));
     openEditDialog("LoRA", (isNew ? "新增" : "编辑") + " LoRA", body, function () {
       var v = collectForm();
       if (!v.name || !v.name.trim()) { els.editMsg.textContent = "名称必填"; return; }
       v.name = v.name.trim();
+      // model_only 开关：checkbox 不在 collectForm 里（它是 data-f 但 checkbox 需特殊处理）
+      var moCb = els.editBody.querySelector('[data-f="model_only_cb"]');
+      v.model_only = moCb ? moCb.checked : true;
+      delete v.model_only_cb;
       if (isNew) {
         loras.push(v);
       } else {
@@ -1806,6 +1812,16 @@
       + fieldHtml("Anima 工作流", '<label class="edit-toggle"><input type="checkbox" data-f="is_anima_cb"' + (w.is_anima ? " checked" : "") + '><span class="toggle-slider"></span><span class="toggle-label">开启后中文提示词会先翻译为 Danbooru 标签</span></label>')
       + fieldHtml("C 站链接（用于抓取封面）", inputHtml("civitai_url", w.civitai_url, "https://civitai.com/models/xxx"))
       + fieldHtml("封面图文件名", inputHtml("image", w.image, "存于 lora_assets/，可抓取或上传"))
+      + '<div class="edit-field"><label>── 节点配置 ──</label></div>'
+      + fieldHtml("正提示词节点", inputHtml("positive_node", w.positive_node, "如 6"))
+      + fieldHtml("负提示词节点", inputHtml("negative_node", w.negative_node, "如 7"))
+      + fieldHtml("分辨率节点", inputHtml("resolution_node", w.resolution_node, "EmptyLatentImage 节点，可留空自动探测"))
+      + fieldHtml("宽度字段", inputHtml("resolution_width_field", w.resolution_width_field, "width"))
+      + fieldHtml("高度字段", inputHtml("resolution_height_field", w.resolution_height_field, "height"))
+      + fieldHtml("参考图节点", inputHtml("image_node", w.image_node, "图生图 LoadImage 节点（可选）"))
+      + fieldHtml("输出节点", inputHtml("output_node", w.output_node, "出图节点（可选）"))
+      + fieldHtml("LoRA 主模锚点", inputHtml("lora_anchor", w.lora_anchor, "底模节点键名，留空自动探测"))
+      + fieldHtml("工作流 JSON（可直接粘贴）", textareaHtml("workflow_json", w.workflow_json, 3))
       + fieldHtml("默认 LoRA（每行 名称|权重|启用|底模）", textareaHtml("loras_text", w.loras_text, 3));
     openEditDialog("WORKFLOW", (isNew ? "新增" : "编辑") + " 工作流", body, function () {
       var v = collectForm();
