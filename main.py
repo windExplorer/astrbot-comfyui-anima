@@ -871,6 +871,26 @@ class ComfyUIDrawPlugin(Star):
             or self._cfg("default_workflow_real", "")
         )
 
+    def _detect_style_from_prompt(self, positive: str) -> str:
+        """从提示词语义检测「真人/写实」还是「动漫/二次元」，用于未指定工作流时选默认。
+
+        返回 "real" / "anime" / ""（无法判断）。命中互斥时以更强烈的信号优先：
+        先看是否有动漫强词（anime/二次元/动漫/卡通/漫画/插画风/赛璐璐等），
+        再看是否真人强词（真人/写实/照片/摄影/真实人物/真人照片/证件照等）。
+        """
+        text = (positive or "").lower()
+        anime_kw = ("anime", "二次元", "动漫", "卡通", "漫画", "动画", "插画风", "赛璐璐",
+                    "anima", "2d", "illustration style", "anime style", "cartoon", "manga")
+        real_kw = ("真人", "写实", "照片", "摄影", "真实", "证件照", "photo", "photograph",
+                   "realistic", "real person", "photorealistic", "真人写真")
+        has_anime = any(k in text for k in anime_kw)
+        has_real = any(k in text for k in real_kw)
+        if has_anime and not has_real:
+            return "anime"
+        if has_real and not has_anime:
+            return "real"
+        return ""
+
     def _alias_workflow_name(self, name: str) -> str:
         """把外部传入的工作流名按「每个工作流配置里的 aliases 字段」映射为真实工作流名。
 
@@ -901,6 +921,7 @@ class ComfyUIDrawPlugin(Star):
         name: str | None = None,
         is_img2img: bool = False,
         fallback_on_missing: bool = False,
+        positive: str = "",
     ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
@@ -924,12 +945,33 @@ class ComfyUIDrawPlugin(Star):
             if alias_target and alias_target != name:
                 name = alias_target
         if not name:
-            # 未指定工作流时，按「风格优先级 + 文生图/图生图」选默认
-            name = self._pick_default_workflow_name(is_img2img)
-            logger.info(
-                f"[绘图] 未指定工作流，按风格优先级={self._cfg('default_style_priority', 'anime')} "
-                f"{'图生图' if is_img2img else '文生图'}选定默认工作流={name or '（均无配置，回退第一个）'}"
-            )
+            # 未指定工作流时，先按提示词语义判断「真人/动漫」，命中则用对应默认工作流；
+            # 语义不明才按「风格优先级 + 文生图/图生图」选全局默认。
+            _sem = self._detect_style_from_prompt("" if positive is None else str(positive))
+            if _sem == "real":
+                _cand = (
+                    self._cfg("default_img2img_workflow_real", "")
+                    if is_img2img
+                    else self._cfg("default_workflow_real", "")
+                ) or self._cfg("default_workflow_real", "")
+                if _cand:
+                    name = _cand
+                    logger.info(f"[绘图] 提示词含「真人/写实」语义，选用真人工流={name}")
+            elif _sem == "anime":
+                _cand = (
+                    self._cfg("default_img2img_workflow", "")
+                    if is_img2img
+                    else self._cfg("default_workflow", "")
+                ) or self._cfg("default_workflow", "")
+                if _cand:
+                    name = _cand
+                    logger.info(f"[绘图] 提示词含「动漫/二次元」语义，选用动漫工作流={name}")
+            if not name:
+                name = self._pick_default_workflow_name(is_img2img)
+                logger.info(
+                    f"[绘图] 未指定工作流，按风格优先级={self._cfg('default_style_priority', 'anime')} "
+                    f"{'图生图' if is_img2img else '文生图'}选定默认工作流={name or '（均无配置，回退第一个）'}"
+                )
         if name:
             # 1) 精确匹配工作流名称
             for w in workflows:
@@ -1632,7 +1674,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
-            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True)
+            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True, positive=positive)
             logger.info(
                 f"[绘图] 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
                 f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
