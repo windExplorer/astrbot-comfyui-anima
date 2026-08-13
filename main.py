@@ -3954,13 +3954,12 @@ class ComfyUIDrawPlugin(Star):
         """查询已配置的 LoRA 库，包括每个 LoRA 的名称、别名、底模、描述与触发词。
 
         触发时机：在调用 comfyui_draw / comfyui_img2img 并需要指定 LoRA 之前，
-        务必先调用本工具获取真实 LoRA 列表，再从中选择正确的名称传入 loras 参数。
-        不要凭记忆或猜测 LoRA 名称，也不要编造不存在的 LoRA。
+        可先调用本工具获取真实 LoRA 列表，再从中选择正确的名称传入 loras 参数。
+        不要凭记忆猜测 LoRA 名称，也不要编造不存在的 LoRA。
 
-        参数：
-        - base_model: 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。
-          当用户指定了工作流/底模时，应传入该底模以只列出可用的 LoRA。
-        - keyword: 可选。按名称/别名模糊匹配查找某个 LoRA。
+        Args:
+            base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
+            keyword(string): 可选。按名称/别名模糊匹配查找某个 LoRA。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
