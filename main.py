@@ -3468,9 +3468,11 @@ class ComfyUIDrawPlugin(Star):
         )
         is_img2img = strong_img2img or weak_img2img
 
-        # ④ 已判定图生图、但参考图还没拿到（图没进 event，如引用图解析失败）时，
-        #    才用历史/会话/生成图兜底补一张参考图。纯文生图绝不进入这里。
-        if is_img2img and not init_images:
+        # ④ 强信号已判定图生图、但参考图还没拿到（图没进 event，如引用图解析失败）时，
+        #    才用历史/会话/生成图兜底补一张参考图。纯文生图、以及弱信号
+        #    （仅传 img2img_workflow 无参考图，常见于伴侣文生图顺带带默认图生图工作流）
+        #    绝不进入这里——弱信号应直接回退对应风格文生图，避免误中断调用方（如伴侣）。
+        if strong_img2img and not init_images:
             sid = getattr(event, "session_id", "") or ""
             for p in (g_last_received.get(sid) or []):
                 if p and os.path.exists(p) and p not in init_images:
