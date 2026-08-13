@@ -482,8 +482,13 @@ class WebUIApi:
                         continue
                     candidates.append((u, w, h))
                 if candidates:
-                    # 与 C 站页面一致：版本内「第一张图」即作者设置的封面/主图
+                    # C 站主图 URL 文件名以「00001-」开头（作者主封面）；优先选它，否则取第一张
                     cover_url = candidates[0][0]
+                    for _u, _w, _h in candidates:
+                        _base = os.path.basename(urlparse(_u).path).lower()
+                        if _base.startswith("00001-") or "00001." in _base:
+                            cover_url = _u
+                            break
                     # 诊断：记录候选图 URL 与尺寸，便于比对页面封面
                     try:
                         from astrbot.api import logger as _log
