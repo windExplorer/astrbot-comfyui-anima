@@ -36,6 +36,7 @@ $includeList = @(
     "webui_api.py",
     "comfyui_client.py",
     "danbooru_client.py",
+    "translate_client.py",
     "workflow_builder.py",
     "image_store.py",
     "metadata.yaml",

@@ -32,11 +32,12 @@ except ImportError:
     StarTools = None
 
 try:
-    from . import comfyui_client, danbooru_client, workflow_builder
+    from . import comfyui_client, danbooru_client, translate_client, workflow_builder
 except ImportError:
     # 兼容非包环境（如本地测试直接运行本模块）
     import comfyui_client
     import danbooru_client
+    import translate_client
     import workflow_builder
 
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
@@ -821,6 +822,151 @@ class ComfyUIDrawPlugin(Star):
     def _danbooru_cfg(self) -> dict:
         return self._cfg("danbooru", {}) or {}
 
+    def _translate_cfg(self) -> dict:
+        """通用 HTTP 翻译接口配置块（translate_api）。"""
+        return self._cfg("translate_api", {}) or {}
+
+    def _resolve_translator_mode(self, wf: dict | None) -> str:
+        """解析本次 Anima 工作流应使用的翻译模式。
+
+        优先级：工作流级 translator_mode > 全局 translator_mode > 兼容旧配置
+        （旧版只有 danbooru.enabled，故仍默认 danbooru）。合法值：
+        danbooru / llm / api。非法或空值统一回退 danbooru。
+        """
+        # 工作流级覆盖
+        if wf and isinstance(wf, dict):
+            wm = (wf.get("translator_mode") or "").strip().lower()
+            if wm in ("danbooru", "llm", "api"):
+                return wm
+        # 全局配置
+        gm = (self._cfg("translator_mode", "") or "").strip().lower()
+        if gm in ("danbooru", "llm", "api"):
+            return gm
+        # 兼容旧配置：全局未显式指定时，danbooru 开启就用 danbooru
+        return "danbooru"
+
+    def _build_danbooru(self) -> danbooru_client.DanbooruClient | None:
+        cfg = self._danbooru_cfg()
+        if not cfg.get("enabled"):
+            return None
+        return danbooru_client.DanbooruClient(
+            cfg.get("url", "http://127.0.0.1:11111"),
+            cfg.get("api_path", "/api/search"),
+            int(cfg.get("limit", 20)),
+            bool(cfg.get("show_nsfw", False)),
+            bool(cfg.get("use_segmentation", True)),
+            float(cfg.get("popularity", 0.15)),
+            int(cfg.get("top_k", 20)),
+        )
+
+    def _build_translate_api(self) -> translate_client.TranslateApiClient | None:
+        """构建通用 HTTP 翻译接口客户端；未配置 url 或未启用则返回 None。"""
+        cfg = self._translate_cfg()
+        if not cfg.get("enabled"):
+            return None
+        url = (cfg.get("url") or "").strip()
+        if not url:
+            return None
+        headers = cfg.get("headers") or {}
+        if isinstance(headers, str):
+            try:
+                import json as _json
+                headers = _json.loads(headers) if headers.strip() else {}
+            except Exception:
+                headers = {}
+        if isinstance(headers, dict):
+            headers = {str(k): str(v) for k, v in headers.items()}
+        else:
+            headers = {}
+        return translate_client.TranslateApiClient(
+            url,
+            method=str(cfg.get("method") or "POST"),
+            headers=headers,
+            timeout=int(cfg.get("timeout", 60)),
+            text_field=str(cfg.get("text_field") or "text"),
+            json_body=bool(cfg.get("json_body", True)),
+            result_field=str(cfg.get("result_field") or "translated"),
+            append_original=bool(cfg.get("append_original", False)),
+        )
+
+    def _resolve_translate_provider_id(self) -> str | None:
+        """解析 LLM 翻译用的 provider id。
+
+        优先 translate_llm_model；留空则取 AstrBot「当前正在使用」的对话 provider。
+        取不到（无可用 provider）时返回 None，由调用方跳过翻译。
+        """
+        model = (self._cfg("translate_llm_model", "") or "").strip()
+        if model:
+            return model
+        try:
+            prov = self.context.get_using_provider()
+        except Exception:
+            prov = None
+        if prov is None:
+            return None
+        cfg = getattr(prov, "provider_config", None) or {}
+        return cfg.get("id") if isinstance(cfg, dict) else None
+
+    async def _translate_llm(self, text: str) -> str:
+        """用 LLM 把中文动漫描述翻译为英文 Danbooru 风格标签。
+
+        使用独立配置 translate_llm_model；留空则走 AstrBot 当前默认对话模型。
+        无可用模型时抛 RuntimeError，由调用方决定是否回退。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("LLM 翻译未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        prompt = (
+            "你是动漫绘图提示词翻译器。把用户的中文动漫/二次元画面描述翻译为"
+            "英文 Danbooru 风格标签，用英文逗号分隔，尽量使用标准 Danbooru 标签"
+            "（如 1boy, long hair, blue eyes, school uniform）。只输出标签本身，"
+            "不要任何解释、不要序号、不要中文。\n\n"
+            f"中文描述：\n{text}\n\n"
+            "英文标签："
+        )
+        try:
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id, prompt=prompt
+            )
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except Exception as e:
+            raise RuntimeError(f"LLM 翻译失败: {e}") from e
+        out = out.strip()
+        # 容忍 ``` 包裹与多余换行
+        out = out.strip("`").strip()
+        out = " ".join(out.split())
+        return out
+
+    async def _translate_prompt(self, wf: dict | None, positive: str) -> str:
+        """按翻译模式把中文正向提示词翻译为英文标签。
+
+        仅当工作流是 Anima（is_anima）且提示词含中文时才有意义；
+        是否调用由本方法内部按模式决定。翻译失败/未配置时返回原提示词（调用方自理）。
+        """
+        mode = self._resolve_translator_mode(wf)
+        logger.info(f"[翻译] Anima 工作流，翻译模式={mode}")
+        try:
+            if mode == "llm":
+                return await self._translate_llm(positive)
+            if mode == "api":
+                api = self._build_translate_api()
+                if api is None:
+                    logger.warning("[翻译] 翻译模式为 api 但未配置 translate_api，跳过翻译")
+                    return positive
+                return await api.translate(positive)
+            # 默认 danbooru
+            danbooru = self._build_danbooru()
+            if danbooru is None:
+                logger.warning("[翻译] 翻译模式为 danbooru 但未启用 danbooru，跳过翻译")
+                return positive
+            tags = await danbooru.search(positive)
+            if tags and self._danbooru_cfg().get("append_original"):
+                return f"{positive}, {tags}"
+            return tags or positive
+        except Exception as e:
+            logger.warning(f"[翻译] {mode} 翻译失败，将直接使用原始提示词: {e}")
+            return positive
+
     def _resolve_server(self, server_name: str | None = None) -> dict:
         servers = self._servers()
         if not servers:
@@ -1036,23 +1182,9 @@ class ComfyUIDrawPlugin(Star):
             timeout=timeout,
         )
 
-    def _build_danbooru(self) -> danbooru_client.DanbooruClient | None:
-        cfg = self._danbooru_cfg()
-        if not cfg.get("enabled"):
-            return None
-        return danbooru_client.DanbooruClient(
-            cfg.get("url", "http://127.0.0.1:11111"),
-            cfg.get("api_path", "/api/search"),
-            int(cfg.get("limit", 20)),
-            bool(cfg.get("show_nsfw", False)),
-            bool(cfg.get("use_segmentation", True)),
-            float(cfg.get("popularity", 0.15)),
-            int(cfg.get("top_k", 20)),
-        )
-
     @staticmethod
     def _has_chinese(text: str) -> bool:
-        """判断文本是否包含中文字符。用于决定是否调用 Danbooru 翻译。"""
+        """判断文本是否包含中文字符。用于决定是否调用提示词翻译。"""
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
 
     @staticmethod
@@ -1765,21 +1897,13 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _re:
                     logger.warning(f"[图库] 参考图归档失败（不影响出图）: {_re}")
 
-        # Anima 工作流：中文提示词翻译为 Danbooru 标签
+        # Anima 工作流：中文提示词翻译为英文标签（支持 danbooru / llm / api 三种模式）
         # 仅当提示词包含中文时才调用（纯英文/无中文时直接作为标签使用，跳过翻译）
-        danbooru = self._build_danbooru()
-        if wf.get("is_anima") and danbooru is not None and self._has_chinese(positive):
-            try:
-                tags = await danbooru.search(positive)
-            except Exception as e:
-                logger.warning(f"Danbooru 翻译失败，将直接使用原始提示词: {e}")
-                tags = ""
-            if tags:
-                if self._danbooru_cfg().get("append_original"):
-                    positive = f"{positive}, {tags}"
-                else:
-                    positive = tags
-                logger.info(f"Danbooru 翻译结果: {positive}")
+        if wf.get("is_anima") and self._has_chinese(positive):
+            translated = await self._translate_prompt(wf, positive)
+            if translated:
+                positive = translated
+                logger.info(f"Anima 提示词翻译结果: {positive}")
 
         # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词
         if lora_presets:

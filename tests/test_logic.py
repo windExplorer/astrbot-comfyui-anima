@@ -17,6 +17,7 @@ sys.path.insert(0, HERE)
 import workflow_builder
 import comfyui_client
 import danbooru_client
+import translate_client
 from mock_comfyui import start_mock
 
 WF_PATH = os.path.join(HERE, "sample_workflow.json")
@@ -227,6 +228,53 @@ async def test_danbooru():
     print("   OK")
 
 
+async def test_translate_api():
+    print("== 4. 通用 HTTP 翻译接口（mock）==")
+    server, base_url = start_mock()
+    # 默认：POST + json 请求体 + 结果字段 data.translated
+    client = translate_client.TranslateApiClient(
+        base_url + "/api/translate",
+        method="POST",
+        text_field="text",
+        json_body=True,
+        result_field="data.translated",
+    )
+    out = await client.translate("一只猫娘水手服少女")
+    print("   翻译结果:", out)
+    assert "cat_ears" in out
+
+    # append_original：结果末尾追加原文
+    client2 = translate_client.TranslateApiClient(
+        base_url + "/api/translate",
+        method="POST",
+        text_field="text",
+        json_body=True,
+        result_field="data.translated",
+        append_original=True,
+    )
+    out2 = await client2.translate("猫娘")
+    print("   追加原文结果:", out2)
+    # append_original：原文在前，英文结果在后（与 danbooru 的 append_original 语义一致）
+    assert out2.startswith("猫娘")
+    assert "cat_ears" in out2
+
+    # 请求失败（接口不存在）应抛 RuntimeError 而非静默
+    bad = translate_client.TranslateApiClient(
+        base_url + "/no-such-endpoint",
+        method="POST",
+        text_field="text",
+        json_body=True,
+        result_field="data.translated",
+    )
+    try:
+        await bad.translate("测试")
+        raise AssertionError("应抛异常")
+    except RuntimeError as e:
+        print("   失败路径 OK:", str(e)[:30], "...")
+    server.shutdown()
+    print("   OK")
+
+
 if __name__ == "__main__":
     test_workflow_logic()
     test_true_disable_relink()
@@ -235,4 +283,5 @@ if __name__ == "__main__":
     test_lora_inject_no_anchor()
     asyncio.run(test_integration())
     asyncio.run(test_danbooru())
+    asyncio.run(test_translate_api())
     print("\n全部测试通过 ✅")

@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.5.30
+
+- **Anima 工作流提示词翻译支持三种模式（danbooru / llm / api）**：此前中文动漫提示词只能发到 Danbooru 标签服务器翻译。现新增：
+  - **LLM 翻译**（`translator_mode=llm`）：用 LLM 把中文描述改写为英文 Danbooru 风格标签。可独立配置 `translate_llm_model`，留空则走 AstrBot 当前默认对话模型。
+  - **通用 HTTP 翻译接口**（`translator_mode=api`）：接入任意支持 HTTP 的翻译服务（DeepL、百度翻译、自定义中转等），通过 `translate_api` 配置接口地址、方法、请求头、字段映射（`text_field` / `result_field` / `json_body`）等。
+  - **模式选择**：全局 `translator_mode` 三选一；每个 `is_anima` 工作流可用自己的 `translator_mode` 覆盖全局。
+  - 新文件 `translate_client.py` 提供通用 HTTP 翻译客户端；新增本地测试 `test_translate_api`。
+
 ## v3.5.29
 
 - **修复"伴侣插件文生图被误判成图生图、还从图库扒旧图当参考"**：图生图补图兜底原先用 `is_img2img`（含弱信号）判定，导致调用方（如伴侣）文生图请求只是顺带传了 `img2img_workflow` 就会被错误转为图生图，并从 gallery 历史捞旧图当参考图。现收紧为仅 `strong_img2img`（显式传了 image 或消息里真有图）才进入补图兜底；弱信号直接回退对应风格文生图，不再误中断调用方。

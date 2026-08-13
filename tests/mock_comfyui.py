@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
 PNG_1PX = base64.b64decode(
-    "iVBORw0KGgoAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
 
 
@@ -60,6 +60,23 @@ class Handler(BaseHTTPRequestHandler):
                     "tags_all": ["1girl", "cat_ears", "sailor_collar", "smile"],
                     "tags_sfw": ["1girl", "cat_ears", "sailor_collar", "smile"],
                     "query": text,
+                }
+            )
+        elif self.path.rstrip("/") == "/api/translate":
+            # 通用 HTTP 翻译接口 mock：从 text_field（默认 text）取原文，返回英文标签
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = {}
+            text = body.get("text", "")
+            self._send_json(
+                {
+                    "data": {
+                        "translated": "1girl, cat_ears, sailor_collar, smile, masterpiece"
+                    },
+                    "source": text,
                 }
             )
         else:

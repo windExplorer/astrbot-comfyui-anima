@@ -167,8 +167,15 @@
           "is_anima": {
             "type": "bool",
             "description": "是否 Anima 工作流",
-            "hint": "若为 true，提交前会把中文提示词发到 Danbooru 标签服务器翻译为英文标签。",
+            "hint": "若为 true，提交前会把中文提示词翻译为英文标签（翻译模式见本工作流 translator_mode，或全局 translator_mode）。",
             "default": false
+          },
+          "translator_mode": {
+            "type": "string",
+            "description": "本工作流翻译模式（可选，覆盖全局）",
+            "hint": "留空=跟随全局 translator_mode。可选：danbooru / llm / api，仅对 is_anima=true 的工作流生效。",
+            "default": "",
+            "options": ["", "danbooru", "llm", "api"]
           },
           "workflow_name": {
             "type": "string",
@@ -390,6 +397,85 @@
         "description": "追加原文",
         "hint": "翻译后是否在标签后追加用户原始中文描述。",
         "default": false
+      }
+    }
+  },
+  "translator_mode": {
+    "type": "string",
+    "description": "Anima 工作流默认提示词翻译模式",
+    "hint": "Anima（动漫）工作流提交前，若提示词含中文，按此模式翻译为英文标签。可选：danbooru（Danbooru 标签服务器）/ llm（LLM 翻译，用 translate_llm_model，留空走默认对话模型）/ api（通用 HTTP 翻译接口，见 translate_api 配置）。各 Anima 工作流也可单独覆盖此设置。",
+    "default": "danbooru",
+    "options": ["danbooru", "llm", "api"]
+  },
+  "translate_llm_model": {
+    "type": "string",
+    "description": "LLM 翻译用模型（可选）",
+    "hint": "translator_mode=llm 时使用的模型服务商。选填：留空则用 AstrBot 默认对话模型翻译；填入某个 LLM 服务商则用它翻译。",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "translate_api": {
+    "type": "object",
+    "description": "通用 HTTP 翻译接口",
+    "hint": "translator_mode=api 时使用的通用翻译接口。可接入任意支持 HTTP 请求的翻译服务（DeepL、百度翻译、自定义中转等）。启用后按下方字段映射提交中文并取回英文标签。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用翻译接口",
+        "default": false
+      },
+      "url": {
+        "type": "string",
+        "description": "接口地址",
+        "hint": "例如 https://api-free.deepl.com/v2/translate 或自定义中转地址。POST 时提交 json/form 到该地址；GET 时把文本拼到 query。",
+        "default": ""
+      },
+      "method": {
+        "type": "string",
+        "description": "请求方法",
+        "hint": "POST（默认）或 GET。",
+        "default": "POST",
+        "options": ["POST", "GET"]
+      },
+      "headers": {
+        "type": "string",
+        "description": "请求头（JSON）",
+        "hint": "可选。JSON 格式的额外请求头，如 {\"Authorization\": \"DeepL-Auth-Key xxx\"}。",
+        "default": ""
+      },
+      "text_field": {
+        "type": "string",
+        "description": "原文字段名",
+        "hint": "把中文提示词放进请求体的哪个字段（POST/表单或 GET query）。",
+        "default": "text"
+      },
+      "json_body": {
+        "type": "bool",
+        "description": "使用 JSON 请求体",
+        "hint": "开启=请求体为 JSON；关闭=使用表单 x-www-form-urlencoded。",
+        "default": true
+      },
+      "result_field": {
+        "type": "string",
+        "description": "结果字段路径",
+        "hint": "英文结果在返回 JSON 里的路径，点分隔取嵌套字段，如 \"data.translated\" 或 \"translated\"。",
+        "default": "translated"
+      },
+      "append_original": {
+        "type": "bool",
+        "description": "追加原文",
+        "hint": "翻译后是否在标签后追加原始中文描述。",
+        "default": false
+      },
+      "timeout": {
+        "type": "int",
+        "description": "超时(秒)",
+        "slider": {
+          "min": 5,
+          "max": 300,
+          "step": 5
+        },
+        "default": 60
       }
     }
   },
