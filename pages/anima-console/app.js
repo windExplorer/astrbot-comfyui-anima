@@ -1476,14 +1476,22 @@
     apiRaw("lora/fetch", { method: "POST", body: { url: cur }, timeout: 60000 }).then(function (d) {
       setButtonBusy(btn, false, "抓取中…", "抓封面");
       if (!d) return;
-      if (d.image) {
-        w.image = d.image;
+      var covers = (Array.isArray(d.images) && d.images.length) ? d.images : (d.image ? [d.image] : []);
+      if (!covers.length) {
+        showToast("未获取到有效封面（该版本可能无图片预览、只有视频，或网络问题）", "info");
+        return;
+      }
+      var applyCover = function (chosenName) {
+        w.image = chosenName;
         apiPost("config", { config: { workflows: state.config.workflows } }).then(function () {
-          showToast("封面已抓取并保存" + (d.save_dir ? "（" + d.save_dir + "）" : ""), "success");
+          showToast("封面已保存", "success");
           renderWorkflows();
         }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
+      };
+      if (covers.length > 1) {
+        openCoverPicker(covers, w.name || "工作流", applyCover);
       } else {
-        showToast("未获取到有效封面（该版本可能无图片预览、只有视频，或网络问题）", "info");
+        applyCover(covers[0]);
       }
     }).catch(function (e) {
       setButtonBusy(btn, false, "抓取中…", "抓封面");
@@ -1523,6 +1531,40 @@
     input.click();
   }
 
+  // 选择封面弹窗：展示候选缩略图，点选一张
+  function openCoverPicker(covers, loraName, onPick) {
+    if (!els.editDialog || !els.editBody) return;
+    var grid = '<div class="cover-picker">';
+    covers.forEach(function (name) {
+      grid += '<button type="button" class="cover-pick-item" data-name="' + escapeHtml(name) + '" title="选这张">'
+        + '<img data-lora-img="' + escapeHtml(name) + '" alt="" loading="lazy">'
+        + '<span class="cover-pick-tag">选用</span></button>';
+    });
+    grid += '</div>';
+    els.editKicker.textContent = "选择封面";
+    els.editTitle.textContent = "为「" + escapeHtml(loraName || "LoRA") + "」选择封面";
+    els.editBody.innerHTML = grid;
+    els.editMsg.textContent = "抓取到 " + covers.length + " 张候选图，点击一张作为封面";
+    els.editDialog._onSave = null;
+    if (els.editSaveBtn) els.editSaveBtn.style.display = "none";
+    if (els.editCancelBtn) els.editCancelBtn.textContent = "取消";
+    els.editDialog.showModal();
+    // 加载缩略图
+    els.editBody.querySelectorAll("[data-lora-img]").forEach(function (img) {
+      var fname = img.dataset.loraImg;
+      apiGet("lora/image", { name: fname }).then(function (d) {
+        if (d && d.url) img.src = d.url;
+      }).catch(function () {});
+    });
+    // 点选
+    els.editBody.querySelectorAll(".cover-pick-item").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (els.editDialog) els.editDialog.close();
+        onPick(btn.dataset.name);
+      });
+    });
+  }
+
   function fetchLoraRemote(btn, url) {
     setButtonBusy(btn, true, "抓取中…", "抓取");
     apiRaw("lora/fetch", { method: "POST", body: { url: url }, timeout: 60000 }).then(function (d) {
@@ -1530,8 +1572,6 @@
       if (!d) return;
       var idx = +btn.dataset.idx;
       var l = state.config.loras[idx] || {};
-      var noCover = false;
-      if (d.image) l.image = d.image; else noCover = true;
       if (d.trigger_words) l.trigger_words = d.trigger_words;
       if (d.description) l.description = d.description;
       // C 站标题并入别名（若不存在）：别名现在是换行分隔（textarea），兼容旧逗号分隔
@@ -1551,16 +1591,23 @@
         if (["anima", "z-image-turbo", "krea2", "illustrious"].indexOf(bm) >= 0) l.base_model = bm;
       }
       l.civitai_url = url;
-      saveLorasState().then(function () {
-        var extra = "";
-        if (noCover) {
-          extra = "；未获取到有效封面";
-        } else if (d && d.cover_url) {
-          extra = "，封面原址 " + d.cover_url;
-        }
-        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」" + extra, noCover ? "info" : "success");
-        renderLoras();
-      });
+      var covers = (Array.isArray(d.images) && d.images.length) ? d.images : (d.image ? [d.image] : []);
+      if (covers.length > 1) {
+        // 多张候选 → 弹选图弹窗，选后再保存
+        openCoverPicker(covers, l.name || "LoRA", function (chosenName) {
+          l.image = chosenName;
+          saveLorasState().then(function () {
+            showToast("已选择封面并保存", "success");
+            renderLoras();
+          }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
+        });
+      } else {
+        if (covers.length === 1) l.image = covers[0];
+        saveLorasState().then(function () {
+          showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」" + (covers.length ? "" : "；未获取到有效封面"), covers.length ? "success" : "info");
+          renderLoras();
+        }).catch(function (e) { showToast(e.message || "保存失败", "error"); });
+      }
     }).catch(function (e) {
       setButtonBusy(btn, false, "抓取中…", "抓取");
       showToast("抓取失败：" + (e && e.message ? e.message : "网络错误，请手动填写"), "error");

@@ -455,9 +455,10 @@ class WebUIApi:
                 trigger_words = "\n".join(str(x) for x in tw if x)
                 base_model = str(version.get("baseModel") or "").strip()
                 description = str(data.get("description") or version.get("description") or "").strip()
-            # 封面图：只选「图片」条目（排除视频），优先竖图（宽≤高），否则取第一张
+            # 封面图：收集候选图（下载后由前端选图）
             image_name = ""
             cover_url = ""
+            fetched_covers = []  # 已下载保存的候选封面文件名（前端选图）
             if version:
                 images = version.get("images") or []
                 candidates = []
@@ -495,13 +496,16 @@ class WebUIApi:
                         _log.info(f"[LoRA抓取] 候选封面 {len(candidates)} 张: " + "; ".join(f"{_u} ({_w}x{_h})" for _u, _w, _h in candidates[:5]))
                     except Exception:
                         pass
-                    # 逐个尝试候选图，直到下载到合法图片（避免单张 403/非图片就放弃）
+                    # 逐个下载候选图（最多 6 张有效图），前端选图用
                     img_headers = dict(headers)
                     img_headers["Referer"] = "https://civitai.com/"
                     cover_timeout = aiohttp.ClientTimeout(total=15)
+                    fetched_covers = []  # 已保存的封面文件名
                     for _u, _w, _h in candidates:
                         if not _u:
                             continue
+                        if len(fetched_covers) >= 6:
+                            break
                         try:
                             async with aiohttp.ClientSession(headers=img_headers, trust_env=True) as _sess:
                                 async with _sess.get(_u, timeout=cover_timeout, proxy=proxy) as _resp:
@@ -517,40 +521,33 @@ class WebUIApi:
                                 ext_by_magic = ".webp"
                             elif _img_data[:4] == b"GIF8":
                                 ext_by_magic = ".gif"
-                            if ext_by_magic and len(_img_data) >= 64:
-                                image_name = f"civitai_{uuid.uuid4().hex[:10]}{ext_by_magic}"
-                                try:
-                                    _dest = self._lora_assets_dir() / image_name
-                                    _dest.write_bytes(_img_data)
-                                    if not _dest.exists() or _dest.stat().st_size < 64:
-                                        # 写失败/空文件
-                                        try:
-                                            from astrbot.api import logger as _log
-                                            _log.warning(f"[LoRA抓取] 封面写入异常: {_dest}")
-                                        except Exception:
-                                            pass
-                                        image_name = ""
-                                        continue
-                                    # 写入成功，记录实际路径供排查
-                                    try:
-                                        from astrbot.api import logger as _log
-                                        _log.info(f"[LoRA抓取] 封面已保存: {_dest}")
-                                    except Exception:
-                                        pass
-                                    break
-                                except Exception as _we:
-                                    try:
-                                        from astrbot.api import logger as _log
-                                        _log.warning(f"[LoRA抓取] 封面写入失败: {_we}")
-                                    except Exception:
-                                        pass
-                                    image_name = ""
+                            if not (ext_by_magic and len(_img_data) >= 64):
+                                continue
+                            _fn = f"civitai_{uuid.uuid4().hex[:10]}{ext_by_magic}"
+                            try:
+                                _dest = self._lora_assets_dir() / _fn
+                                _dest.write_bytes(_img_data)
+                                if not _dest.exists() or _dest.stat().st_size < 64:
                                     continue
+                                fetched_covers.append(_fn)
+                                try:
+                                    from astrbot.api import logger as _log
+                                    _log.info(f"[LoRA抓取] 封面已保存(候选): {_dest}")
+                                except Exception:
+                                    pass
+                            except Exception as _we:
+                                try:
+                                    from astrbot.api import logger as _log
+                                    _log.warning(f"[LoRA抓取] 封面写入失败: {_we}")
+                                except Exception:
+                                    pass
+                                continue
                         except Exception:
                             continue
             return json_response({
-                "image": image_name,
-                "save_dir": str(self._lora_assets_dir()) if image_name else "",
+                "image": "",
+                "images": fetched_covers,
+                "save_dir": str(self._lora_assets_dir()) if fetched_covers else "",
                 "cover_url": cover_url,
                 "trigger_words": trigger_words,
                 "description": description[:2000],
