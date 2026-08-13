@@ -2,7 +2,7 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
-## v3.5.30
+## v3.6.0
 
 - **Anima 工作流提示词翻译支持三种模式（danbooru / llm / api）**：此前中文动漫提示词只能发到 Danbooru 标签服务器翻译。现新增：
   - **LLM 翻译**（`translator_mode=llm`）：用 LLM 把中文描述改写为英文 Danbooru 风格标签。可独立配置 `translate_llm_model`，留空则走 AstrBot 当前默认对话模型。
