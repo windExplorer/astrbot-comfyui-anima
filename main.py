@@ -3270,6 +3270,12 @@ class ComfyUIDrawPlugin(Star):
         - 判断依据：以用户当前消息的【明确意图】为准。对话历史里画过图不等于当前还要画；
           若用户当前表现出拒绝/取消/不需要，就绝不画图，不要被之前的画图请求带偏。
 
+        ★数量规则（务必遵守，默认只画一张）：
+        - **默认只生成 1 张图**。用户没有明确说数量时，一次消息只调用本工具一次、只出 1 张图。
+        - 只有用户**明确**要求多张（如「两张」「三张」「多画几张」「每张/各来一张」「所有姿势都来一版」）时，才按需求张数重复调用；否则不要自作主张多画。
+        - **禁止连续重复调用**：一次请求生成完 1 张后，不要因为觉得"还可以更好/换一张"而立刻再次调用本工具——除非用户明确要求再画/再换。生成完成就收尾，不要停不下来。
+        - 对话记忆里的"多发几张"只对当时那一次有效，不代表以后每次都要多发。当前消息没说多张 = 只发一张。
+
         重要约束（务必遵守，不要因为对话记忆而违反）：
         - 不要依赖历史记忆复用结果。即便本次对话里已经画过类似的图，只要用户再次
           表达画图意图，就必须重新调用本工具生成一张全新的图，绝不能以「之前画过」
@@ -3340,6 +3346,24 @@ class ComfyUIDrawPlugin(Star):
             plugin = self
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
+
+        # 单张保护：同一会话短时间内的重复调用视为模型死循环/误触发，
+        # 直接收尾不重复生图（除非带 source 的第三方插件主动调用）。
+        try:
+            _now = time.time()
+            _sid_key = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+            _ts_map = getattr(plugin, "_last_llm_draw_ts", None)
+            if not isinstance(_ts_map, dict):
+                _ts_map = {}
+                plugin._last_llm_draw_ts = _ts_map
+            _prev = _ts_map.get(_sid_key, 0.0)
+            _ts_map[_sid_key] = _now
+            _is_companion_call = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+            if not _is_companion_call and _prev and (_now - _prev) < 4.0:
+                logger.info(f"[llm_draw] 会话 {_sid_key} 4 秒内重复调用画图工具，已拦截至一张（防止连发多张）")
+                return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
+        except Exception:
+            pass
 
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -4167,6 +4191,23 @@ class ComfyUIDrawPlugin(Star):
             plugin = self
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
+
+        # 单张保护：同 llm_draw，同一会话短时间重复调用（模型死循环）直接收尾
+        try:
+            _now2 = time.time()
+            _sid_key2 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+            _ts_map2 = getattr(plugin, "_last_llm_draw_ts", None)
+            if not isinstance(_ts_map2, dict):
+                _ts_map2 = {}
+                plugin._last_llm_draw_ts = _ts_map2
+            _prev2 = _ts_map2.get(_sid_key2, 0.0)
+            _ts_map2[_sid_key2] = _now2
+            _is_companion_call2 = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+            if not _is_companion_call2 and _prev2 and (_now2 - _prev2) < 4.0:
+                logger.info(f"[llm_img2img] 会话 {_sid_key2} 4 秒内重复调用，已拦截（防止连发多张）")
+                return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
+        except Exception:
+            pass
 
         # 与 llm_draw 同样的兜底处理
         if not isinstance(event, AstrMessageEvent):
