@@ -1552,7 +1552,13 @@
       }
       l.civitai_url = url;
       saveLorasState().then(function () {
-        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」" + (noCover ? "；未获取到有效封面（可能该版本无图片预览或只有视频）" : (d && d.save_dir ? "，封面已存 " + d.save_dir : "")), noCover ? "info" : "success");
+        var extra = "";
+        if (noCover) {
+          extra = "；未获取到有效封面";
+        } else if (d && d.cover_url) {
+          extra = "，封面原址 " + d.cover_url;
+        }
+        showToast("抓取成功，已写入「" + (l.name || "LoRA") + "」" + extra, noCover ? "info" : "success");
         renderLoras();
       });
     }).catch(function (e) {

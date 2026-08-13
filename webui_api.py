@@ -387,6 +387,10 @@ class WebUIApi:
             try:
                 async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
                     async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
+                        if resp.status == 401 or resp.status == 403:
+                            return error_response("C 站 API 拒绝了匿名请求（401/403）。请在插件配置「网络与代理」里填写 civitai_api_key（C 站 Settings → Account → API Keys 生成），否则无法获取描述/封面。")
+                        if resp.status == 429:
+                            return error_response("C 站 API 限流（HTTP 429）。请稍后重试，或配置 civitai_api_key 提升额度。")
                         if resp.status != 200:
                             return error_response(f"C 站 API 请求失败: HTTP {resp.status}")
                         data = await resp.json()
@@ -412,6 +416,9 @@ class WebUIApi:
                 versions = data.get("modelVersions") or []
             elif isinstance(data, dict) and ("trainedWords" in data or "images" in data):
                 versions = [data]
+            if not versions and isinstance(data, dict) and (data.get("error") or data.get("message") or not any(k in data for k in ("name", "id", "modelVersions", "trainedWords", "images"))):
+                # 响应不是有效的模型数据（匿名限流/错误响应但 HTTP 200）
+                return error_response("C 站 API 返回了异常/受限数据（可能是匿名限流）。请在插件配置「网络与代理」填写 civitai_api_key 后重试。")
             version = None
             if versions:
                 if target_version_id and len(versions) > 1:
@@ -477,6 +484,12 @@ class WebUIApi:
                 if candidates:
                     # 与 C 站页面一致：版本内「第一张图」即作者设置的封面/主图
                     cover_url = candidates[0][0]
+                    # 诊断：记录候选图 URL 与尺寸，便于比对页面封面
+                    try:
+                        from astrbot.api import logger as _log
+                        _log.info(f"[LoRA抓取] 候选封面 {len(candidates)} 张: " + "; ".join(f"{_u} ({_w}x{_h})" for _u, _w, _h in candidates[:5]))
+                    except Exception:
+                        pass
                     # 逐个尝试候选图，直到下载到合法图片（避免单张 403/非图片就放弃）
                     img_headers = dict(headers)
                     img_headers["Referer"] = "https://civitai.com/"
@@ -533,6 +546,7 @@ class WebUIApi:
             return json_response({
                 "image": image_name,
                 "save_dir": str(self._lora_assets_dir()) if image_name else "",
+                "cover_url": cover_url,
                 "trigger_words": trigger_words,
                 "description": description[:2000],
                 "base_model": base_model,
