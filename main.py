@@ -3508,7 +3508,9 @@ class ComfyUIDrawPlugin(Star):
         
         图生图判定（重要）：只有当用户**当前消息里附带了参考图**（或明确说"把这张图/参考这张图/这张照片变成XX"）时，才按图生图处理（传 image 或依赖插件自动提取）。**普通文字请求一律文生图**，不要因为群里/历史里有图就当作图生图。
         
-        prompt 语言：动漫/二次元风格（Anima 工作流）用英文标签（如 1girl, solo, white dress）；真人/写实用中文即可。不确定工作流时留空 workflow，插件会用默认；只有用户明确要某种画风且你有把握时才传 workflow 名称（不确定可先调 comfyui_workflows）。
+        prompt 语言：动漫/二次元风格（Anima 工作流）用英文 Danbooru 风格标签（如 1girl, solo, white dress, masterpiece）；真人/写实用中文即可。
+        ★动漫标签翻译（重要）：当用户用中文描述动漫/二次元画面，需要把中文翻译/改写为英文 Danbooru 标签时，若你当前的工具列表里有「Danbooru tag search / Danbooru 标签搜索」这类 MCP 工具，**务必优先调用它**去查询/确认标准 Danbooru 标签，再把准确的英文标签填进 prompt，不要仅凭记忆臆造标签、也不要原样透传中文。只有当没有该类 MCP 工具时才退而直接用你自己的翻译能力改写为英文标签。
+        不确定工作流时留空 workflow，插件会用默认；只有用户明确要某种画风且你有把握时才传 workflow 名称（不确定可先调 comfyui_workflows）。
         
         重要：不要依赖历史记忆复用旧图。用户再次要图就重新生成。画完就自然收尾，不要不停追问或重复画。
         
@@ -4344,6 +4346,9 @@ class ComfyUIDrawPlugin(Star):
         - 动漫/二次元工作流（is_anima=true）：prompt 必须为英文标签化描述（如
           "1boy, handsome, anime style, sharp eyes, masterpiece"），不得输出中文。
           即使用户用中文描述变换意图，也要翻译改写为英文 Danbooru 风格标签，不要原样透传中文。
+          ★若你当前的工具列表里有「Danbooru tag search / Danbooru 标签搜索」这类 MCP 工具，
+          务必优先调用它查询/确认标准 Danbooru 标签后再填入 prompt，不要仅凭记忆臆造、也不要原样透传中文；
+          没有该类 MCP 工具时才退而用你自己的翻译能力改写。
         - 负向提示词（negative_prompt）同样遵循上述语言规则。
 
         工作流选择规则：

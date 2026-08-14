@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.6.3
+
+- **引导 LLM 优先用 Danbooru MCP 工具翻译动漫标签**：在 `comfyui_draw` / `comfyui_img2img` 两个工具的说明中，新增对动漫/二次元工作流的引导——当工具列表里有「Danbooru tag search」类 MCP 工具时，LLM 优先调用它查询/确认标准 Danbooru 标签后再填入 prompt；没有该类工具时才退化为模型自带翻译能力。这是纯提示词层面的"软引导"，无需插件内调用 MCP，也不改任何代码逻辑。
+
 ## v3.6.2
 
 - **通用 HTTP 翻译接口支持额外固定参数（`extra_params`）**：此前翻译接口只能把原文放进 `text_field` 一个字段，无法携带接口要求的其他参数（如 DeepL 的 `target_lang`、百度的 `from/to/appid/salt`、自定义接口的 token/固定参数等）。现新增 `translate_api.extra_params`（JSON 字符串），随 POST 请求体或 GET query 一起发送；值里可用 `{text}` 占位符表示原文（例如 `{"q":"{text}","target_lang":"EN"}`），GET 模式同样生效。
