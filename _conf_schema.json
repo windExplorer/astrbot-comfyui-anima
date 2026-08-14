@@ -414,6 +414,17 @@
     "default": "",
     "_special": "select_provider"
   },
+  "llm_rewrite_timeout": {
+    "type": "int",
+    "description": "LLM 改写/翻译超时（秒）",
+    "hint": "第三方插件调用 Anima 工作流时用 LLM 改写提示词、以及 translator_mode=llm 翻译时的最大等待时间。防止 LLM 服务无响应导致生图流程卡死；超时后自动回退保留原提示词。",
+    "default": 60,
+    "slider": {
+      "min": 10,
+      "max": 300,
+      "step": 5
+    }
+  },
   "translate_api": {
     "type": "object",
     "description": "通用 HTTP 翻译接口",

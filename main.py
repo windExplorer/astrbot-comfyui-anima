@@ -7,6 +7,7 @@ import re
 import time
 import traceback
 import uuid
+import asyncio
 from functools import wraps
 from pathlib import Path
 
@@ -951,10 +952,14 @@ class ComfyUIDrawPlugin(Star):
             "英文标签："
         )
         try:
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id, prompt=prompt
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
             )
             out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"LLM 翻译超时（>{timeout}s）") from None
         except Exception as e:
             raise RuntimeError(f"LLM 翻译失败: {e}") from e
         out = out.strip()
@@ -988,10 +993,15 @@ class ComfyUIDrawPlugin(Star):
             "改写后的英文 Anima 提示词："
         )
         try:
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id, prompt=prompt
+            # 加超时保护，避免 LLM 服务无响应导致生图流程卡死
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
             )
             out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"LLM 改写超时（>{timeout}s）") from None
         except Exception as e:
             raise RuntimeError(f"LLM 改写失败: {e}") from e
         out = out.strip()

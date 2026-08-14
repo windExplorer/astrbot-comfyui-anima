@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.7.8
+
+- **修复第三方插件调用 Anima 工作流时生图卡死**：v3.7.7 引入的 LLM 改写提示词在 `_do_draw` 主流程里同步 `await llm_generate`，且无超时保护。当 `translate_llm_model` 留空走默认对话模型、而默认模型未配好或 LLM 服务无响应时，`text_chat` 会挂起导致整个生图流程卡死。
+  - 给 LLM 改写（`_rewrite_to_anima_llm`）与 LLM 翻译（`_translate_llm`）统一加 `asyncio.wait_for` 超时保护，默认 60s，超时自动回退保留原提示词，不再卡死。
+  - 新增配置项 `llm_rewrite_timeout`（秒，默认 60），可调 LLM 等待上限。
+  - 调用点本就有 try/except 兜底（LLM 失败保留原提示词），加超时后彻底避免挂起。
+
 ## v3.7.7
 
 - **第三方插件调用 Anima 工作流时改用 LLM 改写提示词**：当其他插件（如伴侣插件，`source` 非空）调用 `comfyui_draw` / `comfyui_img2img` 且最终工作流为 Anima（`is_anima=true`）时，插件不再用 api/danbooru 翻译破坏结构，而是让 LLM 理解传入的描述并改写为纯英文 Anima 生图提示词。原生调用（`source` 为空）仍维持原「仅翻译中文片段」逻辑。LLM 用 `translate_llm_model`（留空走默认对话模型），失败时回退保留原提示词。
