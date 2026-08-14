@@ -2951,7 +2951,7 @@ class ComfyUIDrawPlugin(Star):
     def _resolve_user_quota(self, user_id: str) -> dict:
         """解析某用户实际生效的限额：优先用户单独配置，否则用全局配置。
 
-        -1 表示不限制。返回 {"max_total": int, "max_hour": int, "from_global": bool}。
+        -1 表示不限制。返回 {"max_total": int, "max_hour": int, "max_day": int, "from_global": bool}。
         """
         g = self._draw_limit_cfg()
         if self.quota is not None:
@@ -2960,11 +2960,13 @@ class ComfyUIDrawPlugin(Star):
                 return {
                     "max_total": uc["max_total"],
                     "max_hour": uc["max_hour"],
+                    "max_day": uc.get("max_day", -1),
                     "from_global": False,
                 }
         return {
             "max_total": int(g.get("max_total", -1)),
             "max_hour": int(g.get("max_hour", -1)),
+            "max_day": int(g.get("max_day", -1)),
             "from_global": True,
         }
 
@@ -2987,10 +2989,14 @@ class ComfyUIDrawPlugin(Star):
         usage = self.quota.get_usage(user_id)
         total = usage["total_used"]
         hour = usage["hour_used"]
+        day = usage["day_used"]
         mt = quota["max_total"]
         mh = quota["max_hour"]
+        md = quota["max_day"]
         if mt >= 0 and total >= mt:
             return False, "你的生图次数已用尽，暂时无法继续生图，请稍后再试。"
+        if md >= 0 and day >= md:
+            return False, "你今天的生图次数已用完，请在每天 0 点后刷新次数再试。"
         if mh >= 0 and hour >= mh:
             # 计算下个整点（当前小时结束后自动刷新小时次数）
             next_hour = quota_store._hour_start(time.time()) + quota_store.HOUR_SECONDS

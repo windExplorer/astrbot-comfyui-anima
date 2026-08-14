@@ -287,6 +287,7 @@ class WebUIApi:
                         "enabled": bool(g.get("enabled", False)),
                         "max_total": int(g.get("max_total", -1)),
                         "max_hour": int(g.get("max_hour", -1)),
+                        "max_day": int(g.get("max_day", -1)),
                         "admin_exempt": bool(g.get("admin_exempt", True)),
                     },
                     "users": users,
@@ -296,7 +297,7 @@ class WebUIApi:
             return error_response(f"读取限额数据失败: {e}")
 
     async def quota_save_config(self):
-        """保存某用户的单独生图限额。-1 表示不限制；max_total/max_hour 任一缺省用 -1。"""
+        """保存某用户的单独生图限额。-1 表示不限制；max_total/max_hour/max_day 任一缺省用 -1。"""
         q = self._quota()
         if q is None:
             return error_response("生图限额未启用或初始化失败")
@@ -307,7 +308,8 @@ class WebUIApi:
                 return error_response("缺少 user_id")
             max_total = int(body.get("max_total", -1))
             max_hour = int(body.get("max_hour", -1))
-            q.set_user_config(user_id, max_total, max_hour)
+            max_day = int(body.get("max_day", -1))
+            q.set_user_config(user_id, max_total, max_hour, max_day)
             return json_response({"ok": True, "user_id": user_id})
         except Exception as e:
             return error_response(f"保存限额配置失败: {e}")

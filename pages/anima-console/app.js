@@ -1555,9 +1555,10 @@
       + '<div class="quota-global-title">全局默认限额</div>'
       + '<div class="quota-global-item"><span>总次数上限</span><b>' + fmtQuota(g.max_total) + '</b></div>'
       + '<div class="quota-global-item"><span>每小时上限</span><b>' + fmtQuota(g.max_hour) + '</b></div>'
+      + '<div class="quota-global-item"><span>每天上限</span><b>' + fmtQuota(g.max_day) + '</b></div>'
       + '<div class="quota-global-item"><span>管理员豁免</span><b>' + (g.admin_exempt ? "是" : "否") + '</b></div>'
       + '<div class="quota-global-item"><span>限制开关</span><b class="' + (enabled ? "ok" : "off") + '">' + (enabled ? "已启用" : "未启用") + '</b></div>'
-      + '<span class="quota-global-note">全局配置在「配置」页的「生图限额」分组里修改；此处仅展示。</span>'
+      + '<span class="quota-global-note">全局配置在「配置」页的「生图限额」分组里修改；此处仅展示。每天次数在本地时区 0 点自动重置。</span>'
       + '</div>';
     holder.innerHTML = html;
   }
@@ -1577,16 +1578,21 @@
     if (empty) empty.style.display = "none";
     var html = "";
     users.forEach(function (u) {
-      var fromGlobal = (u.max_total === null || u.max_total === undefined) && (u.max_hour === null || u.max_hour === undefined);
+      var fromGlobal = (u.max_total === null || u.max_total === undefined)
+        && (u.max_hour === null || u.max_hour === undefined)
+        && (u.max_day === null || u.max_day === undefined);
       var mt = (u.max_total === null || u.max_total === undefined) ? state.quota.global.max_total : u.max_total;
       var mh = (u.max_hour === null || u.max_hour === undefined) ? state.quota.global.max_hour : u.max_hour;
+      var md = (u.max_day === null || u.max_day === undefined) ? state.quota.global.max_day : u.max_day;
       html += '<tr>'
         + '<td>' + escapeHtml(u.user_name || "（未记录）") + '</td>'
         + '<td>' + escapeHtml(u.user_id || "—") + '</td>'
         + '<td>' + u.total_used + '</td>'
         + '<td>' + u.hour_used + '</td>'
+        + '<td>' + u.day_used + '</td>'
         + '<td><input type="number" class="quota-input" data-uid="' + escapeHtml(u.user_id) + '" data-field="max_total" value="' + mt + '" min="-1" title="-1 表示不限制" /></td>'
         + '<td><input type="number" class="quota-input" data-uid="' + escapeHtml(u.user_id) + '" data-field="max_hour" value="' + mh + '" min="-1" title="-1 表示不限制" /></td>'
+        + '<td><input type="number" class="quota-input" data-uid="' + escapeHtml(u.user_id) + '" data-field="max_day" value="' + md + '" min="-1" title="-1 表示不限制" /></td>'
         + '<td class="quota-actions">'
         + '<button type="button" class="quota-save" data-uid="' + escapeHtml(u.user_id) + '" data-global="' + (fromGlobal ? "1" : "0") + '">保存</button>'
         + '<button type="button" class="quota-reset danger-ghost" data-uid="' + escapeHtml(u.user_id) + '">重置次数</button>'
@@ -1599,16 +1605,17 @@
   async function saveQuotaConfig(btn) {
     var uid = btn.dataset.uid || "";
     if (!uid) return;
-    var maxTotal = -1, maxHour = -1;
+    var maxTotal = -1, maxHour = -1, maxDay = -1;
     document.querySelectorAll(".quota-input[data-uid=\"" + CSS.escape(uid) + "\"]").forEach(function (inp) {
       var v = parseInt(inp.value, 10);
       if (isNaN(v)) v = -1;
       if (inp.dataset.field === "max_total") maxTotal = v;
       if (inp.dataset.field === "max_hour") maxHour = v;
+      if (inp.dataset.field === "max_day") maxDay = v;
     });
     setButtonBusy(btn, true, "保存中…", "保存");
     try {
-      var r = await apiPost("quota/config", { user_id: uid, max_total: maxTotal, max_hour: maxHour });
+      var r = await apiPost("quota/config", { user_id: uid, max_total: maxTotal, max_hour: maxHour, max_day: maxDay });
       if (!r) throw new Error("无响应");
       if (r.error) throw new Error(r.error);
       showToast("已保存用户 " + uid + " 的限额", "success");
