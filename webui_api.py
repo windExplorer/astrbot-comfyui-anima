@@ -268,6 +268,67 @@ class WebUIApi:
             return error_response(f"统计趋势失败: {e}")
 
     # -------------------------------------------------------------- #
+    # 生图次数限制（配额）
+    # -------------------------------------------------------------- #
+    def _quota(self):
+        return getattr(self.plugin, "quota", None)
+
+    async def quota_users(self):
+        """返回生图限额数据：用户列表（用量 + 单独配置）+ 全局配置。"""
+        q = self._quota()
+        if q is None:
+            return json_response({"global": {}, "users": []})
+        try:
+            g = self.plugin._draw_limit_cfg()
+            users = q.list_users()
+            return json_response(
+                {
+                    "global": {
+                        "enabled": bool(g.get("enabled", False)),
+                        "max_total": int(g.get("max_total", -1)),
+                        "max_hour": int(g.get("max_hour", -1)),
+                        "admin_exempt": bool(g.get("admin_exempt", True)),
+                    },
+                    "users": users,
+                }
+            )
+        except Exception as e:
+            return error_response(f"读取限额数据失败: {e}")
+
+    async def quota_save_config(self):
+        """保存某用户的单独生图限额。-1 表示不限制；max_total/max_hour 任一缺省用 -1。"""
+        q = self._quota()
+        if q is None:
+            return error_response("生图限额未启用或初始化失败")
+        try:
+            body = await request.json(default={}) or {}
+            user_id = (body.get("user_id") or "").strip()
+            if not user_id:
+                return error_response("缺少 user_id")
+            max_total = int(body.get("max_total", -1))
+            max_hour = int(body.get("max_hour", -1))
+            q.set_user_config(user_id, max_total, max_hour)
+            return json_response({"ok": True, "user_id": user_id})
+        except Exception as e:
+            return error_response(f"保存限额配置失败: {e}")
+
+    async def quota_reset(self):
+        """重置生图次数。body: {"user_id": "xxx"} 重置单个；省略 user_id 或 {"all": true} 重置全部。"""
+        q = self._quota()
+        if q is None:
+            return error_response("生图限额未启用或初始化失败")
+        try:
+            body = await request.json(default={}) or {}
+            user_id = (body.get("user_id") or "").strip()
+            if not user_id:
+                n = q.reset_all()
+                return json_response({"ok": True, "reset_all": True, "count": n})
+            ok = q.reset_user(user_id)
+            return json_response({"ok": ok, "reset_user": user_id})
+        except Exception as e:
+            return error_response(f"重置生图次数失败: {e}")
+
+    # -------------------------------------------------------------- #
     # LoRA 封面 / C 站抓取
     # -------------------------------------------------------------- #
     def _lora_assets_dir(self) -> Path:
@@ -949,6 +1010,9 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/backup", api.backup_db, ["GET"], "备份图库数据库"),
         (f"{prefix}/stats/ranking", api.stats_ranking, ["GET"], "用户生图排行"),
         (f"{prefix}/stats/trend", api.stats_trend, ["GET"], "生图小时趋势"),
+        (f"{prefix}/quota/users", api.quota_users, ["GET"], "生图限额用户列表"),
+        (f"{prefix}/quota/config", api.quota_save_config, ["POST"], "生图限额配置保存"),
+        (f"{prefix}/quota/reset", api.quota_reset, ["POST"], "生图次数重置"),
         (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取"),
         (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
         (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),

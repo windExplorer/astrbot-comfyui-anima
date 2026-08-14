@@ -40,6 +40,11 @@ except ImportError:
     import translate_client
     import workflow_builder
 
+try:
+    from . import quota_store
+except ImportError:
+    import quota_store
+
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
 
@@ -400,6 +405,14 @@ class ComfyUIDrawPlugin(Star):
             )
         except Exception as e:
             logger.warning(f"[init] 图库初始化失败（功能不可用）: {e}", exc_info=True)
+
+        # 生图次数限制（配额）：独立 SQLite 维护每个用户的总/小时生图计数与单独配置
+        self.quota = None
+        try:
+            self.quota = quota_store.QuotaStore(self.data_dir)
+            logger.info(f"[init] 生图限额已就绪: {self.quota.db_path}")
+        except Exception as e:
+            logger.warning(f"[init] 生图限额初始化失败（功能不可用）: {e}", exc_info=True)
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
@@ -1880,6 +1893,12 @@ class ComfyUIDrawPlugin(Star):
             logger.info(f"[绘图] 用户 {user_id or '(unknown)'} 不在发图白名单，拒绝绘图")
             await self._send(event, "抱歉，你没有发图权限哦～ 如需使用绘图功能请联系管理员。")
             return
+        # 生图次数限制：全局/按用户配额校验（管理员可豁免）
+        _ok, _reason = self._check_draw_limit(event)
+        if not _ok:
+            logger.info(f"[绘图] 用户 {user_id or '(unknown)'} 触发生图限额，拒绝：{_reason}")
+            await self._send(event, _reason)
+            return
         if not positive or not positive.strip():
             await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
             return
@@ -2347,6 +2366,9 @@ class ComfyUIDrawPlugin(Star):
                             logger.warning(f"[出图] webp 转 png 发送副本失败（用原图发送）: {_e}")
                     # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
                     yield event.image_result(_send_img_path), _send_img_path
+
+                    # 生图成功：记录配额（总次数 + 当前小时次数）
+                    self._record_draw_used(event)
 
                     # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
                     # 受配置 show_draw_report 控制（默认关闭，关闭则不输出文件信息）。
@@ -2915,6 +2937,74 @@ class ComfyUIDrawPlugin(Star):
             if x.strip()
         }
         return user_id in allowed
+
+    # ------------------------------------------------------------------ #
+    # 生图次数限制（配额）
+    # ------------------------------------------------------------------ #
+    def _draw_limit_cfg(self) -> dict:
+        """全局生图限额配置块（draw_limit）。"""
+        return self._cfg("draw_limit", {}) or {}
+
+    def _quota_enabled(self) -> bool:
+        return bool(self._draw_limit_cfg().get("enabled", False))
+
+    def _resolve_user_quota(self, user_id: str) -> dict:
+        """解析某用户实际生效的限额：优先用户单独配置，否则用全局配置。
+
+        -1 表示不限制。返回 {"max_total": int, "max_hour": int, "from_global": bool}。
+        """
+        g = self._draw_limit_cfg()
+        if self.quota is not None:
+            uc = self.quota.get_user_config(user_id)
+            if uc:
+                return {
+                    "max_total": uc["max_total"],
+                    "max_hour": uc["max_hour"],
+                    "from_global": False,
+                }
+        return {
+            "max_total": int(g.get("max_total", -1)),
+            "max_hour": int(g.get("max_hour", -1)),
+            "from_global": True,
+        }
+
+    def _check_draw_limit(self, event) -> tuple[bool, str]:
+        """生图前校验配额。返回 (是否允许, 拒绝原因)。
+
+        管理员（且 admin_exempt 开启时）与未识别到 user_id 的用户不受限；
+        -1 表示该项不限。任一维度超限则拒绝。
+        """
+        if self.quota is None or not self._quota_enabled():
+            return True, ""
+        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        # 管理员豁免
+        if self._draw_limit_cfg().get("admin_exempt", False) and self._is_admin(event):
+            return True, ""
+        # 未识别到用户：无法计数，跳过限制（避免误伤）
+        if not user_id:
+            return True, ""
+        quota = self._resolve_user_quota(user_id)
+        usage = self.quota.get_usage(user_id)
+        total = usage["total_used"]
+        hour = usage["hour_used"]
+        mt = quota["max_total"]
+        mh = quota["max_hour"]
+        if mt >= 0 and total >= mt:
+            return False, f"你今日生图已达上限（{mt} 次），无法继续生图。请联系管理员或等待重置。"
+        if mh >= 0 and hour >= mh:
+            return False, f"你当前 1 小时内生图已达上限（{mh} 次），请稍后再试。"
+        return True, ""
+
+    def _record_draw_used(self, event) -> None:
+        """生图成功后记录一次配额（总次数 + 当前小时次数）。"""
+        if self.quota is None or not self._quota_enabled():
+            return
+        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        if not user_id:
+            return
+        user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
+        user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
+        self.quota.record_used(user_id, user_name)
 
     def _can_operate_image(self, event, row: dict, owner: str = "") -> tuple[bool, str]:
         """图库「修改类操作」（打标签/删除/清空/改可见性等）的归属校验。

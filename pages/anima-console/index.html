@@ -36,6 +36,7 @@
         <button data-view="workflows" type="button">工作流</button>
         <button data-view="loras" type="button">LoRA</button>
         <button data-view="gallery" type="button">图库</button>
+        <button data-view="quota" type="button">限额</button>
         <button id="refreshBtn" class="refresh" type="button">刷新数据</button>
       </nav>
 
@@ -239,6 +240,49 @@
             <span id="galPageInfo" class="pager-info"></span>
             <button id="galNextBtn" type="button">下一页</button>
           </div>
+        </section>
+
+        <!-- ====== 生图限额 ====== -->
+        <section id="quotaView" class="workspace" aria-labelledby="quotaTitle">
+          <div class="section-heading wide">
+            <p>DRAW QUOTA / RATE LIMIT</p>
+            <h2 id="quotaTitle">生图限额</h2>
+            <span>查看与配置每个用户的生图次数限制（总次数 / 每小时次数）。-1 表示不限制；未单独配置的用户使用全局默认。</span>
+            <div class="section-actions">
+              <button id="quotaRefreshBtn" type="button">刷新</button>
+              <button id="quotaResetAllBtn" type="button" class="danger-ghost">重置全部次数</button>
+            </div>
+          </div>
+
+          <section class="panel">
+            <div class="quota-global" id="quotaGlobal" aria-live="polite">
+              <div class="empty">正在加载全局配置…</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="quota-heading">
+              <h3>用户生图用量与配置</h3>
+              <span class="count" id="quotaCount" aria-live="polite"></span>
+            </div>
+            <div class="records-table-wrap">
+              <table class="records-table quota-table">
+                <thead>
+                  <tr>
+                    <th>用户名</th>
+                    <th>QQ号</th>
+                    <th>总生图数</th>
+                    <th>当前小时生图数</th>
+                    <th>总次数上限</th>
+                    <th>每小时上限</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="quotaBody"></tbody>
+              </table>
+              <div id="quotaEmpty" class="empty">暂无生图记录或单独配置。用户生图后这里会自动出现。</div>
+            </div>
+          </section>
         </section>
 
       </main>

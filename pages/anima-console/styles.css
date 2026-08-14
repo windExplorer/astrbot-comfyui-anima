@@ -538,3 +538,25 @@ body{
 #loraImgDialog img{max-width:92vw;max-height:88vh;display:block;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.5);cursor:zoom-out}
 .lora-img-close{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;border:none;width:34px;height:34px;border-radius:50%;font-size:1.15rem;cursor:pointer;line-height:1;z-index:2}
 .lora-img-close:hover{background:rgba(0,0,0,.8)}
+
+/* ====== 生图限额（配额） ====== */
+.danger-ghost{color:var(--danger,#e03131);background:transparent;border:1px solid currentColor}
+.danger-ghost:hover{background:rgba(224,49,49,.08)}
+.quota-global{display:flex;gap:16px;flex-wrap:wrap}
+.quota-global-card{flex:1;min-width:240px;border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;background:var(--bg-raised);display:flex;flex-direction:column;gap:10px}
+.quota-global-title{font-weight:700;font-size:.9rem;color:var(--text)}
+.quota-global-item{display:flex;justify-content:space-between;align-items:center;font-size:.85rem}
+.quota-global-item span{color:var(--text-secondary)}
+.quota-global-item b.ok{color:var(--success,#2f9e44)}
+.quota-global-item b.off{color:var(--text-muted)}
+.quota-global-note{margin-top:4px;font-size:.74rem;color:var(--text-muted);line-height:1.5}
+.quota-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px}
+.quota-heading h3{font-size:.95rem;margin:0}
+.quota-table tbody td{padding:8px 10px;font-size:.78rem}
+.quota-input{width:76px;padding:5px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input,var(--bg-card));color:var(--text);font-size:.8rem}
+.quota-actions{white-space:nowrap}
+.quota-actions button{margin-right:6px}
+.quota-save{padding:5px 12px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;cursor:pointer;font-size:.76rem;font-weight:600}
+.quota-save:hover{opacity:.88}
+.quota-reset{padding:5px 10px;border-radius:var(--radius-sm);font-size:.76rem;cursor:pointer}
+.section-actions{display:flex;gap:10px;align-items:center}

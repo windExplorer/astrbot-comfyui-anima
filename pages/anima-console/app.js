@@ -20,6 +20,8 @@
     statsScope: "today",
     statsRanking: { rows: [] },
     statsTrend: { buckets: [] },
+    // quota（生图限额）
+    quota: { global: {}, users: [] },
   };
 
   const $ = function (id) { return document.getElementById(id); };
@@ -77,6 +79,13 @@
     // workflows
     workflowsRefreshBtn: $("workflowsRefreshBtn"),
     workflowsGrid: $("workflowsGrid"),
+    // quota（生图限额）
+    quotaRefreshBtn: $("quotaRefreshBtn"),
+    quotaResetAllBtn: $("quotaResetAllBtn"),
+    quotaGlobal: $("quotaGlobal"),
+    quotaBody: $("quotaBody"),
+    quotaEmpty: $("quotaEmpty"),
+    quotaCount: $("quotaCount"),
     // dialogs
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
@@ -517,6 +526,9 @@
       if (!state.config || !state.config.workflows) loadConfig();
       renderWorkflows();
     }
+    if (name === "quota") {
+      loadQuota();
+    }
   }
 
   // ====== CONFIG ======
@@ -697,7 +709,7 @@
       "Anima 翻译": { description: "Anima 工作流中文提示词翻译模式与接口（danbooru / llm / api）", icon: "translate", keys: ["translator_mode", "translate_llm_model", "translate_api", "danbooru"] },
       "出图行为": { description: "出图等待、轮询、webp 转换与小报告等行为", icon: "image", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report"] },
       "网络与代理": { description: "外部网络访问（如 C 站抓取）的代理设置与 C 站 API Key", icon: "network", keys: ["http_proxy", "civitai_api_key"] },
-      "权限与图库": { description: "发图白名单与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "gallery"] }
+      "权限与图库": { description: "发图白名单、生图次数限制与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "draw_limit", "gallery"] }
     };
     var groupsMeta = CFG_GROUPS || {};
     // 收集所有已分区 key
@@ -1517,6 +1529,116 @@
     });
   }
 
+  // ====== 生图限额（配额） ======
+  async function loadQuota() {
+    try {
+      var d = await apiGet("quota/users");
+      state.quota = d || { global: {}, users: [] };
+      renderQuotaGlobal();
+      renderQuotaTable();
+    } catch (e) {
+      var holder = els.quotaGlobal;
+      if (holder) holder.innerHTML = '<div class="empty error">读取限额数据失败：' + escapeHtml(e.message || e) + '</div>';
+    }
+  }
+
+  function fmtQuota(val) {
+    return (val === null || val === undefined) ? "—" : (val === -1 ? "不限" : String(val));
+  }
+
+  function renderQuotaGlobal() {
+    var holder = els.quotaGlobal;
+    if (!holder) return;
+    var g = state.quota.global || {};
+    var enabled = !!g.enabled;
+    var html = '<div class="quota-global-card">'
+      + '<div class="quota-global-title">全局默认限额</div>'
+      + '<div class="quota-global-item"><span>总次数上限</span><b>' + fmtQuota(g.max_total) + '</b></div>'
+      + '<div class="quota-global-item"><span>每小时上限</span><b>' + fmtQuota(g.max_hour) + '</b></div>'
+      + '<div class="quota-global-item"><span>管理员豁免</span><b>' + (g.admin_exempt ? "是" : "否") + '</b></div>'
+      + '<div class="quota-global-item"><span>限制开关</span><b class="' + (enabled ? "ok" : "off") + '">' + (enabled ? "已启用" : "未启用") + '</b></div>'
+      + '<span class="quota-global-note">全局配置在「配置」页的「生图限额」分组里修改；此处仅展示。</span>'
+      + '</div>';
+    holder.innerHTML = html;
+  }
+
+  function renderQuotaTable() {
+    var body = els.quotaBody;
+    var empty = els.quotaEmpty;
+    var count = els.quotaCount;
+    if (!body) return;
+    var users = (state.quota.users || []).filter(function (u) { return u && (u.user_id || ""); });
+    if (count) count.textContent = users.length ? "共 " + users.length + " 个用户" : "";
+    if (!users.length) {
+      body.innerHTML = "";
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    var html = "";
+    users.forEach(function (u) {
+      var fromGlobal = (u.max_total === null || u.max_total === undefined) && (u.max_hour === null || u.max_hour === undefined);
+      var mt = (u.max_total === null || u.max_total === undefined) ? state.quota.global.max_total : u.max_total;
+      var mh = (u.max_hour === null || u.max_hour === undefined) ? state.quota.global.max_hour : u.max_hour;
+      html += '<tr>'
+        + '<td>' + escapeHtml(u.user_name || "（未记录）") + '</td>'
+        + '<td>' + escapeHtml(u.user_id || "—") + '</td>'
+        + '<td>' + u.total_used + '</td>'
+        + '<td>' + u.hour_used + '</td>'
+        + '<td><input type="number" class="quota-input" data-uid="' + escapeHtml(u.user_id) + '" data-field="max_total" value="' + mt + '" min="-1" title="-1 表示不限制" /></td>'
+        + '<td><input type="number" class="quota-input" data-uid="' + escapeHtml(u.user_id) + '" data-field="max_hour" value="' + mh + '" min="-1" title="-1 表示不限制" /></td>'
+        + '<td class="quota-actions">'
+        + '<button type="button" class="quota-save" data-uid="' + escapeHtml(u.user_id) + '" data-global="' + (fromGlobal ? "1" : "0") + '">保存</button>'
+        + '<button type="button" class="quota-reset danger-ghost" data-uid="' + escapeHtml(u.user_id) + '">重置次数</button>'
+        + '</td>'
+        + '</tr>';
+    });
+    body.innerHTML = html;
+  }
+
+  async function saveQuotaConfig(btn) {
+    var uid = btn.dataset.uid || "";
+    if (!uid) return;
+    var maxTotal = -1, maxHour = -1;
+    document.querySelectorAll(".quota-input[data-uid=\"" + CSS.escape(uid) + "\"]").forEach(function (inp) {
+      var v = parseInt(inp.value, 10);
+      if (isNaN(v)) v = -1;
+      if (inp.dataset.field === "max_total") maxTotal = v;
+      if (inp.dataset.field === "max_hour") maxHour = v;
+    });
+    setButtonBusy(btn, true, "保存中…", "保存");
+    try {
+      var r = await apiPost("quota/config", { user_id: uid, max_total: maxTotal, max_hour: maxHour });
+      if (!r) throw new Error("无响应");
+      if (r.error) throw new Error(r.error);
+      showToast("已保存用户 " + uid + " 的限额", "success");
+      await loadQuota();
+    } catch (e) {
+      showToast("保存失败：" + (e.message || e), "error");
+    } finally {
+      setButtonBusy(btn, false, "保存中…", "保存");
+    }
+  }
+
+  async function resetQuotaUser(btn) {
+    var uid = btn.dataset.uid || "";
+    var name = (btn.closest("tr") && btn.closest("tr").cells[0]) ? btn.closest("tr").cells[0].textContent : uid;
+    var ok = await confirmAction("重置生图次数", "确定要重置用户「" + name + "」的生图次数吗？总次数与当前小时次数都将清零。");
+    if (!ok) return;
+    setButtonBusy(btn, true, "重置中…", "重置次数");
+    try {
+      var r = await apiPost("quota/reset", { user_id: uid });
+      if (!r) throw new Error("无响应");
+      if (r.error) throw new Error(r.error);
+      showToast("已重置用户 " + uid + " 的生图次数", "success");
+      await loadQuota();
+    } catch (e) {
+      showToast("重置失败：" + (e.message || e), "error");
+    } finally {
+      setButtonBusy(btn, false, "重置中…", "重置次数");
+    }
+  }
+
   // 抓取工作流封面：调 C 站接口（返回 image 文件名，仅存封面），写入工作流配置
   function fetchWorkflowCover(btn) {
     var idx = +btn.dataset.idx;
@@ -2299,6 +2421,40 @@
       if (failures.length) showGlobalError(failures);
       setButtonBusy(els.refreshBtn, false, "刷新中…", "刷新数据");
     });
+
+    // 生图限额页
+    if (els.quotaRefreshBtn) {
+      els.quotaRefreshBtn.addEventListener("click", function () { loadQuota(); });
+    }
+    if (els.quotaResetAllBtn) {
+      els.quotaResetAllBtn.addEventListener("click", async function () {
+        var ok = await confirmAction("重置全部生图次数", "确定要重置所有用户的总次数与当前小时次数吗？此操作不可撤销。");
+        if (!ok) return;
+        setButtonBusy(els.quotaResetAllBtn, true, "重置中…", "重置全部次数");
+        try {
+          var r = await apiPost("quota/reset", {});
+          if (!r) throw new Error("无响应");
+          if (r.error) throw new Error(r.error);
+          showToast("已重置全部用户的生图次数", "success");
+          await loadQuota();
+        } catch (e) {
+          showToast("重置失败：" + (e.message || e), "error");
+        } finally {
+          setButtonBusy(els.quotaResetAllBtn, false, "重置中…", "重置全部次数");
+        }
+      });
+    }
+    // 表格事件（委托）
+    var quotaBody = els.quotaBody;
+    if (quotaBody) {
+      quotaBody.addEventListener("click", function (e) {
+        var saveBtn = e.target.closest(".quota-save");
+        if (saveBtn) { saveQuotaConfig(saveBtn); return; }
+        var resetBtn = e.target.closest(".quota-reset");
+        if (resetBtn) { resetQuotaUser(resetBtn); return; }
+      });
+    }
+
     $("retryAllBtn").addEventListener("click", function () { els.refreshBtn.click(); });
   }
 

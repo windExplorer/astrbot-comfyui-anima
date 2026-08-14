@@ -39,6 +39,7 @@ $includeList = @(
     "translate_client.py",
     "workflow_builder.py",
     "image_store.py",
+    "quota_store.py",
     "metadata.yaml",
     "requirements.txt",
     "README.md",
