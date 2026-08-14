@@ -3010,8 +3010,12 @@ class ComfyUIDrawPlugin(Star):
         return True, ""
 
     def _record_draw_used(self, event) -> None:
-        """生图成功后记录一次配额（总次数 + 当前小时次数）。"""
-        if self.quota is None or not self._quota_enabled():
+        """生图成功后记录一次配额用量（总次数 + 当前小时次数 + 当天次数）。
+
+        无论 draw_limit.enabled 是否开启都记录，这样「限额」页总能显示每个用户的
+        真实生图数量；enabled 只控制是否触发「限制」。
+        """
+        if self.quota is None:
             return
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         if not user_id:

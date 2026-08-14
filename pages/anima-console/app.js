@@ -1553,14 +1553,40 @@
     var enabled = !!g.enabled;
     var html = '<div class="quota-global-card">'
       + '<div class="quota-global-title">全局默认限额</div>'
-      + '<div class="quota-global-item"><span>总次数上限</span><b>' + fmtQuota(g.max_total) + '</b></div>'
-      + '<div class="quota-global-item"><span>每小时上限</span><b>' + fmtQuota(g.max_hour) + '</b></div>'
-      + '<div class="quota-global-item"><span>每天上限</span><b>' + fmtQuota(g.max_day) + '</b></div>'
-      + '<div class="quota-global-item"><span>管理员豁免</span><b>' + (g.admin_exempt ? "是" : "否") + '</b></div>'
-      + '<div class="quota-global-item"><span>限制开关</span><b class="' + (enabled ? "ok" : "off") + '">' + (enabled ? "已启用" : "未启用") + '</b></div>'
-      + '<span class="quota-global-note">全局配置在「配置」页的「生图限额」分组里修改；此处仅展示。每天次数在本地时区 0 点自动重置。</span>'
+      + '<div class="quota-global-field"><label>总次数上限</label><input type="number" class="quota-input qg-input" id="qgMaxTotal" value="' + g.max_total + '" min="-1" title="-1 表示不限制" /></div>'
+      + '<div class="quota-global-field"><label>每小时上限</label><input type="number" class="quota-input qg-input" id="qgMaxHour" value="' + g.max_hour + '" min="-1" title="-1 表示不限制" /></div>'
+      + '<div class="quota-global-field"><label>每天上限</label><input type="number" class="quota-input qg-input" id="qgMaxDay" value="' + g.max_day + '" min="-1" title="-1 表示不限制" /></div>'
+      + '<div class="quota-global-field"><label>管理员豁免</label><select id="qgAdminExempt" class="quota-input"><option value="1"' + (g.admin_exempt ? " selected" : "") + '>是</option><option value="0"' + (!g.admin_exempt ? " selected" : "") + '>否</option></select></div>'
+      + '<div class="quota-global-field"><label>限制开关</label><select id="qgEnabled" class="quota-input"><option value="1"' + (enabled ? " selected" : "") + '>已启用</option><option value="0"' + (!enabled ? " selected" : "") + '>未启用</option></select></div>'
+      + '<div class="quota-global-actions"><button type="button" id="qgSaveBtn" class="quota-save">保存全局限额</button>'
+      + '<span class="quota-global-note">未单独配置的用户使用这里的全局值；每天次数在本地时区 0 点自动重置。限制开关未启用时仅记录用量、不拦截生图。</span></div>'
       + '</div>';
     holder.innerHTML = html;
+    var saveBtn = document.getElementById("qgSaveBtn");
+    if (saveBtn) saveBtn.addEventListener("click", saveQuotaGlobal);
+  }
+
+  async function saveQuotaGlobal() {
+    function num(id) { var v = parseInt(document.getElementById(id).value, 10); return isNaN(v) ? -1 : v; }
+    var payload = {
+      max_total: num("qgMaxTotal"),
+      max_hour: num("qgMaxHour"),
+      max_day: num("qgMaxDay"),
+      admin_exempt: document.getElementById("qgAdminExempt").value === "1",
+      enabled: document.getElementById("qgEnabled").value === "1"
+    };
+    var btn = document.getElementById("qgSaveBtn");
+    setButtonBusy(btn, true, "保存中…", "保存全局限额");
+    try {
+      var r = await apiPost("quota/save_global", payload);
+      if (!r) throw new Error("无响应");
+      if (r.error) throw new Error(r.error);
+      showToast("已保存全局限额", "success");
+      await loadQuota();
+    } catch (e) {
+      showToast("保存失败：" + (e.message || e), "error");
+      setButtonBusy(btn, false, "保存中…", "保存全局限额");
+    }
   }
 
   function renderQuotaTable() {

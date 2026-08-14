@@ -314,6 +314,29 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"保存限额配置失败: {e}")
 
+    async def quota_save_global(self):
+        """保存全局限额（draw_limit）配置。供「限额」页直接编辑全局默认值。"""
+        try:
+            body = await request.json(default={}) or {}
+            cur = self.plugin.config.get("draw_limit", {}) or {}
+            if not isinstance(cur, dict):
+                cur = {}
+            if "enabled" in body:
+                cur["enabled"] = bool(body.get("enabled"))
+            for k in ("max_total", "max_hour", "max_day"):
+                if k in body:
+                    cur[k] = int(body.get(k, -1))
+            if "admin_exempt" in body:
+                cur["admin_exempt"] = bool(body.get("admin_exempt"))
+            self.plugin.config["draw_limit"] = cur
+            try:
+                self.plugin.config.save_config()
+            except Exception as e:
+                return error_response(f"保存配置失败（已写入内存）: {e}")
+            return json_response({"ok": True, "draw_limit": cur})
+        except Exception as e:
+            return error_response(f"保存全局限额失败: {e}")
+
     async def quota_reset(self):
         """重置生图次数。body: {"user_id": "xxx"} 重置单个；省略 user_id 或 {"all": true} 重置全部。"""
         q = self._quota()
@@ -1014,6 +1037,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/stats/trend", api.stats_trend, ["GET"], "生图小时趋势"),
         (f"{prefix}/quota/users", api.quota_users, ["GET"], "生图限额用户列表"),
         (f"{prefix}/quota/config", api.quota_save_config, ["POST"], "生图限额配置保存"),
+        (f"{prefix}/quota/save_global", api.quota_save_global, ["POST"], "生图全局限额保存"),
         (f"{prefix}/quota/reset", api.quota_reset, ["POST"], "生图次数重置"),
         (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取"),
         (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),

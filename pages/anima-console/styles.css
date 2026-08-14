@@ -545,6 +545,10 @@ body{
 .quota-global{display:flex;gap:16px;flex-wrap:wrap}
 .quota-global-card{flex:1;min-width:240px;border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;background:var(--bg-raised);display:flex;flex-direction:column;gap:10px}
 .quota-global-title{font-weight:700;font-size:.9rem;color:var(--text)}
+.quota-global-field{display:flex;flex-direction:column;gap:4px}
+.quota-global-field label{font-size:.78rem;color:var(--text-secondary)}
+.quota-global-field .quota-input{width:100%;max-width:160px}
+.quota-global-actions{margin-top:6px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
 .quota-global-item{display:flex;justify-content:space-between;align-items:center;font-size:.85rem}
 .quota-global-item span{color:var(--text-secondary)}
 .quota-global-item b.ok{color:var(--success,#2f9e44)}
