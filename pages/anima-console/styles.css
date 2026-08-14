@@ -355,6 +355,14 @@ body{
 .gal-pager button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 .gal-pager button:disabled{opacity:.45;cursor:not-allowed}
 .gal-pager .pager-info{font-size:.8rem;color:var(--text-secondary);min-width:90px;text-align:center}
+/* 分页器：页码按钮 / 省略号 / 跳转 */
+.gal-pager .pager-btns{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}
+.gal-pager .pager-btns .pager-num{min-width:30px;height:30px;padding:0 6px;font-size:.78rem;line-height:1;display:inline-flex;align-items:center;justify-content:center}
+.gal-pager .pager-btns .pager-num.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.gal-pager .pager-ellipsis{color:var(--text-muted);padding:0 2px;user-select:none}
+.gal-pager .pager-jump{display:inline-flex;align-items:center;gap:6px;font-size:.78rem;color:var(--text-secondary)}
+.gal-pager .pager-jump input{width:52px;padding:5px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);text-align:center}
+.gal-pager .pager-jump button{padding:6px 10px;font-size:.76rem}
 .badge-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:4px;border-radius:9px;background:var(--danger);color:#fff;font-size:.68rem;font-weight:600;vertical-align:middle}
 .trash-stat{color:var(--danger)}
 

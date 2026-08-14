@@ -51,9 +51,14 @@
     recFailedOnly: $("recFailedOnly"),
     recCount: $("recCount"),
     recPager: $("recPager"),
+    recFirstBtn: $("recFirstBtn"),
     recPrevBtn: $("recPrevBtn"),
+    recPageBtns: $("recPageBtns"),
     recNextBtn: $("recNextBtn"),
+    recLastBtn: $("recLastBtn"),
     recPageInfo: $("recPageInfo"),
+    recJumpInput: $("recJumpInput"),
+    recJumpBtn: $("recJumpBtn"),
     // gallery
     galStats: $("galStats"),
     backupDbBtn: $("backupDbBtn"),
@@ -64,9 +69,14 @@
     galSearchBtn: $("galSearchBtn"),
     galCount: $("galCount"),
     galPager: $("galPager"),
+    galFirstBtn: $("galFirstBtn"),
     galPrevBtn: $("galPrevBtn"),
+    galPageBtns: $("galPageBtns"),
     galNextBtn: $("galNextBtn"),
+    galLastBtn: $("galLastBtn"),
     galPageInfo: $("galPageInfo"),
+    galJumpInput: $("galJumpInput"),
+    galJumpBtn: $("galJumpBtn"),
     // stats
     statsRefreshBtn: $("statsRefreshBtn"),
     statsMergeBtn: $("statsMergeBtn"),
@@ -993,18 +1003,84 @@
     state.recSearching = false;
   }
 
+  // 通用分页器：生成「首页/上一页/页码(带省略)/下一页/末页」按钮。
+  // cfg: { firstBtn, prevBtn, btnsEl, nextBtn, lastBtn, infoEl, jumpInput, jumpBtn,
+  //        page, totalPages, onGo }
+  function renderPager(cfg) {
+    var page = cfg.page, totalPages = cfg.totalPages;
+    var onGo = cfg.onGo;
+    var hasPrev = page > 1;
+    var hasNext = page < totalPages;
+    if (cfg.firstBtn) cfg.firstBtn.disabled = !hasPrev;
+    if (cfg.prevBtn) cfg.prevBtn.disabled = !hasPrev;
+    if (cfg.nextBtn) cfg.nextBtn.disabled = !hasNext;
+    if (cfg.lastBtn) cfg.lastBtn.disabled = !hasNext;
+    if (cfg.infoEl) cfg.infoEl.textContent = "共 " + totalPages + " 页";
+    // 生成页码按钮（含省略号）
+    if (cfg.btnsEl) {
+      var html = "";
+      var shown = pageNums(page, totalPages);
+      var prev = 0;
+      shown.forEach(function (p) {
+        if (prev && p - prev > 1) html += '<span class="pager-ellipsis">…</span>';
+        html += '<button type="button" class="pager-num' + (p === page ? " active" : "") + '" data-page="' + p + '">' + p + '</button>';
+        prev = p;
+      });
+      cfg.btnsEl.innerHTML = html;
+      Array.prototype.forEach.call(cfg.btnsEl.querySelectorAll(".pager-num"), function (b) {
+        b.addEventListener("click", function () { onGo(parseInt(b.dataset.page, 10)); });
+      });
+    }
+    if (cfg.jumpInput) {
+      cfg.jumpInput.value = page;
+      cfg.jumpInput.max = totalPages;
+    }
+  }
+
+  // 计算要显示的页码序列（最多 7 个，当前页居中，两端带省略号）。
+  function pageNums(cur, total) {
+    if (total <= 7) {
+      var all = [];
+      for (var i = 1; i <= total; i++) all.push(i);
+      return all;
+    }
+    var nums = [1, total];
+    var start = Math.max(2, cur - 2);
+    var end = Math.min(total - 1, cur + 2);
+    for (var p = start; p <= end; p++) nums.push(p);
+    nums.sort(function (a, b) { return a - b; });
+    return nums.filter(function (v, idx, arr) { return idx === 0 || v !== arr[idx - 1]; });
+  }
+
+  // 通用跳转绑定：回车或点击「跳转」跳到指定页。
+  function bindPagerJump(jumpInput, jumpBtn, onGo, maxPages) {
+    function doJump() {
+      var v = parseInt(jumpInput.value, 10);
+      if (isNaN(v) || v < 1) return;
+      if (maxPages && v > maxPages) v = maxPages;
+      jumpInput.value = v;
+      onGo(v);
+    }
+    if (jumpBtn) jumpBtn.addEventListener("click", doJump);
+    if (jumpInput) {
+      jumpInput.addEventListener("keydown", function (e) { if (e.key === "Enter") doJump(); });
+    }
+  }
+
   // 更新出图记录翻页控件。
   function updateRecPager() {
     if (!els.recPager) return;
     var totalPages = state.recTotal ? Math.ceil(state.recTotal / state.recPageSize) : 1;
-    var hasPrev = state.recPage > 1;
-    var hasNext = state.recPage < totalPages;
+    if (state.recPage > totalPages) state.recPage = totalPages || 1;
+    if (state.recPage < 1) state.recPage = 1;
     els.recPager.hidden = state.recTotal === 0;
-    if (els.recPrevBtn) els.recPrevBtn.disabled = !hasPrev;
-    if (els.recNextBtn) els.recNextBtn.disabled = !hasNext;
-    if (els.recPageInfo) {
-      els.recPageInfo.textContent = "第 " + state.recPage + " / " + totalPages + " 页";
-    }
+    renderPager({
+      firstBtn: els.recFirstBtn, prevBtn: els.recPrevBtn, btnsEl: els.recPageBtns,
+      nextBtn: els.recNextBtn, lastBtn: els.recLastBtn, infoEl: els.recPageInfo,
+      jumpInput: els.recJumpInput, jumpBtn: els.recJumpBtn,
+      page: state.recPage, totalPages: totalPages,
+      onGo: function (p) { loadRecordsPage(p, false); }
+    });
   }
 
   function renderRecords() {
@@ -2110,6 +2186,12 @@
       loadRecordsPage(state.recPage + 1, false);
     });
   }
+  if (els.recFirstBtn) els.recFirstBtn.addEventListener("click", function () { loadRecordsPage(1, false); });
+  if (els.recLastBtn) els.recLastBtn.addEventListener("click", function () {
+    var tp = state.recTotal ? Math.ceil(state.recTotal / state.recPageSize) : 1;
+    loadRecordsPage(tp, false);
+  });
+  bindPagerJump(els.recJumpInput, els.recJumpBtn, function (p) { loadRecordsPage(p, false); });
   if (els.logTabs) {
     els.logTabs.querySelectorAll(".tab").forEach(function (b) {
       b.addEventListener("click", function () { setLogTab(b.dataset.logtab); });
@@ -2183,18 +2265,20 @@
     }
   }
 
-  // 更新图库翻页控件（上一页/页码/下一页）。
+  // 更新图库翻页控件（首页/上一页/页码/下一页/末页 + 跳转）。
   function updateGalPager() {
     if (!els.galPager) return;
     var totalPages = state.galTotal ? Math.ceil(state.galTotal / state.galPageSize) : 1;
-    var hasPrev = state.galPage > 1;
-    var hasNext = state.galPage < totalPages;
+    if (state.galPage > totalPages) state.galPage = totalPages || 1;
+    if (state.galPage < 1) state.galPage = 1;
     els.galPager.hidden = state.galTotal === 0;
-    if (els.galPrevBtn) els.galPrevBtn.disabled = !hasPrev;
-    if (els.galNextBtn) els.galNextBtn.disabled = !hasNext;
-    if (els.galPageInfo) {
-      els.galPageInfo.textContent = "第 " + state.galPage + " / " + totalPages + " 页";
-    }
+    renderPager({
+      firstBtn: els.galFirstBtn, prevBtn: els.galPrevBtn, btnsEl: els.galPageBtns,
+      nextBtn: els.galNextBtn, lastBtn: els.galLastBtn, infoEl: els.galPageInfo,
+      jumpInput: els.galJumpInput, jumpBtn: els.galJumpBtn,
+      page: state.galPage, totalPages: totalPages,
+      onGo: function (p) { galSearchPage(p, false); }
+    });
   }
 
   function renderGalResults() {
@@ -2419,6 +2503,12 @@
       galSearchPage(state.galPage + 1, false);
     });
   }
+  if (els.galFirstBtn) els.galFirstBtn.addEventListener("click", function () { galSearchPage(1, false); });
+  if (els.galLastBtn) els.galLastBtn.addEventListener("click", function () {
+    var tp = state.galTotal ? Math.ceil(state.galTotal / state.galPageSize) : 1;
+    galSearchPage(tp, false);
+  });
+  bindPagerJump(els.galJumpInput, els.galJumpBtn, function (p) { galSearchPage(p, false); });
   if (els.galTabs) {
     els.galTabs.querySelectorAll(".tab").forEach(function (b) {
       b.addEventListener("click", function () {

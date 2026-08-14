@@ -104,9 +104,13 @@
               <div id="recEmpty" class="empty">暂无出图记录。出图后这里会自动出现。</div>
             </div>
             <div class="gal-pager" id="recPager" hidden>
+              <button id="recFirstBtn" type="button" title="第一页">«</button>
               <button id="recPrevBtn" type="button">上一页</button>
-              <span id="recPageInfo" class="pager-info"></span>
+              <span id="recPageBtns" class="pager-btns"></span>
               <button id="recNextBtn" type="button">下一页</button>
+              <button id="recLastBtn" type="button" title="最后一页">»</button>
+              <span id="recPageInfo" class="pager-info"></span>
+              <span class="pager-jump">跳至<input id="recJumpInput" type="number" min="1" placeholder="页" />页<button id="recJumpBtn" type="button">跳转</button></span>
             </div>
           </div>
 
@@ -236,9 +240,13 @@
             <div class="empty">请输入关键词搜索或直接浏览图库。</div>
           </div>
           <div class="gal-pager" id="galPager" hidden>
+            <button id="galFirstBtn" type="button" title="第一页">«</button>
             <button id="galPrevBtn" type="button">上一页</button>
-            <span id="galPageInfo" class="pager-info"></span>
+            <span id="galPageBtns" class="pager-btns"></span>
             <button id="galNextBtn" type="button">下一页</button>
+            <button id="galLastBtn" type="button" title="最后一页">»</button>
+            <span id="galPageInfo" class="pager-info"></span>
+            <span class="pager-jump">跳至<input id="galJumpInput" type="number" min="1" placeholder="页" />页<button id="galJumpBtn" type="button">跳转</button></span>
           </div>
         </section>
 
