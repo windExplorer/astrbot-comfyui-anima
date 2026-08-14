@@ -2990,7 +2990,7 @@ class ComfyUIDrawPlugin(Star):
         mt = quota["max_total"]
         mh = quota["max_hour"]
         if mt >= 0 and total >= mt:
-            return False, "你的生图次数已用尽，无法继续生图。如需恢复，请联系管理员重置。"
+            return False, "你的生图次数已用尽，暂时无法继续生图，请稍后再试。"
         if mh >= 0 and hour >= mh:
             # 计算下个整点（当前小时结束后自动刷新小时次数）
             next_hour = quota_store._hour_start(time.time()) + quota_store.HOUR_SECONDS
