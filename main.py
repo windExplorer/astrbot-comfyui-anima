@@ -980,17 +980,25 @@ class ComfyUIDrawPlugin(Star):
         if not provider_id:
             raise RuntimeError("LLM 改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
         prompt = (
-            "你是动漫（Anima）生图提示词专家。用户会给你一段对画面的描述"
+            "你是动漫（Anime/二次元）生图提示词专家。用户会给你一段对画面的描述"
             "（可能是中文、英文或中英混杂，也可能是结构化文本），请你理解其含义，"
-            "改写为一张可以直接交给 Anima 动漫模型的英文提示词。要求：\n"
+            "改写为一张可以直接交给动漫模型（Anime 风格）的英文提示词。要求：\n"
             "1. 全部用英文，输出 Danbooru 风格标签（如 1girl, solo, white dress, "
             "long hair, blue eyes, masterpiece, best quality），用英文逗号分隔；\n"
-            "2. 忠实反映描述里的人物、外观、服装、场景、动作、表情等核心信息，"
+            "2. 这是动漫/二次元风格生图，输出必须保持动漫风格（anime style, "
+            "anime coloring, 2d 等），不要输出写实/照片类标签；\n"
+            "3. 即使原文提到『真实摄影、手机拍照、胶片颗粒、35mm、浅景深、"
+            "写实、真人、live-action』等写实/摄影元素，也要忽略或转成动漫等价表达"
+            "（如 detail, clean lineart, cel shading），绝不能把这些写实摄影标签"
+            "（photo, photograph, realistic, candid photography, film grain, 35mm, "
+            "dslr, depth of field, octane render 等）写进结果；\n"
+            "4. 忠实反映描述里的人物、外观、服装、场景、动作、表情等核心信息，"
             "不要臆造描述里没有的内容；\n"
-            "3. 如果是已经很合适的英文标签，直接精简整理后输出，不要啰嗦重复；\n"
-            "4. 只输出提示词本身，不要任何解释、不要序号、不要代码块、不要中文。\n\n"
+            "5. 如果描述本身是写实/真人场景，也要用动漫风格标签来表达相同内容"
+            "（例如『真人摄影感』可表达为 anime style, detailed）；\n"
+            "6. 只输出提示词本身，不要任何解释、不要序号、不要代码块、不要中文。\n\n"
             f"画面描述：\n{text}\n\n"
-            "改写后的英文 Anima 提示词："
+            "改写后的英文动漫（Anime）提示词："
         )
         try:
             # 加超时保护，避免 LLM 服务无响应导致生图流程卡死
