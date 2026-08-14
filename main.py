@@ -963,6 +963,42 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
+    async def _rewrite_to_anima_llm(self, text: str) -> str:
+        """用 LLM 把一段自然语言描述（可能中英混杂）改写为纯英文 Anima 生图提示词。
+
+        适用场景：第三方插件调用 comfyui_draw 传入的是整段结构化描述（非 Anima 标签
+        格式），需要让 LLM 理解内容后生成 Anima 模型能吃的标签化提示词。
+        使用独立配置 translate_llm_model；留空走 AstrBot 当前默认对话模型。
+        无可用模型或失败时抛 RuntimeError，由调用方决定是否回退。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("LLM 改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        prompt = (
+            "你是动漫（Anima）生图提示词专家。用户会给你一段对画面的描述"
+            "（可能是中文、英文或中英混杂，也可能是结构化文本），请你理解其含义，"
+            "改写为一张可以直接交给 Anima 动漫模型的英文提示词。要求：\n"
+            "1. 全部用英文，输出 Danbooru 风格标签（如 1girl, solo, white dress, "
+            "long hair, blue eyes, masterpiece, best quality），用英文逗号分隔；\n"
+            "2. 忠实反映描述里的人物、外观、服装、场景、动作、表情等核心信息，"
+            "不要臆造描述里没有的内容；\n"
+            "3. 如果是已经很合适的英文标签，直接精简整理后输出，不要啰嗦重复；\n"
+            "4. 只输出提示词本身，不要任何解释、不要序号、不要代码块、不要中文。\n\n"
+            f"画面描述：\n{text}\n\n"
+            "改写后的英文 Anima 提示词："
+        )
+        try:
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id, prompt=prompt
+            )
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except Exception as e:
+            raise RuntimeError(f"LLM 改写失败: {e}") from e
+        out = out.strip()
+        out = out.strip("`").strip()
+        out = " ".join(out.split())
+        return out
+
     @staticmethod
     def _split_prompt_segments(text: str) -> list[str]:
         """把提示词按逗号拆成「片段 + 分隔符」交错的列表，便于只翻译含中文的片段、
@@ -1876,6 +1912,7 @@ class ComfyUIDrawPlugin(Star):
         is_img2img: bool = False,
         denoise: float | None = None,
         notify_pending: bool = True,
+        source: str = "",
     ):
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
@@ -1997,13 +2034,24 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _re:
                     logger.warning(f"[图库] 参考图归档失败（不影响出图）: {_re}")
 
-        # Anima 工作流：中文提示词翻译为英文标签（支持 danbooru / llm / api 三种模式）
-        # 仅当提示词包含中文时才调用（纯英文/无中文时直接作为标签使用，跳过翻译）
-        if wf.get("is_anima") and self._has_chinese(positive):
-            translated = await self._translate_prompt(wf, positive)
-            if translated:
-                positive = translated
-                logger.info(f"Anima 提示词翻译结果: {positive}")
+        # Anima 工作流提示词处理（source 非空 = 第三方插件调用，如伴侣插件）：
+        # - 第三方插件调用：用 LLM 把传入的描述（可能中英混杂/结构化文本）改写为
+        #   纯英文 Anima 提示词格式，避免被 api/danbooru 翻译破坏结构。
+        # - 原生调用（source 为空）：仅当提示词含中文时按翻译模式处理中文片段。
+        if wf.get("is_anima"):
+            if source:
+                try:
+                    rewritten = await self._rewrite_to_anima_llm(positive)
+                    if rewritten and rewritten.strip():
+                        positive = rewritten
+                        logger.info(f"[Anima] 第三方插件调用，LLM 改写为 Anima 提示词: {positive}")
+                except Exception as e:
+                    logger.warning(f"[Anima] LLM 改写失败，保留原提示词: {e}")
+            elif self._has_chinese(positive):
+                translated = await self._translate_prompt(wf, positive)
+                if translated:
+                    positive = translated
+                    logger.info(f"Anima 提示词翻译结果: {positive}")
 
         # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词
         if lora_presets:
@@ -3956,6 +4004,7 @@ class ComfyUIDrawPlugin(Star):
             # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
             # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
             notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
+            source=source,
         ):
             if not img_node:
                 img_node = node
@@ -4657,6 +4706,7 @@ class ComfyUIDrawPlugin(Star):
             init_images=init_images,
             is_img2img=True,
             denoise=denoise if denoise >= 0 else None,
+            source=source,
         ):
             # 本插件只负责生图与返回，不再主动 event.send（避免与调用方重复发图）：
             # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
