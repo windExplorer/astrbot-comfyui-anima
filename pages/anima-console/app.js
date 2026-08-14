@@ -2030,6 +2030,8 @@
       + fieldHtml("分辨率节点", inputHtml("resolution_node", w.resolution_node, "EmptyLatentImage 节点，可留空自动探测"))
       + fieldHtml("宽度字段", inputHtml("resolution_width_field", w.resolution_width_field, "width"))
       + fieldHtml("高度字段", inputHtml("resolution_height_field", w.resolution_height_field, "height"))
+      + fieldHtml("默认宽度", inputHtml("default_width", w.default_width, "如 512，默认出图宽度"))
+      + fieldHtml("默认高度", inputHtml("default_height", w.default_height, "如 512，默认出图高度"))
       + fieldHtml("参考图节点", inputHtml("image_node", w.image_node, "图生图 LoadImage 节点（可选）"))
       + fieldHtml("输出节点", inputHtml("output_node", w.output_node, "出图节点（可选）"))
       + fieldHtml("LoRA 主模锚点", inputHtml("lora_anchor", w.lora_anchor, "底模节点键名，留空自动探测"))
