@@ -1017,6 +1017,49 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
+    async def _rewrite_to_real_llm(self, text: str) -> str:
+        """用 LLM 把第三方插件传入的描述清理为适合「真人/写实」工作流的中文提示词。
+
+        适用场景：真人（is_anima=false）工作流被第三方插件调用时，提示词里往往
+        夹杂了结构标记（[User image request]、[Scene, style and final preset]、
+        [section compacted]）和中英混杂内容。这里让 LLM 去掉标记、统一为中文、
+        保留写实/摄影风格，输出连贯的画面描述。失败时抛异常，由调用方决定是否回退。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("LLM 清理未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        prompt = (
+            "你是写实/真人摄影类生图提示词优化助手。用户会给你一段生成图片用的描述，"
+            "它可能夹带结构标记（如 [User image request]、[Scene, style and final preset]、"
+            "[section compacted]、Avoid ... 等命令式语句）且中英混杂。请你清理并改写为"
+            "一段可以直接用于真人/写实摄影风格生图的中文提示词。要求：\n"
+            "1. 去掉所有方括号结构标记、'Avoid'/‘不要/禁止’等元指令、以及明显的分节标题"
+            "（如 Scene preset、Composition 等），只保留真正描述画面内容的话；\n"
+            "2. 把中英混杂统一成连贯的中文描述，句子通顺、可按分号或逗号组织成一段；\n"
+            "3. 保留写实/摄影风格元素（如 8K 超高清、真实摄影、手机随手拍、胶片颗粒、"
+            "35mm、浅景深、自然光等）——这是真人写实工作流需要的，不要删掉；\n"
+            "4. 忠实反映描述里的人物、外观、服装、场景、动作、表情、构图、氛围等核心信息，"
+            "不要臆造没有的内容；\n"
+            "5. 只输出改写后的中文提示词本身，不要任何解释、不要序号、不要代码块。\n\n"
+            f"原始描述：\n{text}\n\n"
+            "改写后的中文写实提示词："
+        )
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"LLM 清理超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"LLM 清理失败: {e}") from e
+        out = out.strip()
+        out = out.strip("`").strip()
+        out = " ".join(out.split())
+        return out
+
     @staticmethod
     def _split_prompt_segments(text: str) -> list[str]:
         """把提示词按逗号拆成「片段 + 分隔符」交错的列表，便于只翻译含中文的片段、
@@ -2052,24 +2095,30 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _re:
                     logger.warning(f"[图库] 参考图归档失败（不影响出图）: {_re}")
 
-        # Anima 工作流提示词处理（source 非空 = 第三方插件调用，如伴侣插件）：
-        # - 第三方插件调用：用 LLM 把传入的描述（可能中英混杂/结构化文本）改写为
-        #   纯英文 Anima 提示词格式，避免被 api/danbooru 翻译破坏结构。
-        # - 原生调用（source 为空）：仅当提示词含中文时按翻译模式处理中文片段。
-        if wf.get("is_anima"):
-            if source:
-                try:
+        # 第三方插件调用（source 非空，如伴侣插件）：提示词往往是中英混杂的结构化
+        # 描述（夹带 [User image request] 等标记），需要 LLM 清理/改写为对应风格。
+        # - 动漫工作流（is_anima=true）：改写为纯英文 Anima 标签（强制动漫风格）。
+        # - 真人/写实工作流（is_anima=false）：清理结构标记、统一为中文写实提示词。
+        # 原生调用（source 为空）：仅动漫工作流含中文时按翻译模式处理中文片段。
+        if source:
+            try:
+                if wf.get("is_anima"):
                     rewritten = await self._rewrite_to_anima_llm(positive)
                     if rewritten and rewritten.strip():
                         positive = rewritten
                         logger.info(f"[Anima] 第三方插件调用，LLM 改写为 Anima 提示词: {positive}")
-                except Exception as e:
-                    logger.warning(f"[Anima] LLM 改写失败，保留原提示词: {e}")
-            elif self._has_chinese(positive):
-                translated = await self._translate_prompt(wf, positive)
-                if translated:
-                    positive = translated
-                    logger.info(f"Anima 提示词翻译结果: {positive}")
+                else:
+                    rewritten = await self._rewrite_to_real_llm(positive)
+                    if rewritten and rewritten.strip():
+                        positive = rewritten
+                        logger.info(f"[写实] 第三方插件调用，LLM 清理为写实提示词: {positive}")
+            except Exception as e:
+                logger.warning(f"[提示词] LLM 改写失败，保留原提示词: {e}")
+        elif wf.get("is_anima") and self._has_chinese(positive):
+            translated = await self._translate_prompt(wf, positive)
+            if translated:
+                positive = translated
+                logger.info(f"Anima 提示词翻译结果: {positive}")
 
         # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词
         if lora_presets:

@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.7.10
+
+- **真人/写实工作流被第三方插件调用时也用 LLM 清理提示词**：此前只有动漫（Anima）工作流在第三方插件调用时会走 LLM 改写；真人工作流会把夹带结构标记（`[User image request]`、`[Scene, style and final preset]`、`[section compacted]`、`Avoid ...` 等）且中英混杂的描述原样传给模型。现新增 `_rewrite_to_real_llm`：真人工作流 + 第三方插件调用（`source` 非空）时，用 LLM 去掉结构标记、统一为连贯的中文写实提示词、保留写实/摄影风格（8K、胶片颗粒、35mm、浅景深等）。原生调用不受影响。复用 `llm_rewrite_timeout` 超时保护，失败回退保留原提示词。
+
 ## v3.7.9
 
 - **修复动漫工作流出图却有写实感**：第三方插件调用 Anima 工作流时，LLM 改写提示词的 prompt 未明确「动漫/二次元风格」约束，导致把原文的『真实摄影、手机拍照、胶片颗粒、35mm、浅景深』等写实元素原样转成 `photo / candid photography / film grain / 35mm / realistic` 等写实标签，与动漫工作流冲突、把模型往写实方向带。现已强化 LLM 改写 prompt：明确输出必须保持动漫风格，并**禁止输出写实/摄影类标签**，即使原文如此描述也要忽略或转成动漫等价表达（如 detail, clean lineart, cel shading）。原文描述的『真人/摄影』场景统一用动漫风格标签表达。
