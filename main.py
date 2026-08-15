@@ -86,10 +86,10 @@ SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
 # 把该次 LLM 调用（以及画图收尾总结那次）的 token 消耗计入 token 统计（scene=agent_draw）。
 DRAW_LLM_TOOLS = {"comfyui_draw", "comfyui_img2img", "comfyui_gallery"}
 
-# 记录「当前会话是否正处于画图 agent run」的标记（session_id -> True）。
-# 供 on_llm_response 判断：命中画图工具调用后，该会话随后的 LLM 调用（画图收尾总结）
-# 也一并计入；on_agent_done 时清除，避免污染后续普通对话的统计。
-g_draw_agent_sessions: dict[str, bool] = {}
+# 记录「当前会话是否正处于画图 agent run」的标记（session_id -> 画图那一刻的 provider id，
+# 可能为空串表示未知）。供 on_llm_response 判断：命中画图工具调用后，该会话随后的
+# LLM 调用（画图收尾总结）也一并计入；on_agent_done 时清除，避免污染后续普通对话的统计。
+g_draw_agent_sessions: dict[str, str] = {}
 
 
 def _safe_llm_tool(func):
@@ -4257,11 +4257,12 @@ class ComfyUIDrawPlugin(Star):
         self._last_event = event
         # 若本次调用的是画图/图库类工具，标记该会话处于「画图 agent run」，
         # 供 on_llm_response 把画图收尾总结那次的主对话 LLM 消耗一并计入 token 统计。
+        # 同时记录画图那一刻 AstrBot 正在使用的 provider id，作为该主对话的模型名。
         try:
             sid = getattr(event, "session_id", "") or ""
             tool_name = (getattr(tool, "name", None) or "") if tool is not None else ""
             if sid and tool_name in DRAW_LLM_TOOLS:
-                g_draw_agent_sessions[sid] = True
+                g_draw_agent_sessions[sid] = self._current_chat_provider_id()
         except Exception:
             pass
         # 趁事件里图片组件尚未被剥离，提前把图片本地路径缓存到「会话最近收到图片」，
@@ -4315,14 +4316,28 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             tool_names = (getattr(response, "tools_call_name", None) or []) if response is not None else []
             hit_draw = any((n or "") in DRAW_LLM_TOOLS for n in tool_names)
-            in_draw = bool(sid and g_draw_agent_sessions.get(sid, False))
+            in_draw = bool(sid and sid in g_draw_agent_sessions)
             if not hit_draw and not in_draw:
                 return  # 与画图无关的普通对话，不记录
-            if hit_draw and sid:
-                g_draw_agent_sessions[sid] = True
-            self._record_llm_token("agent_draw", "", response, event)
+            if hit_draw and sid and sid not in g_draw_agent_sessions:
+                g_draw_agent_sessions[sid] = self._current_chat_provider_id()
+            # 主对话模型：优先用画图工具调用时缓存的 provider id；
+            # 未缓存（仅靠 tools_call_name 判定命中的极少数情况）则回退当前 provider。
+            model = g_draw_agent_sessions.get(sid, "") or self._current_chat_provider_id()
+            self._record_llm_token("agent_draw", model, response, event)
         except Exception as e:
             logger.warning(f"[token] 记录画图主对话用量失败: {e}")
+
+    def _current_chat_provider_id(self) -> str:
+        """获取 AstrBot 当前正在使用的对话 provider id；取不到返回空串。"""
+        try:
+            prov = self.context.get_using_provider()
+        except Exception:
+            return ""
+        if prov is None:
+            return ""
+        cfg = getattr(prov, "provider_config", None) or {}
+        return cfg.get("id") if isinstance(cfg, dict) else ""
 
     # 画图 agent run 结束，清除会话标记，避免后续普通对话被误计入 token 统计。
     @filter.on_agent_done()
