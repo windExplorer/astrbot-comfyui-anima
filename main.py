@@ -2347,11 +2347,13 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"[队列] 无中转站 X-Queue-Position 响应头，回退本地队列 ahead={ahead}")
             try:
                 self._local_queue_add(srv_key, prompt_id)
-                # 提交后统一发一条提示：无队列（ahead<=0）→「稍等，马上来」；
-                # 有队列（ahead>0）→「前面排着 N 个」。只发这一条，避免与提交前
-                # 提示重复。伴侣 proactive（notify_pending=False）不发。
+                # 提交后统一发一条提示：有队列（ahead>0）→「前面排着 N 个」；
+                # 无队列（ahead<=0）默认不发提示；仅当 queue_hint_only_when_queued=False
+                # 时才发「稍等，马上来」。只发这一条，避免与提交前提示重复。
+                # 伴侣 proactive（notify_pending=False）不发。
                 if self._cfg("return_queue_position", True) and notify_pending:
-                    await self._send(event, self._queue_hint(ahead))
+                    if ahead > 0 or not self._cfg("queue_hint_only_when_queued", True):
+                        await self._send(event, self._queue_hint(ahead))
 
                 # 等待出图：动态超时 = 基础超时 + 前面排队任务累加预估耗时。
                 # 排得越靠后，前面任务越多，等待就越久，故按 ahead 逐任务累加，

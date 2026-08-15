@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.8.0
+
+- **新增「仅在排队时发送队列提示」配置**：`queue_hint_only_when_queued`（默认开启）。开启后，只有前面有生图任务（排队中，`ahead>0`）时才发「前面还有 N 个」提示；前面无排队时不发提示（静默等待出图）。关闭则保持原行为（无排队也发「稍等，马上来」）。需 `return_queue_position` 开启才生效。
+
 ## v3.7.10
 
 - **真人/写实工作流被第三方插件调用时也用 LLM 清理提示词**：此前只有动漫（Anima）工作流在第三方插件调用时会走 LLM 改写；真人工作流会把夹带结构标记（`[User image request]`、`[Scene, style and final preset]`、`[section compacted]`、`Avoid ...` 等）且中英混杂的描述原样传给模型。现新增 `_rewrite_to_real_llm`：真人工作流 + 第三方插件调用（`source` 非空）时，用 LLM 去掉结构标记、统一为连贯的中文写实提示词、保留写实/摄影风格（8K、胶片颗粒、35mm、浅景深等）。原生调用不受影响。复用 `llm_rewrite_timeout` 超时保护，失败回退保留原提示词。

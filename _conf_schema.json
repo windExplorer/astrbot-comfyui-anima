@@ -565,6 +565,12 @@
     "hint": "提交绘图任务后是否发送可爱提示（无排队时提示正在出图，有排队时提示前面还有几位）。",
     "default": true
   },
+  "queue_hint_only_when_queued": {
+    "type": "bool",
+    "description": "仅在排队时发送队列提示",
+    "hint": "开启后：只有前面有生图任务（排队中）才发送「前面还有 N 个」提示；前面没有排队时不发提示（静默等待出图）。关闭后则保持原行为：无排队时也发「稍等，马上来」。需 return_queue_position 开启才生效。",
+    "default": true
+  },
   "convert_webp_to_png": {
     "type": "bool",
     "description": "发送前把 webp 图片转成 png",
