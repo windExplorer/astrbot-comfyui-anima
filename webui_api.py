@@ -366,17 +366,25 @@ class WebUIApi:
             return error_response("LLM token 统计未启用或初始化失败")
         try:
             days = int((request.query.get("days") or 30))
-            days = max(1, min(days, 365))
+            if days <= 0:
+                # 全部历史：daily 用 0 表示不设下限；其余聚合用足够大的窗口
+                days = -1
+            else:
+                days = max(1, min(days, 3650))
             user_id = (request.query.get("user_id") or "").strip()
-            summary = ts.query_summary(user_id=user_id, days=days)
-            scenes = ts.list_scenes(days=days)
-            users = ts.list_users(days=days)
-            detail = ts.list_detail(user_id=user_id, days=days)
+            summary = ts.query_summary(user_id=user_id, days=max(days, 1))
+            scenes = ts.list_scenes(days=max(days, 1))
+            users = ts.list_users(days=max(days, 1))
+            models = ts.list_models(days=max(days, 1))
+            daily = ts.list_daily(days=days)
+            detail = ts.list_detail(user_id=user_id, days=max(days, 1))
             return json_response(
                 {
                     "summary": summary,
                     "scenes": scenes,
                     "users": users,
+                    "models": models,
+                    "daily": daily,
                     "detail": detail,
                     "days": days,
                 }

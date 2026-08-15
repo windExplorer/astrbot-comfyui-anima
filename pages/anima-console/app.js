@@ -23,7 +23,7 @@
     // quota（生图限额）
     quota: { global: {}, users: [] },
     // token（LLM 用量统计）
-    token: { summary: {}, scenes: [], users: [], detail: [], days: 30 },
+    token: { summary: {}, scenes: [], users: [], models: [], daily: [], detail: [], days: 30 },
   };
 
   // 封面图 URL 缓存：fname -> url，避免保存/重渲染时反复请求 lora/image
@@ -102,12 +102,17 @@
     quotaEmpty: $("quotaEmpty"),
     quotaCount: $("quotaCount"),
     // token（LLM 用量统计）
-    tokenDays: $("tokenDays"),
+    tokenScope: $("tokenScope"),
     tokenRefreshBtn: $("tokenRefreshBtn"),
     tokenResetAllBtn: $("tokenResetAllBtn"),
     tokenCards: $("tokenCards"),
+    tokenTrendChart: $("tokenTrendChart"),
+    tokenTrendInfo: $("tokenTrendInfo"),
     tokenSceneBody: $("tokenSceneBody"),
     tokenSceneEmpty: $("tokenSceneEmpty"),
+    tokenModelBody: $("tokenModelBody"),
+    tokenModelEmpty: $("tokenModelEmpty"),
+    tokenModelCount: $("tokenModelCount"),
     tokenUserBody: $("tokenUserBody"),
     tokenUserEmpty: $("tokenUserEmpty"),
     tokenUserCount: $("tokenUserCount"),
@@ -1773,9 +1778,28 @@
   }
 
   // ---- LLM token 用量统计 ----
-  function tokenDaysValue() {
-    var v = els.tokenDays ? els.tokenDays.value : "30";
-    return (parseInt(v, 10) || 30);
+  var tokenScope = "30"; // today / 1 / 3 / 7 / 30 / 90 / all
+
+  function tokenScopeValue() {
+    if (tokenScope === "today") return 1;
+    if (tokenScope === "all") return -1; // 全部历史
+    var n = parseInt(tokenScope, 10);
+    return (n && n > 0) ? n : 30;
+  }
+
+  function setTokenScope(scope) {
+    tokenScope = scope;
+    if (els.tokenScope) {
+      els.tokenScope.querySelectorAll(".scope-tab").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.tokenScope === scope);
+      });
+    }
+    loadToken();
+  }
+
+  function tokenScopeLabel() {
+    var map = { today: "今天", "1": "近 1 天", "3": "近 3 天", "7": "近 7 天", "30": "近 30 天", "90": "近 90 天", all: "全部" };
+    return map[tokenScope] || "近 30 天";
   }
 
   function fmtTokenNumber(val) {
@@ -1800,14 +1824,17 @@
   async function loadToken() {
     var holder = els.tokenCards;
     if (holder) holder.innerHTML = '<div class="empty">正在加载 token 统计…</div>';
+    if (els.tokenTrendChart) els.tokenTrendChart.innerHTML = '<div class="empty">正在加载趋势…</div>';
     try {
-      var days = tokenDaysValue();
+      var days = tokenScopeValue();
       var d = await apiGet("token/summary", { days: days });
       if (!d) throw new Error("无响应");
       state.token = d;
       state.token.days = days;
       renderTokenCards();
+      renderTokenTrend();
       renderTokenScenes();
+      renderTokenModels();
       renderTokenUsers();
       renderTokenDetail();
     } catch (e) {
@@ -1825,7 +1852,7 @@
       { label: "输出", value: fmtTokenNumber(s.output), sub: s.output === 0 ? "" : String(s.output || 0) },
       { label: "Token 合计", value: fmtTokenNumber(s.total), sub: String(s.total || 0), strong: true },
       { label: "调用次数", value: fmtTokenNumber(s.call_count), sub: String(s.call_count || 0) },
-      { label: "使用模型数", value: fmtTokenNumber(s.model_count), sub: "近 " + (s.days || state.token.days || 30) + " 天" },
+      { label: "使用模型数", value: fmtTokenNumber(s.model_count), sub: tokenScopeLabel() },
     ];
     holder.innerHTML = cards.map(function (c) {
       return '<div class="stat-card' + (c.strong ? ' strong' : '') + '">'
@@ -1836,11 +1863,81 @@
     }).join("");
   }
 
+  // 每日 token 消耗面积图（SVG 折线 + 渐变填充），参照统计页趋势图
+  function renderTokenTrend() {
+    var holder = els.tokenTrendChart;
+    if (!holder) return;
+    var buckets = state.token.daily || [];
+    if (!buckets.length) {
+      holder.innerHTML = '<div class="empty">暂无趋势数据。</div>';
+      if (els.tokenTrendInfo) els.tokenTrendInfo.textContent = "";
+      return;
+    }
+    var total = 0;
+    var maxVal = 1;
+    buckets.forEach(function (b) { if (b.total > maxVal) maxVal = b.total; total += b.total; });
+    if (els.tokenTrendInfo) els.tokenTrendInfo.textContent = tokenScopeLabel() + " 共 " + fmtTokenNumber(total) + " tokens";
+    var W = 860, H = 220, PAD = { l: 34, r: 10, t: 14, b: 26 };
+    var n = buckets.length;
+    var iw = W - PAD.l - PAD.r;
+    var ih = H - PAD.t - PAD.b;
+    var stepX = n > 1 ? iw / (n - 1) : iw;
+    var pts = buckets.map(function (b, i) {
+      var x = PAD.l + i * stepX;
+      var y = PAD.t + ih - (b.total / maxVal) * ih;
+      return { x: x, y: y, b: b };
+    });
+    var line = pts.map(function (p, i) { return (i ? " L" : "M") + p.x.toFixed(1) + " " + p.y.toFixed(1); }).join("");
+    var area = line + " L" + (PAD.l + (n - 1) * stepX).toFixed(1) + " " + (PAD.t + ih) + " L" + PAD.l + " " + (PAD.t + ih) + " Z";
+    var tickEvery = Math.max(1, Math.ceil(n / 12));
+    var ticks = "";
+    for (var i = 0; i < n; i += tickEvery) {
+      var tx = PAD.l + i * stepX;
+      ticks += '<text x="' + tx.toFixed(1) + '" y="' + (PAD.t + ih + 16) + '" text-anchor="middle">' + escapeHtml(buckets[i].day_bucket.slice(5)) + '</text>';
+    }
+    var yticks = "";
+    [0, 0.5, 1].forEach(function (f) {
+      var yy = PAD.t + ih - f * ih;
+      var val = Math.round(f * maxVal);
+      yticks += '<text x="' + (PAD.l - 6) + '" y="' + (yy + 4).toFixed(1) + '" text-anchor="end">' + fmtTokenNumber(val) + '</text>';
+      yticks += '<line x1="' + PAD.l + '" y1="' + yy.toFixed(1) + '" x2="' + (W - PAD.r) + '" y2="' + yy.toFixed(1) + '" class="grid"/>';
+    });
+    var dots = "";
+    var labels = "";
+    pts.forEach(function (p) {
+      var t = '<title>' + escapeHtml(p.b.day_bucket + " - " + fmtTokenNumber(p.b.total) + " tokens") + '</title>';
+      dots += '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="3" class="dot">' + t + '</circle>';
+      if (p.b.total > 0) {
+        labels += '<text x="' + p.x.toFixed(1) + '" y="' + (p.y - 8).toFixed(1) + '" text-anchor="middle" class="dot-label">' + fmtTokenNumber(p.b.total) + '</text>';
+      }
+    });
+    var svg = '<svg class="trend-svg" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="每日 token 消耗面积图">'
+      + '<defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">'
+      + '<stop offset="0%" stop-color="var(--accent, #8b5cf6)" stop-opacity="0.45"/>'
+      + '<stop offset="100%" stop-color="var(--accent, #8b5cf6)" stop-opacity="0.05"/>'
+      + '</linearGradient></defs>'
+      + '<g class="y-axis">' + yticks + '</g>'
+      + '<path d="' + area + '" fill="url(#trendFill)"/>'
+      + '<path d="' + line + '" fill="none" stroke="var(--accent, #8b5cf6)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+      + '<g class="x-axis">' + ticks + '</g>'
+      + '<g class="dots">' + dots + '</g>'
+      + '<g class="dot-labels">' + labels + '</g>'
+      + '</svg>';
+    holder.innerHTML = svg;
+  }
+
+  // 带进度条占比的通用渲染：给表格行加「占比」列（bar 宽度按 maxTotal 归一）
+  function tokenBarRow(r, extraTds) {
+    var pct = Math.round((r.total / (state.token._maxTotal || 1)) * 100);
+    return '<td class="bar-cell"><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + pct + '%</span></td>';
+  }
+
   function renderTokenScenes() {
     var body = els.tokenSceneBody;
     var empty = els.tokenSceneEmpty;
     if (!body) return;
     var rows = (state.token.scenes || []).filter(function (r) { return r && r.scene; });
+    state.token._maxTotal = Math.max.apply(null, rows.map(function (r) { return r.total || 0; }).concat([0])) || 1;
     if (empty) empty.style.display = rows.length ? "none" : "block";
     body.innerHTML = rows.map(function (r) {
       return '<tr>'
@@ -1850,6 +1947,30 @@
         + '<td>' + fmtTokenNumber(r.output) + '</td>'
         + '<td class="num-strong">' + fmtTokenNumber(r.total) + '</td>'
         + '<td>' + fmtTokenNumber(r.call_count) + '</td>'
+        + tokenBarRow(r)
+        + '</tr>';
+    }).join("");
+  }
+
+  function renderTokenModels() {
+    var body = els.tokenModelBody;
+    var empty = els.tokenModelEmpty;
+    var count = els.tokenModelCount;
+    if (!body) return;
+    var rows = (state.token.models || []).filter(function (r) { return r && r.model; });
+    if (count) count.textContent = rows.length ? "共 " + rows.length + " 个模型" : "";
+    if (empty) empty.style.display = rows.length ? "none" : "block";
+    var max = Math.max.apply(null, rows.map(function (r) { return r.total || 0; }).concat([0])) || 1;
+    body.innerHTML = rows.map(function (r) {
+      var pct = Math.round((r.total / max) * 100);
+      return '<tr>'
+        + '<td>' + escapeHtml(r.model) + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_other) + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_cached) + '</td>'
+        + '<td>' + fmtTokenNumber(r.output) + '</td>'
+        + '<td class="num-strong">' + fmtTokenNumber(r.total) + '</td>'
+        + '<td>' + fmtTokenNumber(r.call_count) + '</td>'
+        + '<td class="bar-cell"><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + pct + '%</span></td>'
         + '</tr>';
     }).join("");
   }
@@ -1862,8 +1983,10 @@
     var rows = (state.token.users || []).filter(function (r) { return r && r.user_id; });
     if (count) count.textContent = rows.length ? "共 " + rows.length + " 个用户" : "";
     if (empty) empty.style.display = rows.length ? "none" : "block";
+    var max = Math.max.apply(null, rows.map(function (r) { return r.total || 0; }).concat([0])) || 1;
     body.innerHTML = rows.map(function (r) {
       var uid = escapeHtml(r.user_id);
+      var pct = Math.round((r.total / max) * 100);
       return '<tr>'
         + '<td>' + uid + '</td>'
         + '<td>' + fmtTokenNumber(r.input_other) + '</td>'
@@ -1871,6 +1994,7 @@
         + '<td>' + fmtTokenNumber(r.output) + '</td>'
         + '<td class="num-strong">' + fmtTokenNumber(r.total) + '</td>'
         + '<td>' + fmtTokenNumber(r.call_count) + '</td>'
+        + '<td class="bar-cell"><div class="bar"><i style="width:' + pct + '%"></i></div><span>' + pct + '%</span></td>'
         + '<td><button type="button" class="token-reset danger-ghost" data-uid="' + uid + '">重置</button></td>'
         + '</tr>';
     }).join("");
@@ -2765,11 +2889,15 @@
     }
 
     // token（LLM 用量统计）页
+    if (els.tokenScope) {
+      // 初始 active 由 data-active 标记决定
+      els.tokenScope.querySelectorAll(".scope-tab").forEach(function (b) {
+        if (b.hasAttribute("data-active")) b.classList.add("active");
+        b.addEventListener("click", function () { setTokenScope(b.dataset.tokenScope); });
+      });
+    }
     if (els.tokenRefreshBtn) {
       els.tokenRefreshBtn.addEventListener("click", function () { loadToken(); });
-    }
-    if (els.tokenDays) {
-      els.tokenDays.addEventListener("change", function () { loadToken(); });
     }
     if (els.tokenResetAllBtn) {
       els.tokenResetAllBtn.addEventListener("click", resetAllToken);

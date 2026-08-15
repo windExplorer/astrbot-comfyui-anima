@@ -303,21 +303,34 @@
             <h2 id="tokenTitle">Token 用量</h2>
             <span>统计插件自发起的辅助 LLM 调用（翻译 / 动漫改写 / 写实清理 / 参数提取）消耗的 token。注意：用户在 AI 对话里触发画图那一次主对话调用发生在 AstrBot 核心层，不在此统计内。</span>
             <div class="section-actions">
-              <label class="sr-only" for="tokenDays">统计天数</label>
-              <select id="tokenDays" title="统计时间范围">
-                <option value="7">近 7 天</option>
-                <option value="30" selected>近 30 天</option>
-                <option value="90">近 90 天</option>
-                <option value="365">近 1 年</option>
-              </select>
               <button id="tokenRefreshBtn" type="button">刷新</button>
               <button id="tokenResetAllBtn" type="button" class="danger-ghost">重置全部</button>
             </div>
           </div>
 
+          <div class="token-scope" id="tokenScope" role="tablist" aria-label="Token 统计范围">
+            <button type="button" class="scope-tab" data-token-scope="today">今天</button>
+            <button type="button" class="scope-tab" data-token-scope="1">近 1 天</button>
+            <button type="button" class="scope-tab" data-token-scope="3">近 3 天</button>
+            <button type="button" class="scope-tab" data-token-scope="7">近 7 天</button>
+            <button type="button" class="scope-tab" data-token-scope="30" data-active>近 30 天</button>
+            <button type="button" class="scope-tab" data-token-scope="90">近 90 天</button>
+            <button type="button" class="scope-tab" data-token-scope="all">全部</button>
+          </div>
+
           <section class="panel">
             <div class="token-cards" id="tokenCards" aria-live="polite">
               <div class="empty">正在加载 token 统计…</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="stats-heading">
+              <h3>每日 Token 消耗趋势</h3>
+              <span class="count" id="tokenTrendInfo" aria-live="polite"></span>
+            </div>
+            <div id="tokenTrendChart" class="stats-trend-chart" aria-label="每日 token 消耗面积图">
+              <div class="empty">正在加载趋势…</div>
             </div>
           </section>
 
@@ -336,6 +349,7 @@
                     <th>输出</th>
                     <th>合计</th>
                     <th>调用次数</th>
+                    <th>占比</th>
                   </tr>
                 </thead>
                 <tbody id="tokenSceneBody"></tbody>
@@ -346,7 +360,31 @@
 
           <section class="panel">
             <div class="stats-heading">
-              <h3>用户排行</h3>
+              <h3>按 LLM 模型</h3>
+              <span class="count" id="tokenModelCount" aria-live="polite"></span>
+            </div>
+            <div class="records-table-wrap">
+              <table class="records-table">
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>非缓存输入</th>
+                    <th>缓存命中</th>
+                    <th>输出</th>
+                    <th>合计</th>
+                    <th>调用次数</th>
+                    <th>占比</th>
+                  </tr>
+                </thead>
+                <tbody id="tokenModelBody"></tbody>
+              </table>
+              <div id="tokenModelEmpty" class="empty">暂无数据。使用 LLM 模型后这里会自动出现。</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="stats-heading">
+              <h3>用户 Token 排行</h3>
               <span class="count" id="tokenUserCount" aria-live="polite"></span>
             </div>
             <div class="records-table-wrap">
@@ -359,6 +397,7 @@
                     <th>输出</th>
                     <th>合计</th>
                     <th>调用次数</th>
+                    <th>占比</th>
                     <th>操作</th>
                   </tr>
                 </thead>

@@ -256,6 +256,70 @@ class TokenStore:
             for r in rows
         ]
 
+    def list_daily(self, days: int = 30) -> list[dict]:
+        """按日期聚合的每日 token 用量（供趋势面积图/柱状图）。
+
+        返回按日期升序的每日 total 与调用次数，并补全无记录日期为 0，
+        保证连续日期可用于折线/柱状图。days<=0 表示全部历史。
+        """
+        conn = self._conn_get()
+        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        if days > 0:
+            rows = conn.execute(
+                "SELECT day_bucket, SUM(total) AS total, SUM(call_count) AS calls "
+                "FROM llm_usage WHERE day_bucket>=? GROUP BY day_bucket ORDER BY day_bucket",
+                (bucket_min,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT day_bucket, SUM(total) AS total, SUM(call_count) AS calls "
+                "FROM llm_usage GROUP BY day_bucket ORDER BY day_bucket"
+            ).fetchall()
+        # 全部历史：直接按日期排序返回有记录的日期，不补全空日期
+        if days <= 0:
+            return [
+                {"day_bucket": r["day_bucket"], "total": int(r["total"] or 0), "call_count": int(r["calls"] or 0)}
+                for r in rows
+            ]
+        data = {r["day_bucket"]: {"total": int(r["total"] or 0), "call_count": int(r["calls"] or 0)} for r in rows}
+        # 有限窗口：从「今天往前 N-1 天」的 0 点逐天补全到今天，保证连续且不超窗
+        lt = time.localtime(time.time())
+        today_0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        cursor = today_0 - (int(max(days, 1)) - 1) * 86400
+        out = []
+        while cursor <= today_0:
+            b = _day_bucket(cursor)
+            d = data.get(b, {"total": 0, "call_count": 0})
+            out.append({"day_bucket": b, "total": d["total"], "call_count": d["call_count"]})
+            cursor += 86400
+        return out
+
+    def list_models(self, days: int = 30) -> list[dict]:
+        """按所用 LLM 模型（provider id）汇总，用于模型对比进度条/柱状图。"""
+        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        rows = self._conn_get().execute(
+            """
+            SELECT model, SUM(input_other) AS in_other, SUM(input_cached) AS in_cached,
+                   SUM(output) AS out, SUM(total) AS total, SUM(call_count) AS calls
+            FROM llm_usage
+            WHERE day_bucket>=? AND model<>''
+            GROUP BY model
+            ORDER BY total DESC
+            """,
+            (bucket_min,),
+        ).fetchall()
+        return [
+            {
+                "model": r["model"],
+                "input_other": int(r["in_other"] or 0),
+                "input_cached": int(r["in_cached"] or 0),
+                "output": int(r["out"] or 0),
+                "total": int(r["total"] or 0),
+                "call_count": int(r["calls"] or 0),
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------ #
     # 重置
     # ------------------------------------------------------------------ #
