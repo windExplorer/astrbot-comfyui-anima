@@ -2065,7 +2065,7 @@
       var tplKeyL = (loras[idx] && loras[idx].__template_key) || "default";
       v.__template_key = tplKeyL;
       if (isNew) {
-        loras.push(v);
+        loras.unshift(v); // 新增的排在最前
       } else {
         loras[idx] = Object.assign({}, loras[idx], v);
       }
@@ -2128,7 +2128,7 @@
       var tplKey = (wfs[idx] && wfs[idx].__template_key) || "default";
       v.__template_key = tplKey;
       if (isNew) {
-        wfs.push(v);
+        wfs.unshift(v); // 新增的排在最前
       } else {
         wfs[idx] = Object.assign({}, wfs[idx], v);
       }
