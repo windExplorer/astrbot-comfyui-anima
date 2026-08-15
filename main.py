@@ -555,11 +555,12 @@ class ComfyUIDrawPlugin(Star):
         return val if val is not None else default
 
     def _record_llm_token(self, scene: str, model: str, llm_resp, event=None) -> None:
-        """记录一次插件自发起的辅助 LLM 调用的 token 用量。
+        """记录一次 LLM 调用的 token 用量。
 
-        scene 取值：translate / rewrite_anima / rewrite_real / extract_args。
+        scene 取值：translate / rewrite_anima / rewrite_real / extract_args / agent_draw。
         从 ``llm_resp.usage``（TokenUsage）读 input_other / input_cached / output；
         usage 为 None（某些 provider 不返回）时记 0，不影响生图主流程。
+        同时记录 user_name（event.get_sender_name()），供 WebUI 用户排行展示名字。
         全程 try/except 包裹，失败只打 warning，绝不抛错影响主流程。
         """
         if self.token_store is None or not self._cfg("llm_token_stats", True):
@@ -571,8 +572,14 @@ class ComfyUIDrawPlugin(Star):
             out = getattr(usage, "output", 0) or 0
             if event is None:
                 event = getattr(self, "_last_event", None)
-            user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
-            self.token_store.record_used(user_id, scene, model or "", in_other, in_cached, out)
+            if event is not None:
+                user_id = (getattr(event, "get_sender_id", lambda: "")() or "") or ""
+                user_name = (getattr(event, "get_sender_name", lambda: "")() or "") or ""
+            else:
+                user_id, user_name = "", ""
+            self.token_store.record_used(
+                user_id, scene, model or "", in_other, in_cached, out, user_name=user_name
+            )
         except Exception as e:
             logger.warning(f"[token] 记录 LLM 用量失败: {e}")
 

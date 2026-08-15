@@ -304,7 +304,6 @@
             <span>统计插件自发起的辅助 LLM 调用（翻译 / 动漫改写 / 写实清理 / 参数提取）消耗的 token。注意：用户在 AI 对话里触发画图那一次主对话调用发生在 AstrBot 核心层，不在此统计内。</span>
             <div class="section-actions">
               <button id="tokenRefreshBtn" type="button">刷新</button>
-              <button id="tokenResetAllBtn" type="button" class="danger-ghost">重置全部</button>
             </div>
           </div>
 
@@ -316,6 +315,11 @@
             <button type="button" class="scope-tab" data-token-scope="30" data-active>近 30 天</button>
             <button type="button" class="scope-tab" data-token-scope="90">近 90 天</button>
             <button type="button" class="scope-tab" data-token-scope="all">全部</button>
+            <label class="stats-merge-toggle token-merge-toggle" title="把 PrivateCompanion 等插件记录合并为一条">
+              <input type="checkbox" id="tokenMergeBtn">
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">合并插件记录</span>
+            </label>
           </div>
 
           <section class="panel">
@@ -391,14 +395,13 @@
               <table class="records-table">
                 <thead>
                   <tr>
-                    <th>用户ID</th>
+                    <th>用户 / ID</th>
                     <th>非缓存输入</th>
                     <th>缓存命中</th>
                     <th>输出</th>
                     <th>合计</th>
                     <th>调用次数</th>
                     <th>占比</th>
-                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="tokenUserBody"></tbody>

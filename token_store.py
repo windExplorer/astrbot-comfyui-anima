@@ -60,6 +60,7 @@ class TokenStore:
                 """
                 CREATE TABLE IF NOT EXISTS llm_usage (
                     user_id      TEXT NOT NULL,
+                    user_name    TEXT NOT NULL DEFAULT '',
                     scene        TEXT NOT NULL,
                     model        TEXT NOT NULL DEFAULT '',
                     day_bucket   TEXT NOT NULL,
@@ -76,6 +77,13 @@ class TokenStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_llm_usage_day ON llm_usage (day_bucket)"
             )
+            # 兼容旧库：给老表补 user_name 列（若有则忽略）
+            try:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(llm_usage)").fetchall()}
+                if "user_name" not in cols:
+                    conn.execute("ALTER TABLE llm_usage ADD COLUMN user_name TEXT NOT NULL DEFAULT ''")
+            except Exception as e:  # pragma: no cover
+                logger.warning(f"[token] 迁移 user_name 列失败: {e}")
             conn.commit()
         except Exception as e:  # pragma: no cover
             logger.warning(f"[token] 初始化数据库失败: {e}")
@@ -91,14 +99,17 @@ class TokenStore:
         input_other: int = 0,
         input_cached: int = 0,
         output: int = 0,
+        user_name: str = "",
     ) -> None:
         """累加一次 LLM 调用用量。按 (user_id, scene, model, 日期) 聚合。
 
         ``input_other`` 非缓存输入；``input_cached`` 命中缓存的输入；``output``
         输出。``total`` 为三者之和。``user_id`` 为空时归入 ``__system__``。
+        ``user_name`` 记录该用户最近一次的名字（非空才覆盖，供用户排行展示）。
         """
         if not user_id:
             user_id = SYSTEM_USER
+        user_name = (user_name or "").strip()
         input_other = max(int(input_other or 0), 0)
         input_cached = max(int(input_cached or 0), 0)
         output = max(int(output or 0), 0)
@@ -110,10 +121,12 @@ class TokenStore:
             conn.execute(
                 """
                 INSERT INTO llm_usage
-                    (user_id, scene, model, day_bucket, input_other, input_cached,
+                    (user_id, user_name, scene, model, day_bucket, input_other, input_cached,
                      output, total, call_count, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,1,?)
+                VALUES (?,?,?,?,?,?,?,?,?,1,?)
                 ON CONFLICT(user_id, scene, model, day_bucket) DO UPDATE SET
+                    user_name    = CASE WHEN excluded.user_name <> '' THEN excluded.user_name
+                                        ELSE llm_usage.user_name END,
                     input_other  = llm_usage.input_other + excluded.input_other,
                     input_cached = llm_usage.input_cached + excluded.input_cached,
                     output       = llm_usage.output + excluded.output,
@@ -121,7 +134,7 @@ class TokenStore:
                     call_count   = llm_usage.call_count + excluded.call_count,
                     updated_at   = excluded.updated_at
                 """,
-                (user_id, scene, model, bucket, input_other, input_cached, output, total, now),
+                (user_id, user_name, scene, model, bucket, input_other, input_cached, output, total, now),
             )
             conn.commit()
         except Exception as e:  # pragma: no cover
@@ -177,13 +190,24 @@ class TokenStore:
             "model_count": int(model_count),
         }
 
-    def list_users(self, days: int = 30) -> list[dict]:
-        """用户维度汇总，按 total 倒序。用于 WebUI 用户排行。"""
+    def list_users(
+        self,
+        days: int = 30,
+        merge_alsoknown: list[str] | None = None,
+    ) -> list[dict]:
+        """用户维度汇总，按 total 倒序。用于 WebUI 用户排行。
+
+        ``merge_alsoknown``：可选。给出一组「其他插件/别名」名（如 ["PrivateCompanion"]），
+        命中 user_name 的记录合并为一行（user_id 逗号拼接、token 求和、调用次数求和），
+        便于把同一插件/非真人来源的分散记录整合；传空列表/None 则不合并。
+        返回项含 user_name（供前端展示）与 total/call_count 等。
+        """
         bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
         rows = self._conn_get().execute(
             """
-            SELECT user_id, SUM(input_other) AS in_other, SUM(input_cached) AS in_cached,
-                   SUM(output) AS out, SUM(total) AS total, SUM(call_count) AS calls
+            SELECT user_id, MAX(user_name) AS user_name, SUM(input_other) AS in_other,
+                   SUM(input_cached) AS in_cached, SUM(output) AS out, SUM(total) AS total,
+                   SUM(call_count) AS calls
             FROM llm_usage
             WHERE day_bucket>=?
             GROUP BY user_id
@@ -191,9 +215,10 @@ class TokenStore:
             """,
             (bucket_min,),
         ).fetchall()
-        return [
+        ranked = [
             {
                 "user_id": r["user_id"],
+                "user_name": (r["user_name"] or "").strip() or r["user_id"],
                 "input_other": int(r["in_other"] or 0),
                 "input_cached": int(r["in_cached"] or 0),
                 "output": int(r["out"] or 0),
@@ -202,6 +227,44 @@ class TokenStore:
             }
             for r in rows
         ]
+        # 可选：把「其他插件/别名」命中的记录合并成一行
+        if merge_alsoknown:
+            names = {str(x).strip() for x in merge_alsoknown if str(x).strip()}
+            owner_rows = []
+            merged = {
+                "user_id": "",
+                "user_ids": [],
+                "user_id_counts": {},
+                "user_name": "",
+                "input_other": 0,
+                "input_cached": 0,
+                "output": 0,
+                "total": 0,
+                "call_count": 0,
+            }
+            for r in ranked:
+                if r["user_name"] in names:
+                    merged["user_name"] = next(iter(names))
+                    if r["user_id"]:
+                        merged["user_ids"].append(r["user_id"])
+                        merged["user_id_counts"][r["user_id"]] = (
+                            merged["user_id_counts"].get(r["user_id"], 0) + r["total"]
+                        )
+                    merged["input_other"] += r["input_other"]
+                    merged["input_cached"] += r["input_cached"]
+                    merged["output"] += r["output"]
+                    merged["total"] += r["total"]
+                    merged["call_count"] += r["call_count"]
+                else:
+                    owner_rows.append(r)
+            if merged["total"] > 0:
+                merged_ids_dedup = list(dict.fromkeys(merged["user_ids"]))
+                merged["user_id"] = ",".join(merged_ids_dedup)
+                merged["user_ids"] = merged_ids_dedup
+                owner_rows.append(merged)
+            owner_rows.sort(key=lambda x: (-x["total"], -x["call_count"]))
+            ranked = owner_rows
+        return ranked
 
     def list_detail(self, user_id: str = "", days: int = 30) -> list[dict]:
         """明细查询，可按 user_id 过滤；返回按日期倒序的 (scene/model/日期) 明细。"""
@@ -296,6 +359,45 @@ class TokenStore:
             d = data.get(b, {"total": 0, "call_count": 0})
             out.append({"day_bucket": b, "total": d["total"], "call_count": d["call_count"]})
             cursor += 86400
+        return out
+
+    def list_hourly(self, hours: int = 24) -> list[dict]:
+        """近 N 小时 token 用量的逐小时面积图数据（按本地时区小时分桶）。
+
+        说明：llm_usage 是按天聚合表，每小时粒度用记录的 updated_at（最后一次调用时间）
+        近似聚合——对低频的 token 记录（翻译/改写/画图对话）该小时基本就是实际发生小时，
+        满足趋势展示。返回按小时升序的 {hour, total, call_count}，无记录时段补 0。
+        桶从「当前整点 - (hours-1) 小时」开始，逐小时递增到当前整点。
+        """
+        conn = self._conn_get()
+        now = time.time()
+        hours = max(1, min(int(hours), 24 * 7))
+        start_ts = now - hours * 3600.0
+        rows = conn.execute(
+            "SELECT updated_at AS t, SUM(total) AS total, SUM(call_count) AS calls "
+            "FROM llm_usage WHERE updated_at>=? GROUP BY updated_at ORDER BY updated_at",
+            (start_ts,),
+        ).fetchall()
+        # 按「本地小时」分桶
+        data: dict[str, dict] = {}
+        for r in rows:
+            lt = time.localtime(r["t"])
+            key = f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}"
+            cur = data.setdefault(key, {"total": 0, "call_count": 0})
+            cur["total"] += int(r["total"] or 0)
+            cur["call_count"] += int(r["calls"] or 0)
+        # 从「当前整点 - (hours-1) 小时」逐小时补全到当前整点
+        cur_lt = time.localtime(now)
+        cursor = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, cur_lt.tm_hour, 0, 0, 0, 0, -1))
+        start = cursor - (hours - 1) * 3600.0
+        out = []
+        while cursor >= start:
+            lt = time.localtime(cursor)
+            key = f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}"
+            d = data.get(key, {"total": 0, "call_count": 0})
+            out.append({"hour": f"{lt.tm_hour:02d}:00", "total": d["total"], "call_count": d["call_count"]})
+            cursor -= 3600.0
+        out.reverse()
         return out
 
     def list_models(self, days: int = 30) -> list[dict]:
