@@ -1779,7 +1779,7 @@
   }
 
   // ---- LLM token 用量统计 ----
-  var tokenScope = "30"; // today / 1 / 3 / 7 / 30 / 90 / all
+  var tokenScope = "1"; // today / 1 / 3 / 7 / 30 / 90 / all，默认近 1 天
   var tokenMerge = false; // 是否合并插件记录
 
   function tokenScopeValue() {
@@ -1835,7 +1835,7 @@
     if (els.tokenTrendChart) els.tokenTrendChart.innerHTML = '<div class="empty">正在加载趋势…</div>';
     try {
       var days = tokenScopeValue();
-      var d = await apiGet("token/summary", { days: days, merge: tokenMerge ? "1" : "0" });
+      var d = await apiGet("token/summary", { days: days, scope: tokenScope, merge: tokenMerge ? "1" : "0" });
       if (!d) throw new Error("无响应");
       state.token = d;
       state.token.days = days;

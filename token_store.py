@@ -361,18 +361,27 @@ class TokenStore:
             cursor += 86400
         return out
 
-    def list_hourly(self, hours: int = 24) -> list[dict]:
-        """近 N 小时 token 用量的逐小时面积图数据（按本地时区小时分桶）。
+    def list_hourly(self, hours: int = 24, since_day_start: bool = False) -> list[dict]:
+        """token 用量的逐小时面积图数据（按本地时区小时分桶）。
 
         说明：llm_usage 是按天聚合表，每小时粒度用记录的 updated_at（最后一次调用时间）
         近似聚合——对低频的 token 记录（翻译/改写/画图对话）该小时基本就是实际发生小时，
         满足趋势展示。返回按小时升序的 {hour, total, call_count}，无记录时段补 0。
-        桶从「当前整点 - (hours-1) 小时」开始，逐小时递增到当前整点。
+
+        起始时间有两种：
+        - ``since_day_start=True``：从「今天 0 点的整点」开始，覆盖今天已过去的各小时
+          （用于「今天」范围）；
+        - ``since_day_start=False``（默认）：从「当前整点 - (hours-1) 小时」开始滚动窗口
+          （用于「近 N 天」中的近 1 天，跨昨天）。
         """
         conn = self._conn_get()
         now = time.time()
         hours = max(1, min(int(hours), 24 * 7))
-        start_ts = now - hours * 3600.0
+        cur_lt = time.localtime(now)
+        if since_day_start:
+            start_ts = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        else:
+            start_ts = now - hours * 3600.0
         rows = conn.execute(
             "SELECT updated_at AS t, SUM(total) AS total, SUM(call_count) AS calls "
             "FROM llm_usage WHERE updated_at>=? GROUP BY updated_at ORDER BY updated_at",
@@ -386,10 +395,12 @@ class TokenStore:
             cur = data.setdefault(key, {"total": 0, "call_count": 0})
             cur["total"] += int(r["total"] or 0)
             cur["call_count"] += int(r["calls"] or 0)
-        # 从「当前整点 - (hours-1) 小时」逐小时补全到当前整点
-        cur_lt = time.localtime(now)
+        # 从起始整点逐小时补全到当前整点
         cursor = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, cur_lt.tm_hour, 0, 0, 0, 0, -1))
-        start = cursor - (hours - 1) * 3600.0
+        if since_day_start:
+            start = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        else:
+            start = cursor - (hours - 1) * 3600.0
         out = []
         while cursor >= start:
             lt = time.localtime(cursor)

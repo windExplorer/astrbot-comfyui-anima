@@ -361,7 +361,7 @@ class WebUIApi:
 
     async def token_summary(self):
         """返回 LLM token 统计：汇总 + 场景分类 + 用户排行 + 明细。
-        query: days=30&user_id=可选过滤&merge=1 合并插件记录。
+        query: days=30&scope=today|1|...&user_id=可选过滤&merge=1 合并插件记录。
         """
         ts = self._token_store()
         if ts is None:
@@ -373,6 +373,7 @@ class WebUIApi:
                 days = -1
             else:
                 days = max(1, min(days, 3650))
+            scope = (request.query.get("scope") or "").strip().lower()
             user_id = (request.query.get("user_id") or "").strip()
             merge = request.query.get("merge", "0") == "1"
             merge_names = ["PrivateCompanion"] if merge else None
@@ -381,8 +382,15 @@ class WebUIApi:
             users = ts.list_users(days=max(days, 1), merge_alsoknown=merge_names)
             models = ts.list_models(days=max(days, 1))
             daily = ts.list_daily(days=days)
-            # 近 24 小时逐小时趋势（供「今天/近 1 天」范围按 HH:mm 展示）
-            hourly = ts.list_hourly(hours=24)
+            # 小时趋势：仅「今天 / 近 1 天」范围提供
+            if scope == "today":
+                # 今天：从今天 0 点起
+                hourly = ts.list_hourly(since_day_start=True)
+            elif scope == "1":
+                # 近 1 天：过去 24 小时滚动窗口
+                hourly = ts.list_hourly(hours=24)
+            else:
+                hourly = []
             detail = ts.list_detail(user_id=user_id, days=max(days, 1))
             return json_response(
                 {
