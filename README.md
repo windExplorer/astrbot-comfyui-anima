@@ -1,5 +1,7 @@
 # astrbot_plugin_comfyui_anima
 
+![logo](logo.png)
+
 AstrBot 的 ComfyUI 绘图插件。可通过**指令**或**与 AI 对话**触发绘图，支持：
 
 - 配置多个 ComfyUI 服务器（同一时间仅启用一个）
