@@ -2265,7 +2265,8 @@
       });
     }
     els.loraImgDialog.addEventListener("click", function (e) {
-      if (e.target === els.loraImgDialog) els.loraImgDialog.close();
+      // 点击空白处（dialog 背景或填满的 form 层）关闭；点击图片/关闭按钮走各自的逻辑
+      if (e.target === els.loraImgDialog || e.target.tagName === "FORM") els.loraImgDialog.close();
     });
   }
 
