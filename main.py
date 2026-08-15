@@ -46,6 +46,11 @@ try:
 except ImportError:
     import quota_store
 
+try:
+    from . import token_store
+except ImportError:
+    import token_store
+
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
 
@@ -415,6 +420,16 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"[init] 生图限额初始化失败（功能不可用）: {e}", exc_info=True)
 
+        # LLM token 用量统计：独立 SQLite 记录插件自发起的辅助 LLM 调用
+        # （翻译/改写/参数提取）的 token 消耗。主对话画图那一次发生在 AstrBot
+        # 核心层，插件统计不到，不计入。
+        self.token_store = None
+        try:
+            self.token_store = token_store.TokenStore(self.data_dir)
+            logger.info(f"[init] LLM token 统计已就绪: {self.token_store.db_path}")
+        except Exception as e:
+            logger.warning(f"[init] LLM token 统计初始化失败（功能不可用）: {e}", exc_info=True)
+
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
             try:
@@ -529,6 +544,28 @@ class ComfyUIDrawPlugin(Star):
             val = default
         return val if val is not None else default
 
+    def _record_llm_token(self, scene: str, model: str, llm_resp, event=None) -> None:
+        """记录一次插件自发起的辅助 LLM 调用的 token 用量。
+
+        scene 取值：translate / rewrite_anima / rewrite_real / extract_args。
+        从 ``llm_resp.usage``（TokenUsage）读 input_other / input_cached / output；
+        usage 为 None（某些 provider 不返回）时记 0，不影响生图主流程。
+        全程 try/except 包裹，失败只打 warning，绝不抛错影响主流程。
+        """
+        if self.token_store is None or not self._cfg("llm_token_stats", True):
+            return
+        try:
+            usage = getattr(llm_resp, "usage", None)
+            in_other = getattr(usage, "input_other", 0) or 0
+            in_cached = getattr(usage, "input_cached", 0) or 0
+            out = getattr(usage, "output", 0) or 0
+            if event is None:
+                event = getattr(self, "_last_event", None)
+            user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+            self.token_store.record_used(user_id, scene, model or "", in_other, in_cached, out)
+        except Exception as e:
+            logger.warning(f"[token] 记录 LLM 用量失败: {e}")
+
     async def _llm_extract_args(self, user_text: str, param_spec: str) -> dict | None:
         """当默认模型不支持 Function Calling 导致工具参数空洞时，用「指定模型」(llm_model)
         重新理解用户原话并提取工具参数。返回解析出的参数字典；失败/未配置则返回 None。"""
@@ -545,6 +582,7 @@ class ComfyUIDrawPlugin(Star):
         )
         try:
             llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
+            self._record_llm_token("extract_args", model, llm_resp)
             text = getattr(llm_resp, "completion_text", "") or ""
         except Exception as e:
             logger.warning(f"[llm_model] 指定模型({model}) 参数提取失败，退回默认逻辑: {e}")
@@ -971,6 +1009,7 @@ class ComfyUIDrawPlugin(Star):
                 self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
                 timeout=timeout,
             )
+            self._record_llm_token("translate", provider_id, llm_resp)
             out = getattr(llm_resp, "completion_text", "") or ""
         except asyncio.TimeoutError:
             raise RuntimeError(f"LLM 翻译超时（>{timeout}s）") from None
@@ -1021,6 +1060,7 @@ class ComfyUIDrawPlugin(Star):
                 self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
                 timeout=timeout,
             )
+            self._record_llm_token("rewrite_anima", provider_id, llm_resp)
             out = getattr(llm_resp, "completion_text", "") or ""
         except asyncio.TimeoutError:
             raise RuntimeError(f"LLM 改写超时（>{timeout}s）") from None
@@ -1064,6 +1104,7 @@ class ComfyUIDrawPlugin(Star):
                 self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
                 timeout=timeout,
             )
+            self._record_llm_token("rewrite_real", provider_id, llm_resp)
             out = getattr(llm_resp, "completion_text", "") or ""
         except asyncio.TimeoutError:
             raise RuntimeError(f"LLM 清理超时（>{timeout}s）") from None

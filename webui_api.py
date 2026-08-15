@@ -354,6 +354,53 @@ class WebUIApi:
             return error_response(f"重置生图次数失败: {e}")
 
     # -------------------------------------------------------------- #
+    # LLM token 用量统计
+    # -------------------------------------------------------------- #
+    def _token_store(self):
+        return getattr(self.plugin, "token_store", None)
+
+    async def token_summary(self):
+        """返回 LLM token 统计：汇总 + 场景分类 + 用户排行 + 明细。query: days=30&user_id=可选过滤。"""
+        ts = self._token_store()
+        if ts is None:
+            return error_response("LLM token 统计未启用或初始化失败")
+        try:
+            days = int((request.query.get("days") or 30))
+            days = max(1, min(days, 365))
+            user_id = (request.query.get("user_id") or "").strip()
+            summary = ts.query_summary(user_id=user_id, days=days)
+            scenes = ts.list_scenes(days=days)
+            users = ts.list_users(days=days)
+            detail = ts.list_detail(user_id=user_id, days=days)
+            return json_response(
+                {
+                    "summary": summary,
+                    "scenes": scenes,
+                    "users": users,
+                    "detail": detail,
+                    "days": days,
+                }
+            )
+        except Exception as e:
+            return error_response(f"读取 token 统计失败: {e}")
+
+    async def token_reset(self):
+        """重置 LLM token 统计。body: {"user_id": "xxx"} 重置单个；省略或 {"all": true} 重置全部。"""
+        ts = self._token_store()
+        if ts is None:
+            return error_response("LLM token 统计未启用或初始化失败")
+        try:
+            body = await request.json(default={}) or {}
+            user_id = (body.get("user_id") or "").strip()
+            if not user_id:
+                n = ts.reset_all()
+                return json_response({"ok": True, "reset_all": True, "count": n})
+            ok = ts.reset_user(user_id)
+            return json_response({"ok": ok, "reset_user": user_id})
+        except Exception as e:
+            return error_response(f"重置 token 统计失败: {e}")
+
+    # -------------------------------------------------------------- #
     # LoRA 封面 / C 站抓取
     # -------------------------------------------------------------- #
     def _lora_assets_dir(self) -> Path:
@@ -1039,6 +1086,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/quota/config", api.quota_save_config, ["POST"], "生图限额配置保存"),
         (f"{prefix}/quota/save_global", api.quota_save_global, ["POST"], "生图全局限额保存"),
         (f"{prefix}/quota/reset", api.quota_reset, ["POST"], "生图次数重置"),
+        (f"{prefix}/token/summary", api.token_summary, ["GET"], "LLM token 用量统计"),
+        (f"{prefix}/token/reset", api.token_reset, ["POST"], "LLM token 统计重置"),
         (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取"),
         (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
         (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),

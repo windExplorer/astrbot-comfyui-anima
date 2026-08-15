@@ -425,6 +425,12 @@
       "step": 5
     }
   },
+  "llm_token_stats": {
+    "type": "bool",
+    "description": "LLM token 用量统计",
+    "hint": "统计插件自发起的辅助 LLM 调用（翻译 / 动漫改写 / 写实清理 / 参数提取）的 token 消耗，写入独立 llm_token.db，供 WebUI「Token 用量」页查看。注意统计边界：用户在 AI 对话里触发画图那一次主对话调用发生在 AstrBot 核心层，本插件拿不到 usage，不计入。",
+    "default": true
+  },
   "translate_api": {
     "type": "object",
     "description": "通用 HTTP 翻译接口",

@@ -37,6 +37,7 @@
         <button data-view="loras" type="button">LoRA</button>
         <button data-view="gallery" type="button">图库</button>
         <button data-view="quota" type="button">限额</button>
+        <button data-view="token" type="button">Token</button>
         <button id="refreshBtn" class="refresh" type="button">刷新数据</button>
       </nav>
 
@@ -291,6 +292,105 @@
                 <tbody id="quotaBody"></tbody>
               </table>
               <div id="quotaEmpty" class="empty">暂无生图记录或单独配置。用户生图后这里会自动出现（该页始终记录每个用户的用量，即使未开启限制）。</div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ====== LLM Token 用量 ====== -->
+        <section id="tokenView" class="workspace" aria-labelledby="tokenTitle">
+          <div class="section-heading wide">
+            <p>LLM TOKEN USAGE</p>
+            <h2 id="tokenTitle">Token 用量</h2>
+            <span>统计插件自发起的辅助 LLM 调用（翻译 / 动漫改写 / 写实清理 / 参数提取）消耗的 token。注意：用户在 AI 对话里触发画图那一次主对话调用发生在 AstrBot 核心层，不在此统计内。</span>
+            <div class="section-actions">
+              <label class="sr-only" for="tokenDays">统计天数</label>
+              <select id="tokenDays" title="统计时间范围">
+                <option value="7">近 7 天</option>
+                <option value="30" selected>近 30 天</option>
+                <option value="90">近 90 天</option>
+                <option value="365">近 1 年</option>
+              </select>
+              <button id="tokenRefreshBtn" type="button">刷新</button>
+              <button id="tokenResetAllBtn" type="button" class="danger-ghost">重置全部</button>
+            </div>
+          </div>
+
+          <section class="panel">
+            <div class="token-cards" id="tokenCards" aria-live="polite">
+              <div class="empty">正在加载 token 统计…</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="stats-heading">
+              <h3>按调用场景</h3>
+              <span class="count">翻译 / 动漫改写 / 写实清理 / 参数提取</span>
+            </div>
+            <div class="records-table-wrap">
+              <table class="records-table">
+                <thead>
+                  <tr>
+                    <th>场景</th>
+                    <th>非缓存输入</th>
+                    <th>缓存命中</th>
+                    <th>输出</th>
+                    <th>合计</th>
+                    <th>调用次数</th>
+                  </tr>
+                </thead>
+                <tbody id="tokenSceneBody"></tbody>
+              </table>
+              <div id="tokenSceneEmpty" class="empty">暂无数据。插件发生翻译/改写/参数提取调用后这里会自动出现。</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="stats-heading">
+              <h3>用户排行</h3>
+              <span class="count" id="tokenUserCount" aria-live="polite"></span>
+            </div>
+            <div class="records-table-wrap">
+              <table class="records-table">
+                <thead>
+                  <tr>
+                    <th>用户ID</th>
+                    <th>非缓存输入</th>
+                    <th>缓存命中</th>
+                    <th>输出</th>
+                    <th>合计</th>
+                    <th>调用次数</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="tokenUserBody"></tbody>
+              </table>
+              <div id="tokenUserEmpty" class="empty">暂无数据。</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="stats-heading">
+              <h3>明细</h3>
+              <span class="count" id="tokenDetailCount" aria-live="polite"></span>
+            </div>
+            <div class="records-table-wrap">
+              <table class="records-table">
+                <thead>
+                  <tr>
+                    <th>日期</th>
+                    <th>用户ID</th>
+                    <th>场景</th>
+                    <th>模型</th>
+                    <th>非缓存输入</th>
+                    <th>缓存命中</th>
+                    <th>输出</th>
+                    <th>合计</th>
+                    <th>调用次数</th>
+                  </tr>
+                </thead>
+                <tbody id="tokenDetailBody"></tbody>
+              </table>
+              <div id="tokenDetailEmpty" class="empty">暂无数据。</div>
             </div>
           </section>
         </section>

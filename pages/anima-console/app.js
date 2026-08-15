@@ -22,6 +22,8 @@
     statsTrend: { buckets: [] },
     // quota（生图限额）
     quota: { global: {}, users: [] },
+    // token（LLM 用量统计）
+    token: { summary: {}, scenes: [], users: [], detail: [], days: 30 },
   };
 
   // 封面图 URL 缓存：fname -> url，避免保存/重渲染时反复请求 lora/image
@@ -99,6 +101,19 @@
     quotaBody: $("quotaBody"),
     quotaEmpty: $("quotaEmpty"),
     quotaCount: $("quotaCount"),
+    // token（LLM 用量统计）
+    tokenDays: $("tokenDays"),
+    tokenRefreshBtn: $("tokenRefreshBtn"),
+    tokenResetAllBtn: $("tokenResetAllBtn"),
+    tokenCards: $("tokenCards"),
+    tokenSceneBody: $("tokenSceneBody"),
+    tokenSceneEmpty: $("tokenSceneEmpty"),
+    tokenUserBody: $("tokenUserBody"),
+    tokenUserEmpty: $("tokenUserEmpty"),
+    tokenUserCount: $("tokenUserCount"),
+    tokenDetailBody: $("tokenDetailBody"),
+    tokenDetailEmpty: $("tokenDetailEmpty"),
+    tokenDetailCount: $("tokenDetailCount"),
     // dialogs
     confirmDialog: $("confirmDialog"),
     dialogTitle: $("dialogTitle"),
@@ -541,6 +556,9 @@
     }
     if (name === "quota") {
       loadQuota();
+    }
+    if (name === "token") {
+      loadToken();
     }
   }
 
@@ -1754,6 +1772,168 @@
     }
   }
 
+  // ---- LLM token 用量统计 ----
+  function tokenDaysValue() {
+    var v = els.tokenDays ? els.tokenDays.value : "30";
+    return (parseInt(v, 10) || 30);
+  }
+
+  function fmtTokenNumber(val) {
+    if (val === null || val === undefined) return "—";
+    var n = Number(val) || 0;
+    if (n >= 1000000000) return (n / 1000000000).toFixed(2) + "B";
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + "M";
+    if (n >= 10000) return (n / 1000).toFixed(1) + "k";
+    return String(n);
+  }
+
+  function sceneLabel(scene) {
+    var map = {
+      translate: "翻译",
+      rewrite_anima: "动漫改写",
+      rewrite_real: "写实清理",
+      extract_args: "参数提取",
+    };
+    return map[scene] || escapeHtml(scene);
+  }
+
+  async function loadToken() {
+    var holder = els.tokenCards;
+    if (holder) holder.innerHTML = '<div class="empty">正在加载 token 统计…</div>';
+    try {
+      var days = tokenDaysValue();
+      var d = await apiGet("token/summary", { days: days });
+      if (!d) throw new Error("无响应");
+      state.token = d;
+      state.token.days = days;
+      renderTokenCards();
+      renderTokenScenes();
+      renderTokenUsers();
+      renderTokenDetail();
+    } catch (e) {
+      if (holder) holder.innerHTML = '<div class="empty error">读取 token 统计失败：' + escapeHtml(e.message || e) + '</div>';
+    }
+  }
+
+  function renderTokenCards() {
+    var holder = els.tokenCards;
+    if (!holder) return;
+    var s = state.token.summary || {};
+    var cards = [
+      { label: "非缓存输入", value: fmtTokenNumber(s.input_other), sub: s.input_other === 0 ? "" : String(s.input_other || 0) },
+      { label: "缓存命中", value: fmtTokenNumber(s.input_cached), sub: s.input_cached === 0 ? "" : String(s.input_cached || 0) },
+      { label: "输出", value: fmtTokenNumber(s.output), sub: s.output === 0 ? "" : String(s.output || 0) },
+      { label: "Token 合计", value: fmtTokenNumber(s.total), sub: String(s.total || 0), strong: true },
+      { label: "调用次数", value: fmtTokenNumber(s.call_count), sub: String(s.call_count || 0) },
+      { label: "使用模型数", value: fmtTokenNumber(s.model_count), sub: "近 " + (s.days || state.token.days || 30) + " 天" },
+    ];
+    holder.innerHTML = cards.map(function (c) {
+      return '<div class="stat-card' + (c.strong ? ' strong' : '') + '">'
+        + '<span class="stat-value">' + escapeHtml(c.value) + '</span>'
+        + '<span class="stat-label">' + escapeHtml(c.label) + '</span>'
+        + (c.sub ? '<span class="stat-sub">' + escapeHtml(c.sub) + '</span>' : '')
+        + '</div>';
+    }).join("");
+  }
+
+  function renderTokenScenes() {
+    var body = els.tokenSceneBody;
+    var empty = els.tokenSceneEmpty;
+    if (!body) return;
+    var rows = (state.token.scenes || []).filter(function (r) { return r && r.scene; });
+    if (empty) empty.style.display = rows.length ? "none" : "block";
+    body.innerHTML = rows.map(function (r) {
+      return '<tr>'
+        + '<td>' + sceneLabel(r.scene) + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_other) + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_cached) + '</td>'
+        + '<td>' + fmtTokenNumber(r.output) + '</td>'
+        + '<td class="num-strong">' + fmtTokenNumber(r.total) + '</td>'
+        + '<td>' + fmtTokenNumber(r.call_count) + '</td>'
+        + '</tr>';
+    }).join("");
+  }
+
+  function renderTokenUsers() {
+    var body = els.tokenUserBody;
+    var empty = els.tokenUserEmpty;
+    var count = els.tokenUserCount;
+    if (!body) return;
+    var rows = (state.token.users || []).filter(function (r) { return r && r.user_id; });
+    if (count) count.textContent = rows.length ? "共 " + rows.length + " 个用户" : "";
+    if (empty) empty.style.display = rows.length ? "none" : "block";
+    body.innerHTML = rows.map(function (r) {
+      var uid = escapeHtml(r.user_id);
+      return '<tr>'
+        + '<td>' + uid + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_other) + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_cached) + '</td>'
+        + '<td>' + fmtTokenNumber(r.output) + '</td>'
+        + '<td class="num-strong">' + fmtTokenNumber(r.total) + '</td>'
+        + '<td>' + fmtTokenNumber(r.call_count) + '</td>'
+        + '<td><button type="button" class="token-reset danger-ghost" data-uid="' + uid + '">重置</button></td>'
+        + '</tr>';
+    }).join("");
+  }
+
+  function renderTokenDetail() {
+    var body = els.tokenDetailBody;
+    var empty = els.tokenDetailEmpty;
+    var count = els.tokenDetailCount;
+    if (!body) return;
+    var rows = state.token.detail || [];
+    if (count) count.textContent = rows.length ? "共 " + rows.length + " 条" : "";
+    if (empty) empty.style.display = rows.length ? "none" : "block";
+    body.innerHTML = rows.map(function (r) {
+      return '<tr>'
+        + '<td>' + escapeHtml(r.day_bucket || "") + '</td>'
+        + '<td>' + escapeHtml(r.user_id || "") + '</td>'
+        + '<td>' + sceneLabel(r.scene) + '</td>'
+        + '<td>' + escapeHtml(r.model || "—") + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_other) + '</td>'
+        + '<td>' + fmtTokenNumber(r.input_cached) + '</td>'
+        + '<td>' + fmtTokenNumber(r.output) + '</td>'
+        + '<td class="num-strong">' + fmtTokenNumber(r.total) + '</td>'
+        + '<td>' + fmtTokenNumber(r.call_count) + '</td>'
+        + '</tr>';
+    }).join("");
+  }
+
+  async function resetTokenUser(btn) {
+    var uid = btn.dataset.uid || "";
+    var ok = await confirmAction("重置 Token 用量", "确定要删除用户「" + uid + "」的全部 token 用量记录吗？该操作不可恢复。");
+    if (!ok) return;
+    setButtonBusy(btn, true, "重置中…", "重置");
+    try {
+      var r = await apiPost("token/reset", { user_id: uid });
+      if (!r) throw new Error("无响应");
+      if (r.error) throw new Error(r.error);
+      showToast("已重置用户 " + uid + " 的 token 用量", "success");
+      await loadToken();
+    } catch (e) {
+      showToast("重置失败：" + (e.message || e), "error");
+    } finally {
+      setButtonBusy(btn, false, "重置中…", "重置");
+    }
+  }
+
+  async function resetAllToken() {
+    var ok = await confirmAction("重置全部 Token 用量", "确定要清空全部 LLM token 用量记录吗？该操作不可恢复。");
+    if (!ok) return;
+    setButtonBusy(els.tokenResetAllBtn, true, "重置中…", "重置全部");
+    try {
+      var r = await apiPost("token/reset", {});
+      if (!r) throw new Error("无响应");
+      if (r.error) throw new Error(r.error);
+      showToast("已清空全部 token 用量记录", "success");
+      await loadToken();
+    } catch (e) {
+      showToast("重置失败：" + (e.message || e), "error");
+    } finally {
+      setButtonBusy(els.tokenResetAllBtn, false, "重置中…", "重置全部");
+    }
+  }
+
   // 抓取工作流封面：调 C 站接口（返回 image 文件名，仅存封面），写入工作流配置
   function fetchWorkflowCover(btn) {
     var idx = +btn.dataset.idx;
@@ -2581,6 +2761,23 @@
         if (saveBtn) { saveQuotaConfig(saveBtn); return; }
         var resetBtn = e.target.closest(".quota-reset");
         if (resetBtn) { resetQuotaUser(resetBtn); return; }
+      });
+    }
+
+    // token（LLM 用量统计）页
+    if (els.tokenRefreshBtn) {
+      els.tokenRefreshBtn.addEventListener("click", function () { loadToken(); });
+    }
+    if (els.tokenDays) {
+      els.tokenDays.addEventListener("change", function () { loadToken(); });
+    }
+    if (els.tokenResetAllBtn) {
+      els.tokenResetAllBtn.addEventListener("click", resetAllToken);
+    }
+    if (els.tokenUserBody) {
+      els.tokenUserBody.addEventListener("click", function (e) {
+        var resetBtn = e.target.closest(".token-reset");
+        if (resetBtn) { resetTokenUser(resetBtn); return; }
       });
     }
 
