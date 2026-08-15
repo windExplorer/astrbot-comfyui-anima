@@ -2037,7 +2037,8 @@
     if (els.editCancelBtn) els.editCancelBtn.textContent = "取消";
     var loras = (state.config && Array.isArray(state.config.loras)) ? state.config.loras : [];
     var isNew = idx < 0 || idx >= loras.length;
-    var l = isNew ? {} : (loras[idx] || {});
+    // 新增 LoRA 时权重默认填 1，避免漏填导致空字符串报错
+    var l = isNew ? { weight: 1 } : (loras[idx] || {});
     var body = fieldHtml("名称（引用键）", inputHtml("name", l.name, "如 安魂曲"))
       + fieldHtml("底模", bmSelectHtml("base_model", l.base_model))
       + fieldHtml("别名（每行一个，供 LLM 区分）", textareaHtml("keywords", l.keywords, 3))

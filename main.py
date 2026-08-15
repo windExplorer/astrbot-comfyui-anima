@@ -653,7 +653,7 @@ class ComfyUIDrawPlugin(Star):
                         "model_name": (lib_l.get("model_name") or "").strip(),
                         "model_only": bool(lib_l.get("model_only", True)),
                         "base_model": (lib_l.get("base_model") or "").strip() or (l.get("base_model") or "").strip(),
-                        "weight": float(l.get("weight", 1.0)),
+                        "weight": self._safe_lora_weight(l.get("weight", 1.0)),
                         "enabled": bool(l.get("enabled", False)),
                         "load_node": "",
                         "model_input": "lora_name",
@@ -673,7 +673,7 @@ class ComfyUIDrawPlugin(Star):
                         "model_name": (l.get("model_name") or "").strip(),
                         "model_only": True,
                         "base_model": (l.get("base_model") or "").strip(),
-                        "weight": float(l.get("weight", 1.0)),
+                        "weight": self._safe_lora_weight(l.get("weight", 1.0)),
                         "enabled": bool(l.get("enabled", False)),
                         "load_node": "",
                         "model_input": "lora_name",
@@ -767,6 +767,20 @@ class ComfyUIDrawPlugin(Star):
         return out
 
     @staticmethod
+    @staticmethod
+    def _safe_lora_weight(value, default: float = 1.0) -> float:
+        """把 LoRA 权重安全转为 float；空字符串/缺失/非法值回退 default（默认 1.0）。
+
+        避免用户漏填 weight（配置里是空字符串 ''）时 float('') 抛 ValueError。
+        """
+        if value is None:
+            return default
+        try:
+            f = float(value)
+            return f if f == f else default  # 过滤 NaN
+        except (TypeError, ValueError):
+            return default
+
     def _serialize_loras_text(loras: list[dict]) -> str:
         """将 LoRA 列表序列化回 名称|权重|0/1|底模 文本（用于 loraon/loraoff 持久化）。"""
         lines = []
@@ -774,7 +788,7 @@ class ComfyUIDrawPlugin(Star):
             name = (l.get("name") or "").strip()
             if not name:
                 continue
-            weight = l.get("weight", 1.0)
+            weight = self._safe_lora_weight(l.get("weight", 1.0))
             wstr = str(int(weight)) if float(weight) == int(weight) else str(weight)
             enabled = 1 if l.get("enabled", False) else 0
             bm = (l.get("base_model") or "").strip()
@@ -2216,9 +2230,9 @@ class ComfyUIDrawPlugin(Star):
                             "model_name": (lib_l.get("model_name") or "").strip(),
                             "model_only": bool(lib_l.get("model_only", True)),
                             "weight": (
-                                float(lib_l.get("weight", 1.0))
+                                self._safe_lora_weight(lib_l.get("weight", 1.0))
                                 if w is None
-                                else float(w)
+                                else self._safe_lora_weight(w)
                             ),
                             "enabled": True,
                             "load_node": "",
