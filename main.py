@@ -2651,22 +2651,23 @@ class ComfyUIDrawPlugin(Star):
     # 工作流名是可选的，且必须以空格与提示词分隔；若指定的工作流不存在，
     # 直接回复「xx 工作流不存在」并列出可用工作流，不再静默回退默认。
     # 与 /draw 并存，互不冲突。
-    _DRAW_TRIGGER_PATTERN = r"^[/／]?(?:画|绘图|绘画|生图|画图|作画|画画)(?:\s+(.+))?$"
+    _DRAW_TRIGGER_PATTERN = r"^[/／]?(画|绘图|绘画|生图|画图|作画|画画)(?:\s+(.+))?$"
 
     @filter.regex(_DRAW_TRIGGER_PATTERN)
     async def cmd_draw_wf(self, event: AstrMessageEvent):
         """「画」系绘图指令（新增指令，非 /draw 别名）。
 
         用法：
-          /画 提示词 [...]                      用默认工作流（如 /画 一个女孩）
-          /画 工作流名 提示词 [...]             用指定工作流（如 /画 真人 一个女孩）
-          /绘图|/绘画|/生图|/画图|/作画|/画画 提示词 [...]   用默认工作流
-        工作流名可选、必须以空格与提示词分隔；首 token 若长度超过 10 字则视为
-        提示词（用默认工作流），若长度 ≤10 但不是已知工作流会回复该工作流不存在并
-        列出可用工作流。其余参数（--lora / --w / --h / --seed / --wf 等）与 /draw 完全一致。"""
+         /画 提示词 [...]                      用默认工作流（如 /画 一个女孩）
+         /画 工作流名 提示词 [...]             用指定工作流（如 /画 真人 一个女孩）
+         /绘图|/绘画|/生图|/画图|/作画|/画画 提示词 [...]   用默认工作流（不解析工作流名）
+        /画 触发词下工作流名可选：首 token 命中已知工作流才拆出作为工作流名，
+        否则一律视为提示词用默认工作流（如 /画 一个女孩 正常作画）。其余触发词
+        （绘图/绘画/生图/画图/作画/画画）整句即为提示词。其余参数（--lora / --w /
+        --h / --seed / --wf 等）与 /draw 完全一致。"""
         text = (event.message_str or "").strip()
         m = re.match(self._DRAW_TRIGGER_PATTERN, text, re.S)
-        rest = (m.group(1) or "").strip() if m else ""
+        rest = (m.group(2) or "").strip() if m else ""
         if not rest:
             await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf="默认"))
             event.stop_event()
@@ -2676,27 +2677,32 @@ class ComfyUIDrawPlugin(Star):
             await self.cmd_help(event)
             event.stop_event()
             return
-        # 尝试把 rest 首 token 当作可选工作流名。规则：
+        # 触发词行为区分（关键）：
+        #   /画 允许可选工作流名；/绘图|/绘画|/生图|/画图|/作画|/画画 语义明确是
+        #   「用默认工作流」，首 token 一律当作提示词，绝不解析工作流名。
+        #   否则「/绘图 一个女孩」会把首 token "一个女孩" 误判为工作流名而报错。
+        trig = (m.group(1) or "").strip().lstrip("/／")
+        allow_wf = (trig == "画")
+        # 尝试把 rest 首 token 当作可选工作流名（仅 /画 触发词）。规则：
         #  - 首 token 长度 > 10（多半是用户直接写提示词，只是恰好开头像工作流名）
         #    → 不解析为工作流，整句当作提示词用默认工作流。
-        #  - 首 token 长度 ≤ 10，但确为已知工作流 → 拆出作为指定工作流名。
-        #  - 首 token 长度 ≤ 10，且不是已知工作流 → 直接回复「没有该工作流」并列出可用，
-        #    不再静默回退当提示词（例如「画 真人 一个女孩」中真人拼错就明确报错）。
+        #  - 首 token 长度 ≤ 10，且命中已知工作流 → 拆出作为指定工作流名。
+        #  - 首 token 长度 ≤ 10，且不是已知工作流 → 视为提示词（不报错），仍用默认工作流。
+        #    这样「/画 一个女孩」能正常作画；「/画 真人 一个女孩」中「真人」命中才作为工作流名。
         MAX_WF_NAME_LEN = 10
         wf_specified = None
-        parts = rest.split(None, 1)
-        first_tok = parts[0]
-        if len(first_tok) > MAX_WF_NAME_LEN:
-            rest_for_parse = rest
-        else:
-            try:
-                self._resolve_workflow(first_tok)
-                wf_specified = first_tok
-                rest_for_parse = parts[1] if len(parts) > 1 else ""
-            except ValueError as e:
-                await self._send(event, str(e))
-                event.stop_event()
-                return
+        rest_for_parse = rest
+        if allow_wf:
+            parts = rest.split(None, 1)
+            first_tok = parts[0]
+            if len(first_tok) <= MAX_WF_NAME_LEN:
+                try:
+                    self._resolve_workflow(first_tok)
+                    wf_specified = first_tok
+                    rest_for_parse = parts[1] if len(parts) > 1 else ""
+                except ValueError:
+                    # 不是已知工作流：静默当作提示词，用默认工作流
+                    rest_for_parse = rest
         prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest_for_parse)
         # 工作流优先级：显式 --wf > 首 token 推断的工作流名 > 默认
         wf_name = wf_arg or wf_specified
