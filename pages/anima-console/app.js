@@ -24,6 +24,9 @@
     quota: { global: {}, users: [] },
   };
 
+  // 封面图 URL 缓存：fname -> url，避免保存/重渲染时反复请求 lora/image
+  var coverCache = {};
+
   const $ = function (id) { return document.getElementById(id); };
 
   const els = {
@@ -1470,12 +1473,9 @@
         }).catch(function (e) { showToast(e.message || "删除失败", "error"); });
       });
     });
-    // 工作流封面：加载图 / 看大图 / 抓封面 / 传封面
+    // 工作流封面：加载图（带缓存）/ 看大图 / 抓封面 / 传封面
     holder.querySelectorAll("[data-lora-img]").forEach(function (img) {
-      var fname = img.dataset.loraImg;
-      apiGet("lora/image", { name: fname }).then(function (d) {
-        if (d && d.url) img.src = d.url;
-      }).catch(function () {});
+      loadCover(img, img.dataset.loraImg);
     });
     holder.querySelectorAll(".wf-cover-btn").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -1504,6 +1504,21 @@
       return '<div class="lora-cover"><img data-lora-img="' + escapeHtml(img) + '" alt="" loading="lazy"></div>';
     }
     return '<div class="lora-cover lora-cover-empty"><span>无封面</span></div>';
+  }
+
+  // 加载封面：命中缓存直接用，否则请求后端并写入缓存。
+  function loadCover(img, fname) {
+    if (!img || !fname) return;
+    if (coverCache[fname]) {
+      img.src = coverCache[fname];
+      return;
+    }
+    apiGet("lora/image", { name: fname }).then(function (d) {
+      if (d && d.url) {
+        coverCache[fname] = d.url;
+        img.src = d.url;
+      }
+    }).catch(function () {});
   }
 
   function renderLoras() {
@@ -1546,18 +1561,9 @@
     });
     html += '</div>';
     holder.innerHTML = html;
-    // 加载封面图
+    // 加载封面图（带缓存，避免保存/重渲染时反复请求）
     holder.querySelectorAll("[data-lora-img]").forEach(function (img) {
-      var fname = img.dataset.loraImg;
-      apiGet("lora/image", { name: fname }).then(function (d) {
-        if (d && d.url) {
-          img.src = d.url;
-        } else {
-          console.warn("[anima-console] lora/image 返回无 url:", fname, d);
-        }
-      }).catch(function (e) {
-        console.warn("[anima-console] lora/image 加载失败:", fname, e && e.message ? e.message : e);
-      });
+      loadCover(img, img.dataset.loraImg);
     });
     // 事件
     holder.querySelectorAll(".lora-cover-btn").forEach(function (btn) {
@@ -1834,12 +1840,9 @@
     if (els.editSaveBtn) els.editSaveBtn.style.display = "none";
     if (els.editCancelBtn) els.editCancelBtn.textContent = "取消";
     els.editDialog.showModal();
-    // 加载缩略图
+    // 加载缩略图（带缓存）
     els.editBody.querySelectorAll("[data-lora-img]").forEach(function (img) {
-      var fname = img.dataset.loraImg;
-      apiGet("lora/image", { name: fname }).then(function (d) {
-        if (d && d.url) img.src = d.url;
-      }).catch(function () {});
+      loadCover(img, img.dataset.loraImg);
     });
     // 点选
     els.editBody.querySelectorAll(".cover-pick-item").forEach(function (btn) {
