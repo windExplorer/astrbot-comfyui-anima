@@ -663,19 +663,24 @@ class WebUIApi:
                     path_low = urlparse(u).path.lower()
                     if path_low.endswith((".mp4", ".mov", ".webm", ".avi", ".m4v")):
                         continue
-                    candidates.append((u, w, h))
+                    # C 站 API 的 images[].url 默认是「压缩缩略图」URL（形如
+                    # .../width=450/xxx.jpeg），直接下载会很模糊。C 站图片服务支持
+                    # width=original 参数返回原始分辨率，这里生成原图 URL；下载时
+                    # 优先原图，失败则回退到原始 url。
+                    u_orig = re.sub(r"/width=[^/]+/", "/width=original/", u)
+                    candidates.append((u_orig, u, w, h))
                 if candidates:
                     # C 站主图 URL 文件名以「00001-」开头（作者主封面）；优先选它，否则取第一张
                     cover_url = candidates[0][0]
-                    for _u, _w, _h in candidates:
-                        _base = os.path.basename(urlparse(_u).path).lower()
+                    for _uo, _ur, _w, _h in candidates:
+                        _base = os.path.basename(urlparse(_uo).path).lower()
                         if _base.startswith("00001-") or "00001." in _base:
-                            cover_url = _u
+                            cover_url = _uo
                             break
                     # 诊断：记录候选图 URL 与尺寸，便于比对页面封面
                     try:
                         from astrbot.api import logger as _log
-                        _log.info(f"[LoRA抓取] 候选封面 {len(candidates)} 张: " + "; ".join(f"{_u} ({_w}x{_h})" for _u, _w, _h in candidates[:5]))
+                        _log.info(f"[LoRA抓取] 候选封面 {len(candidates)} 张: " + "; ".join(f"{_uo} ({_w}x{_h})" for _uo, _ur, _w, _h in candidates[:5]))
                     except Exception:
                         pass
                     # 逐个下载候选图（最多 6 张有效图），前端选图用
@@ -683,17 +688,30 @@ class WebUIApi:
                     img_headers["Referer"] = "https://civitai.com/"
                     cover_timeout = aiohttp.ClientTimeout(total=15)
                     fetched_covers = []  # 已保存的封面文件名
-                    for _u, _w, _h in candidates:
-                        if not _u:
+                    for _uo, _ur, _w, _h in candidates:
+                        if not _uo:
                             continue
                         if len(fetched_covers) >= 6:
                             break
+                        _img_data = b""
                         try:
-                            async with aiohttp.ClientSession(headers=img_headers, trust_env=True) as _sess:
-                                async with _sess.get(_u, timeout=cover_timeout, proxy=proxy) as _resp:
-                                    if _resp.status != 200:
-                                        continue
-                                    _img_data = await _resp.read()
+                            # 优先原图 URL（width=original）；失败则回退到原始 url
+                            for _curl in (_uo, _ur):
+                                if not _curl:
+                                    continue
+                                try:
+                                    async with aiohttp.ClientSession(headers=img_headers, trust_env=True) as _sess:
+                                        async with _sess.get(_curl, timeout=cover_timeout, proxy=proxy) as _resp:
+                                            if _resp.status != 200:
+                                                continue
+                                            _img_data = await _resp.read()
+                                    if _img_data:
+                                        break
+                                except Exception:
+                                    _img_data = b""
+                                    continue
+                            if not _img_data:
+                                continue
                             ext_by_magic = ""
                             if _img_data[:3] == b"\xff\xd8\xff":
                                 ext_by_magic = ".jpg"

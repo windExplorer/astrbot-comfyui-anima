@@ -186,6 +186,7 @@ AI 会调用 `comfyui_draw` 工具，并按你提到的 LoRA 名称启用对应 
 - LoRA 库新增字段：`trigger_words`（触发词，多行）、`description`（描述）、`civitai_url`（C 站链接）、`image`（封面图）。
 - 封面图存于插件数据目录 `lora_assets/`，WebUI「LoRA」页以卡片形式展示（未设置封面显示默认占位图）。
 - 「抓取」按钮：填入 C 站链接后点击，自动下载封面图到本地并填入触发词/描述/底模；网络不可用时可手动上传图片、填写描述与触发词。
+- 封面图下载原始分辨率原图（v3.8.8）：C 站 API 默认返回压缩缩略图 URL（`width=NNN`），插件已改为请求 `width=original` 原图，保证封面清晰；个别图源不支持时自动回退原 URL。
 - 代理：自动使用 AstrBot 配置的 `http_proxy`（写入环境变量 + 显式读取兜底）。
 
 ## 说明
