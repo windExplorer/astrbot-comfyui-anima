@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v3.8.13
+
+- **新增「用户对话触发画图」的 token 用量统计**：此前 token 统计只覆盖插件自发起的辅助 LLM 调用（翻译/改写/参数提取），用户在 AI 对话里说「画一张小女孩」这类进入 LLM Agent 流程的主对话调用发生在 AstrBot 核心层、插件拿不到 usage，故统计不到。现新增：
+  - 新增 `filter.on_llm_response` 钩子（agent 结束时广播最终 LLM 响应的 usage），配合 `on_using_llm_tool` 的「画图会话」标记，把用户通过对话触发画图的**主对话 LLM 消耗**计入 token 统计，场景标记为「画图对话」（`scene=agent_draw`）。
+  - 新增 `filter.on_agent_done` 钩子清除会话标记，避免后续普通对话被误计入。
+  - WebUI Token 页「按调用场景」新增「画图对话」分类标签。
+  - 说明：AstrBot 的 `on_llm_response` 只在 agent 结束广播一次，故记录的是画图收尾总结那次（input 含完整上下文、消耗大头）；触发工具意图那次属中间调用，AstrBot 不回调，无法单独记录——属插件架构边界，已优于原先「完全统计不到」。
+
 ## v3.8.12
 
 - **更名插件展示名为「ComfyUI萌绘」**：将 `metadata.yaml` 中的 `display_name` 从 `ComfyUI 绘图 (Anima)` 改为 `ComfyUI萌绘`，更简洁、有记忆点，且不再局限于二次元，契合插件多工作流/多风格的定位。仅影响 UI 展示，插件 id、数据目录、指令、日志命名均不受影响。

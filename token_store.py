@@ -1,11 +1,15 @@
 """LLM token 使用统计存储。
 
-用独立的 SQLite（llm_token.db）维护插件自己发起的辅助 LLM 调用
-（翻译 / 动漫改写 / 写实清理 / 参数提取）的 token 用量。
+用独立的 SQLite（llm_token.db）维护插件相关的 LLM 调用 token 用量，包括：
+
+1. 插件自己发起的辅助 LLM 调用（翻译 / 动漫改写 / 写实清理 / 参数提取，
+   scene=translate / rewrite_anima / rewrite_real / extract_args）。
+2. 用户通过 LLM Agent 对话触发画图时，主对话最终 LLM 响应的用量
+   （scene=agent_draw）：通过 on_llm_response 钩子在 agent 结束时补记。
 
 注意统计边界：用户在 AI 对话里触发画图那一次主对话调用发生在 AstrBot
-核心层，插件拿不到 usage，不计入本统计。本模块只统计插件自身通过
-``llm_generate`` 发起的辅助调用。
+核心层，插件无法拿到「触发工具意图那次」的 usage（AstrBot 的 on_llm_response
+只在 agent 结束广播一次），只能记到画图收尾总结那次的用量。
 
 表结构按 (user_id, scene, model, 日期) 聚合为一行，多次调用累加
 total/call_count，避免每条调用单独一行导致表无限膨胀；跨天自动 rollover

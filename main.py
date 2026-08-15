@@ -81,6 +81,16 @@ g_recent_user_images: dict[str, list[str]] = {}
 # 事实与元指令、清除 [section compacted] 等标记）。
 SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
 
+# 本插件的画图/图库类 LLM 工具名集合。用于判定「用户是否通过 LLM 对话触发了画图」：
+# 当 on_llm_response 里 LLM 返回的工具调用命中这些名字时，认为本次主对话是「画图流程」，
+# 把该次 LLM 调用（以及画图收尾总结那次）的 token 消耗计入 token 统计（scene=agent_draw）。
+DRAW_LLM_TOOLS = {"comfyui_draw", "comfyui_img2img", "comfyui_gallery"}
+
+# 记录「当前会话是否正处于画图 agent run」的标记（session_id -> True）。
+# 供 on_llm_response 判断：命中画图工具调用后，该会话随后的 LLM 调用（画图收尾总结）
+# 也一并计入；on_agent_done 时清除，避免污染后续普通对话的统计。
+g_draw_agent_sessions: dict[str, bool] = {}
+
 
 def _safe_llm_tool(func):
     """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
@@ -4245,6 +4255,15 @@ class ComfyUIDrawPlugin(Star):
         self, event: AstrMessageEvent, tool=None, tool_args: dict | None = None
     ):
         self._last_event = event
+        # 若本次调用的是画图/图库类工具，标记该会话处于「画图 agent run」，
+        # 供 on_llm_response 把画图收尾总结那次的主对话 LLM 消耗一并计入 token 统计。
+        try:
+            sid = getattr(event, "session_id", "") or ""
+            tool_name = (getattr(tool, "name", None) or "") if tool is not None else ""
+            if sid and tool_name in DRAW_LLM_TOOLS:
+                g_draw_agent_sessions[sid] = True
+        except Exception:
+            pass
         # 趁事件里图片组件尚未被剥离，提前把图片本地路径缓存到「会话最近收到图片」，
         # 用于图生图兜底：当工具执行时图片已被平台压缩临时文件清理、event 只剩文本时，
         # 仍可退回使用本次对话用户实际发来的图。
@@ -4276,6 +4295,44 @@ class ComfyUIDrawPlugin(Star):
                     logger.debug("[取图] 缓存时未从消息/引用取到任何图")
         except Exception as e:
             logger.debug(f"[取图] 缓存会话图片失败（忽略）: {e}")
+
+    # 记录「用户通过 LLM 对话触发画图」时，主对话 LLM 调用的 token 消耗。
+    # 背景：用户说"画一张小女孩"进入 LLM Agent 流程，那次主对话调用发生在 AstrBot
+    # 核心层，插件在工具回调里拿不到 usage，所以此前统计不到。这里借助 on_llm_response
+    # 钩子（在 agent 结束、最终 LLM 响应时触发一次，携带 usage）补上：
+    #   - 触发画图工具时 _capture_llm_event（on_using_llm_tool）已给会话打标记；
+    #   - 到 agent 结束时，若该会话有画图标记，则把本次最终响应的 usage 计入
+    #     scene=agent_draw（此时 response 为画图收尾总结那次，input 含完整上下文，
+    #     是画图主对话消耗的大头；触发工具意图那次属中间调用，AstrBot 不回调，记不到）。
+    #   - 若 on_llm_response 时 LLM 返回的工具调用命中画图工具（response.tools_call_name，
+    #     覆盖个别 runner 在工具调用时也广播该事件的情况），同样记入。
+    # 用 scene=agent_draw 区分，model 主对话取不到统一记空串。
+    @filter.on_llm_response()
+    async def _record_agent_draw_tokens(self, event: AstrMessageEvent, response=None) -> None:
+        if self.token_store is None or not self._cfg("llm_token_stats", True):
+            return
+        try:
+            sid = getattr(event, "session_id", "") or ""
+            tool_names = (getattr(response, "tools_call_name", None) or []) if response is not None else []
+            hit_draw = any((n or "") in DRAW_LLM_TOOLS for n in tool_names)
+            in_draw = bool(sid and g_draw_agent_sessions.get(sid, False))
+            if not hit_draw and not in_draw:
+                return  # 与画图无关的普通对话，不记录
+            if hit_draw and sid:
+                g_draw_agent_sessions[sid] = True
+            self._record_llm_token("agent_draw", "", response, event)
+        except Exception as e:
+            logger.warning(f"[token] 记录画图主对话用量失败: {e}")
+
+    # 画图 agent run 结束，清除会话标记，避免后续普通对话被误计入 token 统计。
+    @filter.on_agent_done()
+    async def _clear_draw_agent_mark(self, event: AstrMessageEvent, run_context=None, response=None) -> None:
+        try:
+            sid = getattr(event, "session_id", "") or ""
+            if sid:
+                g_draw_agent_sessions.pop(sid, None)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # LLM 工具：comfyui_gallery（图库检索与语义标签召回）

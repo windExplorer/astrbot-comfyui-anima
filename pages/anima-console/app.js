@@ -1817,6 +1817,7 @@
       rewrite_anima: "动漫改写",
       rewrite_real: "写实清理",
       extract_args: "参数提取",
+      agent_draw: "画图对话",
     };
     return map[scene] || escapeHtml(scene);
   }
