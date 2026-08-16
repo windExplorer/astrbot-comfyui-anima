@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.1.8
+
+- **修复 Token 页「每日 Token 消耗趋势」显示为空**：后端每日数据字段为 `total`（`llm_usage` 表按日聚合），前端此前只读 `tokens`/`total_tokens` 导致 Y 值恒为 0、曲线画不出来。现改为兼容 `total`/`tokens`/`total_tokens`，每日趋势恢复正常。
+
 ## v4.1.7
 
 - **面积图改进（统计/Token 页）**：

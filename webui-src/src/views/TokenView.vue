@@ -125,7 +125,7 @@ const trendData = computed(() => {
   if (!buckets || !buckets.length) return [];
   return buckets.map((b) => ({
     x: fmtBucketLabel(b),
-    y: Number(b.tokens ?? b.total_tokens ?? 0),
+    y: Number(b.total ?? b.tokens ?? b.total_tokens ?? 0),
   }));
 });
 
