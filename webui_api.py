@@ -1,7 +1,7 @@
 """Anima 控制台 WebUI 后端 API。
 
-通过 AstrBot 的 context.register_web_api 注册路由，配合 pages/anima-console/
-下的前端页面使用。
+通过 AstrBot 的 context.register_web_api 注册路由，配合 pages/anima-console-vue/
+（新版）与 pages/anima-console-vue-legacy/（旧版）下的前端页面使用。
 
 严格遵循 AstrBot 官方文档（docs/zh/dev/star/guides/plugin-pages.md）：
 1) 使用 astrbot.api.web 提供的 request / json_response / error_response，

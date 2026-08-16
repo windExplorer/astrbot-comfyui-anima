@@ -73,7 +73,7 @@ function Add-ItemToZip($fsPath, $zipEntryPath) {
         $stream = $entry.Open()
         # 给 pages 的静态资源加版本化 query，强制浏览器在每次发布后拉取新文件，
         # 避免旧缓存导致「统计有数但图库空白 / 回收站点不动」等典型缓存症状。
-        if ($zipEntryPath -eq "pages/anima-console/index.html" -and $newVer -ne "") {
+        if ($zipEntryPath -eq "pages/anima-console-vue-legacy/index.html" -and $newVer -ne "") {
             $html = [System.IO.File]::ReadAllText($fsPath)
             $html = $html -replace '\./app\.js', ("./app.js?v=" + $newVer)
             $html = $html -replace '\./styles\.css', ("./styles.css?v=" + $newVer)
