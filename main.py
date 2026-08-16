@@ -76,6 +76,13 @@ g_last_received: dict[str, list[str]] = {}
 # 仅在 LLM 工具调用且当前消息/引用/_last_event 全部取不到图时才启用，避免误用旧图。
 g_recent_user_images: dict[str, list[str]] = {}
 
+# 每个会话「最近一次图生图实际使用的用户原图」记忆（区别于生成图）：
+# 多轮改图场景（用户先发原图 → AI 生成结果图 → 用户再说「重新改/再改一下」但没再发图）下，
+# 用于让「重新改」回到最初的用户原图，而不是误用「AI 上次生成的结果图」。
+# 记录在 llm_draw 取到最终参考图时（取到的第一张，通常是用户发的那张原图）。
+# 键为 session_id，值为最近一次图生图的用户原图本地路径列表（最多 3 张）。
+g_session_i2i_ref: dict[str, list[str]] = {}
+
 # 「我会永远陪着你」伴侣插件的来源标识：llm_draw 的 source 参数命中此值时，
 # 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
 # 事实与元指令、清除 [section compacted] 等标记）。
@@ -3839,7 +3846,12 @@ class ComfyUIDrawPlugin(Star):
 
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
-        - 图生图只认「本次消息附带的参考图」；历史消息/群聊里的旧图不算。仅在用户明确针对某张图时按图生图走。
+        - 图生图参考图的选择（★最容易出错）：参考图必须是**用户自己发的那张原图**。你（AI）上次生成的
+          结果图**不是**参考图，除非用户明确说「把上次生成那张/刚才那张成品再改」，否则**绝不要**把 AI
+          生成的图当参考图。用户说「再改一下/重新改/继续改这张图」（没发新图）时，应基于**最初用户发的
+          那张原图**继续改，优先从对话历史找到用户最初附带的原图并引用；找不到就提示用户重发图，**不要**
+          擅自用最近一次生成的图顶替。仅在用户明确引用你刚生成的某张图去二次加工时才用 AI 生成图。
+        - 图生图只认「用户发的那张参考图」；群聊里无关的旧图不算。仅在用户明确针对某张图时按图生图走。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
@@ -3991,15 +4003,20 @@ class ComfyUIDrawPlugin(Star):
         #    绝不进入这里——弱信号应直接回退对应风格文生图，避免误中断调用方（如伴侣）。
         if strong_img2img and not init_images:
             sid = getattr(event, "session_id", "") or ""
-            for p in (g_last_received.get(sid) or []):
-                if p and os.path.exists(p) and p not in init_images:
-                    init_images.append(p)
-            if not init_images:
-                hist = list(reversed(g_recent_user_images.get(sid) or []))
-                for p in hist[:1]:
+            # ① 优先用「本会话最近一次图生图实际使用的用户原图」（多轮改图时回到最初原图，
+            #    而不是误用 AI 上次生成的结果图）。仅当这些缓存路径仍可读时才采纳。
+            for store in (
+                list(reversed(g_session_i2i_ref.get(sid) or [])),
+                list(reversed(g_last_received.get(sid) or [])),
+                list(reversed(g_recent_user_images.get(sid) or [])),
+            ):
+                for p in store:
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
-                        break
+                if init_images:
+                    break
+            # ② 以上「用户原图」类缓存均不可读时，最后才兜底用最近生成的图
+            #    （仅当用户明确引用刚生成的图做二次加工，且临时路径仍有效时）。
             if not init_images:
                 for p in (list(reversed(g_last_generated.get(sid) or []))[:1]):
                     if p and os.path.exists(p) and p not in init_images:
@@ -4012,6 +4029,16 @@ class ComfyUIDrawPlugin(Star):
 
         if init_images:
             logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
+            # 记录「本会话最近一次图生图的用户原图」记忆，供多轮改图兜底回到最初原图
+            # （而非误用 AI 上次生成的结果图）。仅图生图且取到参考图时记录。
+            if is_img2img:
+                sid = getattr(event, "session_id", "") or ""
+                bucket = g_session_i2i_ref.setdefault(sid, [])
+                for p in init_images:
+                    if p and p not in bucket:
+                        bucket.append(p)
+                if len(bucket) > 3:
+                    g_session_i2i_ref[sid] = bucket[-3:]
         elif is_img2img:
             logger.info(
                 f"[取图] llm_draw 意图为图生图但无参考图可用"
@@ -4726,8 +4753,15 @@ class ComfyUIDrawPlugin(Star):
           若用户当前表现出拒绝/取消/不需要，就绝不变图，不要被之前的请求带偏。
 
         重要约束：
-        - 必须确保用户消息里附带了参考图；若没有图，请提示用户先发一张图再描述变换。
-        - 即便对话历史里做过类似变换，只要用户再次附带图片并表达意图，就重新调用。
+        - 必须确保有参考图；若当前消息没有图、也拿不到用户最初发的那张原图，请提示用户先发一张图再描述变换。
+        - 即便对话历史里做过类似变换，只要用户再次表达改图意图（如「再改一下」「重新改」「继续改这张图」），就重新调用。
+        - 参考图的选择规则（★最容易出错，务必遵守）：
+          ① 参考图 = **用户自己发的那张原图**。你（AI）上次生成的结果图**不是**参考图，除非用户明确说
+            「把上次生成的那张图/刚才那张成品再改」，否则**绝不要**把 AI 生成的图当作参考图传进来。
+          ② 用户说「再改一下 / 重新改 / 继续改这张图」（没发新图）时，应基于**最初用户发的那张原图**继续改，
+            而不是上次生成的结果图；优先从对话历史里找到用户最初附带的原图并引用它。
+          ③ 若无法定位用户最初的原图，就提示用户重发一张图，**不要**擅自用最近一次生成的图顶替。
+          ④ 只有在「用户明确引用你刚生成的某张图去二次加工」时，才允许用那张 AI 生成图作为参考图。
         - 传入 image 参数（消息中图片的 URL）或插件自动从消息中提取图片均可。
         - ⚠️ 若用户已在当前消息里附带了图片，请直接把该图片（或其在消息中的引用）
           传入即可，**不要**调用 get_message_detail 之类接口去回拉"原始消息"再重新下载图片：
