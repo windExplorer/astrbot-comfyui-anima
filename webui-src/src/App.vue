@@ -3,18 +3,8 @@
     <n-message-provider>
       <n-dialog-provider>
         <n-loading-bar-provider>
-          <n-layout has-sider class="app-shell" :style="{ height: '100vh', overflow: 'hidden' }">
-            <n-layout-sider
-              bordered
-              collapse-mode="width"
-              :collapsed-width="0"
-              :width="200"
-              :collapsed="siderCollapsed"
-              show-trigger="bar"
-              @collapse="siderCollapsed = true"
-              @expand="siderCollapsed = false"
-              class="app-sider"
-            >
+          <div class="app-shell">
+            <div class="app-sider" :class="{ collapsed: siderCollapsed }">
               <div class="brand">
                 <div class="brand-logo">✦</div>
                 <div v-if="!siderCollapsed" class="brand-text">
@@ -30,10 +20,11 @@
                 :indent="18"
                 @update:value="onMenuSelect"
               />
-            </n-layout-sider>
+              <div class="sider-trigger" @click="siderCollapsed = !siderCollapsed">«</div>
+            </div>
 
-            <n-layout class="app-main">
-              <n-layout-header bordered class="app-header">
+            <div class="app-main">
+              <div class="app-header">
                 <div class="header-left">
                   <span class="header-title">{{ currentTitle }}</span>
                 </div>
@@ -47,13 +38,13 @@
                     刷新数据
                   </n-button>
                 </div>
-              </n-layout-header>
+              </div>
 
-              <n-layout-content class="app-content" :native-scrollbar="false">
+              <div class="app-content">
                 <router-view />
-              </n-layout-content>
-            </n-layout>
-          </n-layout>
+              </div>
+            </div>
+          </div>
         </n-loading-bar-provider>
       </n-dialog-provider>
     </n-message-provider>
@@ -139,17 +130,35 @@ function onMenuSelect(key: string) {
 </script>
 
 <style scoped>
+/* 纯 flex 布局外壳：100vh 撑满，滚动完全由各页面内部管理 */
 .app-shell {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
   background: var(--bg-body);
 }
 .app-sider {
+  width: 200px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-panel);
+  border-right: 1px solid var(--border-color);
+  transition: width 0.2s;
+  overflow: hidden;
+}
+.app-sider.collapsed {
+  width: 48px;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 16px 16px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  flex: 0 0 auto;
 }
 .brand-logo {
   font-size: 22px;
@@ -165,20 +174,39 @@ function onMenuSelect(key: string) {
   opacity: 0.55;
   letter-spacing: 0.05em;
 }
+.app-sider :deep(.n-menu) {
+  flex: 1 1 auto;
+  overflow: auto;
+  min-height: 0;
+}
+.sider-trigger {
+  flex: 0 0 auto;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-sub);
+  border-top: 1px solid var(--border-color);
+  user-select: none;
+}
+.sider-trigger:hover { color: var(--accent); }
 .app-main {
-  height: 100vh;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
   overflow: hidden;
 }
 .app-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 20px;
   height: 52px;
-  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
 }
 .header-title {
   font-size: 16px;
@@ -189,14 +217,13 @@ function onMenuSelect(key: string) {
   align-items: center;
   gap: 12px;
 }
-/* 内容区固定高度、不整体滚动；滚动由各页面内部管理，
+/* 内容区：flex 填满 header 以下全部空间，不滚动；滚动由各页面内部管理，
    从而保证顶部标题（header）与底部有分页器的页面底部固定可见。 */
 .app-content {
-  padding: 20px;
   flex: 1 1 auto;
-  overflow: hidden;
   min-height: 0;
-  height: calc(100vh - 52px);
+  padding: 16px 20px;
+  overflow: hidden;
 }
 .app-content > * {
   height: 100%;

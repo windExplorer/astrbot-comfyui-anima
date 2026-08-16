@@ -8,64 +8,61 @@
       <n-button :loading="loading" @click="refresh">刷新</n-button>
     </div>
 
-    <div class="logs-body">
-      <n-tabs v-model:value="activeTab" type="line" class="logs-tabs">
-        <!-- 出图记录 -->
-        <n-tab-pane name="records" tab="出图记录" class="logs-pane">
-          <div class="pane-inner">
-            <div class="toolbar">
-              <n-input v-model:value="recSearch" size="small" placeholder="搜索用户 / 消息 / 提示词…" style="width:280px" clearable @keyup.enter="loadRecords(1)" />
-              <n-checkbox v-model:checked="recFailedOnly" size="small" @update:checked="loadRecords(1)">仅看失败</n-checkbox>
-              <n-button size="small" @click="loadRecords(1)">搜索</n-button>
-              <span class="count">{{ recTotal ? recTotal + " 条" : recRows.length + " 条" }}</span>
-            </div>
+    <div class="tab-bar">
+      <button class="tab-btn" :class="{ active: activeTab === 'records' }" @click="activeTab = 'records'">出图记录</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'runlog' }" @click="activeTab = 'runlog'">运行日志</button>
+    </div>
 
-            <div class="table-scroll">
-              <n-data-table
-                :columns="recColumns"
-                :data="recRows"
-                :pagination="recPagination"
-                :bordered="false"
-                :loading="recLoading"
-                remote
-                :max-height="recTableHeight"
-                :scroll-x="1100"
-                :row-key="(row: any) => row.sha || row.id"
-              />
-            </div>
-          </div>
-        </n-tab-pane>
+    <!-- 出图记录 -->
+    <div v-show="activeTab === 'records'" class="pane-inner">
+      <div class="toolbar">
+        <n-input v-model:value="recSearch" size="small" placeholder="搜索用户 / 消息 / 提示词…" style="width:280px" clearable @keyup.enter="loadRecords(1)" />
+        <n-checkbox v-model:checked="recFailedOnly" size="small" @update:checked="loadRecords(1)">仅看失败</n-checkbox>
+        <n-button size="small" @click="loadRecords(1)">搜索</n-button>
+        <span class="count">{{ recTotal ? recTotal + " 条" : recRows.length + " 条" }}</span>
+      </div>
 
-        <!-- 运行日志 -->
-        <n-tab-pane name="runlog" tab="运行日志" class="logs-pane">
-          <div class="pane-inner">
-            <div class="toolbar">
-              <n-select
-                v-model:value="logLevel"
-                size="small"
-                style="width:140px"
-                :options="logLevelOptions"
-                @update:value="filterLogs"
-              />
-              <n-input v-model:value="logSearch" size="small" placeholder="搜索日志关键词…" style="width:280px" clearable @update:value="filterLogs" />
-              <span class="count">{{ filteredLogs.length }} 条</span>
-            </div>
-            <div class="log-viewer">
-              <div v-for="(line, i) in filteredLogs" :key="i" class="log-line" :class="logLineClass(line)">
-                <pre>{{ line }}</pre>
-              </div>
-              <div v-if="!filteredLogs.length" class="empty">暂无日志</div>
-            </div>
-          </div>
-        </n-tab-pane>
-      </n-tabs>
+      <div class="table-scroll">
+        <n-data-table
+          :columns="recColumns"
+          :data="recRows"
+          :pagination="recPagination"
+          :bordered="false"
+          :loading="recLoading"
+          remote
+          flex-height
+          :scroll-x="1100"
+          :row-key="(row: any) => row.sha || row.id"
+        />
+      </div>
+    </div>
+
+    <!-- 运行日志 -->
+    <div v-show="activeTab === 'runlog'" class="pane-inner">
+      <div class="toolbar">
+        <n-select
+          v-model:value="logLevel"
+          size="small"
+          style="width:140px"
+          :options="logLevelOptions"
+          @update:value="filterLogs"
+        />
+        <n-input v-model:value="logSearch" size="small" placeholder="搜索日志关键词…" style="width:280px" clearable @update:value="filterLogs" />
+        <span class="count">{{ filteredLogs.length }} 条</span>
+      </div>
+      <div class="log-viewer">
+        <div v-for="(line, i) in filteredLogs" :key="i" class="log-line" :class="logLineClass(line)">
+          <pre>{{ line }}</pre>
+        </div>
+        <div v-if="!filteredLogs.length" class="empty">暂无日志</div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from "vue";
-import { NButton, NDataTable, NInput, NCheckbox, NSelect, NTabs, NTabPane, NTag, NImage, useMessage, type DataTableColumns } from "naive-ui";
+import { NButton, NDataTable, NInput, NCheckbox, NSelect, NTag, NImage, useMessage, type DataTableColumns } from "naive-ui";
 import { apiGet } from "@/api/bridge";
 import { fetchThumb } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime, truncate } from "@/utils/format";
@@ -74,9 +71,6 @@ import { useRefresh } from "@/composables/useRefresh";
 const message = useMessage();
 const activeTab = ref("records");
 const loading = ref(false);
-
-// 表格可视高度：让出图记录表格内部滚动，页面标题与底部工具栏/分页器固定可见。
-const recTableHeight = computed(() => `calc(100vh - 280px)`);
 
 // 出图记录
 const recRows = ref<any[]>([]);
@@ -217,14 +211,28 @@ onMounted(() => {
 .view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
-.logs-body { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.logs-tabs { height: 100%; display: flex; flex-direction: column; }
-.logs-pane { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.pane-inner { height: 100%; display: flex; flex-direction: column; min-height: 0; }
-.toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; flex-wrap: wrap; flex: 0 0 auto; }
+/* tab 切换条 */
+.tab-bar { display: flex; gap: 8px; margin-bottom: 12px; flex: 0 0 auto; }
+.tab-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-sub);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.tab-btn:hover { color: var(--accent); border-color: var(--accent); }
+.tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* 内容面板：flex 填满剩余空间，内部滚动；工具栏/分页器固定 */
+.pane-inner { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 0 0 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
-/* 表格区域：flex 占满剩余空间，表格内部滚动（max-height）、分页器固定底部可见 */
-.table-scroll { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+/* 表格区域：flex 占满剩余空间，flex-height 使表格内部滚动、分页器固定底部可见 */
+.table-scroll { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.table-scroll :deep(.n-data-table) { flex: 1 1 auto; min-height: 0; }
 .log-viewer {
   background: var(--bg-body);
   border: 1px solid var(--border-color);

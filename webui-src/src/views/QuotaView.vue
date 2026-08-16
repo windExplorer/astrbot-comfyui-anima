@@ -32,6 +32,8 @@
           :data="users"
           :bordered="false"
           :loading="loading"
+          flex-height
+          :scroll-x="900"
           :row-key="(row: any) => row.user_id"
         />
       </div>
@@ -190,9 +192,7 @@ onMounted(load);
 .count { color: var(--text-sub); font-size: 12px; }
 .global-form { display: flex; flex-direction: column; gap: 12px; }
 .num-fields { display: flex; gap: 24px; flex-wrap: wrap; }
-/* 表格区：占满剩余空间，表格内部滚动 */
-.table-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.table-wrap :deep(.n-data-table) { height: 100%; }
-.table-wrap :deep(.n-data-table .n-data-table-base-table) { height: 100%; }
-.table-wrap :deep(.n-data-table .n-data-table-base-table-body) { overflow: auto; }
+/* 表格区：占满剩余空间，flex-height 使表格内部滚动 */
+.table-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.table-wrap :deep(.n-data-table) { flex: 1 1 auto; min-height: 0; }
 </style>
