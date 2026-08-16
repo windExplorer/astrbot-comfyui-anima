@@ -1082,10 +1082,11 @@ class ImageStore:
             "trash_count": trash_count,
         }
 
-    def workflow_stats(self, top: int = 3) -> list[dict]:
-        """按工作流统计成功出图数量与平均耗时，按数量倒序取前 top 个。
+    def workflow_stats(self, top: int = 3, days: int = 0) -> list[dict]:
+        """按工作流统计指定时间范围内的成功出图数量与平均耗时，按数量倒序取前 top 个。
 
         只统计成功生成的成品图（source='gen' 且 status=0 且未删除）。
+        days 语义与 user_ranking 一致：None=全部，0=今天，N=最近 N 天。
         返回 [{workflow, count, avg_sec}]；无记录或异常时返回空列表。
         供「/绘图统计」指令使用。
         """
@@ -1093,16 +1094,20 @@ class ImageStore:
             return []
         conn = self._conn_get()
         try:
-            rows = conn.execute(
+            since_ts = self._stats_since_ts(days)
+            sql = (
                 "SELECT workflow, COUNT(*) AS c, AVG(cost_sec) AS avg_sec "
                 "FROM images "
                 "WHERE source=? AND status=0 AND deleted=0 "
                 "AND workflow IS NOT NULL AND workflow<>'' "
-                "GROUP BY workflow "
-                "ORDER BY c DESC, MAX(created_at) DESC "
-                "LIMIT ?",
-                (SRC_GEN, int(max(1, top))),
-            ).fetchall()
+            )
+            params: list = [SRC_GEN]
+            if since_ts is not None:
+                sql += " AND created_at>=? "
+                params.append(since_ts)
+            sql += "GROUP BY workflow ORDER BY c DESC, MAX(created_at) DESC LIMIT ?"
+            params.append(int(max(1, top)))
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [
                 {
                     "workflow": r["workflow"],

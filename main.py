@@ -3031,10 +3031,10 @@ class ComfyUIDrawPlugin(Star):
                 lines.append(f"· 今日 Token 用量：读取失败（{e}）")
         else:
             lines.append("· 今日 Token 用量：统计未启用")
-        # 热门工作流 Top3（出图数量 + 平均耗时）
+        # 热门工作流 Top5（出图数量 + 平均耗时）
         if self.gallery is not None:
             try:
-                wfs = self.gallery.workflow_stats(top=3)
+                wfs = self.gallery.workflow_stats(top=5)
                 if wfs:
                     lines.append("· 热门工作流出图：")
                     for w in wfs:
