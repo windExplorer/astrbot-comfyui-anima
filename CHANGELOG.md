@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.2.11
+
+- **修复 WebUI 保存/新增/LoRA 报错**：`Failed to execute 'postMessage' on 'Window': [object Object] could not be cloned`。根因是前端把 Vue 响应式 Proxy 对象直接作为 body 传给 astrbot 的 `apiPost`，而 `postMessage` 走结构化克隆、无法克隆 Proxy。现已在 `bridge.ts` 的请求层统一做深拷贝（`JSON.parse(JSON.stringify(...))`），从源头剥掉 Proxy，覆盖所有页面的保存/新增/删除/上传封面等调用点。
+
 ## v4.2.10
 
 - **优化 `/绘图状态` 延迟测量口径**：`probe()` 改为「预热 + 正式测量」两段式——先发一次请求完成建连/DNS/TLS 握手（不计时），再用同一连接池内第二次请求的耗时作为 HTTP 往返延迟，避免把握手/建连开销误报成高延迟。

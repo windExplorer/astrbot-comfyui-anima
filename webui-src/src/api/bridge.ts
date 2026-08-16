@@ -181,6 +181,14 @@ async function bridgeRequest(br: Bridge, path: string, method: string, body: Rec
   if (typeof payload === "string") {
     try { payload = JSON.parse(payload); } catch (e) { payload = {}; }
   }
+  // 关键：统一深拷贝，剥掉 Vue 响应式 Proxy。
+  // postMessage 走结构化克隆，reactive proxy / ref 解包对象无法被克隆，
+  // 会抛 "could not be cloned"。这里统一转成纯 JSON，任何调用方都不会再踩坑。
+  try {
+    payload = JSON.parse(JSON.stringify(payload));
+  } catch (e) {
+    // 若含 File/函数等无法 JSON 化的内容，保留原样交由下游处理。
+  }
   for (const c of candidates) {
     try {
       const r = await withTimeout(br.apiPost(c.endpoint, payload), tmo, "POST " + c.endpoint);
