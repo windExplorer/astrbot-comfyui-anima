@@ -14,28 +14,29 @@ const props = defineProps<{
 const chartEl = ref<HTMLElement | null>(null);
 let chart: VChartCore | null = null;
 let destroyed = false;
+let ro: ResizeObserver | null = null;
 
-function ensureChart(): VChartCore | null {
-  if (chart) return chart;
-  if (!chartEl.value || !props.option) return null;
+function ensureChart(): boolean {
+  if (chart) return true;
+  if (!chartEl.value || !props.option) return false;
+  const el = chartEl.value;
+  if (el.clientWidth === 0 && el.clientHeight === 0) return false; // 容器未就绪
   try {
-    chart = new VChartCore(props.option, { dom: chartEl.value });
+    chart = new VChartCore(props.option, { dom: el });
     chart.renderAsync();
-    return chart;
+    return true;
   } catch (e) {
     chart = null;
-    return null;
+    return false;
   }
 }
 
 async function render() {
-  if (destroyed) return;
-  if (!props.option) return;
-  // 等待容器有实际尺寸（避免在 v-show 隐藏或布局未就绪时宽高为 0 渲染失败）
+  if (destroyed || !props.option) return;
   await nextTick();
   if (destroyed) return;
   if (chart) {
-    chart.updateSpec(props.option);
+    try { chart.updateSpec(props.option); } catch (e) { /* ignore */ }
   } else {
     ensureChart();
   }
@@ -43,22 +44,30 @@ async function render() {
 
 watch(
   () => props.option,
-  (val) => {
-    if (val) render();
-  },
+  (val) => { if (val) render(); },
   { deep: true }
 );
 
 onMounted(async () => {
   await nextTick();
   render();
+  // 容器尺寸变化（flex 布局/侧栏折叠/窗口缩放）时重建或 resize，确保图表可见
+  if (chartEl.value && typeof ResizeObserver !== "undefined") {
+    ro = new ResizeObserver(() => {
+      if (destroyed) return;
+      if (!chart && props.option) {
+        ensureChart();
+      } else if (chart) {
+        try { chart.resize(); } catch (e) { /* ignore */ }
+      }
+    });
+    ro.observe(chartEl.value);
+  }
 });
 
 onBeforeUnmount(() => {
   destroyed = true;
-  if (chart) {
-    chart.release();
-    chart = null;
-  }
+  if (ro) { ro.disconnect(); ro = null; }
+  if (chart) { chart.release(); chart = null; }
 });
 </script>

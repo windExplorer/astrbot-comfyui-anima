@@ -44,21 +44,21 @@
           <div v-for="img in images" :key="img.sha || img.sha256" class="gal-item" @click="openDetail(img)">
             <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" />
             <div class="gal-item-overlay">
-              <n-tag v-if="img.starred" size="tiny" type="warning" :bordered="false">★</n-tag>
-              <n-tag v-if="img.source" size="tiny" :bordered="false">{{ typeLabel(img.source) }}</n-tag>
+              <span v-if="img.starred" class="gal-star">★</span>
+              <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
             </div>
           </div>
         </div>
       </n-spin>
     </div>
 
-    <n-pagination
+    <Pager
       v-if="total > pageSize"
-      v-model:page="page"
+      :page="page"
       :page-size="pageSize"
-      :item-count="total"
-      style="justify-content:flex-end;flex:0 0 auto;padding-top:12px"
+      :total="total"
       @update:page="doSearch"
+      @update:page-size="onPageSize"
     />
 
     <!-- 大图查看器 -->
@@ -78,11 +78,12 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NPagination, NStatistic, NTabs, NTabPane } from "naive-ui";
+import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NStatistic, NTabs, NTabPane } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { fmtBytes, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import ImageViewer from "@/components/ImageViewer.vue";
+import Pager from "@/components/Pager.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -97,7 +98,7 @@ const images = ref<any[]>([]);
 const total = ref(0);
 const page = ref(1);
 // 每页缩略图数量：与出图记录一致，避免一页展示太多
-const pageSize = 20;
+let pageSize = 20;
 const stats = ref<any>(null);
 const thumbCache = reactive<Record<string, string>>({});
 
@@ -109,11 +110,15 @@ const typeOptions = [
   { label: "参考图", value: "ref" },
 ];
 
-function typeLabel(src: string): string {
-  if (src === "gen") return "文生图";
-  if (src === "img2img") return "图生图";
-  if (src === "ref") return "参考图";
-  return src || "图片";
+function typeKey(img: any): string {
+  if (img?.is_img2img || img?.ref_sha256) return "img2img";
+  if (img?.source === "ref") return "ref";
+  if (img?.source === "user") return "user";
+  return "gen";
+}
+function typeLabel(img: any): string {
+  const k = typeKey(img);
+  return { gen: "文生图", img2img: "图生图", ref: "参考图", user: "收藏" }[k] || "图片";
 }
 
 async function loadStats() {
@@ -154,6 +159,12 @@ async function doSearch(p: number) {
 }
 
 function onTabChange() {
+  page.value = 1;
+  doSearch(1);
+}
+
+function onPageSize(s: number) {
+  pageSize = s;
   page.value = 1;
   doSearch(1);
 }
@@ -284,26 +295,47 @@ onMounted(() => {
 .gal-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .gal-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
 }
 .gal-item {
   position: relative;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
   cursor: pointer;
-  aspect-ratio: 1;
+  aspect-ratio: 3 / 4;
   background: var(--bg-body);
   border: 1px solid var(--border-color);
+  box-shadow: 0 2px 8px rgba(255, 143, 179, 0.08);
+  transition: transform 0.18s, box-shadow 0.18s;
 }
+.gal-item:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(255, 143, 179, 0.18); }
 .gal-item img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s; }
 .gal-item:hover img { transform: scale(1.05); }
 .gal-item-overlay {
   position: absolute;
-  top: 6px;
-  left: 6px;
+  top: 8px;
+  left: 8px;
   display: flex;
-  gap: 4px;
+  gap: 6px;
+  align-items: center;
 }
-.gal-item-overlay .star-badge { color: #d4a017; }
+.gal-star {
+  font-size: 15px;
+  color: #ffd257;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.gal-type {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 20px;
+  color: #fff;
+  backdrop-filter: blur(3px);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.gal-type.t-gen { background: linear-gradient(135deg, #ffb3d1, #ff8fb3); }
+.gal-type.t-img2img { background: linear-gradient(135deg, #ff9ecb, #ff7ea8); }
+.gal-type.t-ref { background: linear-gradient(135deg, #a8d8ff, #7eb6ff); }
+.gal-type.t-user { background: linear-gradient(135deg, #ffd98a, #ffb347); }
 </style>

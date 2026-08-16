@@ -8,8 +8,8 @@
               <div class="brand">
                 <div class="brand-logo">✦</div>
                 <div v-if="!siderCollapsed" class="brand-text">
-                  <div class="brand-title">Anima 控制台</div>
-                  <div class="brand-sub">ComfyUI / Control</div>
+                  <div class="brand-title">萌绘控制台</div>
+                  <div class="brand-sub">ComfyUI / 萌图工厂</div>
                 </div>
               </div>
               <n-menu
@@ -85,11 +85,13 @@ const siderCollapsed = ref(false);
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: "#7c4dff",
-    primaryColorHover: "#9a73ff",
-    primaryColorPressed: "#6236d6",
-    primaryColorSuppl: "#7c4dff",
-    borderRadius: "8px",
+    primaryColor: "#ff8fb3",
+    primaryColorHover: "#ffa8c8",
+    primaryColorPressed: "#e86f9c",
+    primaryColorSuppl: "#ff8fb3",
+    borderRadius: "10px",
+    borderRadiusSmall: "8px",
+    fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", "HarmonyOS Sans SC", "Segoe UI", Roboto, sans-serif',
   },
 };
 
@@ -161,13 +163,25 @@ function onMenuSelect(key: string) {
   flex: 0 0 auto;
 }
 .brand-logo {
-  font-size: 22px;
-  color: #7c4dff;
+  font-size: 20px;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ffb3d1, #ff8fb3);
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(255, 143, 179, 0.35);
 }
 .brand-title {
-  font-weight: 700;
+  font-weight: 800;
   font-size: 15px;
   line-height: 1.2;
+  background: linear-gradient(90deg, #ff8fb3, #ffb3d1);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .brand-sub {
   font-size: 11px;
@@ -232,29 +246,29 @@ function onMenuSelect(key: string) {
 
 <style>
 :root {
-  --bg-body: #f6f5fa;
+  --bg-body: #fff6f9;
   --bg-panel: #ffffff;
-  --text-main: #1f1f2e;
-  --text-sub: #6b6b80;
-  --border-color: #e8e7f0;
-  --accent: #7c4dff;
+  --text-main: #3a2a33;
+  --text-sub: #9a7a88;
+  --border-color: #ffe3ec;
+  --accent: #ff8fb3;
 }
 html.dark {
-  --bg-body: #14141d;
-  --bg-panel: #1c1c27;
-  --text-main: #e6e6f0;
-  --text-sub: #9a9ab0;
-  --border-color: #2c2c3a;
-  --accent: #9a73ff;
+  --bg-body: #1a1418;
+  --bg-panel: #241b21;
+  --text-main: #f2e3ea;
+  --text-sub: #b3909f;
+  --border-color: #3a2a33;
+  --accent: #ff9dc4;
 }
 body {
   margin: 0;
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "HarmonyOS Sans SC", "Segoe UI", Roboto, sans-serif;
   color: var(--text-main);
   background: var(--bg-body);
 }
 * { box-sizing: border-box; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(124, 77, 255, 0.3); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: rgba(255, 143, 179, 0.35); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 </style>

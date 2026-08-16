@@ -38,7 +38,7 @@ import os
 import re
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -51,6 +51,25 @@ PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
+
+# 缩略图 data URL 内存缓存：key=(路径, max_w)，避免每次请求都重新读盘 + Pillow 缩放 + base64，
+# 显著降低图库/出图记录缩略图的加载耗时（局域网下尤其明显）。用 OrderedDict 做简单 LRU。
+_thumb_cache: "OrderedDict[str, str]" = OrderedDict()
+_THUMB_CACHE_MAX = 512
+
+
+def _thumb_cached(path, max_w: int) -> str:
+    key = f"{path}|{max_w}"
+    hit = _thumb_cache.get(key)
+    if hit is not None:
+        _thumb_cache.move_to_end(key)
+        return hit
+    val = _thumb_data_url(path, max_w)
+    if val:
+        _thumb_cache[key] = val
+        if len(_thumb_cache) > _THUMB_CACHE_MAX:
+            _thumb_cache.popitem(last=False)
+    return val
 
 
 class WebUIApi:
@@ -843,7 +862,7 @@ class WebUIApi:
         if not path or not Path(path).exists():
             return error_response("图片不存在", status_code=404)
         try:
-            data_url = await asyncio.to_thread(_thumb_data_url, path, max_w=size)
+            data_url = await asyncio.to_thread(_thumb_cached, path, size)
             if not data_url:
                 return error_response("生成缩略图失败")
             return json_response({"sha": sha, "url": data_url})
@@ -879,7 +898,7 @@ class WebUIApi:
                     view_size = request.query.get("size", 1600, type=int)
                 except Exception:
                     view_size = 1600
-                data_url = await asyncio.to_thread(_thumb_data_url, path, max_w=view_size)
+                data_url = await asyncio.to_thread(_thumb_cached, path, view_size)
                 if not data_url:
                     raw = await asyncio.to_thread(Path(path).read_bytes)
                     mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"

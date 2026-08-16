@@ -108,8 +108,8 @@ const trendSpec = computed(() => {
     data: [{ values: data }],
     xField: "label",
     yField: "count",
-    area: { style: { fillOpacity: 0.3, fill: "#7c4dff" } },
-    line: { style: { stroke: "#7c4dff", lineWidth: 2 } },
+    area: { style: { fillOpacity: 0.3, fill: "#ff8fb3" } },
+    line: { style: { stroke: "#ff8fb3", lineWidth: 2 } },
     point: { visible: false },
     tooltip: { visible: true },
     axes: [
@@ -124,7 +124,7 @@ function rankPct(count: number): number {
   return Math.max(4, Math.round((count / max) * 100));
 }
 function rankColor(i: number): string {
-  const colors = ["#7c4dff", "#9a73ff", "#c0a3ff", "#d9c9ff", "#9aa0b0"];
+  const colors = ["#ff8fb3", "#ffb3d1", "#ffd0e2", "#f8d8e4", "#c0a8b4"];
   return colors[i] || colors[colors.length - 1];
 }
 function rankClass(i: number): string {

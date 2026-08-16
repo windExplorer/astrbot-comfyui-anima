@@ -250,7 +250,7 @@ function onPurge(it: any) { emit("purge", it); }
   cursor: pointer;
   user-select: none;
 }
-.iv-cap.ref { background: #5b3a8e; color: #fff; }
+.iv-cap.ref { background: linear-gradient(135deg, #ffb3d1, #ff8fb3); color: #fff; }
 .iv-imgwrap {
   background: #0c0d11;
   display: flex;

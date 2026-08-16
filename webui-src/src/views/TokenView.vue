@@ -141,8 +141,8 @@ const trendSpec = computed(() => {
     data: [{ values: data }],
     xField: "label",
     yField: "tokens",
-    area: { style: { fillOpacity: 0.3, fill: "#7c4dff" } },
-    line: { style: { stroke: "#7c4dff", lineWidth: 2 } },
+    area: { style: { fillOpacity: 0.3, fill: "#ff8fb3" } },
+    line: { style: { stroke: "#ff8fb3", lineWidth: 2 } },
     point: { visible: false },
     tooltip: { visible: true },
     axes: [

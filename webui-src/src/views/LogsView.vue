@@ -26,7 +26,6 @@
         <n-data-table
           :columns="recColumns"
           :data="recRows"
-          :pagination="recPagination"
           :bordered="false"
           :loading="recLoading"
           remote
@@ -35,6 +34,14 @@
           :row-key="(row: any) => row.sha || row.id"
         />
       </div>
+      <Pager
+        v-if="recTotal > recPageSize"
+        :page="recPage"
+        :page-size="recPageSize"
+        :total="recTotal"
+        @update:page="loadRecords"
+        @update:page-size="onRecPageSize"
+      />
     </div>
 
     <!-- 运行日志 -->
@@ -78,6 +85,7 @@ import { fetchThumb } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import ImageViewer from "@/components/ImageViewer.vue";
+import Pager from "@/components/Pager.vue";
 
 const message = useMessage();
 const activeTab = ref("records");
@@ -90,7 +98,7 @@ const recLoading = ref(false);
 const recSearch = ref("");
 const recFailedOnly = ref(false);
 const recPage = ref(1);
-const recPageSize = 40;
+let recPageSize = 40;
 // 用响应式对象缓存缩略图：fetchThumb 完成后更新会触发表格重新渲染，图片才显示。
 const recThumbCache = reactive<Record<string, string>>({});
 
@@ -171,7 +179,7 @@ const recColumns: DataTableColumns = [
         ? h("img", { src, style: "width:60px;height:60px;object-fit:cover;border-radius:6px;display:block;background:#00000010" })
         : h("div", { style: "width:60px;height:60px;border-radius:6px;background:#00000010;display:flex;align-items:center;justify-content:center;color:#999;font-size:11px" }, "加载…"),
       isI2i
-        ? h("span", { class: "rec-i2i-badge", style: "position:absolute;left:2px;bottom:2px;background:#5b3a8e;color:#fff;font-size:10px;padding:1px 5px;border-radius:8px" }, "图生图")
+        ? h("span", { class: "rec-i2i-badge", style: "position:absolute;left:2px;bottom:2px;background:linear-gradient(135deg,#ffb3d1,#ff8fb3);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px" }, "图生图")
         : null,
     ]);
   }},
@@ -189,13 +197,11 @@ const recColumns: DataTableColumns = [
   { title: "提示词", key: "prompt", ellipsis: { tooltip: true }, render: (row) => truncate(row.prompt || row.prompt_raw, 50) },
 ];
 
-const recPagination = computed(() => ({
-  page: recPage.value,
-  pageSize: recPageSize,
-  itemCount: recTotal.value,
-  onChange: (page: number) => loadRecords(page),
-  showSizePicker: false,
-}));
+function onRecPageSize(s: number) {
+  recPageSize = s;
+  recPage.value = 1;
+  loadRecords(1);
+}
 
 // 运行日志
 const logLines = ref<string[]>([]);
