@@ -57,16 +57,27 @@
         <div v-if="!filteredLogs.length" class="empty">暂无日志</div>
       </div>
     </div>
+
+    <!-- 大图查看器 -->
+    <ImageViewer
+      v-model:show="viewerShow"
+      :sha="viewerSha"
+      :item="viewerItem"
+      :ref-sha="viewerRefSha"
+      @star="onViewerStar"
+      @delete="onViewerDelete"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from "vue";
-import { NButton, NDataTable, NInput, NCheckbox, NSelect, NTag, NImage, useMessage, type DataTableColumns } from "naive-ui";
-import { apiGet } from "@/api/bridge";
+import { NButton, NDataTable, NInput, NCheckbox, NSelect, NTag, useMessage, type DataTableColumns } from "naive-ui";
+import { apiGet, apiPost } from "@/api/bridge";
 import { fetchThumb } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import ImageViewer from "@/components/ImageViewer.vue";
 
 const message = useMessage();
 const activeTab = ref("records");
@@ -121,18 +132,48 @@ function thumbFor(row: any): string {
   return sha ? (recThumbCache[sha] || "") : "";
 }
 
+// 大图查看器：点击缩略图打开，支持图生图（参考图 + 结果图并排）
+const viewerShow = ref(false);
+const viewerSha = ref("");
+const viewerItem = ref<any>(null);
+const viewerRefSha = ref("");
+
+function openViewer(row: any) {
+  const sha = row.sha || row.sha256;
+  if (!sha) return;
+  viewerSha.value = sha;
+  viewerItem.value = { ...row };
+  viewerRefSha.value = row.ref_sha256 || "";
+  viewerShow.value = true;
+}
+
+function onViewerStar(img: any) {
+  const sha = img.sha || img.sha256;
+  apiPost("gallery/star", { sha, on: !img.starred })
+    .then(() => {
+      img.starred = !img.starred;
+      message.success(img.starred ? "已收藏" : "已取消收藏");
+    })
+    .catch((e: any) => message.error(e.message || "操作失败"));
+}
+
+function onViewerDelete(img: any) {
+  message.warning("出图记录不支持删除，请到「图库」中操作");
+}
+
 const recColumns: DataTableColumns = [
-  { title: "预览", key: "thumb", width: 70, render: (row) => {
+  { title: "预览", key: "thumb", width: 90, render: (row) => {
     const sha = row.sha || row.sha256;
-    return h(NImage, {
-      width: 56,
-      height: 56,
-      objectFit: "cover",
-      src: thumbFor(row),
-      fallbackSrc: "",
-      style: "border-radius:6px;background:#00000010",
-      previewDisabled: false,
-    });
+    const isI2i = !!(row.is_img2img || row.ref_sha256);
+    const src = thumbFor(row);
+    return h("div", { class: "rec-thumb", style: "position:relative;cursor:zoom-in;display:inline-block", onClick: () => openViewer(row) }, [
+      src
+        ? h("img", { src, style: "width:60px;height:60px;object-fit:cover;border-radius:6px;display:block;background:#00000010" })
+        : h("div", { style: "width:60px;height:60px;border-radius:6px;background:#00000010;display:flex;align-items:center;justify-content:center;color:#999;font-size:11px" }, "加载…"),
+      isI2i
+        ? h("span", { class: "rec-i2i-badge", style: "position:absolute;left:2px;bottom:2px;background:#5b3a8e;color:#fff;font-size:10px;padding:1px 5px;border-radius:8px" }, "图生图")
+        : null,
+    ]);
   }},
   { title: "出图时间", key: "created_at", width: 150, render: (row) => fmtDateTime(row.created_at) },
   { title: "用户", key: "user_name", width: 100, render: (row) => row.user_name || row.user_id || "-" },

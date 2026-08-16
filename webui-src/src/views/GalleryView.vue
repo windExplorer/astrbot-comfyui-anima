@@ -60,49 +60,28 @@
       @update:page="doSearch"
     />
 
-    <!-- 图片详情 -->
-    <n-modal v-model:show="detailShow" style="width:min(900px, 92vw)" :bordered="false" :show-mask="true">
-      <div class="img-detail">
-        <div class="img-detail-imgs">
-          <img v-if="detailItem" :src="detailDataUrl" alt="" style="max-width:100%;border-radius:8px" />
-        </div>
-        <div class="img-detail-info" v-if="detailItem">
-          <n-space vertical>
-            <n-space>
-              <n-tag :type="detailItem.starred ? 'warning' : 'default'" size="small" :bordered="false">{{ detailItem.starred ? "已收藏" : "未收藏" }}</n-tag>
-              <n-tag size="small" :bordered="false">{{ typeLabel(detailItem.source) }}</n-tag>
-              <n-tag v-if="detailItem.is_img2img" size="small" type="info" :bordered="false">图生图</n-tag>
-            </n-space>
-            <div class="info-row"><b>提示词：</b><pre>{{ detailItem.prompt || "—" }}</pre></div>
-            <div class="info-row"><b>原始提示词：</b><pre>{{ detailItem.prompt_raw || "—" }}</pre></div>
-            <div class="info-row"><b>工作流：</b>{{ detailItem.workflow || "—" }}</div>
-            <div class="info-row"><b>LoRA：</b>{{ loraStr(detailItem.loras) }}</div>
-            <div class="info-row"><b>尺寸：</b>{{ detailItem.w && detailItem.h ? `${detailItem.w}×${detailItem.h}` : "—" }}</div>
-            <div class="info-row"><b>大小：</b>{{ fmtBytes(detailItem.size_bytes) }}</div>
-            <div class="info-row"><b>seed：</b>{{ detailItem.seed ?? "—" }}</div>
-            <div class="info-row"><b>denoise：</b>{{ detailItem.denoise ?? "—" }}</div>
-            <div class="info-row"><b>用户：</b>{{ detailItem.user_name || detailItem.user_id || "—" }}</div>
-            <div class="info-row"><b>时间：</b>{{ fmtDateTime(detailItem.created_at) }}</div>
-            <div class="info-row"><b>使用次数：</b>{{ detailItem.use_count ?? 0 }}</div>
-            <n-space style="margin-top:12px">
-              <n-button v-if="activeTab !== 'trash'" size="small" @click="toggleStar(detailItem)">{{ detailItem.starred ? "取消收藏" : "收藏" }}</n-button>
-              <n-button v-if="activeTab !== 'trash'" size="small" type="error" @click="deleteImage(detailItem)">删除</n-button>
-              <n-button v-else size="small" type="primary" @click="restoreImage(detailItem)">恢复</n-button>
-              <n-button v-if="activeTab === 'trash'" size="small" type="error" @click="purgeImage(detailItem)">彻底删除</n-button>
-            </n-space>
-          </n-space>
-        </div>
-      </div>
-    </n-modal>
+    <!-- 大图查看器 -->
+    <ImageViewer
+      v-model:show="viewerShow"
+      :sha="viewerSha"
+      :item="viewerItem"
+      :ref-sha="viewerRefSha"
+      :is-trash="activeTab === 'trash'"
+      @star="onStar"
+      @delete="onDelete"
+      @restore="onRestore"
+      @purge="onPurge"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
-import { useMessage, useDialog, NButton, NModal, NInput, NSelect, NCheckbox, NTag, NSpace, NSpin, NEmpty, NPagination, NStatistic, NTabs, NTabPane } from "naive-ui";
-import { apiGet, apiPost, fetchThumb, fetchImageMeta } from "@/api/bridge";
-import { fmtBytes, fmtDateTime, truncate } from "@/utils/format";
+import { onMounted, reactive, ref } from "vue";
+import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NPagination, NStatistic, NTabs, NTabPane } from "naive-ui";
+import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
+import { fmtBytes, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import ImageViewer from "@/components/ImageViewer.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -115,7 +94,8 @@ const starred = ref(false);
 const images = ref<any[]>([]);
 const total = ref(0);
 const page = ref(1);
-const pageSize = 40;
+// 每页缩略图数量：与出图记录一致，避免一页展示太多
+const pageSize = 20;
 const stats = ref<any>(null);
 const thumbCache = reactive<Record<string, string>>({});
 
@@ -132,17 +112,6 @@ function typeLabel(src: string): string {
   if (src === "img2img") return "图生图";
   if (src === "ref") return "参考图";
   return src || "图片";
-}
-
-function loraStr(raw: any): string {
-  if (!raw) return "—";
-  try {
-    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (Array.isArray(arr)) return arr.map((l) => (typeof l === "string" ? l : l.name || "")).filter(Boolean).join("、") || "—";
-    return String(raw);
-  } catch {
-    return String(raw);
-  }
 }
 
 async function loadStats() {
@@ -205,45 +174,32 @@ function backupDb() {
   }).catch((e: any) => message.error(e.message || "备份失败"));
 }
 
-// 图片详情
-const detailShow = ref(false);
-const detailItem = ref<any>(null);
-const detailDataUrl = ref("");
-const detailSha = ref("");
+// 大图查看器：点击缩略图打开原图
+const viewerShow = ref(false);
+const viewerSha = ref("");
+const viewerItem = ref<any>(null);
+const viewerRefSha = ref("");
 
-async function openDetail(img: any) {
+function openDetail(img: any) {
   const sha = img.sha || img.sha256;
   if (!sha) return;
-  detailItem.value = img;
-  detailSha.value = sha;
-  detailShow.value = true;
-  detailDataUrl.value = img.data_url || thumbCache[sha] || "";
-  if (!detailDataUrl.value) {
-    try {
-      const meta = await fetchImageMeta(sha);
-      if (meta && meta.data_url) detailDataUrl.value = meta.data_url;
-    } catch {}
-  }
-  // 刷新元数据
-  try {
-    const meta = await fetchImageMeta(sha);
-    if (meta && meta.meta) detailItem.value = { ...img, ...meta.meta, sha: meta.meta.sha256 || sha };
-  } catch {}
+  viewerSha.value = sha;
+  viewerItem.value = { ...img };
+  viewerRefSha.value = img.ref_sha256 || "";
+  viewerShow.value = true;
 }
 
-async function toggleStar(img: any) {
+function onStar(img: any) {
   const sha = img.sha || img.sha256;
-  try {
-    await apiPost("gallery/star", { sha, on: !img.starred });
+  apiPost("gallery/star", { sha, on: !img.starred }).then(() => {
     img.starred = !img.starred;
-    detailItem.value = { ...img };
     message.success(img.starred ? "已收藏" : "已取消收藏");
-  } catch (e: any) {
-    message.error(e.message || "操作失败");
-  }
+    doSearch(page.value);
+    loadStats();
+  }).catch((e: any) => message.error(e.message || "操作失败"));
 }
 
-function deleteImage(img: any) {
+function onDelete(img: any) {
   const sha = img.sha || img.sha256;
   dialog.warning({
     title: "删除图片",
@@ -254,7 +210,7 @@ function deleteImage(img: any) {
       try {
         await apiPost("gallery/delete", { sha });
         message.success("已移入回收站");
-        detailShow.value = false;
+        viewerShow.value = false;
         doSearch(page.value);
         loadStats();
       } catch (e: any) {
@@ -264,17 +220,17 @@ function deleteImage(img: any) {
   });
 }
 
-function restoreImage(img: any) {
+function onRestore(img: any) {
   const sha = img.sha || img.sha256;
   apiPost("gallery/restore", { sha }).then(() => {
     message.success("已恢复");
-    detailShow.value = false;
+    viewerShow.value = false;
     doSearch(page.value);
     loadStats();
   }).catch((e: any) => message.error(e.message || "恢复失败"));
 }
 
-function purgeImage(img: any) {
+function onPurge(img: any) {
   const sha = img.sha || img.sha256;
   dialog.warning({
     title: "彻底删除",
@@ -285,7 +241,7 @@ function purgeImage(img: any) {
       try {
         await apiPost("gallery/purge", { sha });
         message.success("已彻底删除");
-        detailShow.value = false;
+        viewerShow.value = false;
         doSearch(page.value);
         loadStats();
       } catch (e: any) {
@@ -347,9 +303,5 @@ onMounted(() => {
   display: flex;
   gap: 4px;
 }
-.img-detail { display: flex; gap: 16px; padding: 16px; }
-.img-detail-imgs { flex: 1; display: flex; align-items: flex-start; }
-.img-detail-info { width: 320px; max-height: 70vh; overflow: auto; }
-.info-row { font-size: 13px; }
-.info-row pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-family: inherit; color: var(--text-sub); }
+.gal-item-overlay .star-badge { color: #d4a017; }
 </style>
