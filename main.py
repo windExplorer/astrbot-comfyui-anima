@@ -3815,14 +3815,21 @@ class ComfyUIDrawPlugin(Star):
         ★动漫标签翻译（重要）：当用户用中文描述动漫/二次元画面，需要把中文翻译/改写为英文 Danbooru 标签时，若你当前的工具列表里有「Danbooru tag search / Danbooru 标签搜索」这类 MCP 工具，**务必优先调用它**去查询/确认标准 Danbooru 标签，再把准确的英文标签填进 prompt，不要仅凭记忆臆造标签、也不要原样透传中文。只有当没有该类 MCP 工具时才退而直接用你自己的翻译能力改写为英文标签。
         不确定工作流时留空 workflow，插件会用默认；只有用户明确要某种画风且你有把握时才传 workflow 名称（不确定可先调 comfyui_workflows）。
         
+        图生图工作流选择（重要）：当本次为图生图（附了参考图）时，工作流应填在 **img2img_workflow** 参数里，**不要**把文生图工作流名填进 workflow（文生图工作流往往没有图加载节点，无法做图生图会报错）。
+        调用前务必先调 comfyui_workflows 查询真实列表（它会标注每个工作流「[支持图生图]」还是「[仅文生图]」），再按优先级选 img2img_workflow：
+        0. ★优先选名称含「图生图」字样的工作流（管理员通常把图生图工作流命名为「XX图生图」，专为图生图设计）。
+        1. 只选列表里标记「[支持图生图]」的工作流；「[仅文生图]」的工作流绝不能用于图生图。
+        2. 在支持图生图的工作流里按名称语义匹配用户画风（转真人/写实→含「真人」；转动漫/二次元→含「动漫」「二次元」；用户说了名字→用那个名字）。
+        3. 都不匹配就**留空** img2img_workflow，让插件自动用图生图默认工作流，不要硬猜工作流名。
+        
         重要：不要依赖历史记忆复用旧图。用户再次要图就重新生成。画完就自然收尾，不要不停追问或重复画。
         
         Args:
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
                 不要留空，也不要用自然语言包裹，直接给出画面描述文本。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。
-            img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用；否则留空用默认图生图工作流。
+            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。
+            img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 需要启用的 LoRA 名称/别名列表，例如 ["catgirl"]。用户提到某个 LoRA（用名称或别名）就填进来；不确定有哪些可先调 comfyui_loras 查。用户没提 or 不需要时留空。
@@ -4085,7 +4092,33 @@ class ComfyUIDrawPlugin(Star):
         if is_img2img and img2img_workflow and img2img_workflow.strip():
             resolved_wf = img2img_workflow.strip()
         elif is_img2img and workflow and workflow.strip():
-            resolved_wf = workflow.strip()
+            # 图生图但未显式指定 img2img_workflow：LLM 常把「文生图工作流名」填进
+            # workflow 字段（其语义就是文生图工作流名），而文生图工作流往往没有
+            # LoadImage 节点、无法做图生图。此时应优先用配置的「默认图生图工作流」，
+            # 而不是直接把 LLM 传来的文生图工作流名当图生图工作流用（否则会因缺
+            # 图加载节点而报错，见「工作流没有 LoadImage 类节点」）。
+            # 判断依据：该工作流配置里显式填了 image_node（用户配它就是要做图生图），
+            # 或它本身命中配置的默认图生图工作流 → 视为具备图生图能力，直接使用；
+            # 否则回退到按「风格优先级 + 图生图」选定的默认图生图工作流。
+            _req_wf_name = workflow.strip()
+            _req_wf_cfg = next(
+                (w for w in plugin._workflows() if (w.get("name") or "").strip() == _req_wf_name),
+                None,
+            )
+            _req_has_image_cfg = bool(_req_wf_cfg and (_req_wf_cfg.get("image_node") or "").strip())
+            _default_i2i = (plugin._pick_default_workflow_name(is_img2img=True) or "").strip()
+            if _req_has_image_cfg or (_req_wf_name and _req_wf_name == _default_i2i):
+                resolved_wf = _req_wf_name
+                logger.info(
+                    f"[llm_draw] 图生图：LLM 指定工作流「{_req_wf_name}」具备图生图能力"
+                    f"（image_node 已配置或命中默认图生图工作流），直接使用"
+                )
+            else:
+                resolved_wf = _default_i2i or None
+                logger.info(
+                    f"[llm_draw] 图生图：LLM 指定工作流「{_req_wf_name}」为文生图工作流"
+                    f"（无 image_node 配置），回退到默认图生图工作流「{resolved_wf or '默认'}」"
+                )
         else:
             resolved_wf = (workflow or "").strip() or None
         # 回退为文生图时：不沿用原图生图工作流名（那可能是图生图工作流、有 LoadImage
