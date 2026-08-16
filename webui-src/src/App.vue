@@ -52,7 +52,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, ref } from "vue";
+import { computed, h, onMounted, ref } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
 import {
   darkTheme,
@@ -73,7 +73,7 @@ import {
   type MenuOption,
   type GlobalThemeOverrides,
 } from "naive-ui";
-import { useTheme } from "@/composables/useTheme";
+import { useTheme, initThemeBridge } from "@/composables/useTheme";
 
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
 // 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
@@ -82,6 +82,11 @@ const { isDark, toggleDark } = useTheme();
 const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
+
+// 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext
+onMounted(() => {
+  initThemeBridge();
+});
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -253,6 +258,8 @@ function onMenuSelect(key: string) {
   --border-color: #ffe3ec;
   --accent: #ff8fb3;
 }
+/* 兼容两种深色触发：AstrBot 维护的 [data-theme=dark] 与本地手动切换的 html.dark */
+html[data-theme="dark"],
 html.dark {
   --bg-body: #1a1418;
   --bg-panel: #241b21;

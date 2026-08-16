@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.2.1
+
+- **主题与 AstrBot 联动**：插件页面的深色/浅色模式现跟随 AstrBot 控制台主题自动切换。
+  - 深色触发从仅 `html.dark` 改为同时兼容 AstrBot 维护的 `html[data-theme="dark"]`。
+  - `useTheme` 初始读取 AstrBot context.isDark（或 `html[data-theme]`），并新增 `initThemeBridge`：通过 `bridge.onContext` + MutationObserver 监听 `html` 的 `data-theme`/`class` 变化，AstrBot 切换主题时插件页面（含 Naive UI、面板、图表）即时联动。
+  - 面积图同样监听 `data-theme`/`class` 变化，切换主题时重算配色。
+
 ## v4.2.0
 
 - **修复深色主题切换无效**：此前 `toggleDark` 只翻转了 `isDark` 状态（驱动 Naive UI 组件），但从未给 `<html>` 添加 `dark` class，导致页面背景、文字及依赖 CSS 变量（`--bg-body`/`--bg-panel`/`--text-*` 等）的自定义样式（面板、图表等）始终停留在浅色。现 `useTheme` 在初始化与切换时同步 `document.documentElement.classList.toggle("dark")`，深色模式整体生效。

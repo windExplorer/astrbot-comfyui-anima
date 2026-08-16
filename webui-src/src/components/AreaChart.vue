@@ -304,10 +304,10 @@ onMounted(() => {
       window.addEventListener("resize", scheduleMeasure);
     }
   }
-  // 主题切换：监听 <html> 的 class 属性变化，重算图表颜色
+  // 主题切换：监听 <html> 的 class / data-theme 属性变化，重算图表颜色
   try {
     mo = new MutationObserver(onThemeClassChange);
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
   } catch (e) {
     mo = null;
   }
