@@ -1082,6 +1082,39 @@ class ImageStore:
             "trash_count": trash_count,
         }
 
+    def workflow_stats(self, top: int = 3) -> list[dict]:
+        """按工作流统计成功出图数量与平均耗时，按数量倒序取前 top 个。
+
+        只统计成功生成的成品图（source='gen' 且 status=0 且未删除）。
+        返回 [{workflow, count, avg_sec}]；无记录或异常时返回空列表。
+        供「/绘图统计」指令使用。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return []
+        conn = self._conn_get()
+        try:
+            rows = conn.execute(
+                "SELECT workflow, COUNT(*) AS c, AVG(cost_sec) AS avg_sec "
+                "FROM images "
+                "WHERE source=? AND status=0 AND deleted=0 "
+                "AND workflow IS NOT NULL AND workflow<>'' "
+                "GROUP BY workflow "
+                "ORDER BY c DESC, MAX(created_at) DESC "
+                "LIMIT ?",
+                (SRC_GEN, int(max(1, top))),
+            ).fetchall()
+            return [
+                {
+                    "workflow": r["workflow"],
+                    "count": int(r["c"]),
+                    "avg_sec": round(float(r["avg_sec"] or 0), 1),
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"[图库] 工作流统计失败: {e}")
+            return []
+
     # ------------------------------------------------------------------ #
     # 用户生图统计（WebUI「统计」页）
     # ------------------------------------------------------------------ #

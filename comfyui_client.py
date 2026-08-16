@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 import uuid
 
 import aiohttp
@@ -40,6 +41,34 @@ class ComfyUIClient:
         async with session.get(self.base_url + path) as resp:
             resp.raise_for_status()
             return await resp.json()
+
+    async def ping(self) -> dict:
+        """探测服务器连通性，返回 {"ok": bool, "elapsed_ms": int, "error": str}。
+
+        用 GET /system_stats 作为健康探测（轻量、稳定）；失败时记录异常但
+        不抛出，由调用方展示不可达状态。elapsed_ms 为本次请求往返耗时（延迟）。
+        """
+        start = time.time()
+        try:
+            session = await self._session_get()
+            async with session.get(self.base_url + "/system_stats") as resp:
+                resp.raise_for_status()
+                await resp.json()
+            return {"ok": True, "elapsed_ms": int((time.time() - start) * 1000), "error": ""}
+        except Exception as e:  # 连接失败 / 超时 / 非 2xx
+            return {
+                "ok": False,
+                "elapsed_ms": int((time.time() - start) * 1000),
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    async def get_queue(self) -> dict:
+        """查询 ComfyUI /queue 接口，返回 {"queue_running": [...], "queue_pending": [...]}。
+
+        标准 ComfyUI 的 /queue 返回 {queue_running, queue_pending}，各为一个
+        任务列表。此方法只做透传，由调用方计算正在执行与排队数量。
+        """
+        return await self._get("/queue")
 
     async def queue_prompt(self, prompt: dict, client_id: str | None = None) -> dict:
         """提交工作流，返回 {"prompt_id": "...", ...}。

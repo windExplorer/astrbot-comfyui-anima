@@ -3000,6 +3000,107 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # ------------------------------------------------------------------ #
+    # 指令：/绘图统计 出图与 token 统计
+    # ------------------------------------------------------------------ #
+    @filter.command("绘图统计", alias={"drawstats", "画图统计"})
+    async def cmd_draw_stats(self, event: AstrMessageEvent):
+        """统计：累计/今日出图数量、今日 token 用量、热门工作流出图数与平均耗时。"""
+        lines = ["📊 绘图统计"]
+        # 出图数量
+        if self.gallery is not None:
+            try:
+                st = self.gallery.stats()
+                total = st.get("total", 0) if isinstance(st, dict) else 0
+                lines.append(f"· 累计出图：{total} 张")
+            except Exception as e:
+                lines.append(f"· 累计出图：读取失败（{e}）")
+            try:
+                today = self.gallery.user_ranking(days=0).get("total", 0)
+                lines.append(f"· 今日出图：{today} 张")
+            except Exception as e:
+                lines.append(f"· 今日出图：读取失败（{e}）")
+        else:
+            lines.append("· 累计出图：图库未启用")
+        # 今日 token 用量
+        if self.token_store is not None:
+            try:
+                d = self.token_store.list_daily(days=1)
+                tok = int(d[0]["total"]) if d else 0
+                lines.append(f"· 今日 Token 用量：{tok}")
+            except Exception as e:
+                lines.append(f"· 今日 Token 用量：读取失败（{e}）")
+        else:
+            lines.append("· 今日 Token 用量：统计未启用")
+        # 热门工作流 Top3（出图数量 + 平均耗时）
+        if self.gallery is not None:
+            try:
+                wfs = self.gallery.workflow_stats(top=3)
+                if wfs:
+                    lines.append("· 热门工作流出图：")
+                    for w in wfs:
+                        speed = "—" if not w["avg_sec"] else f"{w['avg_sec']}s/张"
+                        lines.append(f"    · {w['workflow']}：{w['count']} 张（平均 {speed}）")
+                else:
+                    lines.append("· 热门工作流：暂无数据")
+            except Exception as e:
+                lines.append(f"· 热门工作流：读取失败（{e}）")
+        await self._send(event, "\n".join(lines))
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
+    # 指令：/绘图状态 服务器连通 / 延迟 / 队列
+    # ------------------------------------------------------------------ #
+    @filter.command("绘图状态", alias={"drawstatus", "画图状态"})
+    async def cmd_draw_status(self, event: AstrMessageEvent):
+        """查询绘图服务器连通情况、延迟，以及正在出图还是空闲、队列数量。"""
+        servers = self._servers()
+        if not servers:
+            await self._send(event, "未配置任何 ComfyUI 服务器。")
+            event.stop_event()
+            return
+        lines = ["🖥️ 绘图服务器状态"]
+        for s in servers:
+            name = s.get("name") or s.get("url") or "未命名"
+            url = s.get("url", "").strip()
+            if not url:
+                lines.append(f"· {name}：⚠️ 未配置地址")
+                continue
+            enabled = bool(s.get("enabled", True))
+            client = comfyui_client.ComfyUIClient(url, timeout=20)
+            try:
+                p = await client.ping()
+            except Exception as e:
+                p = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            if p.get("ok"):
+                latency = int(p.get("elapsed_ms", 0))
+                # 优先查真实 /queue；失败则回退本地队列近似
+                try:
+                    q = await client.get_queue()
+                    running = len(q.get("queue_running") or [])
+                    pending = len(q.get("queue_pending") or [])
+                    if running > 0:
+                        state = f"正在出图（{running} 个，队列 {pending} 个）"
+                    elif pending > 0:
+                        state = f"排队中（{pending} 个待处理）"
+                    else:
+                        state = "空闲"
+                    lines.append(f"· {name}：🟢 正常（延迟 {latency}ms）· {state}")
+                except Exception:
+                    srv_key = self._server_key(s)
+                    local = len(self._server_pending.get(srv_key, []))
+                    state = "正在出图" if local > 0 else "空闲"
+                    lines.append(f"· {name}：🟢 正常（延迟 {latency}ms）· 本地队列 {local} 个（{state}）")
+            else:
+                state_tag = "（未启用）" if not enabled else ""
+                lines.append(f"· {name}：🔴 不可达{state_tag}（{p.get('error', '')}）")
+            try:
+                await client.close()
+            except Exception:
+                pass
+        await self._send(event, "\n".join(lines))
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
     # 指令：/workflows 列出/选择默认工作流
     # ------------------------------------------------------------------ #
     @filter.command("workflows")
