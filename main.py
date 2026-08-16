@@ -3075,47 +3075,39 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("绘图状态", alias={"drawstatus", "画图状态"})
     async def cmd_draw_status(self, event: AstrMessageEvent):
-        """查询绘图服务器连通情况、延迟，以及正在出图还是空闲、队列数量。"""
+        """查询绘图服务器连通情况、延迟，以及正在出图还是空闲、队列数量。
+
+        只探测启用的服务器；用 /queue 一次请求同时测得连通性、延迟与队列状态，
+        不额外请求 system_stats。展示时不暴露服务器名称/IP。
+        """
         servers = self._servers()
-        if not servers:
-            await self._send(event, "未配置任何 ComfyUI 服务器。")
+        active = [
+            s for s in servers
+            if bool(s.get("enabled", True)) and (s.get("url") or "").strip()
+        ]
+        if not active:
+            await self._send(event, "当前没有正在使用的绘图服务器。")
             event.stop_event()
             return
         lines = ["🖥️ 绘图服务器状态"]
-        for s in servers:
-            name = s.get("name") or s.get("url") or "未命名"
-            url = s.get("url", "").strip()
-            if not url:
-                lines.append(f"· {name}：⚠️ 未配置地址")
-                continue
-            enabled = bool(s.get("enabled", True))
+        for idx, s in enumerate(active, 1):
+            url = s["url"].strip()
             client = comfyui_client.ComfyUIClient(url, timeout=20)
             try:
-                p = await client.ping()
+                start = time.monotonic()
+                q = await client.get_queue()
+                latency = int((time.monotonic() - start) * 1000)
+                running = len(q.get("queue_running") or [])
+                pending = len(q.get("queue_pending") or [])
+                if running > 0:
+                    state = f"正在出图（{running} 个，队列 {pending} 个）"
+                elif pending > 0:
+                    state = f"排队中（{pending} 个待处理）"
+                else:
+                    state = "空闲"
+                lines.append(f"· 服务器{idx}：🟢 正常（延迟 {latency}ms）· {state}")
             except Exception as e:
-                p = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-            if p.get("ok"):
-                latency = int(p.get("elapsed_ms", 0))
-                # 优先查真实 /queue；失败则回退本地队列近似
-                try:
-                    q = await client.get_queue()
-                    running = len(q.get("queue_running") or [])
-                    pending = len(q.get("queue_pending") or [])
-                    if running > 0:
-                        state = f"正在出图（{running} 个，队列 {pending} 个）"
-                    elif pending > 0:
-                        state = f"排队中（{pending} 个待处理）"
-                    else:
-                        state = "空闲"
-                    lines.append(f"· {name}：🟢 正常（延迟 {latency}ms）· {state}")
-                except Exception:
-                    srv_key = self._server_key(s)
-                    local = len(self._server_pending.get(srv_key, []))
-                    state = "正在出图" if local > 0 else "空闲"
-                    lines.append(f"· {name}：🟢 正常（延迟 {latency}ms）· 本地队列 {local} 个（{state}）")
-            else:
-                state_tag = "（未启用）" if not enabled else ""
-                lines.append(f"· {name}：🔴 不可达{state_tag}（{p.get('error', '')}）")
+                lines.append(f"· 服务器{idx}：🔴 不可达（{type(e).__name__}: {e}）")
             try:
                 await client.close()
             except Exception:
