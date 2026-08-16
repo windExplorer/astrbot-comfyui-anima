@@ -2,9 +2,9 @@
   <teleport to="body">
     <div v-if="show" class="iviewer" @click.self="onClose">
       <button class="iv-close" @click="onClose" aria-label="关闭">✕</button>
-      <div class="iv-body">
-        <!-- 图片区 -->
-        <div class="iv-imgs" :data-pair="isPair ? '1' : '0'">
+      <div class="iv-body" @click.self="onClose">
+        <!-- 图片区：点击图片之外的空白（含图四周留白）关闭 -->
+        <div class="iv-imgs" :data-pair="isPair ? '1' : '0'" @click.self="onClose">
           <!-- 参考图（图生图源图） -->
           <figure v-if="isPair" class="iv-fig">
             <div class="iv-imgwrap">
@@ -128,7 +128,8 @@ const typeText = computed(() => {
 async function loadMain(sha: string) {
   mainSrc.value = "";
   try {
-    const data = await apiGet("gallery/image", { sha, meta: 1 });
+    // size 控制后端转 data URL 的最大宽：主图足够清晰且体积可控
+    const data = await apiGet("gallery/image", { sha, meta: 1, size: 1400 });
     if (data && data.data_url) mainSrc.value = data.data_url;
     if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };
     // 提示词取原始
@@ -146,14 +147,16 @@ async function loadMain(sha: string) {
 async function loadRef(rs: string) {
   refSrc.value = "";
   try {
-    const data = await apiGet("gallery/image", { sha: rs, meta: 1 });
+    // 参考图展示尺寸较小，用更小的 size 进一步减小体积
+    const data = await apiGet("gallery/image", { sha: rs, meta: 1, size: 900 });
     if (data && data.data_url) refSrc.value = data.data_url;
   } catch (e) {
     refSrc.value = "";
   }
 }
 
-// 图生图参考图 + 结果图并排；无参考图时纯单图
+// 图生图参考图 + 结果图并排；无参考图时纯单图。
+// 主图与参考图并行加载，避免串行等待放大图加载时长。
 watch(
   () => props.show,
   async (v) => {
@@ -161,9 +164,10 @@ watch(
     item.value = props.item || null;
     mainSrc.value = "";
     refSrc.value = "";
-    await loadMain(props.sha);
+    const tasks: Promise<void>[] = [loadMain(props.sha)];
     const rs = props.refSha || (item.value && item.value.ref_sha256);
-    if (rs) await loadRef(String(rs));
+    if (rs) tasks.push(loadRef(String(rs)));
+    await Promise.all(tasks);
   },
   { immediate: true }
 );
