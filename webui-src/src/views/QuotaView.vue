@@ -93,21 +93,28 @@ const columns: DataTableColumns = [
 ];
 
 function editUser(row: any) {
-  const local = { max_total: row.max_total ?? -1, max_hour: row.max_hour ?? -1, max_day: row.max_day ?? -1 };
+  // None/null（未单独配置）统一按 -1 展示（-1 表示不限制）
+  const toNum = (v: any) => (v === undefined || v === null || v === "" || isNaN(Number(v)) ? -1 : Number(v));
+  const local = {
+    max_total: toNum(row.max_total),
+    max_hour: toNum(row.max_hour),
+    max_day: toNum(row.max_day),
+  };
+  // 用 default-value（非受控）保证弹窗每次打开都能正确展示该用户的限额初始值
   dialog.info({
     title: `配置「${row.user_name || row.user_id}」的限额`,
-    content: () => h("div", { style: "display:flex;flex-direction:column;gap:8px" }, [
+    content: () => h("div", { style: "display:flex;flex-direction:column;gap:10px" }, [
       h("div", {}, [
-        "总次数上限：",
-        h(NInputNumber, { size: "small", style: "width:120px", min: -1, value: local.max_total, "onUpdate:value": (v: number) => (local.max_total = v) }),
+        "总次数上限（-1 不限）：",
+        h(NInputNumber, { size: "small", style: "width:140px", min: -1, "default-value": local.max_total, "onUpdate:value": (v: number | null) => (local.max_total = v ?? -1) }),
       ]),
       h("div", {}, [
-        "每小时上限：",
-        h(NInputNumber, { size: "small", style: "width:120px", min: -1, value: local.max_hour, "onUpdate:value": (v: number) => (local.max_hour = v) }),
+        "每小时上限（-1 不限）：",
+        h(NInputNumber, { size: "small", style: "width:140px", min: -1, "default-value": local.max_hour, "onUpdate:value": (v: number | null) => (local.max_hour = v ?? -1) }),
       ]),
       h("div", {}, [
-        "每天上限：",
-        h(NInputNumber, { size: "small", style: "width:120px", min: -1, value: local.max_day, "onUpdate:value": (v: number) => (local.max_day = v) }),
+        "每天上限（-1 不限）：",
+        h(NInputNumber, { size: "small", style: "width:140px", min: -1, "default-value": local.max_day, "onUpdate:value": (v: number | null) => (local.max_day = v ?? -1) }),
       ]),
     ]),
     positiveText: "保存",

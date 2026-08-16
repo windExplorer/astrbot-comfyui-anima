@@ -210,8 +210,15 @@ export function apiGet(endpoint: string, params?: Record<string, any>): Promise<
   let path = endpoint;
   if (params && Object.keys(params).length) {
     const qs = new URLSearchParams();
-    Object.keys(params).forEach((k) => qs.set(k, String(params[k])));
-    path = endpoint + "?" + qs.toString();
+    Object.keys(params).forEach((k) => {
+      const v = params[k];
+      // 跳过 undefined / null / 空字符串，避免把 undefined 序列化成字符串 "undefined"
+      // 导致后端过滤条件错误（例如 type=undefined 匹配不到任何数据）。
+      if (v === undefined || v === null || v === "") return;
+      qs.set(k, String(v));
+    });
+    const q = qs.toString();
+    if (q) path = endpoint + "?" + q;
   }
   return apiRaw(path, { method: "GET" });
 }

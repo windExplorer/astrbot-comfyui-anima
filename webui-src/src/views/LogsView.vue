@@ -80,7 +80,8 @@ const recSearch = ref("");
 const recFailedOnly = ref(false);
 const recPage = ref(1);
 const recPageSize = 40;
-const recPageCache = new Map<string, string>();
+// 用响应式对象缓存缩略图：fetchThumb 完成后更新会触发表格重新渲染，图片才显示。
+const recThumbCache = reactive<Record<string, string>>({});
 
 async function loadRecords(page: number) {
   recLoading.value = true;
@@ -95,6 +96,8 @@ async function loadRecords(page: number) {
     recRows.value = rows;
     recTotal.value = data && data.total != null ? Number(data.total) : 0;
     recPage.value = page;
+    // 预取本页缩略图
+    rows.forEach((r) => loadThumb(r));
   } catch (e: any) {
     message.error(e.message || "读取出图记录失败");
   } finally {
@@ -102,15 +105,20 @@ async function loadRecords(page: number) {
   }
 }
 
-// 缩略图懒加载
+// 缩略图：响应式缓存 + 懒加载，拉取成功自动触发渲染
+async function loadThumb(row: any): Promise<void> {
+  const sha = row?.sha || row?.sha256;
+  if (!sha || recThumbCache[sha]) return;
+  try {
+    const url = await fetchThumb(sha, 200);
+    if (url) recThumbCache[sha] = url;
+  } catch (e) {
+    // 忽略单张缩略图失败
+  }
+}
 function thumbFor(row: any): string {
-  const sha = row.sha || row.sha256;
-  if (!sha) return "";
-  if (recPageCache.has(sha)) return recPageCache.get(sha)!;
-  fetchThumb(sha, 200).then((url) => {
-    if (url) recPageCache.set(sha, url);
-  });
-  return "";
+  const sha = row?.sha || row?.sha256;
+  return sha ? (recThumbCache[sha] || "") : "";
 }
 
 const recColumns: DataTableColumns = [
