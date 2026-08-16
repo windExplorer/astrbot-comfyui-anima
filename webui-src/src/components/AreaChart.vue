@@ -4,7 +4,7 @@
       v-if="pts.length >= 2"
       class="area-svg"
       :viewBox="`0 0 ${W} ${H}`"
-      preserveAspectRatio="xMidYMid meet"
+      preserveAspectRatio="none"
       role="img"
     >
       <defs>
@@ -109,9 +109,11 @@ const props = withDefaults(
 const wrapEl = ref<HTMLElement | null>(null);
 
 // ---- 几何常量 ----
-const W = 800;
+// W 为响应式：跟随容器实际宽度，保证图表占满宽度并在窗口/容器尺寸变化时重新布局
+const W = ref(800);
 const H = 300;
-const pad = { l: 44, r: 14, t: 20, b: 32 };
+// 顶部 padding 需容纳峰值标签(hover 最高到 y-48)与曲线光晕，防止被裁切
+const pad = { l: 44, r: 14, t: 40, b: 32 };
 
 // ---- 主题取色（含 fallback，保证沙箱内 CSS 变量不可用时仍可显示）----
 const accent = computed(() => cssVar("--accent", "#ff8fb3"));
@@ -129,13 +131,34 @@ function cssVar(name: string, fallback: string): string {
   }
 }
 
-// ---- 数据点映射 ----
+// ---- 容器尺寸测量 + 监听（ResizeObserver 为主，window.resize 兜底）----
+let ro: ResizeObserver | null = null;
+let rafId = 0;
+
+function measure() {
+  const el = wrapEl.value;
+  if (!el) return;
+  const w = el.clientWidth;
+  if (w > 0 && Math.abs(w - W.value) > 0.5) {
+    W.value = w;
+  }
+}
+
+function scheduleMeasure() {
+  if (rafId) return;
+  rafId = window.requestAnimationFrame(() => {
+    rafId = 0;
+    measure();
+  });
+}
+
+// ---- 数据点映射（依赖响应式 W，尺寸变化自动重算）----
 const pts = computed(() => {
   const d = props.data || [];
   if (!d.length) return [];
   const max = Math.max(...d.map((p) => p.y), 1);
   const ih = H - pad.t - pad.b;
-  const step = (W - pad.l - pad.r) / Math.max(d.length - 1, 1);
+  const step = (W.value - pad.l - pad.r) / Math.max(d.length - 1, 1);
   return d.map((p, i) => ({
     x: pad.l + i * step,
     y: pad.t + ih - (p.y / max) * ih,
@@ -209,7 +232,7 @@ const peaks = computed(() => {
   const tagW = 64;
   return top.map((pt) => {
     let tagX = pt.x - tagW / 2;
-    tagX = Math.max(pad.l, Math.min(W - pad.r - tagW, tagX));
+    tagX = Math.max(pad.l, Math.min(W.value - pad.r - tagW, tagX));
     return { i: pt.x, x: pt.x, y: pt.y, tagX, tagW, label: pt.yLabel };
   });
 });
@@ -222,7 +245,7 @@ const tipW = 84;
 const tipX = computed(() => {
   if (!hover.value) return 0;
   const w = tipW + 16;
-  return Math.max(4, Math.min(W - w - 4, hover.value.x - tipW / 2));
+  return Math.max(4, Math.min(W.value - w - 4, hover.value.x - tipW / 2));
 });
 const tipY = computed(() => Math.max(4, hover.value ? hover.value.y - 48 : 0));
 
@@ -230,7 +253,7 @@ function onMove(e: MouseEvent) {
   if (!wrapEl.value || !pts.value.length) return;
   const rect = wrapEl.value.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
-  const relX = ((e.clientX - rect.left) / rect.width) * W;
+  const relX = ((e.clientX - rect.left) / rect.width) * W.value;
   // 找到最近的数据点
   let best = 0;
   let bestDist = Infinity;
@@ -259,6 +282,19 @@ onMounted(() => {
     el.addEventListener("mousemove", onMove);
     el.addEventListener("mouseenter", onEnter);
     el.addEventListener("mouseleave", onLeave);
+    measure();
+    // 优先 ResizeObserver（容器尺寸变化最灵敏）；否则退化为 window.resize
+    if (typeof ResizeObserver !== "undefined") {
+      try {
+        ro = new ResizeObserver(scheduleMeasure);
+        ro.observe(el);
+      } catch (e) {
+        ro = null;
+      }
+    }
+    if (!ro) {
+      window.addEventListener("resize", scheduleMeasure);
+    }
   }
 });
 onBeforeUnmount(() => {
@@ -268,6 +304,11 @@ onBeforeUnmount(() => {
     el.removeEventListener("mouseenter", onEnter);
     el.removeEventListener("mouseleave", onLeave);
   }
+  if (ro) { ro.disconnect(); ro = null; }
+  if (!ro) {
+    window.removeEventListener("resize", scheduleMeasure);
+  }
+  if (rafId) { window.cancelAnimationFrame(rafId); rafId = 0; }
 });
 </script>
 

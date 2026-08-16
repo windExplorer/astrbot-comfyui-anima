@@ -124,10 +124,21 @@ const trendData = computed(() => {
   const buckets = scope.value === "today" || scope.value === "1" ? hourly.value : daily.value;
   if (!buckets || !buckets.length) return [];
   return buckets.map((b) => ({
-    x: b.date || (b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || "")),
+    x: fmtBucketLabel(b),
     y: Number(b.tokens ?? b.total_tokens ?? 0),
   }));
 });
+
+// 每日趋势用后端 day_bucket（YYYY-MM-DD）；小时趋势 hour 已是 "HH:00" 直接使用；
+// 若 hour 为纯数字则补零格式化为 HH:00，避免重复拼出秒数
+function fmtBucketLabel(b: any): string {
+  if (b.day_bucket) return String(b.day_bucket);
+  if (b.hour != null) {
+    const h = String(b.hour);
+    return h.includes(":") ? h : `${h.padStart(2, "0")}:00`;
+  }
+  return String(b.label || b.bucket || "");
+}
 
 function makeSceneColumns(): DataTableColumns {
   return [

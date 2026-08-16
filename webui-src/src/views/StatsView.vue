@@ -92,10 +92,19 @@ const trendInfo = computed(() => {
   return `共 ${total} 张`;
 });
 
+// 小时桶后端已返回 "HH:00"，直接使用；否则按小时数字格式化为 HH:00，避免重复拼秒
+function fmtBucketLabel(b: any): string {
+  if (b.hour != null) {
+    const h = String(b.hour);
+    return h.includes(":") ? h : `${h.padStart(2, "0")}:00`;
+  }
+  return String(b.label || b.bucket || "");
+}
+
 const trendData = computed(() => {
   const buckets = trend.value?.buckets || [];
   return buckets.map((b) => ({
-    x: b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || ""),
+    x: fmtBucketLabel(b),
     y: Number(b.count) || 0,
   }));
 });
