@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.1.3
+
+- **修复新版 WebUI 图表初始化崩溃**：VChart 面积图此前使用顶层 `area/line/point` 配置导致 `init chart fail`，并因初始化失败后内部 chart 为 `undefined` 触发 `Cannot read properties of undefined (reading 'updateSpec')`。
+  - 改用 VChart 官方推荐的 `series` 数组 + `curveType` 平滑曲线写法（面积图/Token 趋势图），spec 更规范、初始化稳定。
+  - VChart 组件加固：`renderAsync` 的异步 init 错误被捕获，避免 unhandled rejection；init 失败后不再反复重试刷屏；spec 变化时重置失败标记允许重新初始化。
+  - 统计页「近一天生图数量」与 Token 页「每日 Token 消耗趋势」面积图现可正常渲染。
+
 ## v4.1.2
 
 - **新版 WebUI 多项修复与优化**：

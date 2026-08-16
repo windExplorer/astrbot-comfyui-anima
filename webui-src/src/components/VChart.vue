@@ -16,17 +16,26 @@ let chart: VChartCore | null = null;
 let destroyed = false;
 let ro: ResizeObserver | null = null;
 
+let initFailed = false;
+
 function ensureChart(): boolean {
   if (chart) return true;
+  if (initFailed) return false;
   if (!chartEl.value || !props.option) return false;
   const el = chartEl.value;
   if (el.clientWidth === 0 && el.clientHeight === 0) return false; // 容器未就绪
   try {
     chart = new VChartCore(props.option, { dom: el });
-    chart.renderAsync();
+    // renderAsync 返回 promise，必须捕获异步 init 错误，避免 unhandled rejection
+    Promise.resolve(chart.renderAsync()).catch(() => {
+      try { chart?.release(); } catch (e2) { /* ignore */ }
+      chart = null;
+      initFailed = true;
+    });
     return true;
   } catch (e) {
     chart = null;
+    initFailed = true;
     return false;
   }
 }
@@ -35,9 +44,14 @@ async function render() {
   if (destroyed || !props.option) return;
   await nextTick();
   if (destroyed) return;
-  // spec 变化时重建 chart（比 updateSpec 更可靠，避免旧 chart 状态残留导致不渲染）
+  // 首次 init 已失败则不再重试（避免反复 init 报错刷屏）
+  if (initFailed) {
+    ensureChart();
+    return;
+  }
   if (chart) {
     try {
+      // updateSpec 前确保内部 chart 有效，避免 "Cannot read properties of undefined (reading 'updateSpec')"
       chart.updateSpec(props.option);
       chart.resize();
       return;
@@ -51,7 +65,12 @@ async function render() {
 
 watch(
   () => props.option,
-  (val) => { if (val) render(); },
+  (val) => {
+    if (!val) return;
+    // spec 变化时重置失败标记，允许重新 init
+    initFailed = false;
+    render();
+  },
   { deep: true }
 );
 

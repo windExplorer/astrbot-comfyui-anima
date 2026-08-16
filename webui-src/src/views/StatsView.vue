@@ -98,24 +98,35 @@ const trendSpec = computed(() => {
   const buckets = trend.value?.buckets || [];
   if (!buckets.length) return null;
   const axisColor = isDark.value ? "#9a9ab0" : "#6b6b80";
-  const gridColor = isDark.value ? "#2c2c3a" : "#eceaf4";
   const data = buckets.map((b) => ({
     label: b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || ""),
-    count: Number(b.count) || 0,
+    value: Number(b.count) || 0,
   }));
+  // VChart 声明式 area：极简 spec，避免顶层 area/line/point 配置导致 init 失败
   return {
     type: "area",
-    data: [{ values: data }],
+    data: [{ id: "area", values: data }],
     xField: "label",
-    yField: "count",
-    area: { style: { fillOpacity: 0.3, fill: "#ff8fb3" } },
-    line: { style: { stroke: "#ff8fb3", lineWidth: 2 } },
-    point: { visible: false },
-    tooltip: { visible: true },
+    yField: "value",
+    series: [
+      {
+        type: "area",
+        xField: "label",
+        yField: "value",
+        area: {
+          style: { fillOpacity: 0.35, fill: "#ff8fb3", curveType: "monotone" },
+        },
+        line: {
+          style: { stroke: "#ff8fb3", lineWidth: 2, curveType: "monotone" },
+        },
+        point: { visible: false },
+      },
+    ],
     axes: [
       { orient: "bottom", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: false } },
-      { orient: "left", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { style: { stroke: gridColor, lineWidth: 1 } } },
+      { orient: "left", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: true } },
     ],
+    tooltip: { visible: true },
   };
 });
 
