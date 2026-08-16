@@ -116,11 +116,13 @@ const H = 300;
 const pad = { l: 44, r: 14, t: 40, b: 32 };
 
 // ---- 主题取色（含 fallback，保证沙箱内 CSS 变量不可用时仍可显示）----
-const accent = computed(() => cssVar("--accent", "#ff8fb3"));
-const textSub = computed(() => cssVar("--text-sub", "#9a7a88"));
-const borderColor = computed(() => cssVar("--border-color", "#ffe3ec"));
-const textMain = computed(() => cssVar("--text-main", "#3a2a33"));
-const bgPanel = computed(() => cssVar("--bg-panel", "#ffffff"));
+// themeTick 用于在 <html>.dark class 变化时强制重算颜色（CSS 变量本身非响应式）。
+const themeTick = ref(0);
+const accent = computed(() => { void themeTick.value; return cssVar("--accent", "#ff8fb3"); });
+const textSub = computed(() => { void themeTick.value; return cssVar("--text-sub", "#9a7a88"); });
+const borderColor = computed(() => { void themeTick.value; return cssVar("--border-color", "#ffe3ec"); });
+const textMain = computed(() => { void themeTick.value; return cssVar("--text-main", "#3a2a33"); });
+const bgPanel = computed(() => { void themeTick.value; return cssVar("--bg-panel", "#ffffff"); });
 
 function cssVar(name: string, fallback: string): string {
   try {
@@ -134,6 +136,12 @@ function cssVar(name: string, fallback: string): string {
 // ---- 容器尺寸测量 + 监听（ResizeObserver 为主，window.resize 兜底）----
 let ro: ResizeObserver | null = null;
 let rafId = 0;
+// 监听 <html> 的 class 变化，主题切换时重算颜色（CSS 变量非响应式）
+let mo: MutationObserver | null = null;
+
+function onThemeClassChange() {
+  themeTick.value++;
+}
 
 function measure() {
   const el = wrapEl.value;
@@ -296,6 +304,13 @@ onMounted(() => {
       window.addEventListener("resize", scheduleMeasure);
     }
   }
+  // 主题切换：监听 <html> 的 class 属性变化，重算图表颜色
+  try {
+    mo = new MutationObserver(onThemeClassChange);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  } catch (e) {
+    mo = null;
+  }
 });
 onBeforeUnmount(() => {
   const el = wrapEl.value;
@@ -308,6 +323,7 @@ onBeforeUnmount(() => {
   if (!ro) {
     window.removeEventListener("resize", scheduleMeasure);
   }
+  if (mo) { mo.disconnect(); mo = null; }
   if (rafId) { window.cancelAnimationFrame(rafId); rafId = 0; }
 });
 </script>

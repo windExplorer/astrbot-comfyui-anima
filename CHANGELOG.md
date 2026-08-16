@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.2.0
+
+- **修复深色主题切换无效**：此前 `toggleDark` 只翻转了 `isDark` 状态（驱动 Naive UI 组件），但从未给 `<html>` 添加 `dark` class，导致页面背景、文字及依赖 CSS 变量（`--bg-body`/`--bg-panel`/`--text-*` 等）的自定义样式（面板、图表等）始终停留在浅色。现 `useTheme` 在初始化与切换时同步 `document.documentElement.classList.toggle("dark")`，深色模式整体生效。
+- **面积图颜色跟随主题**：`AreaChart` 通过 MutationObserver 监听 `<html>` 的 `class` 变化，主题切换时重算图表配色（曲线/网格/文字/峰值标签等），不再停留在旧主题色。
+
 ## v4.1.10
 
 - **Token 数值单位改为 K/M/B**：Token 计量单位统一用业界标准 `K`（千）、`M`（百万）、`B`（十亿），如 `1.2K`、`123.5K`、`3.4M`，替代此前的 `万`/`亿` 中文单位，更符合 token 场景习惯。
