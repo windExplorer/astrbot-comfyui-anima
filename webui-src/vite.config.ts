@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import cssInjectedByJs from "vite-plugin-css-injected-by-js";
 import { fileURLToPath, URL } from "node:url";
 
 // AstrBot 插件页面以静态资源方式从 pages/anima-console-vue/ 提供。
@@ -19,7 +20,7 @@ import { fileURLToPath, URL } from "node:url";
 // 必须用相对 base（./），且构建产物输出到 ../pages/anima-console-vue。
 // 插件页面用 hash 路由（createWebHashHistory），故无需 SPA fallback。
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), cssInjectedByJs()],
   base: "./",
   resolve: {
     alias: {

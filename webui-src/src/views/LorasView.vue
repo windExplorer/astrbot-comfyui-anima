@@ -51,6 +51,9 @@
       </div>
     </n-modal>
 
+    <!-- 大图预览 -->
+    <ImagePreview v-model:show="previewShow" :src="previewSrc" :title="previewTitle" />
+
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" style="width:680px" :bordered="false">
       <n-form label-placement="top" class="edit-form">
@@ -93,6 +96,7 @@ import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInpu
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import ImagePreview from "@/components/ImagePreview.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -128,9 +132,20 @@ function aliasFirst(raw: string): string {
   return a.length ? a[0] : "—";
 }
 
+// 大图预览（用弹窗显示 data URL，避免沙箱 iframe 下 window.open 被拦截）
+const previewShow = ref(false);
+const previewSrc = ref("");
+const previewTitle = ref("");
+
 function openImage(fname: string, name: string) {
   if (!fname) { message.info("该 LoRA 没有封面图，可先上传或抓取封面"); return; }
-  if (coverCache[fname]) window.open(coverCache[fname]);
+  if (coverCache[fname]) {
+    previewSrc.value = coverCache[fname];
+    previewTitle.value = name || fname;
+    previewShow.value = true;
+  } else {
+    message.info("封面加载中，请稍后再试");
+  }
 }
 
 // 详情
@@ -280,8 +295,8 @@ onMounted(load);
   background: var(--bg-panel);
   overflow: hidden;
 }
-.card-cover { height: 140px; cursor: pointer; background: var(--bg-body); display: flex; align-items: center; justify-content: center; }
-.card-cover img { width: 100%; height: 100%; object-fit: cover; }
+.card-cover { aspect-ratio: 3 / 4; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-empty { color: var(--text-sub); font-size: 12px; }
 .card-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .card-title { font-weight: 600; font-size: 15px; }

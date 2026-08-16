@@ -25,6 +25,8 @@
           :bordered="false"
           :loading="recLoading"
           remote
+          :max-height="recTableHeight"
+          :scroll-x="1100"
           :row-key="(row: any) => row.sha || row.id"
         />
       </n-tab-pane>
@@ -64,6 +66,10 @@ import { useRefresh } from "@/composables/useRefresh";
 const message = useMessage();
 const activeTab = ref("records");
 const loading = ref(false);
+
+// 表格可视高度：让出图记录表格内部滚动，标题、工具栏、分页器固定可见。
+// 用固定视口高度减去标题栏/工具栏/分页器的估算高度，保证不撑破页面产生整体滚动。
+const recTableHeight = computed(() => `calc(100vh - ${activeTab.value === "records" ? 300 : 0}px)`);
 
 // 出图记录
 const recRows = ref<any[]>([]);
@@ -205,7 +211,8 @@ onMounted(() => {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 8px;
-  max-height: 70vh;
+  height: calc(100vh - 280px);
+  min-height: 200px;
   overflow: auto;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;

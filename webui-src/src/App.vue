@@ -3,7 +3,7 @@
     <n-message-provider>
       <n-dialog-provider>
         <n-loading-bar-provider>
-          <n-layout has-sider class="app-shell" :style="{ height: '100vh' }">
+          <n-layout has-sider class="app-shell" :style="{ height: '100vh', overflow: 'hidden' }">
             <n-layout-sider
               bordered
               collapse-mode="width"
@@ -27,6 +27,7 @@
                 :options="menuOptions"
                 :collapsed="siderCollapsed"
                 :collapsed-width="0"
+                :indent="18"
                 @update:value="onMenuSelect"
               />
             </n-layout-sider>
@@ -170,6 +171,7 @@ function onMenuSelect(key: string) {
   justify-content: space-between;
   padding: 0 20px;
   height: 52px;
+  flex: 0 0 auto;
 }
 .header-title {
   font-size: 16px;
@@ -182,6 +184,9 @@ function onMenuSelect(key: string) {
 }
 .app-content {
   padding: 20px;
+  flex: 1 1 auto;
+  overflow: auto;
+  height: calc(100vh - 52px);
 }
 </style>
 
