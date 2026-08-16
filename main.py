@@ -898,6 +898,29 @@ class ComfyUIDrawPlugin(Star):
         return []
 
     @staticmethod
+    def _fmt_token(v) -> str:
+        """Token 数值友好化，使用 K/M/B 单位（千/百万/十亿）。
+
+        与前端 WebUI 的展示口径一致，避免长数字影响可读性。
+        """
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return str(v)
+
+        def _trim(x: float, decimals: int) -> str:
+            return f"{x:.{decimals}f}".rstrip("0").rstrip(".")
+
+        abs_n = abs(n)
+        if abs_n >= 1e9:
+            return _trim(n / 1e9, 2) + "B"
+        if abs_n >= 1e6:
+            return _trim(n / 1e6, 2) + "M"
+        if abs_n >= 1e3:
+            return _trim(n / 1e3, 1) + "K"
+        return str(int(n))
+
+    @staticmethod
     def _strip_command(message_str: str, cmd: str) -> str:
         """从消息文本中去掉命令触发词（如 /draw），返回剩余参数文本。"""
         text = (message_str or "").strip()
@@ -3026,7 +3049,7 @@ class ComfyUIDrawPlugin(Star):
             try:
                 d = self.token_store.list_daily(days=1)
                 tok = int(d[0]["total"]) if d else 0
-                lines.append(f"· 今日 Token 用量：{tok}")
+                lines.append(f"· 今日 Token 用量：{self._fmt_token(tok)}")
             except Exception as e:
                 lines.append(f"· 今日 Token 用量：读取失败（{e}）")
         else:
