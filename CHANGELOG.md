@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.1.5
+
+- **图表彻底改用手写 SVG，移除 VChart**：VChart/ECharts 核心引擎在 AstrBot 沙箱 iframe 下依赖受限的 Canvas 量字 API（`getContext('2d')`、`document.fonts` 等），即便 `renderMode:'svg'` 也无法根治 init 失败。本次新建手写 `AreaChart.vue`（平滑贝塞尔曲线 + 渐变填充 + 光晕 + 网格 + hover 提示 + 峰值标签，观感接近 VChart），统计页「近一天生图数量」与 Token 页趋势图全面替换。
+- **构建体积大幅下降**：移除 `@visactor/vchart` 依赖后单文件产物从约 4MB 降至约 1.58MB（gzip 436KB），图表渲染 100% 依赖基础 DOM/SVG API，在沙箱 iframe 下绝对可靠。
+
 ## v4.1.4
 
 - **图表仍未显示问题再次修复**：VChart 面积图改用官方最简 spec（仅类型+数据+字段，去掉可能引发 init 失败的复杂配置），并强制 `renderMode: 'svg'`（SVG 渲染），避开 AstrBot 沙箱 iframe 下 Canvas 渲染受限导致图表空白的问题。统计页「近一天生图数量」与 Token 页趋势图现可渲染。

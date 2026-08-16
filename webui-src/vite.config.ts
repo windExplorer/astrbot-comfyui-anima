@@ -13,7 +13,7 @@ import { fileURLToPath, URL } from "node:url";
 //
 //  为确保在任何 AstrBot 版本下都能打开，这里强制构建为【单文件】：
 //    - inlineDynamicImports: true → 路由懒加载被合并进单个 JS，不再产生跨 chunk import
-//    - 不拆 manualChunks → vue/naive/vchart 全部打进同一个 JS
+//    - 不拆 manualChunks → vue/naive 全部打进同一个 JS（图表为手写 SVG，无重量级库）
 //  产物只有 index.html + 单个 assets/index-*.js + 单个 assets/index-*.css，
 //  入口 index.html 直接用 <script>/<link> 引用它们，AstrBot 重写一次即全部可加载。
 //

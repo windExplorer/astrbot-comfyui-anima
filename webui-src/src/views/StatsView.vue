@@ -44,7 +44,7 @@
         <span class="count">{{ trendInfo }}</span>
       </div>
       <div class="chart-wrap">
-        <VChart v-if="trendSpec" :option="trendSpec" :style="{ height: '260px', width: '100%' }" />
+        <AreaChart v-if="trendData.length" :data="trendData" />
         <div v-else class="empty">正在加载趋势…</div>
       </div>
     </div>
@@ -55,13 +55,11 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
 import { NButton, NRadioGroup, NRadioButton, NCheckbox, NEmpty, NProgress, useMessage } from "naive-ui";
-import VChart from "@/components/VChart.vue";
+import AreaChart from "@/components/AreaChart.vue";
 import { apiGet } from "@/api/bridge";
-import { useTheme } from "@/composables/useTheme";
 import { useRefresh } from "@/composables/useRefresh";
 
 const message = useMessage();
-const { isDark } = useTheme();
 const loading = ref(false);
 const scope = ref("today");
 const merge = ref(false);
@@ -94,28 +92,12 @@ const trendInfo = computed(() => {
   return `共 ${total} 张`;
 });
 
-const trendSpec = computed(() => {
+const trendData = computed(() => {
   const buckets = trend.value?.buckets || [];
-  if (!buckets.length) return null;
-  const axisColor = isDark.value ? "#9a9ab0" : "#6b6b80";
-  const data = buckets.map((b) => ({
+  return buckets.map((b) => ({
     x: b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || ""),
     y: Number(b.count) || 0,
   }));
-  // VChart 官方最简 area spec：只声明类型 + 数据 + 字段，样式走默认，确保 init 稳定。
-  // 用 SVG 渲染（renderMode: 'svg'），避免沙箱 iframe 下 Canvas 渲染受限导致图表空白。
-  return {
-    type: "area",
-    renderMode: "svg",
-    data: [{ id: "data0", values: data }],
-    xField: "x",
-    yField: "y",
-    point: { visible: false },
-    axes: [
-      { orient: "bottom", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: false } },
-      { orient: "left", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: true } },
-    ],
-  };
 });
 
 function rankPct(count: number): number {

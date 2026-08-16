@@ -39,7 +39,7 @@
       <div class="panel">
         <div class="panel-title"><h3>每日 Token 消耗趋势</h3></div>
         <div class="chart-wrap">
-          <VChart v-if="trendSpec" :option="trendSpec" :style="{ height: '260px', width: '100%' }" />
+          <AreaChart v-if="trendData.length" :data="trendData" />
           <div v-else class="empty">暂无数据</div>
         </div>
       </div>
@@ -75,15 +75,13 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
 import { useMessage, useDialog, NButton, NRadioGroup, NRadioButton, NCheckbox, NCard, NDataTable, NSpin, NTag, type DataTableColumns } from "naive-ui";
-import VChart from "@/components/VChart.vue";
+import AreaChart from "@/components/AreaChart.vue";
 import { apiGet, apiPost } from "@/api/bridge";
 import { fmtDateTime } from "@/utils/format";
-import { useTheme } from "@/composables/useTheme";
 import { useRefresh } from "@/composables/useRefresh";
 
 const message = useMessage();
 const dialog = useDialog();
-const { isDark } = useTheme();
 const loading = ref(false);
 const scope = ref("1");
 const merge = ref(false);
@@ -122,28 +120,13 @@ async function load() {
   }
 }
 
-const trendSpec = computed(() => {
+const trendData = computed(() => {
   const buckets = scope.value === "today" || scope.value === "1" ? hourly.value : daily.value;
-  if (!buckets || !buckets.length) return null;
-  const axisColor = isDark.value ? "#9a9ab0" : "#6b6b80";
-  const data = buckets.map((b) => ({
+  if (!buckets || !buckets.length) return [];
+  return buckets.map((b) => ({
     x: b.date || (b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || "")),
     y: Number(b.tokens ?? b.total_tokens ?? 0),
   }));
-  // VChart 官方最简 area spec：只声明类型 + 数据 + 字段，样式走默认，确保 init 稳定。
-  // 用 SVG 渲染（renderMode: 'svg'），避免沙箱 iframe 下 Canvas 渲染受限导致图表空白。
-  return {
-    type: "area",
-    renderMode: "svg",
-    data: [{ id: "data0", values: data }],
-    xField: "x",
-    yField: "y",
-    point: { visible: false },
-    axes: [
-      { orient: "bottom", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: false } },
-      { orient: "left", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: true } },
-    ],
-  };
 });
 
 function makeSceneColumns(): DataTableColumns {
