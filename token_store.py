@@ -11,9 +11,11 @@
 核心层，插件无法拿到「触发工具意图那次」的 usage（AstrBot 的 on_llm_response
 只在 agent 结束广播一次），只能记到画图收尾总结那次的用量。
 
-表结构按 (user_id, scene, model, 日期) 聚合为一行，多次调用累加
-total/call_count，避免每条调用单独一行导致表无限膨胀；跨天自动 rollover
-到新日期桶。缓存命中（input_cached）单独记录，满足缓存统计需求。
+表结构按 (user_id, scene, model, 小时) 聚合为一行，多次调用累加
+total/call_count，避免每条调用单独一行导致表无限膨胀；跨小时自动 rollover
+到新小时桶。小时粒度既能精确还原「每日」趋势（按日期前缀分组），也能精确
+还原「逐小时」趋势（避免旧版把一天累计量错误堆到最后一次调用小时）。缓存
+命中（input_cached）单独记录，满足缓存统计需求。
 """
 
 import logging
@@ -33,6 +35,16 @@ def _day_bucket(ts: float) -> str:
     """返回 ts 所在「本地日期」的字符串桶（YYYY-MM-DD）。"""
     lt = time.localtime(ts)
     return f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d}"
+
+
+def _hour_bucket(ts: float) -> str:
+    """返回 ts 所在「本地小时」的字符串桶（YYYY-MM-DD HH:00）。
+
+    用作 llm_usage 的小时粒度主键/分桶键。按日期过滤时用其前 10 位（YYYY-MM-DD）
+    即可还原「每日」聚合；字典序与日期时间天然一致，`hour_bucket >= ?` 过滤正确。
+    """
+    lt = time.localtime(ts)
+    return f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}:00"
 
 
 class TokenStore:
@@ -63,30 +75,100 @@ class TokenStore:
                     user_name    TEXT NOT NULL DEFAULT '',
                     scene        TEXT NOT NULL,
                     model        TEXT NOT NULL DEFAULT '',
-                    day_bucket   TEXT NOT NULL,
+                    hour_bucket  TEXT NOT NULL,
                     input_other  INTEGER NOT NULL DEFAULT 0,
                     input_cached INTEGER NOT NULL DEFAULT 0,
                     output       INTEGER NOT NULL DEFAULT 0,
                     total        INTEGER NOT NULL DEFAULT 0,
                     call_count   INTEGER NOT NULL DEFAULT 0,
-                    updated_at   REAL NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id, scene, model, day_bucket)
+                    PRIMARY KEY (user_id, scene, model, hour_bucket)
                 )
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_usage_day ON llm_usage (day_bucket)"
+                "CREATE INDEX IF NOT EXISTS idx_llm_usage_hour ON llm_usage (hour_bucket)"
             )
-            # 兼容旧库：给老表补 user_name 列（若有则忽略）
-            try:
-                cols = {r[1] for r in conn.execute("PRAGMA table_info(llm_usage)").fetchall()}
-                if "user_name" not in cols:
-                    conn.execute("ALTER TABLE llm_usage ADD COLUMN user_name TEXT NOT NULL DEFAULT ''")
-            except Exception as e:  # pragma: no cover
-                logger.warning(f"[token] 迁移 user_name 列失败: {e}")
+            # 兼容旧库：若为「按天聚合」的旧结构（含 day_bucket、无 hour_bucket），
+            # 重建为小时粒度，不丢总量（旧数据无法还原小时分布，按 updated_at 所在
+            # 小时近似归属，量级不丢）。
+            self._migrate_legacy_if_needed(conn)
             conn.commit()
         except Exception as e:  # pragma: no cover
             logger.warning(f"[token] 初始化数据库失败: {e}")
+
+    def _migrate_legacy_if_needed(self, conn) -> None:
+        """把旧版「按天聚合」的 llm_usage 平滑迁移为小时粒度。
+
+        旧表主键 (user_id, scene, model, day_bucket)，无 hour_bucket 列。检测到
+        该结构时重建为新表：旧记录的用量归属到其 updated_at 所在小时桶（近似），
+        保证每日总量不变，只是无法还原真实小时分布（旧数据本就无此信息）。
+        """
+        try:
+            cols = {
+                r[1]: r["type"] if isinstance(r, sqlite3.Row) else r[1]
+                for r in conn.execute("PRAGMA table_info(llm_usage)").fetchall()
+            }
+            colnames = set(cols)
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"[token] 读取表结构失败，跳过迁移: {e}")
+            return
+        if "hour_bucket" in colnames and "day_bucket" not in colnames:
+            return  # 已是新结构
+        try:
+            conn.execute("BEGIN")
+            conn.execute(
+                """
+                CREATE TABLE llm_usage_new (
+                    user_id      TEXT NOT NULL,
+                    user_name    TEXT NOT NULL DEFAULT '',
+                    scene        TEXT NOT NULL,
+                    model        TEXT NOT NULL DEFAULT '',
+                    hour_bucket  TEXT NOT NULL,
+                    input_other  INTEGER NOT NULL DEFAULT 0,
+                    input_cached INTEGER NOT NULL DEFAULT 0,
+                    output       INTEGER NOT NULL DEFAULT 0,
+                    total        INTEGER NOT NULL DEFAULT 0,
+                    call_count   INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, scene, model, hour_bucket)
+                )
+                """
+            )
+            # 旧表可能无 updated_at（极端情况），按 day_bucket 当天 0 点兜底
+            has_updated = "updated_at" in colnames
+            if has_updated:
+                conn.execute(
+                    """
+                    INSERT INTO llm_usage_new
+                        (user_id, user_name, scene, model, hour_bucket,
+                         input_other, input_cached, output, total, call_count)
+                    SELECT user_id, user_name, scene, model,
+                           strftime('%Y-%m-%d %H:00', updated_at, 'localtime'),
+                           input_other, input_cached, output, total, call_count
+                    FROM llm_usage
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO llm_usage_new
+                        (user_id, user_name, scene, model, hour_bucket,
+                         input_other, input_cached, output, total, call_count)
+                    SELECT user_id, user_name, scene, model,
+                           day_bucket || ' 00:00',
+                           input_other, input_cached, output, total, call_count
+                    FROM llm_usage
+                    """
+                )
+            conn.execute("DROP TABLE llm_usage")
+            conn.execute("ALTER TABLE llm_usage_new RENAME TO llm_usage")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_usage_hour ON llm_usage (hour_bucket)"
+            )
+            conn.commit()
+            logger.info("[token] 已把 llm_usage 从按天迁移为按小时粒度（旧数据按 updated_at 小时近似归属，总量不变）")
+        except Exception as e:  # pragma: no cover
+            conn.rollback()
+            logger.warning(f"[token] 迁移旧表失败（可能已迁移过或并发冲突）: {e}")
 
     # ------------------------------------------------------------------ #
     # 记录
@@ -101,7 +183,7 @@ class TokenStore:
         output: int = 0,
         user_name: str = "",
     ) -> None:
-        """累加一次 LLM 调用用量。按 (user_id, scene, model, 日期) 聚合。
+        """累加一次 LLM 调用用量。按 (user_id, scene, model, 小时) 聚合。
 
         ``input_other`` 非缓存输入；``input_cached`` 命中缓存的输入；``output``
         输出。``total`` 为三者之和。``user_id`` 为空时归入 ``__system__``。
@@ -115,26 +197,25 @@ class TokenStore:
         output = max(int(output or 0), 0)
         total = input_other + input_cached + output
         now = time.time()
-        bucket = _day_bucket(now)
+        bucket = _hour_bucket(now)
         conn = self._conn_get()
         try:
             conn.execute(
                 """
                 INSERT INTO llm_usage
-                    (user_id, user_name, scene, model, day_bucket, input_other, input_cached,
-                     output, total, call_count, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,1,?)
-                ON CONFLICT(user_id, scene, model, day_bucket) DO UPDATE SET
+                    (user_id, user_name, scene, model, hour_bucket, input_other, input_cached,
+                     output, total, call_count)
+                VALUES (?,?,?,?,?,?,?,?,?,1)
+                ON CONFLICT(user_id, scene, model, hour_bucket) DO UPDATE SET
                     user_name    = CASE WHEN excluded.user_name <> '' THEN excluded.user_name
                                         ELSE llm_usage.user_name END,
                     input_other  = llm_usage.input_other + excluded.input_other,
                     input_cached = llm_usage.input_cached + excluded.input_cached,
                     output       = llm_usage.output + excluded.output,
                     total        = llm_usage.total + excluded.total,
-                    call_count   = llm_usage.call_count + excluded.call_count,
-                    updated_at   = excluded.updated_at
+                    call_count   = llm_usage.call_count + excluded.call_count
                 """,
-                (user_id, user_name, scene, model, bucket, input_other, input_cached, output, total, now),
+                (user_id, user_name, scene, model, bucket, input_other, input_cached, output, total),
             )
             conn.commit()
         except Exception as e:  # pragma: no cover
@@ -150,18 +231,18 @@ class TokenStore:
         N 天的桶。返回总 input_other / input_cached / output / total /
         call_count 及覆盖天数与模型数。
         """
-        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         conn = self._conn_get()
         if user_id:
             row = conn.execute(
                 "SELECT SUM(input_other), SUM(input_cached), SUM(output), SUM(total), SUM(call_count) "
-                "FROM llm_usage WHERE user_id=? AND day_bucket>=?",
+                "FROM llm_usage WHERE user_id=? AND hour_bucket>=?",
                 (user_id, bucket_min),
             ).fetchone()
         else:
             row = conn.execute(
                 "SELECT SUM(input_other), SUM(input_cached), SUM(output), SUM(total), SUM(call_count) "
-                "FROM llm_usage WHERE day_bucket>=?",
+                "FROM llm_usage WHERE hour_bucket>=?",
                 (bucket_min,),
             ).fetchone()
         in_other = row["SUM(input_other)"] or 0
@@ -171,12 +252,12 @@ class TokenStore:
         calls = row["SUM(call_count)"] or 0
         if user_id:
             model_count = conn.execute(
-                "SELECT COUNT(DISTINCT model) FROM llm_usage WHERE user_id=? AND day_bucket>=? AND model<>''",
+                "SELECT COUNT(DISTINCT model) FROM llm_usage WHERE user_id=? AND hour_bucket>=? AND model<>''",
                 (user_id, bucket_min),
             ).fetchone()[0]
         else:
             model_count = conn.execute(
-                "SELECT COUNT(DISTINCT model) FROM llm_usage WHERE day_bucket>=? AND model<>''",
+                "SELECT COUNT(DISTINCT model) FROM llm_usage WHERE hour_bucket>=? AND model<>''",
                 (bucket_min,),
             ).fetchone()[0]
         return {
@@ -202,14 +283,14 @@ class TokenStore:
         便于把同一插件/非真人来源的分散记录整合；传空列表/None 则不合并。
         返回项含 user_name（供前端展示）与 total/call_count 等。
         """
-        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         rows = self._conn_get().execute(
             """
             SELECT user_id, MAX(user_name) AS user_name, SUM(input_other) AS in_other,
                    SUM(input_cached) AS in_cached, SUM(output) AS out, SUM(total) AS total,
                    SUM(call_count) AS calls
             FROM llm_usage
-            WHERE day_bucket>=?
+            WHERE hour_bucket>=?
             GROUP BY user_id
             ORDER BY total DESC
             """,
@@ -267,19 +348,23 @@ class TokenStore:
         return ranked
 
     def list_detail(self, user_id: str = "", days: int = 30) -> list[dict]:
-        """明细查询，可按 user_id 过滤；返回按日期倒序的 (scene/model/日期) 明细。"""
-        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        """明细查询，可按 user_id 过滤；返回按时间倒序的 (scene/model/时间) 明细。
+
+        返回的 ``hour_bucket`` 为 ``YYYY-MM-DD HH:00`` 小时桶，同时派生出
+        ``day_bucket``（前 10 位日期）供前端按日展示。
+        """
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         conn = self._conn_get()
         if user_id:
             rows = conn.execute(
-                "SELECT user_id, scene, model, day_bucket, input_other, input_cached, output, total, call_count "
-                "FROM llm_usage WHERE user_id=? AND day_bucket>=? ORDER BY day_bucket DESC, total DESC",
+                "SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
+                "FROM llm_usage WHERE user_id=? AND hour_bucket>=? ORDER BY hour_bucket DESC, total DESC",
                 (user_id, bucket_min),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT user_id, scene, model, day_bucket, input_other, input_cached, output, total, call_count "
-                "FROM llm_usage WHERE day_bucket>=? ORDER BY day_bucket DESC, total DESC",
+                "SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
+                "FROM llm_usage WHERE hour_bucket>=? ORDER BY hour_bucket DESC, total DESC",
                 (bucket_min,),
             ).fetchall()
         return [
@@ -287,7 +372,8 @@ class TokenStore:
                 "user_id": r["user_id"],
                 "scene": r["scene"],
                 "model": r["model"],
-                "day_bucket": r["day_bucket"],
+                "hour_bucket": r["hour_bucket"],
+                "day_bucket": (r["hour_bucket"] or "")[:10],
                 "input_other": int(r["input_other"] or 0),
                 "input_cached": int(r["input_cached"] or 0),
                 "output": int(r["output"] or 0),
@@ -299,13 +385,13 @@ class TokenStore:
 
     def list_scenes(self, days: int = 30) -> list[dict]:
         """按调用场景（scene）汇总，用于 WebUI 分类展示。"""
-        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         rows = self._conn_get().execute(
             """
             SELECT scene, SUM(input_other) AS in_other, SUM(input_cached) AS in_cached,
                    SUM(output) AS out, SUM(total) AS total, SUM(call_count) AS calls
             FROM llm_usage
-            WHERE day_bucket>=?
+            WHERE hour_bucket>=?
             GROUP BY scene
             ORDER BY total DESC
             """,
@@ -326,20 +412,23 @@ class TokenStore:
     def list_daily(self, days: int = 30) -> list[dict]:
         """按日期聚合的每日 token 用量（供趋势面积图/柱状图）。
 
-        返回按日期升序的每日 total 与调用次数，并补全无记录日期为 0，
-        保证连续日期可用于折线/柱状图。days<=0 表示全部历史。
+        由小时粒度数据按日期前缀（YYYY-MM-DD）聚合，返回按日期升序的每日
+        total 与调用次数，并补全无记录日期为 0，保证连续日期可用于折线/柱状图。
+        days<=0 表示全部历史。
         """
         conn = self._conn_get()
-        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         if days > 0:
             rows = conn.execute(
-                "SELECT day_bucket, SUM(total) AS total, SUM(call_count) AS calls "
-                "FROM llm_usage WHERE day_bucket>=? GROUP BY day_bucket ORDER BY day_bucket",
+                "SELECT substr(hour_bucket, 1, 10) AS day_bucket, SUM(total) AS total, "
+                "SUM(call_count) AS calls "
+                "FROM llm_usage WHERE hour_bucket>=? GROUP BY day_bucket ORDER BY day_bucket",
                 (bucket_min,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT day_bucket, SUM(total) AS total, SUM(call_count) AS calls "
+                "SELECT substr(hour_bucket, 1, 10) AS day_bucket, SUM(total) AS total, "
+                "SUM(call_count) AS calls "
                 "FROM llm_usage GROUP BY day_bucket ORDER BY day_bucket"
             ).fetchall()
         # 全部历史：直接按日期排序返回有记录的日期，不补全空日期
@@ -364,9 +453,11 @@ class TokenStore:
     def list_hourly(self, hours: int = 24, since_day_start: bool = False) -> list[dict]:
         """token 用量的逐小时面积图数据（按本地时区小时分桶）。
 
-        说明：llm_usage 是按天聚合表，每小时粒度用记录的 updated_at（最后一次调用时间）
-        近似聚合——对低频的 token 记录（翻译/改写/画图对话）该小时基本就是实际发生小时，
-        满足趋势展示。返回按小时升序的 {hour, total, call_count}，无记录时段补 0。
+        llm_usage 已是小时粒度表，`hour_bucket`（YYYY-MM-DD HH:00）直接作为分桶键，
+        不再依赖 updated_at 近似，因此一天的用量会被准确分配到实际发生的各个小时，
+        不会再把全天累计堆到最后一次调用小时。
+
+        返回按小时升序的 {hour, total, call_count}，无记录时段补 0。
 
         起始时间有两种：
         - ``since_day_start=True``：从「今天 0 点的整点」开始，覆盖今天已过去的各小时
@@ -380,21 +471,23 @@ class TokenStore:
         cur_lt = time.localtime(now)
         if since_day_start:
             start_ts = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, 0, 0, 0, 0, 0, -1))
+            start_bucket = _hour_bucket(start_ts)
         else:
             start_ts = now - hours * 3600.0
+            start_bucket = _hour_bucket(start_ts)
         rows = conn.execute(
-            "SELECT updated_at AS t, SUM(total) AS total, SUM(call_count) AS calls "
-            "FROM llm_usage WHERE updated_at>=? GROUP BY updated_at ORDER BY updated_at",
-            (start_ts,),
+            "SELECT hour_bucket, SUM(total) AS total, SUM(call_count) AS calls "
+            "FROM llm_usage WHERE hour_bucket>=? GROUP BY hour_bucket ORDER BY hour_bucket",
+            (start_bucket,),
         ).fetchall()
-        # 按「本地小时」分桶
+        # 按「本地小时」直接映射（hour_bucket 即键）
         data: dict[str, dict] = {}
         for r in rows:
-            lt = time.localtime(r["t"])
-            key = f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}"
-            cur = data.setdefault(key, {"total": 0, "call_count": 0})
-            cur["total"] += int(r["total"] or 0)
-            cur["call_count"] += int(r["calls"] or 0)
+            key = r["hour_bucket"]
+            data[key] = {
+                "total": int(r["total"] or 0),
+                "call_count": int(r["calls"] or 0),
+            }
         # 从起始整点逐小时补全到当前整点
         cursor = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, cur_lt.tm_hour, 0, 0, 0, 0, -1))
         if since_day_start:
@@ -404,7 +497,7 @@ class TokenStore:
         out = []
         while cursor >= start:
             lt = time.localtime(cursor)
-            key = f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}"
+            key = _hour_bucket(cursor)  # YYYY-MM-DD HH:00，与 data 的 hour_bucket 键一致
             d = data.get(key, {"total": 0, "call_count": 0})
             out.append({"hour": f"{lt.tm_hour:02d}:00", "total": d["total"], "call_count": d["call_count"]})
             cursor -= 3600.0
@@ -413,13 +506,13 @@ class TokenStore:
 
     def list_models(self, days: int = 30) -> list[dict]:
         """按所用 LLM 模型（provider id）汇总，用于模型对比进度条/柱状图。"""
-        bucket_min = _day_bucket(time.time() - int(max(days, 1)) * 86400)
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         rows = self._conn_get().execute(
             """
             SELECT model, SUM(input_other) AS in_other, SUM(input_cached) AS in_cached,
                    SUM(output) AS out, SUM(total) AS total, SUM(call_count) AS calls
             FROM llm_usage
-            WHERE day_bucket>=? AND model<>''
+            WHERE hour_bucket>=? AND model<>''
             GROUP BY model
             ORDER BY total DESC
             """,

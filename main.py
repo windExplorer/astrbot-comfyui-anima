@@ -829,6 +829,35 @@ class ComfyUIDrawPlugin(Star):
         return out
 
     @staticmethod
+    def _parse_llm_loras(loras) -> dict[str, float | None] | None:
+        """把 LLM 工具传来的 LoRA 参数解析成 {名称: 权重|None}。
+
+        每个条目支持两种格式：
+          - "安魂曲"        → 权重 None（用配置默认权重）
+          - "安魂曲:0.8"    → 权重 0.8（半角/全角冒号均可）
+        与 /draw 指令的 --名称:权重 语义一致。返回 None 表示没有可用的 LoRA。
+        """
+        if not loras:
+            return None
+        out: dict[str, float | None] = {}
+        for item in loras:
+            if not isinstance(item, (str, int, float)) or str(item).strip() == "":
+                continue
+            tok = str(item).strip()
+            # 兼容 "名称:权重" 与 "名称：权重"（全角冒号归一）
+            name, _, wt = tok.replace("：", ":").partition(":")
+            name = name.strip()
+            if not name:
+                continue
+            weight = None
+            if wt:
+                try:
+                    weight = float(wt)
+                except ValueError:
+                    weight = None
+            out[name] = weight
+        return out or None
+
     @staticmethod
     def _safe_lora_weight(value, default: float = 1.0) -> float:
         """把 LoRA 权重安全转为 float；空字符串/缺失/非法值回退 default（默认 1.0）。
@@ -3970,7 +3999,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
-            loras(array[string]): 需要启用的 LoRA 名称/别名列表，例如 ["catgirl"]。用户提到某个 LoRA（用名称或别名）就填进来；不确定有哪些可先调 comfyui_loras 查。用户没提 or 不需要时留空。
+            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。用户提到某个 LoRA（用名称或别名）就填进来；用户明确了想要的强弱/浓度时给权重，没给则省略用默认。不确定有哪些可先调 comfyui_loras 查。用户没提 or 不需要时留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
@@ -4033,7 +4062,7 @@ class ComfyUIDrawPlugin(Star):
                     "negative_prompt(string): 负向提示词，可选。\n"
                     "workflow(string): 文生图工作流名，可选。\n"
                     "img2img_workflow(string): 图生图工作流名，可选。\n"
-                    "loras(string): LoRA 名称列表，可选。\n"
+                    "loras(string): LoRA 名称/别名列表，可选，每项可带权重如 \"catgirl:0.8\"。\n"
                     "width(int): 宽度，可选。height(int): 高度，可选。\n"
                     "seed(int): 随机种子，可选。denoise(float): 降噪幅度0~1，可选。",
                 )
@@ -4065,9 +4094,7 @@ class ComfyUIDrawPlugin(Star):
                 if not prompt or not prompt.strip():
                     return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
 
-        lora_map = None
-        if loras:
-            lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
+        lora_map = self._parse_llm_loras(loras)
 
         # ── 收集图片（图生图参考图）─────────────────────────────────
         # 关键修正：图生图不要求 LLM 必须传 image 参数。用户最常见的图生图方式就是
@@ -4935,7 +4962,7 @@ class ComfyUIDrawPlugin(Star):
                 直接给出变换意图文本，不要留空，不要包裹自然语言或 markdown。
             negative_prompt(string): 负向提示词，可选，不填则留空。
             img2img_workflow(string): 图生图工作流名称。★用户明确要求特定画风/风格/类型时，必须先调用 comfyui_workflows 查询真实列表，再从中选确切名称传入；禁止凭记忆或猜测工作流名，否则找不到工作流。用户完全没指定画风时才可留空（插件用图生图默认工作流）。
-            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。留空则使用配置中默认启用的 LoRA。指定 LoRA 前必须先调用 comfyui_loras 查询真实列表（可按底模过滤），再从中选确切名称传入；禁止凭记忆或猜测名称。
+            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强；用户明确强弱时给权重，没给则省略用默认）。留空则使用配置中默认启用的 LoRA。指定 LoRA 前必须先调用 comfyui_loras 查询真实列表（可按底模过滤），再从中选确切名称传入；禁止凭记忆或猜测名称。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
@@ -4989,7 +5016,7 @@ class ComfyUIDrawPlugin(Star):
                     "prompt(string): 基于参考图的变换/生成描述（必填）。\n"
                     "negative_prompt(string): 负向提示词，可选。\n"
                     "img2img_workflow(string): 图生图工作流名，可选。\n"
-                    "loras(string): LoRA 名称列表，可选。\n"
+                    "loras(string): LoRA 名称/别名列表，可选，每项可带权重如 \"catgirl:0.8\"。\n"
                     "seed(int): 随机种子，可选。denoise(float): 降噪幅度0~1，可选。",
                 )
                 if extracted and extracted.get("prompt"):
@@ -5090,9 +5117,7 @@ class ComfyUIDrawPlugin(Star):
         else:
             resolved_wf = None
 
-        lora_map = None
-        if loras:
-            lora_map = {str(n).strip(): None for n in loras if str(n).strip()}
+        lora_map = self._parse_llm_loras(loras)
 
         # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
         positive, parsed_neg = plugin._split_external_prompt(prompt)

@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.2.12
+
+- **修复 Token 趋势图「最后一条像总数」**：`/绘图统计` 与 WebUI「Token 用量」里，今天/近 1 天范围展示的「每日趋势」实际渲染的是小时数据。旧版 `llm_usage` 表按「天」聚合、只记最后一次调用时间，小时趋势用该时间近似归属，导致**一天内的累计用量被整体堆到最后一次调用所在小时**，最后一根柱子虚高、看起来像当日总量。
+- **存储改为小时粒度**：`llm_usage` 主键由 `(user_id, scene, model, 日期)` 迁移为 `(user_id, scene, model, 小时)`（`hour_bucket=YYYY-MM-DD HH:00`），新写入按小时落桶。旧数据自动迁移（旧记录按 `updated_at` 所在小时近似归属，每日总量不变）。
+- **小时趋势精确化**：`list_hourly` 直接按 `hour_bucket` 分桶，不再用 `updated_at` 近似，一天的用量准确分配到实际发生的各小时。`list_daily` 改按小时桶的日期前缀聚合，每日数值不受影响。
+- **明细展示细化**：WebUI Token 明细由「日期」粒度细化为「时间」（小时）粒度，字段 `hour_bucket`（`YYYY-MM-DD HH:00`）。
+
 ## v4.2.11
 
 - **修复 WebUI 保存/新增/LoRA 报错**：`Failed to execute 'postMessage' on 'Window': [object Object] could not be cloned`。根因是前端把 Vue 响应式 Proxy 对象直接作为 body 传给 astrbot 的 `apiPost`，而 `postMessage` 走结构化克隆、无法克隆 Proxy。现已在 `bridge.ts` 的请求层统一做深拷贝（`JSON.parse(JSON.stringify(...))`），从源头剥掉 Proxy，覆盖所有页面的保存/新增/删除/上传封面等调用点。

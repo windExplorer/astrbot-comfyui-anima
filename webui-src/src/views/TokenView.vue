@@ -192,7 +192,7 @@ const userColumns = makeUserColumns();
 
 function makeDetailColumns(): DataTableColumns {
   return [
-    { title: "日期", key: "day_bucket", width: 150, render: (row) => row.day_bucket || fmtDateTime(row.created_at) },
+    { title: "时间", key: "hour_bucket", width: 150, render: (row) => row.hour_bucket || row.day_bucket || fmtDateTime(row.created_at) },
     { title: "用户ID", key: "user_id", width: 110, render: (row) => row.user_id || "-" },
     { title: "场景", key: "scene", width: 120, render: (row) => row.scene || "-" },
     { title: "模型", key: "model", ellipsis: { tooltip: true }, render: (row) => row.model || "-" },
