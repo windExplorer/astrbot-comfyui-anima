@@ -1,0 +1,25 @@
+{
+  "name": "anima-console-vue",
+  "version": "4.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ComfyUI Anima 插件 WebUI 控制台（Vue3 + Naive UI + VChart 重构版）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@visactor/vchart": "^2.1.6",
+    "naive-ui": "^2.40.3",
+    "vfonts": "^0.0.3",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vue-tsc": "^2.2.0"
+  }
+}

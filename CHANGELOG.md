@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.0.0
+
+- **WebUI 控制台全新重写为 Vue3 + Naive UI + VChart**：
+  - 新增 `pages/anima-console-vue/` 新版控制台（Vue3 + Vite + TypeScript），作为默认主入口「Anima 控制台」；旧版 `pages/anima-console/` 保留并标注「(旧版)」，可随时切换回退。
+  - 8 个模块全部用 Naive UI 组件重写：配置（基于 `_conf_schema.json` 的 schema 动态渲染，含服务器/工作流/LoRA 模板列表、对象嵌套、滑块/下拉/多行等字段类型）、出图记录/运行日志、生图统计（排行 + 面积图）、工作流卡片、LoRA 卡片、图库（网格 + 详情弹窗 + 回收站 + 收藏/删除/恢复/彻底删除 + 数据库备份）、生图限额、Token 用量（汇总卡片 + 面积图 + 多张明细表）。
+  - 图表用 **VChart**（`@visactor/vchart`）自封装 Vue 组件替代旧版手写 SVG 面积图，深色模式自动适配。
+  - 深色模式跟随 AstrBot 桥接 context（`isDark`），顶栏可手动切换，Naive UI 主题与 VChart 主题联动。
+  - 后端 `webui_api.py` 的 30 个接口零改动，新版前端原样复用 bridge 通信。
+- **前端工程化**：新增 `webui-src/`（Vue3 npm 子项目）与 `build_webui.ps1` 构建脚本；`vite build` 产物输出到 `pages/anima-console-vue/`（hash 路由、相对路径资源，适配 AstrBot 静态资源重写）。
+- `metadata.yaml` pages 列表调整：新版 `anima-console-vue`（Anima 控制台）排第一作默认入口，旧版 `anima-console`（Anima 控制台 (旧版)）排第二。
+
 ## v3.8.17
 
 - **修复 Token 统计页出现两个「近 1 天」按钮**：v3.8.16 在调整默认范围为近 1 天时，HTML 里误插入了重复的「近 1 天」按钮（一个无 `data-active`、一个带 `data-active`）。现删除重复项，保留带默认激活的「近 1 天」按钮。
