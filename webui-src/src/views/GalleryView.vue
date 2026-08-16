@@ -12,10 +12,10 @@
     </div>
 
     <div v-if="stats" class="gal-stats">
-      <n-statistic label="图片总数" :value="stats.total_count ?? 0" />
-      <n-statistic label="收藏数" :value="stats.starred_count ?? 0" />
-      <n-statistic label="总大小" :value="fmtBytes(stats.total_size_bytes)" />
-      <n-statistic label="使用次数" :value="stats.total_use ?? 0" />
+      <n-statistic label="图片总数" :value="stats.total ?? 0" />
+      <n-statistic label="收藏数" :value="stats.starred ?? 0" />
+      <n-statistic label="总大小" :value="fmtBytes((stats.size_mb ?? 0) * 1024 * 1024)" />
+      <n-statistic label="回收站" :value="stats.trash_count ?? 0" />
     </div>
 
     <div class="toolbar">
@@ -23,11 +23,12 @@
         <n-tab-pane name="normal" tab="图库" />
         <n-tab-pane name="trash" tab="回收站" />
       </n-tabs>
-      <n-input v-model:value="search" size="small" placeholder="搜索关键词、prompt…" style="width:260px" clearable @keyup.enter="doSearch(1)" />
+      <n-input v-model:value="search" size="small" placeholder="搜索关键词、prompt…" style="width:220px" clearable @keyup.enter="doSearch(1)" />
+      <n-input v-model:value="userSearch" size="small" placeholder="筛选用户昵称 / QQ…" style="width:200px" clearable @keyup.enter="doSearch(1)" />
       <n-select
         v-model:value="type"
         size="small"
-        style="width:120px"
+        style="width:110px"
         :options="typeOptions"
         @update:value="doSearch(1)"
       />
@@ -89,6 +90,7 @@ const loading = ref(false);
 const searching = ref(false);
 const activeTab = ref("normal");
 const search = ref("");
+const userSearch = ref("");
 const type = ref("");
 const starred = ref(false);
 const images = ref<any[]>([]);
@@ -128,6 +130,7 @@ async function doSearch(p: number) {
   try {
     const data = await apiGet("gallery/search", {
       keyword: search.value.trim(),
+      user: userSearch.value.trim(),
       type: type.value || undefined,
       starred: starred.value ? 1 : 0,
       trash: activeTab.value === "trash" ? 1 : 0,
@@ -136,11 +139,11 @@ async function doSearch(p: number) {
     });
     images.value = (data && Array.isArray(data.images)) ? data.images : [];
     total.value = data && data.total != null ? Number(data.total) : 0;
-    // 懒加载缩略图
+    // 并发预取缩略图（小尺寸，提升加载速度）
     images.value.forEach((img) => {
       const sha = img.sha || img.sha256;
       if (sha && !thumbCache[sha]) {
-        fetchThumb(sha, 300).then((url) => { if (url) thumbCache[sha] = url; }).catch(() => {});
+        fetchThumb(sha, 240).then((url) => { if (url) thumbCache[sha] = url; }).catch(() => {});
       }
     });
   } catch (e: any) {
@@ -269,7 +272,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-width: 1200px;
 }
 .view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }

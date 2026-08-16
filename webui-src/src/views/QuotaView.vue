@@ -186,7 +186,6 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-width: 1200px;
 }
 .view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }

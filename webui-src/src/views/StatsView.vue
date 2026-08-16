@@ -136,7 +136,7 @@ onMounted(load);
 </script>
 
 <style scoped>
-.stats-view { height: 100%; display: flex; flex-direction: column; min-height: 0; max-width: 1100px; }
+.stats-view { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }

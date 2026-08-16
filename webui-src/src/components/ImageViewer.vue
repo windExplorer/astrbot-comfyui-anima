@@ -27,10 +27,10 @@
         <aside class="iv-info">
           <template v-if="item">
             <div class="iv-actions">
-              <button v-if="!isTrash" class="iv-act" :class="{ on: item.starred }" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</button>
-              <button v-if="!isTrash" class="iv-act danger" @click="onDelete(item)">删除</button>
-              <button v-if="isTrash" class="iv-act ok" @click="onRestore(item)">恢复</button>
-              <button v-if="isTrash" class="iv-act danger" @click="onPurge(item)">彻底删除</button>
+              <n-button v-if="!isTrash" size="small" :type="item.starred ? 'warning' : 'default'" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</n-button>
+              <n-button v-if="!isTrash" size="small" type="error" ghost @click="onDelete(item)">删除</n-button>
+              <n-button v-if="isTrash" size="small" type="success" @click="onRestore(item)">恢复</n-button>
+              <n-button v-if="isTrash" size="small" type="error" ghost @click="onPurge(item)">彻底删除</n-button>
             </div>
             <div class="iv-row"><span class="k">SHA</span><span class="v">{{ shortSha }}</span></div>
             <div class="iv-row"><span class="k">类型</span><span class="v">{{ typeText }}</span></div>
@@ -55,6 +55,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { NButton } from "naive-ui";
 import { apiGet } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
@@ -299,22 +300,6 @@ function onPurge(it: any) { emit("purge", it); }
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   margin-bottom: 8px;
 }
-.iv-act {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.iv-act:hover { background: rgba(255, 255, 255, 0.22); }
-.iv-act.on { background: #d4a017; color: #1a1206; }
-.iv-act.danger { background: rgba(255, 69, 58, 0.2); color: #ff6b5e; }
-.iv-act.danger:hover { background: rgba(255, 69, 58, 0.35); }
-.iv-act.ok { background: rgba(52, 199, 89, 0.2); color: #4cd964; }
-.iv-act.ok:hover { background: rgba(52, 199, 89, 0.35); }
 .iv-row {
   display: flex;
   gap: 8px;

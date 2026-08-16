@@ -781,6 +781,7 @@ class WebUIApi:
             return error_response("图库未启用或初始化失败")
         try:
             kw = request.query.get("keyword", "")
+            user_filter = request.query.get("user", "")
             stype = request.query.get("type", "") or None
             if stype in ("", "all"):
                 stype = None
@@ -802,9 +803,9 @@ class WebUIApi:
                 size = 200
             offset = (page - 1) * size
             rows = g.search(keyword=kw, type=stype, starred_only=starred,
-                            trash=trash, limit=size, offset=offset)
+                            trash=trash, limit=size, offset=offset, user_filter=user_filter)
             total = g.count_search(keyword=kw, type=stype,
-                                   starred_only=starred, trash=trash)
+                                   starred_only=starred, trash=trash, user_filter=user_filter)
             # 列表只返回元数据（含 sha256），不内联任何缩略图 base64——避免一次几十张
             # 图导致响应体爆炸/超时。缩略图由前端经 bridge 调用 gallery_thumb 按需、
             # 懒加载、带 LRU 缓存地拉取单张 data URL（参考 astrbot_plugin_stealer 图库）。
@@ -872,10 +873,18 @@ class WebUIApi:
             except Exception:
                 meta = None
             try:
-                raw = await asyncio.to_thread(Path(path).read_bytes)
-                mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-                encoded = base64.b64encode(raw).decode("ascii")
-                return json_response({"data_url": f"data:{mime};base64,{encoded}", "mime": mime, "meta": meta})
+                # 大图默认限制在 1600px 内转 data URL，避免图生图并排时两张原图 base64
+                # 体积过大导致加载慢/超时；需要更大可传 size=原尺寸。
+                try:
+                    view_size = request.query.get("size", 1600, type=int)
+                except Exception:
+                    view_size = 1600
+                data_url = await asyncio.to_thread(_thumb_data_url, path, max_w=view_size)
+                if not data_url:
+                    raw = await asyncio.to_thread(Path(path).read_bytes)
+                    mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+                    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                return json_response({"data_url": data_url, "mime": None, "meta": meta})
             except Exception as e:
                 return error_response(f"读取图片失败: {e}")
         mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"

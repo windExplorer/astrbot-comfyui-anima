@@ -614,6 +614,7 @@ class ImageStore:
         trash: bool = False,
         owner: str = "",
         session=None,
+        user_filter: str = "",
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
         owner: 用户隔离标识，与 search 保持一致。
@@ -652,6 +653,10 @@ class ImageStore:
             args.append(type)
         if starred_only:
             sql += " AND starred=1"
+        if user_filter and user_filter.strip():
+            uf = f"%{user_filter.strip()}%"
+            sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
+            args += [uf, uf]
         try:
             row = conn.execute(sql, args).fetchone()
             return int(row["c"]) if row else 0
@@ -669,6 +674,7 @@ class ImageStore:
         limit: int = 20,
         offset: int = 0,
         owner: str = "",
+        user_filter: str = "",
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
@@ -717,6 +723,10 @@ class ImageStore:
                 args.append(type)
         if starred_only:
             sql += " AND starred=1"
+        if user_filter and user_filter.strip():
+            uf = f"%{user_filter.strip()}%"
+            sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
+            args += [uf, uf]
         sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"
         args.append(int(limit))
         args.append(int(offset))

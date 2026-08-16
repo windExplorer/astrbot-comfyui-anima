@@ -187,7 +187,6 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-width: 1200px;
 }
 .view-head {
   display: flex;
