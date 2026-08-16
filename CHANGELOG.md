@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.0.3
+
+- **修复新版 WebUI 在 AstrBot 里打开空白的问题**：v4.0.0 的新版控制台（`anima-console-vue`）在部分 AstrBot 版本中无法加载——构建产物为多个 JS chunk 且存在跨 chunk 的 `import`，而运行中的 AstrBot 的页面服务无法把动态 chunk 重写为带 `asset_token` 的地址，导致 `assets/*.js` 以无 token 的相对路径请求被 401 拒绝、CORS 拦截，页面空白。
+  - 改为**单文件构建**：Vite 配置 `inlineDynamicImports: true` + 关闭 `manualChunks` 分包 + `cssCodeSplit: false`，且路由从懒加载（`import()`）改为静态 `import`。
+  - 产物收敛为单个 `assets/index-*.js` + 单个 `assets/style-*.css`，入口 `index.html` 直接引用，AstrBot 只需重写一次入口资源即可全部加载，兼容所有 AstrBot 版本（与旧版原生 JS 页面加载方式一致）。
+  - 产物体积约 2.6 MB（gzip 705 KB），对控制台可接受。
+
 ## v4.0.2
 
 - **修复多轮改图误用「上次生成的图」当参考图的问题**：用户先发原图让 AI 改图（生成结果图），之后再说「再改一下/重新改」（不再发原图）时，AI 常把**自己上次生成的结果图**当参考图，导致改出来的图基于错误的底图。

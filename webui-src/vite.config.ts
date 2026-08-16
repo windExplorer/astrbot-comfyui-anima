@@ -3,6 +3,19 @@ import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
 
 // AstrBot 插件页面以静态资源方式从 pages/anima-console-vue/ 提供。
+//
+// ⚠️ 兼容性关键（务必保持）：
+//  AstrBot 的 plugin_page_service 只会对「入口 index.html 直接引用的资源」重写为带
+//  asset_token 的绝对路径；而对「入口 JS 内部动态 import 出来的 chunk」能否正确重写，
+//  取决于运行中的 AstrBot 版本（旧版本的正则不支持 Vite 的跨 chunk import，会导致这些
+//  chunk 以无 token 的相对路径请求 → 401 → 页面空白）。
+//
+//  为确保在任何 AstrBot 版本下都能打开，这里强制构建为【单文件】：
+//    - inlineDynamicImports: true → 路由懒加载被合并进单个 JS，不再产生跨 chunk import
+//    - 不拆 manualChunks → vue/naive/vchart 全部打进同一个 JS
+//  产物只有 index.html + 单个 assets/index-*.js + 单个 assets/index-*.css，
+//  入口 index.html 直接用 <script>/<link> 引用它们，AstrBot 重写一次即全部可加载。
+//
 // 必须用相对 base（./），且构建产物输出到 ../pages/anima-console-vue。
 // 插件页面用 hash 路由（createWebHashHistory），故无需 SPA fallback。
 export default defineConfig({
@@ -16,21 +29,16 @@ export default defineConfig({
   build: {
     outDir: "../pages/anima-console-vue",
     emptyOutDir: true,
-    chunkSizeWarningLimit: 1200,
+    chunkSizeWarningLimit: 4000,
+    cssCodeSplit: false,
     rollupOptions: {
       output: {
-        // 分包策略：把体积大的依赖拆出来，便于 AstrBot 资源重写时按需缓存
-        manualChunks: {
-          "vue-vendor": ["vue", "vue-router"],
-          "naive": ["naive-ui"],
-          "vchart": ["@visactor/vchart"],
-        },
+        inlineDynamicImports: true,
       },
     },
   },
   server: {
     port: 5173,
-    // 开发时用本地 mock 或反向代理到 AstrBot？开发环境直接 fallback 到 index，生产产物不受影响。
     proxy: {},
   },
 });
