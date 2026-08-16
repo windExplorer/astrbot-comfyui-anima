@@ -98,7 +98,7 @@ const recLoading = ref(false);
 const recSearch = ref("");
 const recFailedOnly = ref(false);
 const recPage = ref(1);
-let recPageSize = 40;
+let recPageSize = 10;
 // 用响应式对象缓存缩略图：fetchThumb 完成后更新会触发表格重新渲染，图片才显示。
 const recThumbCache = reactive<Record<string, string>>({});
 

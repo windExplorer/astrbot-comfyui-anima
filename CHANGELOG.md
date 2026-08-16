@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.1.6
+
+- **出图记录分页器默认每页 10 条**：此前默认 40 条，改为 10 条，浏览更清晰，分页器依旧支持 10/20/24/40/60/100 自由切换。
+
 ## v4.1.5
 
 - **图表彻底改用手写 SVG，移除 VChart**：VChart/ECharts 核心引擎在 AstrBot 沙箱 iframe 下依赖受限的 Canvas 量字 API（`getContext('2d')`、`document.fonts` 等），即便 `renderMode:'svg'` 也无法根治 init 失败。本次新建手写 `AreaChart.vue`（平滑贝塞尔曲线 + 渐变填充 + 光晕 + 网格 + hover 提示 + 峰值标签，观感接近 VChart），统计页「近一天生图数量」与 Token 页趋势图全面替换。
