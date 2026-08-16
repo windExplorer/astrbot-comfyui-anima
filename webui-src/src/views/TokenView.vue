@@ -99,13 +99,14 @@ function num(v: number | null | undefined): string {
   return Number(v).toLocaleString();
 }
 
-// token 数值友好化：亿/万 + 千分位，避免长数字撑爆布局
+// token 数值友好化：K/M/B（千/百万/十亿）token 计量单位，避免长数字撑爆布局
 function fmtToken(v: number | null | undefined): string {
   if (v == null) return "0";
   const n = Number(v);
   const abs = Math.abs(n);
-  if (abs >= 1e8) return trimZero((n / 1e8).toFixed(2)) + " 亿";
-  if (abs >= 1e4) return trimZero((n / 1e4).toFixed(1)) + " 万";
+  if (abs >= 1e9) return trimZero((n / 1e9).toFixed(2)) + "B";
+  if (abs >= 1e6) return trimZero((n / 1e6).toFixed(2)) + "M";
+  if (abs >= 1e3) return trimZero((n / 1e3).toFixed(1)) + "K";
   return n.toLocaleString();
 }
 function trimZero(s: string): string {
