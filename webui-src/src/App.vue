@@ -127,7 +127,7 @@ const menuOptions: MenuOption[] = [
 ];
 
 function iconSvg(text: string) {
-  return () => h("span", { style: "font-size:16px" }, text);
+  return h("span", { style: "font-size:16px" }, text);
 }
 
 const activeKey = computed(() => route.name as string);
