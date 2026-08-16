@@ -78,16 +78,17 @@ import {
   NSwitch,
   NButton,
   NIcon,
-  useMessage,
   type MenuOption,
   type GlobalThemeOverrides,
 } from "naive-ui";
 import { useTheme } from "@/composables/useTheme";
 
+// 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
+// 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
+// 消息提示只能在各 View（provider 的后代）里用。
 const { isDark, toggleDark } = useTheme();
 const route = useRoute();
 const router = useRouter();
-const message = useMessage();
 const siderCollapsed = ref(false);
 
 const themeOverrides: GlobalThemeOverrides = {
@@ -111,7 +112,6 @@ function emitRefresh() {
 
 function refreshAll() {
   emitRefresh();
-  message.success("已请求刷新数据");
 }
 
 const menuOptions: MenuOption[] = [

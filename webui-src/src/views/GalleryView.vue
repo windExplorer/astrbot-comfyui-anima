@@ -97,7 +97,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { useMessage, useDialog, NButton, NModal, NInput, NSelect, NCheckbox, NTag, NSpace, NSpin, NEmpty, NPagination, NStatistic, NTabs, NTabPane, useMessage as _um } from "naive-ui";
+import { useMessage, useDialog, NButton, NModal, NInput, NSelect, NCheckbox, NTag, NSpace, NSpin, NEmpty, NPagination, NStatistic, NTabs, NTabPane } from "naive-ui";
 import { apiGet, apiPost, fetchThumb, fetchImageMeta } from "@/api/bridge";
 import { fmtBytes, fmtDateTime, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";

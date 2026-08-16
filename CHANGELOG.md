@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.0.4
+
+- **修复新版 WebUI 打开后空白（Naive UI provider 未就绪导致崩溃）**：v4.0.3 的单文件构建能正常加载 JS 了，但页面仍空白——根因是 `App.vue`（新版控制台根组件）在自身 `setup` 阶段调用了 `useMessage()`，而 App 是 `<n-message-provider>` 的祖先组件、provider 尚未挂载，导致「No outer <n-message-provider/>」错误，整个应用启动即崩溃。
+  - 移除 `App.vue` setup 里的 `useMessage()`（App 自身不用弹消息，只负责分发全局刷新事件）；各功能 View 是 provider 的后代，其中的 `useMessage()`/`useDialog()` 正常可用。
+  - 顺带清理 `GalleryView` 中一个多余的 `useMessage as _um` 导入。
+
 ## v4.0.3
 
 - **修复新版 WebUI 在 AstrBot 里打开空白的问题**：v4.0.0 的新版控制台（`anima-console-vue`）在部分 AstrBot 版本中无法加载——构建产物为多个 JS chunk 且存在跨 chunk 的 `import`，而运行中的 AstrBot 的页面服务无法把动态 chunk 重写为带 `asset_token` 的地址，导致 `assets/*.js` 以无 token 的相对路径请求被 401 拒绝、CORS 拦截，页面空白。
