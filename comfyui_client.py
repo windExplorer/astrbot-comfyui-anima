@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 import uuid
 
 import aiohttp
@@ -40,6 +41,26 @@ class ComfyUIClient:
         async with session.get(self.base_url + path) as resp:
             resp.raise_for_status()
             return await resp.json()
+
+    async def probe(self) -> dict:
+        """探测服务器连通性与延迟，返回 {"ok": bool, "elapsed_ms": int, "error": str}。
+
+        访问根路径 /（任何 ComfyUI 均存在），只检查 HTTP 2xx，不解析内容，
+        避免依赖 system_stats 等可能缺失/404 的端点。失败时返回 ok=False，
+        由调用方展示不可达状态。
+        """
+        start = time.monotonic()
+        try:
+            session = await self._session_get()
+            async with session.get(self.base_url + "/") as resp:
+                resp.raise_for_status()
+            return {"ok": True, "elapsed_ms": int((time.monotonic() - start) * 1000), "error": ""}
+        except Exception as e:
+            return {
+                "ok": False,
+                "elapsed_ms": int((time.monotonic() - start) * 1000),
+                "error": f"{type(e).__name__}: {e}",
+            }
 
     async def get_queue(self) -> dict:
         """查询 ComfyUI /queue 接口，返回 {"queue_running": [...], "queue_pending": [...]}。

@@ -921,6 +921,14 @@ class ComfyUIDrawPlugin(Star):
         return str(int(n))
 
     @staticmethod
+    async def _safe_close(client) -> None:
+        """安全关闭 ComfyUI 客户端，忽略关闭时的异常。"""
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+    @staticmethod
     def _strip_command(message_str: str, cmd: str) -> str:
         """从消息文本中去掉命令触发词（如 /draw），返回剩余参数文本。"""
         text = (message_str or "").strip()
@@ -3093,10 +3101,17 @@ class ComfyUIDrawPlugin(Star):
         for idx, s in enumerate(active, 1):
             url = s["url"].strip()
             client = comfyui_client.ComfyUIClient(url, timeout=20)
+            # 1) 用根路径探测连通性与延迟（不依赖 system_stats 等可能 404 的端点）
+            p = await client.probe()
+            if not p.get("ok"):
+                lines.append(f"· 服务器{idx}：🔴 不可达（{p.get('error', '')}）")
+                await self._safe_close(client)
+                continue
+            latency = int(p.get("elapsed_ms", 0))
+            # 2) 再查队列状态；/queue 不可用时回退本地队列近似
+            state = "空闲"
             try:
-                start = time.monotonic()
                 q = await client.get_queue()
-                latency = int((time.monotonic() - start) * 1000)
                 running = len(q.get("queue_running") or [])
                 pending = len(q.get("queue_pending") or [])
                 if running > 0:
@@ -3105,13 +3120,12 @@ class ComfyUIDrawPlugin(Star):
                     state = f"排队中（{pending} 个待处理）"
                 else:
                     state = "空闲"
-                lines.append(f"· 服务器{idx}：🟢 正常（延迟 {latency}ms）· {state}")
-            except Exception as e:
-                lines.append(f"· 服务器{idx}：🔴 不可达（{type(e).__name__}: {e}）")
-            try:
-                await client.close()
             except Exception:
-                pass
+                srv_key = self._server_key(s)
+                local = len(self._server_pending.get(srv_key, []))
+                state = "正在出图" if local > 0 else "空闲"
+            lines.append(f"· 服务器{idx}：🟢 正常（延迟 {latency}ms）· {state}")
+            await self._safe_close(client)
         await self._send(event, "\n".join(lines))
         event.stop_event()
 
