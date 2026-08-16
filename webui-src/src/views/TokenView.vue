@@ -127,30 +127,22 @@ const trendSpec = computed(() => {
   if (!buckets || !buckets.length) return null;
   const axisColor = isDark.value ? "#9a9ab0" : "#6b6b80";
   const data = buckets.map((b) => ({
-    label: b.date || (b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || "")),
-    value: Number(b.tokens ?? b.total_tokens ?? 0),
+    x: b.date || (b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || "")),
+    y: Number(b.tokens ?? b.total_tokens ?? 0),
   }));
-  // VChart 声明式 area：极简 spec + series 数组，避免顶层 area/line/point 配置导致 init 失败
+  // VChart 官方最简 area spec：只声明类型 + 数据 + 字段，样式走默认，确保 init 稳定。
+  // 用 SVG 渲染（renderMode: 'svg'），避免沙箱 iframe 下 Canvas 渲染受限导致图表空白。
   return {
     type: "area",
-    data: [{ id: "area", values: data }],
-    xField: "label",
-    yField: "value",
-    series: [
-      {
-        type: "area",
-        xField: "label",
-        yField: "value",
-        area: { style: { fillOpacity: 0.35, fill: "#ff8fb3", curveType: "monotone" } },
-        line: { style: { stroke: "#ff8fb3", lineWidth: 2, curveType: "monotone" } },
-        point: { visible: false },
-      },
-    ],
+    renderMode: "svg",
+    data: [{ id: "data0", values: data }],
+    xField: "x",
+    yField: "y",
+    point: { visible: false },
     axes: [
       { orient: "bottom", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: false } },
       { orient: "left", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: true } },
     ],
-    tooltip: { visible: true },
   };
 });
 

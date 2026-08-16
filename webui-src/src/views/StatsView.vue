@@ -68,7 +68,7 @@ const merge = ref(false);
 const ranking = ref<{ rows: any[]; total: number }>({ rows: [], total: 0 });
 const trend = ref<{ buckets: any[] }>({ buckets: [] });
 
-const SCOPE_MAP: Record<string, string> = { today: "0", "3": "3", "7": "7", all: "all" };
+const SCOPE_MAP: Record<string, string> = { today: "today", "3": "3", "7": "7", all: "all" };
 
 async function load() {
   loading.value = true;
@@ -99,34 +99,22 @@ const trendSpec = computed(() => {
   if (!buckets.length) return null;
   const axisColor = isDark.value ? "#9a9ab0" : "#6b6b80";
   const data = buckets.map((b) => ({
-    label: b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || ""),
-    value: Number(b.count) || 0,
+    x: b.hour != null ? `${b.hour}:00` : String(b.label || b.bucket || ""),
+    y: Number(b.count) || 0,
   }));
-  // VChart 声明式 area：极简 spec，避免顶层 area/line/point 配置导致 init 失败
+  // VChart 官方最简 area spec：只声明类型 + 数据 + 字段，样式走默认，确保 init 稳定。
+  // 用 SVG 渲染（renderMode: 'svg'），避免沙箱 iframe 下 Canvas 渲染受限导致图表空白。
   return {
     type: "area",
-    data: [{ id: "area", values: data }],
-    xField: "label",
-    yField: "value",
-    series: [
-      {
-        type: "area",
-        xField: "label",
-        yField: "value",
-        area: {
-          style: { fillOpacity: 0.35, fill: "#ff8fb3", curveType: "monotone" },
-        },
-        line: {
-          style: { stroke: "#ff8fb3", lineWidth: 2, curveType: "monotone" },
-        },
-        point: { visible: false },
-      },
-    ],
+    renderMode: "svg",
+    data: [{ id: "data0", values: data }],
+    xField: "x",
+    yField: "y",
+    point: { visible: false },
     axes: [
       { orient: "bottom", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: false } },
       { orient: "left", label: { style: { fill: axisColor, fontSize: 11 } }, grid: { visible: true } },
     ],
-    tooltip: { visible: true },
   };
 });
 

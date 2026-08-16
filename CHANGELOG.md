@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.1.4
+
+- **图表仍未显示问题再次修复**：VChart 面积图改用官方最简 spec（仅类型+数据+字段，去掉可能引发 init 失败的复杂配置），并强制 `renderMode: 'svg'`（SVG 渲染），避开 AstrBot 沙箱 iframe 下 Canvas 渲染受限导致图表空白的问题。统计页「近一天生图数量」与 Token 页趋势图现可渲染。
+- **修复统计页「今天」范围与「全部」相同**：前端把「今天」的 `days` 参数误传为 `"0"`，而后端映射字典的键是 `"today"`，导致 `"0"` 匹配失败回退为全部。已改为传 `"today"`，今天统计正确生效。
+
 ## v4.1.3
 
 - **修复新版 WebUI 图表初始化崩溃**：VChart 面积图此前使用顶层 `area/line/point` 配置导致 `init chart fail`，并因初始化失败后内部 chart 为 `undefined` 触发 `Cannot read properties of undefined (reading 'updateSpec')`。
