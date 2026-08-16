@@ -3100,8 +3100,9 @@ class ComfyUIDrawPlugin(Star):
         lines = ["🖥️ 绘图服务器状态"]
         for idx, s in enumerate(active, 1):
             url = s["url"].strip()
-            client = comfyui_client.ComfyUIClient(url, timeout=20)
-            # 1) 用根路径探测连通性与延迟（不依赖 system_stats 等可能 404 的端点）
+            # 探测用较短的超时（不可达时更快返回），整体 15s 上限
+            client = comfyui_client.ComfyUIClient(url, timeout=15, probe_timeout=8)
+            # 1) 用根路径探测连通性与 HTTP 往返耗时（不依赖 system_stats 等可能 404 的端点）
             p = await client.probe()
             if not p.get("ok"):
                 lines.append(f"· 服务器{idx}：🔴 不可达（{p.get('error', '')}）")
@@ -3124,7 +3125,7 @@ class ComfyUIDrawPlugin(Star):
                 srv_key = self._server_key(s)
                 local = len(self._server_pending.get(srv_key, []))
                 state = "正在出图" if local > 0 else "空闲"
-            lines.append(f"· 服务器{idx}：🟢 正常（延迟 {latency}ms）· {state}")
+            lines.append(f"· 服务器{idx}：🟢 正常（HTTP 往返 {latency}ms）· {state}")
             await self._safe_close(client)
         await self._send(event, "\n".join(lines))
         event.stop_event()

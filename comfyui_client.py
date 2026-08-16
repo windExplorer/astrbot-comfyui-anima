@@ -14,7 +14,9 @@ class ComfyUIClient:
         base_url: str,
         client_id: str | None = None,
         timeout: int = 120,
+        probe_timeout: int = 15,
     ) -> None:
+        self.probe_timeout = probe_timeout
         self.base_url = base_url.rstrip("/")
         self.client_id = client_id or f"astrbot-comfyui-{uuid.uuid4().hex[:8]}"
         self.timeout = aiohttp.ClientTimeout(total=timeout)
@@ -48,13 +50,23 @@ class ComfyUIClient:
         访问根路径 /（任何 ComfyUI 均存在），只检查 HTTP 2xx，不解析内容，
         避免依赖 system_stats 等可能缺失/404 的端点。失败时返回 ok=False，
         由调用方展示不可达状态。
+
+        测量口径：先发一次"预热"请求完成建连/DNS/TLS 握手（其耗时不算数），
+        再用同一条连接内的第二次请求的耗时作为 HTTP 往返延迟（elapsed_ms），
+        避免把握手/建连开销误报成高延迟。整个探测用较短的 probe_timeout，
+        不可达时能更快返回，不会干等超时。
         """
         start = time.monotonic()
         try:
             session = await self._session_get()
-            async with session.get(self.base_url + "/") as resp:
+            # 1) 预热请求：完成建连/DNS/TLS，只验连通，不纳入计时
+            async with session.get(self.base_url + "/", timeout=aiohttp.ClientTimeout(total=self.probe_timeout)) as resp:
                 resp.raise_for_status()
-            return {"ok": True, "elapsed_ms": int((time.monotonic() - start) * 1000), "error": ""}
+            # 2) 正式测量：复用同一连接池，得到贴近真实网络的往返耗时
+            s2 = time.monotonic()
+            async with session.get(self.base_url + "/", timeout=aiohttp.ClientTimeout(total=self.probe_timeout)) as resp2:
+                resp2.raise_for_status()
+            return {"ok": True, "elapsed_ms": int((time.monotonic() - s2) * 1000), "error": ""}
         except Exception as e:
             return {
                 "ok": False,
