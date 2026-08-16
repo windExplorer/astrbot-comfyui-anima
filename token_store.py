@@ -85,13 +85,15 @@ class TokenStore:
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_usage_hour ON llm_usage (hour_bucket)"
-            )
             # 兼容旧库：若为「按天聚合」的旧结构（含 day_bucket、无 hour_bucket），
             # 重建为小时粒度，不丢总量（旧数据无法还原小时分布，按 updated_at 所在
             # 小时近似归属，量级不丢）。
+            # 注意：必须先迁移再建 hour_bucket 索引——若旧表仍无该列，此处建索引会
+            # 抛 "no such column"，导致迁移流程中断（旧代码正是因此报错）。
             self._migrate_legacy_if_needed(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_usage_hour ON llm_usage (hour_bucket)"
+            )
             conn.commit()
         except Exception as e:  # pragma: no cover
             logger.warning(f"[token] 初始化数据库失败: {e}")
