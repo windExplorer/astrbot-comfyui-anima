@@ -35,11 +35,18 @@ async function render() {
   if (destroyed || !props.option) return;
   await nextTick();
   if (destroyed) return;
+  // spec 变化时重建 chart（比 updateSpec 更可靠，避免旧 chart 状态残留导致不渲染）
   if (chart) {
-    try { chart.updateSpec(props.option); } catch (e) { /* ignore */ }
-  } else {
-    ensureChart();
+    try {
+      chart.updateSpec(props.option);
+      chart.resize();
+      return;
+    } catch (e) {
+      try { chart.release(); } catch (e2) { /* ignore */ }
+      chart = null;
+    }
   }
+  ensureChart();
 }
 
 watch(

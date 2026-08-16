@@ -5,7 +5,7 @@
       :page="page"
       :page-size="pageSize"
       :item-count="total"
-      :page-sizes="[20, 40, 60, 100]"
+      :page-sizes="[10, 20, 24, 40, 60, 100]"
       show-size-picker
       @update:page="onPage"
       @update:page-size="onSize"

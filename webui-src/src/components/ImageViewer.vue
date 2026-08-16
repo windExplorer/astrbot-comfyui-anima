@@ -27,7 +27,7 @@
         <aside class="iv-info">
           <template v-if="item">
             <div class="iv-actions">
-              <n-button v-if="!isTrash" size="small" :type="item.starred ? 'warning' : 'default'" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</n-button>
+              <button v-if="!isTrash" class="iv-star" :class="{ on: item.starred }" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</button>
               <n-button v-if="!isTrash" size="small" type="error" ghost @click="onDelete(item)">删除</n-button>
               <n-button v-if="isTrash" size="small" type="success" @click="onRestore(item)">恢复</n-button>
               <n-button v-if="isTrash" size="small" type="error" ghost @click="onPurge(item)">彻底删除</n-button>
@@ -295,11 +295,25 @@ function onPurge(it: any) { emit("purge", it); }
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   flex: 0 0 auto;
   padding-bottom: 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   margin-bottom: 8px;
 }
+.iv-star {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #ffd257;
+  background: rgba(255, 210, 87, 0.15);
+  color: #ffd257;
+  transition: all 0.15s;
+}
+.iv-star:hover { background: rgba(255, 210, 87, 0.3); }
+.iv-star.on { background: #ffd257; color: #1a1206; border-color: #ffd257; }
 .iv-row {
   display: flex;
   gap: 8px;

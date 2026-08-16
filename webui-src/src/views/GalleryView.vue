@@ -12,10 +12,34 @@
     </div>
 
     <div v-if="stats" class="gal-stats">
-      <n-statistic label="图片总数" :value="stats.total ?? 0" />
-      <n-statistic label="收藏数" :value="stats.starred ?? 0" />
-      <n-statistic label="总大小" :value="fmtBytes((stats.size_mb ?? 0) * 1024 * 1024)" />
-      <n-statistic label="回收站" :value="stats.trash_count ?? 0" />
+      <div class="stat-card sc-pink">
+        <div class="stat-icon">🖼️</div>
+        <div class="stat-body">
+          <div class="stat-num">{{ (stats.total ?? 0).toLocaleString() }}</div>
+          <div class="stat-label">图片总数</div>
+        </div>
+      </div>
+      <div class="stat-card sc-gold">
+        <div class="stat-icon">⭐</div>
+        <div class="stat-body">
+          <div class="stat-num">{{ (stats.starred ?? 0).toLocaleString() }}</div>
+          <div class="stat-label">收藏数</div>
+        </div>
+      </div>
+      <div class="stat-card sc-blue">
+        <div class="stat-icon">💾</div>
+        <div class="stat-body">
+          <div class="stat-num">{{ fmtBytes((stats.size_mb ?? 0) * 1024 * 1024) }}</div>
+          <div class="stat-label">总大小</div>
+        </div>
+      </div>
+      <div class="stat-card sc-purple">
+        <div class="stat-icon">🗑️</div>
+        <div class="stat-body">
+          <div class="stat-num">{{ (stats.trash_count ?? 0).toLocaleString() }}</div>
+          <div class="stat-label">回收站</div>
+        </div>
+      </div>
     </div>
 
     <div class="toolbar">
@@ -78,7 +102,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NStatistic, NTabs, NTabPane } from "naive-ui";
+import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { fmtBytes, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
@@ -288,7 +312,36 @@ onMounted(() => {
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
-.gal-stats { display: flex; gap: 32px; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
+.gal-stats { display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; flex: 0 0 auto; }
+.stat-card {
+  flex: 1 1 0;
+  min-width: 150px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  box-shadow: 0 2px 10px rgba(255, 143, 179, 0.08);
+}
+.stat-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex: 0 0 auto;
+}
+.stat-body { display: flex; flex-direction: column; min-width: 0; }
+.stat-num { font-size: 20px; font-weight: 800; color: var(--text-main); line-height: 1.2; }
+.stat-label { font-size: 12px; color: var(--text-sub); margin-top: 2px; }
+.sc-pink .stat-icon { background: rgba(255, 143, 179, 0.15); }
+.sc-gold .stat-icon { background: rgba(255, 210, 87, 0.18); }
+.sc-blue .stat-icon { background: rgba(126, 182, 255, 0.18); }
+.sc-purple .stat-icon { background: rgba(181, 152, 255, 0.18); }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
 /* 图片网格滚动区：占满剩余空间，内部滚动，分页器固定底部 */

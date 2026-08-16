@@ -28,11 +28,11 @@
     <n-spin :show="loading">
       <!-- 汇总卡片 -->
       <div v-if="summary" class="token-cards">
-        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.total_tokens) }}</div><div class="card-label">合计 tokens</div></n-card>
-        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.total_input) }}</div><div class="card-label">输入 tokens</div></n-card>
-        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.total_output) }}</div><div class="card-label">输出 tokens</div></n-card>
-        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.total_cached) }}</div><div class="card-label">缓存命中</div></n-card>
-        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.total_calls) }}</div><div class="card-label">调用次数</div></n-card>
+        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.total) }}</div><div class="card-label">合计 tokens</div></n-card>
+        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.input_other) }}</div><div class="card-label">非缓存输入</div></n-card>
+        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.output) }}</div><div class="card-label">输出 tokens</div></n-card>
+        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.input_cached) }}</div><div class="card-label">缓存命中</div></n-card>
+        <n-card size="small" class="token-card"><div class="card-num">{{ num(summary.call_count) }}</div><div class="card-label">调用次数</div></n-card>
       </div>
 
       <!-- 每日趋势 -->
@@ -85,7 +85,7 @@ const message = useMessage();
 const dialog = useDialog();
 const { isDark } = useTheme();
 const loading = ref(false);
-const scope = ref("30");
+const scope = ref("1");
 const merge = ref(false);
 
 const summary = ref<any>(null);
@@ -99,11 +99,6 @@ const hourly = ref<any[]>([]);
 function num(v: number | null | undefined): string {
   if (v == null) return "0";
   return Number(v).toLocaleString();
-}
-
-function pct(v: number | null | undefined): string {
-  if (v == null) return "-";
-  return Number(v).toFixed(1) + "%";
 }
 
 const SCOPE_DAYS: Record<string, string> = { today: "1", "1": "1", "3": "3", "7": "7", "30": "30", "90": "90", all: "0" };
@@ -155,12 +150,11 @@ const trendSpec = computed(() => {
 function makeSceneColumns(): DataTableColumns {
   return [
     { title: "场景", key: "scene", render: (row) => row.scene || "-" },
-    { title: "非缓存输入", key: "input", width: 110, render: (row) => num(row.input) },
-    { title: "缓存命中", key: "cached_input", width: 100, render: (row) => num(row.cached_input) },
+    { title: "非缓存输入", key: "input", width: 110, render: (row) => num(row.input_other) },
+    { title: "缓存命中", key: "cached_input", width: 100, render: (row) => num(row.input_cached) },
     { title: "输出", key: "output", width: 100, render: (row) => num(row.output) },
     { title: "合计", key: "total", width: 100, render: (row) => num(row.total) },
-    { title: "调用次数", key: "calls", width: 90, render: (row) => num(row.calls) },
-    { title: "占比", key: "ratio", width: 90, render: (row) => pct(row.ratio) },
+    { title: "调用次数", key: "call_count", width: 90, render: (row) => num(row.call_count) },
   ];
 }
 const sceneColumns = makeSceneColumns();
@@ -168,12 +162,11 @@ const sceneColumns = makeSceneColumns();
 function makeModelColumns(): DataTableColumns {
   return [
     { title: "模型", key: "model", render: (row) => row.model || "-" },
-    { title: "非缓存输入", key: "input", width: 110, render: (row) => num(row.input) },
-    { title: "缓存命中", key: "cached_input", width: 100, render: (row) => num(row.cached_input) },
+    { title: "非缓存输入", key: "input", width: 110, render: (row) => num(row.input_other) },
+    { title: "缓存命中", key: "cached_input", width: 100, render: (row) => num(row.input_cached) },
     { title: "输出", key: "output", width: 100, render: (row) => num(row.output) },
     { title: "合计", key: "total", width: 100, render: (row) => num(row.total) },
-    { title: "调用次数", key: "calls", width: 90, render: (row) => num(row.calls) },
-    { title: "占比", key: "ratio", width: 90, render: (row) => pct(row.ratio) },
+    { title: "调用次数", key: "call_count", width: 90, render: (row) => num(row.call_count) },
   ];
 }
 const modelColumns = makeModelColumns();
@@ -181,27 +174,26 @@ const modelColumns = makeModelColumns();
 function makeUserColumns(): DataTableColumns {
   return [
     { title: "用户 / ID", key: "name", render: (row) => `${row.user_name || ""}${row.user_id ? ` (${row.user_id})` : ""}` || "-" },
-    { title: "非缓存输入", key: "input", width: 110, render: (row) => num(row.input) },
-    { title: "缓存命中", key: "cached_input", width: 100, render: (row) => num(row.cached_input) },
+    { title: "非缓存输入", key: "input", width: 110, render: (row) => num(row.input_other) },
+    { title: "缓存命中", key: "cached_input", width: 100, render: (row) => num(row.input_cached) },
     { title: "输出", key: "output", width: 100, render: (row) => num(row.output) },
     { title: "合计", key: "total", width: 100, render: (row) => num(row.total) },
-    { title: "调用次数", key: "calls", width: 90, render: (row) => num(row.calls) },
-    { title: "占比", key: "ratio", width: 90, render: (row) => pct(row.ratio) },
+    { title: "调用次数", key: "call_count", width: 90, render: (row) => num(row.call_count) },
   ];
 }
 const userColumns = makeUserColumns();
 
 function makeDetailColumns(): DataTableColumns {
   return [
-    { title: "日期", key: "date", width: 150, render: (row) => row.date || fmtDateTime(row.created_at) },
+    { title: "日期", key: "day_bucket", width: 150, render: (row) => row.day_bucket || fmtDateTime(row.created_at) },
     { title: "用户ID", key: "user_id", width: 110, render: (row) => row.user_id || "-" },
     { title: "场景", key: "scene", width: 120, render: (row) => row.scene || "-" },
     { title: "模型", key: "model", ellipsis: { tooltip: true }, render: (row) => row.model || "-" },
-    { title: "非缓存输入", key: "input", width: 100, render: (row) => num(row.input) },
-    { title: "缓存命中", key: "cached_input", width: 90, render: (row) => num(row.cached_input) },
+    { title: "非缓存输入", key: "input_other", width: 100, render: (row) => num(row.input_other) },
+    { title: "缓存命中", key: "input_cached", width: 90, render: (row) => num(row.input_cached) },
     { title: "输出", key: "output", width: 90, render: (row) => num(row.output) },
     { title: "合计", key: "total", width: 90, render: (row) => num(row.total) },
-    { title: "调用次数", key: "calls", width: 80, render: (row) => num(row.calls) },
+    { title: "调用次数", key: "call_count", width: 80, render: (row) => num(row.call_count) },
   ];
 }
 const detailColumns = makeDetailColumns();

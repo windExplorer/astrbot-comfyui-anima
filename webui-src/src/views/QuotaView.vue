@@ -72,7 +72,8 @@ async function load() {
 }
 
 function fmtLimit(v: number): string {
-  return v == null || v < 0 ? "不限" : String(v);
+  if (v == null || v === "") return "（全局）";
+  return v < 0 ? "不限" : String(v);
 }
 
 const columns: DataTableColumns = [
