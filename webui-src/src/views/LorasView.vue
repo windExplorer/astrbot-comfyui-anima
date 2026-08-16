@@ -11,6 +11,7 @@
       </div>
     </div>
 
+    <div class="lora-scroll">
     <n-spin :show="loading">
       <n-empty v-if="!loading && !loras.length" description="尚未配置任何 LoRA，点「新增 LoRA」添加。" style="padding:60px" />
       <div v-else class="card-grid">
@@ -37,6 +38,7 @@
         </div>
       </div>
     </n-spin>
+    </div>
 
     <!-- 详情弹窗 -->
     <n-modal v-model:show="detailShow" preset="card" title="LoRA 详情" style="width:520px" :bordered="false">
@@ -283,11 +285,18 @@ onMounted(load);
 </script>
 
 <style scoped>
-.loras-view { max-width: 1100px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.loras-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1100px;
+}
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
+.lora-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .lora-card {
   border: 1px solid var(--border-color);

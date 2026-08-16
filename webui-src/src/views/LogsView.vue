@@ -8,50 +8,58 @@
       <n-button :loading="loading" @click="refresh">刷新</n-button>
     </div>
 
-    <n-tabs v-model:value="activeTab" type="line">
-      <!-- 出图记录 -->
-      <n-tab-pane name="records" tab="出图记录">
-        <div class="toolbar">
-          <n-input v-model:value="recSearch" size="small" placeholder="搜索用户 / 消息 / 提示词…" style="width:280px" clearable @keyup.enter="loadRecords(1)" />
-          <n-checkbox v-model:checked="recFailedOnly" size="small" @update:checked="loadRecords(1)">仅看失败</n-checkbox>
-          <n-button size="small" @click="loadRecords(1)">搜索</n-button>
-          <span class="count">{{ recTotal ? recTotal + " 条" : recRows.length + " 条" }}</span>
-        </div>
+    <div class="logs-body">
+      <n-tabs v-model:value="activeTab" type="line" class="logs-tabs">
+        <!-- 出图记录 -->
+        <n-tab-pane name="records" tab="出图记录" class="logs-pane">
+          <div class="pane-inner">
+            <div class="toolbar">
+              <n-input v-model:value="recSearch" size="small" placeholder="搜索用户 / 消息 / 提示词…" style="width:280px" clearable @keyup.enter="loadRecords(1)" />
+              <n-checkbox v-model:checked="recFailedOnly" size="small" @update:checked="loadRecords(1)">仅看失败</n-checkbox>
+              <n-button size="small" @click="loadRecords(1)">搜索</n-button>
+              <span class="count">{{ recTotal ? recTotal + " 条" : recRows.length + " 条" }}</span>
+            </div>
 
-        <n-data-table
-          :columns="recColumns"
-          :data="recRows"
-          :pagination="recPagination"
-          :bordered="false"
-          :loading="recLoading"
-          remote
-          :max-height="recTableHeight"
-          :scroll-x="1100"
-          :row-key="(row: any) => row.sha || row.id"
-        />
-      </n-tab-pane>
-
-      <!-- 运行日志 -->
-      <n-tab-pane name="runlog" tab="运行日志">
-        <div class="toolbar">
-          <n-select
-            v-model:value="logLevel"
-            size="small"
-            style="width:140px"
-            :options="logLevelOptions"
-            @update:value="filterLogs"
-          />
-          <n-input v-model:value="logSearch" size="small" placeholder="搜索日志关键词…" style="width:280px" clearable @update:value="filterLogs" />
-          <span class="count">{{ filteredLogs.length }} 条</span>
-        </div>
-        <div class="log-viewer">
-          <div v-for="(line, i) in filteredLogs" :key="i" class="log-line" :class="logLineClass(line)">
-            <pre>{{ line }}</pre>
+            <div class="table-scroll">
+              <n-data-table
+                :columns="recColumns"
+                :data="recRows"
+                :pagination="recPagination"
+                :bordered="false"
+                :loading="recLoading"
+                remote
+                :max-height="recTableHeight"
+                :scroll-x="1100"
+                :row-key="(row: any) => row.sha || row.id"
+              />
+            </div>
           </div>
-          <div v-if="!filteredLogs.length" class="empty">暂无日志</div>
-        </div>
-      </n-tab-pane>
-    </n-tabs>
+        </n-tab-pane>
+
+        <!-- 运行日志 -->
+        <n-tab-pane name="runlog" tab="运行日志" class="logs-pane">
+          <div class="pane-inner">
+            <div class="toolbar">
+              <n-select
+                v-model:value="logLevel"
+                size="small"
+                style="width:140px"
+                :options="logLevelOptions"
+                @update:value="filterLogs"
+              />
+              <n-input v-model:value="logSearch" size="small" placeholder="搜索日志关键词…" style="width:280px" clearable @update:value="filterLogs" />
+              <span class="count">{{ filteredLogs.length }} 条</span>
+            </div>
+            <div class="log-viewer">
+              <div v-for="(line, i) in filteredLogs" :key="i" class="log-line" :class="logLineClass(line)">
+                <pre>{{ line }}</pre>
+              </div>
+              <div v-if="!filteredLogs.length" class="empty">暂无日志</div>
+            </div>
+          </div>
+        </n-tab-pane>
+      </n-tabs>
+    </div>
   </div>
 </template>
 
@@ -67,9 +75,8 @@ const message = useMessage();
 const activeTab = ref("records");
 const loading = ref(false);
 
-// 表格可视高度：让出图记录表格内部滚动，标题、工具栏、分页器固定可见。
-// 用固定视口高度减去标题栏/工具栏/分页器的估算高度，保证不撑破页面产生整体滚动。
-const recTableHeight = computed(() => `calc(100vh - ${activeTab.value === "records" ? 300 : 0}px)`);
+// 表格可视高度：让出图记录表格内部滚动，页面标题与底部工具栏/分页器固定可见。
+const recTableHeight = computed(() => `calc(100vh - 280px)`);
 
 // 出图记录
 const recRows = ref<any[]>([]);
@@ -200,19 +207,31 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.logs-view { max-width: 1280px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.logs-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1280px;
+}
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
-.toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; flex-wrap: wrap; }
+.logs-body { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.logs-tabs { height: 100%; display: flex; flex-direction: column; }
+.logs-pane { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.pane-inner { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
+/* 表格区域：flex 占满剩余空间，表格内部滚动（max-height）、分页器固定底部可见 */
+.table-scroll { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .log-viewer {
   background: var(--bg-body);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 8px;
-  height: calc(100vh - 280px);
-  min-height: 200px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;

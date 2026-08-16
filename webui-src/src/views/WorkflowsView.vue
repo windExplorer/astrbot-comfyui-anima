@@ -11,6 +11,7 @@
       </div>
     </div>
 
+    <div class="wf-scroll">
     <n-spin :show="loading">
       <n-empty v-if="!loading && !workflows.length" description="尚未配置任何工作流，点「新增工作流」添加。" style="padding:60px" />
       <div v-else class="card-grid">
@@ -42,6 +43,7 @@
         </div>
       </div>
     </n-spin>
+    </div>
 
     <!-- 大图预览 -->
     <ImagePreview v-model:show="previewShow" :src="previewSrc" :title="previewTitle" />
@@ -315,11 +317,18 @@ onMounted(load);
 </script>
 
 <style scoped>
-.workflows-view { max-width: 1100px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.workflows-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1100px;
+}
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
+.wf-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .wf-card {
   border: 1px solid var(--border-color);

@@ -11,6 +11,7 @@
       </div>
     </div>
 
+    <div class="token-scroll">
     <div class="scope-toolbar">
       <n-radio-group v-model:value="scope" size="small" @update:value="load">
         <n-radio-button value="today">今天</n-radio-button>
@@ -67,6 +68,7 @@
         <n-data-table :columns="detailColumns" :data="detail" :bordered="false" size="small" />
       </div>
     </n-spin>
+    </div>
   </div>
 </template>
 
@@ -227,11 +229,12 @@ onMounted(load);
 </script>
 
 <style scoped>
-.token-view { max-width: 1200px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.token-view { height: 100%; display: flex; flex-direction: column; min-height: 0; max-width: 1200px; }
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
+.token-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .scope-toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .token-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .token-card { text-align: center; }

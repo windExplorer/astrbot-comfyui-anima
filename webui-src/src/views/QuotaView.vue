@@ -24,15 +24,17 @@
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel panel-table">
       <div class="panel-title"><h3>用户生图用量与配置</h3><span class="count">{{ users.length }} 个用户</span></div>
-      <n-data-table
-        :columns="columns"
-        :data="users"
-        :bordered="false"
-        :loading="loading"
-        :row-key="(row: any) => row.user_id"
-      />
+      <div class="table-wrap">
+        <n-data-table
+          :columns="columns"
+          :data="users"
+          :bordered="false"
+          :loading="loading"
+          :row-key="(row: any) => row.user_id"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -170,15 +172,27 @@ onMounted(load);
 </script>
 
 <style scoped>
-.quota-view { max-width: 1200px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.quota-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1200px;
+}
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
-.panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px; flex: 0 0 auto; }
+.panel-table { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex: 0 0 auto; }
 .panel-title h3 { margin: 0; }
 .count { color: var(--text-sub); font-size: 12px; }
 .global-form { display: flex; flex-direction: column; gap: 12px; }
 .num-fields { display: flex; gap: 24px; flex-wrap: wrap; }
+/* 表格区：占满剩余空间，表格内部滚动 */
+.table-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.table-wrap :deep(.n-data-table) { height: 100%; }
+.table-wrap :deep(.n-data-table .n-data-table-base-table) { height: 100%; }
+.table-wrap :deep(.n-data-table .n-data-table-base-table-body) { overflow: auto; }
 </style>

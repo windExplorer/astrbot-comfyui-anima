@@ -36,25 +36,27 @@
       <span class="count">{{ total ? total + " 条" : "" }}</span>
     </div>
 
-    <n-spin :show="searching">
-      <div class="gal-grid">
-        <n-empty v-if="!searching && !images.length" :description="activeTab === 'trash' ? '回收站为空' : '请输入关键词搜索或直接浏览图库'" style="padding:60px" />
-        <div v-for="img in images" :key="img.sha || img.sha256" class="gal-item" @click="openDetail(img)">
-          <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" />
-          <div class="gal-item-overlay">
-            <n-tag v-if="img.starred" size="tiny" type="warning" :bordered="false">★</n-tag>
-            <n-tag v-if="img.source" size="tiny" :bordered="false">{{ typeLabel(img.source) }}</n-tag>
+    <div class="gal-scroll">
+      <n-spin :show="searching">
+        <div class="gal-grid">
+          <n-empty v-if="!searching && !images.length" :description="activeTab === 'trash' ? '回收站为空' : '请输入关键词搜索或直接浏览图库'" style="padding:60px" />
+          <div v-for="img in images" :key="img.sha || img.sha256" class="gal-item" @click="openDetail(img)">
+            <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" />
+            <div class="gal-item-overlay">
+              <n-tag v-if="img.starred" size="tiny" type="warning" :bordered="false">★</n-tag>
+              <n-tag v-if="img.source" size="tiny" :bordered="false">{{ typeLabel(img.source) }}</n-tag>
+            </div>
           </div>
         </div>
-      </div>
-    </n-spin>
+      </n-spin>
+    </div>
 
     <n-pagination
       v-if="total > pageSize"
       v-model:page="page"
       :page-size="pageSize"
       :item-count="total"
-      style="justify-content:flex-end;margin-top:16px"
+      style="justify-content:flex-end;flex:0 0 auto;padding-top:12px"
       @update:page="doSearch"
     />
 
@@ -306,14 +308,22 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.gallery-view { max-width: 1200px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.gallery-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1200px;
+}
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
-.gal-stats { display: flex; gap: 32px; margin-bottom: 16px; flex-wrap: wrap; }
-.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+.gal-stats { display: flex; gap: 32px; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
+/* 图片网格滚动区：占满剩余空间，内部滚动，分页器固定底部 */
+.gal-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .gal-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));

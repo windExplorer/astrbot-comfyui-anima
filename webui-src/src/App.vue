@@ -32,7 +32,7 @@
               />
             </n-layout-sider>
 
-            <n-layout>
+            <n-layout class="app-main">
               <n-layout-header bordered class="app-header">
                 <div class="header-left">
                   <span class="header-title">{{ currentTitle }}</span>
@@ -165,6 +165,13 @@ function onMenuSelect(key: string) {
   opacity: 0.55;
   letter-spacing: 0.05em;
 }
+.app-main {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
 .app-header {
   display: flex;
   align-items: center;
@@ -182,11 +189,17 @@ function onMenuSelect(key: string) {
   align-items: center;
   gap: 12px;
 }
+/* 内容区固定高度、不整体滚动；滚动由各页面内部管理，
+   从而保证顶部标题（header）与底部有分页器的页面底部固定可见。 */
 .app-content {
   padding: 20px;
   flex: 1 1 auto;
-  overflow: auto;
+  overflow: hidden;
+  min-height: 0;
   height: calc(100vh - 52px);
+}
+.app-content > * {
+  height: 100%;
 }
 </style>
 

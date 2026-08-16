@@ -8,6 +8,7 @@
       <n-button :loading="loading" @click="load">刷新</n-button>
     </div>
 
+    <div class="stats-scroll">
     <div class="panel">
       <div class="stats-toolbar">
         <n-radio-group v-model:value="scope" size="small" @update:value="load">
@@ -46,6 +47,7 @@
         <VChart v-if="trendSpec" :option="trendSpec" :style="{ height: '260px', width: '100%' }" />
         <div v-else class="empty">正在加载趋势…</div>
       </div>
+    </div>
     </div>
   </div>
 </template>
@@ -134,10 +136,11 @@ onMounted(load);
 </script>
 
 <style scoped>
-.stats-view { max-width: 1100px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.stats-view { height: 100%; display: flex; flex-direction: column; min-height: 0; max-width: 1100px; }
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; flex: 0 0 auto; }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
+.stats-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
 .stats-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
 .ranking { display: flex; flex-direction: column; gap: 8px; }

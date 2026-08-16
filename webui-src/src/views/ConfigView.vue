@@ -11,54 +11,56 @@
       </div>
     </div>
 
-    <n-alert v-if="saveMsg" :type="saveMsgType" closable @close="saveMsg = ''" style="margin-bottom:16px">
-      {{ saveMsg }}
-    </n-alert>
+    <div class="cfg-scroll">
+      <n-alert v-if="saveMsg" :type="saveMsgType" closable @close="saveMsg = ''" style="margin-bottom:16px">
+        {{ saveMsg }}
+      </n-alert>
 
-    <n-spin :show="loading" style="min-height:200px">
-      <div v-if="!loading && !schema" class="empty">未获取到配置结构（schema 为空）</div>
+      <n-spin :show="loading" style="min-height:200px">
+        <div v-if="!loading && !schema" class="empty">未获取到配置结构（schema 为空）</div>
 
-      <n-collapse v-else v-model:expanded-names="expanded" class="cfg-collapse">
-        <n-collapse-item v-for="grp in groups" :key="grp.name" :name="grp.name">
-          <template #header>
-            <div class="grp-head">
-              <span class="grp-icon">{{ grp.icon }}</span>
-              <span class="grp-title">{{ grp.name }}</span>
-              <span class="grp-desc">{{ grp.description }}</span>
+        <n-collapse v-else v-model:expanded-names="expanded" class="cfg-collapse">
+          <n-collapse-item v-for="grp in groups" :key="grp.name" :name="grp.name">
+            <template #header>
+              <div class="grp-head">
+                <span class="grp-icon">{{ grp.icon }}</span>
+                <span class="grp-title">{{ grp.name }}</span>
+                <span class="grp-desc">{{ grp.description }}</span>
+              </div>
+            </template>
+            <div class="grp-body">
+              <ConfigSection
+                v-for="key in grp.keys.filter((k: string) => schema && schema[k])"
+                :key="key"
+                :schema="schema![key]"
+                :value="config[key]"
+                @change="onFieldChange"
+              />
             </div>
-          </template>
-          <div class="grp-body">
-            <ConfigSection
-              v-for="key in grp.keys.filter((k: string) => schema && schema[k])"
-              :key="key"
-              :schema="schema![key]"
-              :value="config[key]"
-              @change="onFieldChange"
-            />
-          </div>
-        </n-collapse-item>
-      </n-collapse>
-    </n-spin>
+          </n-collapse-item>
+        </n-collapse>
+      </n-spin>
 
-    <!-- 翻译调试 -->
-    <div class="panel translate-debug">
-      <div class="panel-title">
-        <h3>翻译调试</h3>
-        <span>测试 Anima 翻译模式（danbooru / llm / api）是否连通。</span>
-      </div>
-      <div class="tran-debug-row">
-        <n-select v-model:value="tranMode" :options="tranOptions" size="small" style="width:220px" />
-        <n-input v-model:value="tranText" size="small" style="width:320px" placeholder="中文描述" />
-        <n-button size="small" :loading="tranLoading" @click="runTranslate">测试翻译</n-button>
-      </div>
-      <div v-if="tranResult" class="tran-result" :class="tranResult.ok ? 'ok' : 'err'">
-        <div v-if="tranResult.ok">
-          <b>✓ 成功 · {{ tranResult.elapsed_ms }}ms</b>
-          <pre>{{ tranResult.result }}</pre>
+      <!-- 翻译调试 -->
+      <div class="panel translate-debug">
+        <div class="panel-title">
+          <h3>翻译调试</h3>
+          <span>测试 Anima 翻译模式（danbooru / llm / api）是否连通。</span>
         </div>
-        <div v-else>
-          <b>✗ 失败 · {{ tranResult.elapsed_ms }}ms</b>
-          <pre>{{ tranResult.error }}</pre>
+        <div class="tran-debug-row">
+          <n-select v-model:value="tranMode" :options="tranOptions" size="small" style="width:220px" />
+          <n-input v-model:value="tranText" size="small" style="width:320px" placeholder="中文描述" />
+          <n-button size="small" :loading="tranLoading" @click="runTranslate">测试翻译</n-button>
+        </div>
+        <div v-if="tranResult" class="tran-result" :class="tranResult.ok ? 'ok' : 'err'">
+          <div v-if="tranResult.ok">
+            <b>✓ 成功 · {{ tranResult.elapsed_ms }}ms</b>
+            <pre>{{ tranResult.result }}</pre>
+          </div>
+          <div v-else>
+            <b>✗ 失败 · {{ tranResult.elapsed_ms }}ms</b>
+            <pre>{{ tranResult.error }}</pre>
+          </div>
         </div>
       </div>
     </div>
@@ -180,16 +182,24 @@ onMounted(load);
 </script>
 
 <style scoped>
-.config-view { max-width: 1200px; }
+.config-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1200px;
+}
 .view-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 16px;
+  flex: 0 0 auto;
 }
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
+.cfg-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .cfg-collapse { background: var(--bg-panel); border-radius: 8px; padding: 8px; }
 .grp-head { display: flex; align-items: center; gap: 8px; }
 .grp-icon { font-size: 16px; }
