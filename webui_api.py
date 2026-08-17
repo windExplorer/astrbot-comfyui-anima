@@ -52,6 +52,26 @@ PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
 
+# 允许的底模（归一化白名单，与前端 baseModelOptions 一致）。
+# C 站返回的 baseModel 可能带大小写（如 "Anima"），统一转小写后按此白名单过滤，
+# 不在白名单内的置空（视为通用），避免前端下拉/筛选匹配不上。
+BASE_MODEL_WHITELIST = ("anima", "z-image-turbo", "krea2", "illustrious")
+
+
+def _normalize_base_model(raw) -> str:
+    """归一化 C 站底模：转小写、去空格；命中白名单则返回小写名，否则返回空（通用）。"""
+    bm = str(raw or "").strip().lower()
+    if not bm:
+        return ""
+    for w in BASE_MODEL_WHITELIST:
+        if bm == w:
+            return w
+    # 容错：包含但不完全相等时也尝试精确匹配（如 "anima v1" -> 命中 anima）
+    for w in BASE_MODEL_WHITELIST:
+        if bm.startswith(w):
+            return w
+    return ""
+
 # 缩略图 data URL 内存缓存：key=(路径, max_w)，避免每次请求都重新读盘 + Pillow 缩放 + base64，
 # 显著降低图库/出图记录缩略图的加载耗时（局域网下尤其明显）。用 OrderedDict 做简单 LRU。
 _thumb_cache: "OrderedDict[str, str]" = OrderedDict()
@@ -682,7 +702,7 @@ class WebUIApi:
             if version:
                 tw = version.get("trainedWords") or []
                 trigger_words = "\n".join(str(x) for x in tw if x)
-                base_model = str(version.get("baseModel") or "").strip()
+                base_model = _normalize_base_model(version.get("baseModel"))
                 description = str(data.get("description") or version.get("description") or "").strip()
             # 封面图：收集候选图（下载后由前端选图）
             image_name = ""

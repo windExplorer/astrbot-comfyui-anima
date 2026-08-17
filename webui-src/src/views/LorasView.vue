@@ -140,6 +140,20 @@ const filteredIndexes = computed<number[]>(() => {
     .map(({ i }) => i);
 });
 
+// 底模归一化：转小写并与白名单（baseModelOptions 非空项）匹配，不在白名单返回空（通用）
+function normalizeBaseModel(raw: string): string {
+  const bm = (raw || "").trim().toLowerCase();
+  if (!bm) return "";
+  for (const opt of baseModelOptions) {
+    if (opt.value && bm === opt.value) return opt.value;
+  }
+  // 容错前缀匹配（如 "anima v1" -> anima）
+  for (const opt of baseModelOptions) {
+    if (opt.value && bm.startsWith(opt.value)) return opt.value;
+  }
+  return "";
+}
+
 // 各底模分类的数量（用于筛选栏计数）
 function countByModel(m: string): number {
   if (m === "all") return loras.value.length;
@@ -152,6 +166,12 @@ async function load() {
   try {
     const cfg = await apiGet("config");
     loras.value = Array.isArray(cfg.loras) ? cfg.loras : [];
+    // 归一化存量底模（修正早期抓取存下的大写/非法值，如 "Anima"）
+    loras.value = loras.value.map((l) => {
+      const bm = normalizeBaseModel(l.base_model || "");
+      if (bm !== (l.base_model || "").trim()) return { ...l, base_model: bm };
+      return l;
+    });
   } catch (e: any) {
     message.error(e.message || "加载 LoRA 失败");
   } finally {
@@ -307,6 +327,9 @@ function fetchLora(idx: number) {
     if (d.description) updates.description = d.description;
     if (d.base_model) updates.base_model = d.base_model;
     const covers = (Array.isArray(d.images) && d.images.length) ? d.images : (d.image ? [d.image] : []);
+    // 底模兜底归一化：C 站可能返回 "Anima" 等大写，需转小写并与白名单匹配，
+    // 否则与编辑下拉 / 底模筛选的小写选项对不上。
+    if (updates.base_model) updates.base_model = normalizeBaseModel(updates.base_model);
     if (covers.length > 1) {
       // 多张候选 → 弹封面选择
       coverPickCovers.value = covers;
