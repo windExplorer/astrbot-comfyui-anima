@@ -17,7 +17,7 @@
       <div v-else class="card-grid">
         <div v-for="(w, idx) in workflows" :key="idx" class="wf-card">
           <div class="card-cover" @click="openImage(w.image, w.name)">
-            <img v-if="w.image && coverCache[w.image]" :src="coverCache[w.image]" alt="" loading="lazy" />
+            <img v-if="w.image" v-cover-lazy="w.image" alt="" loading="lazy" />
             <div v-else class="cover-empty">无封面</div>
           </div>
           <div class="card-head">
@@ -106,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases, truncate } from "@/utils/format";
@@ -119,7 +119,6 @@ const loading = ref(false);
 const saving = ref(false);
 const workflows = ref<any[]>([]);
 const loras = ref<any[]>([]);
-const coverCache = reactive<Record<string, string>>({});
 
 const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
 
@@ -129,20 +128,11 @@ async function load() {
     const cfg = await apiGet("config");
     workflows.value = Array.isArray(cfg.workflows) ? cfg.workflows : [];
     loras.value = Array.isArray(cfg.loras) ? cfg.loras : [];
-    // 预取封面
-    workflows.value.forEach((w) => loadCover(w.image));
   } catch (e: any) {
     message.error(e.message || "加载工作流失败");
   } finally {
     loading.value = false;
   }
-}
-
-function loadCover(fname: string) {
-  if (!fname || coverCache[fname]) return;
-  apiGet("lora/image", { name: fname }).then((d) => {
-    if (d && d.url) coverCache[fname] = d.url;
-  }).catch(() => {});
 }
 
 function aliasStr(raw: string): string {
@@ -168,13 +158,16 @@ const previewTitle = ref("");
 
 function openImage(fname: string, name: string) {
   if (!fname) { message.info("该工作流没有封面图，可先上传或抓取封面"); return; }
-  if (coverCache[fname]) {
-    previewSrc.value = coverCache[fname];
-    previewTitle.value = name || fname;
-    previewShow.value = true;
-  } else {
-    message.info("封面加载中，请稍后再试");
-  }
+  message.loading("加载预览…", { duration: 8000 });
+  apiGet("lora/image", { name: fname }).then((d) => {
+    if (d && d.url) {
+      previewSrc.value = d.url;
+      previewTitle.value = name || fname;
+      previewShow.value = true;
+    } else {
+      message.error("封面加载失败");
+    }
+  }).catch(() => message.error("封面加载失败"));
 }
 
 // 编辑
@@ -239,7 +232,6 @@ async function saveEdit() {
     await apiPost("config", { config: { workflows: workflows.value } });
     message.success("工作流已保存");
     editShow.value = false;
-    loadCover(v.image);
   } catch (e: any) {
     message.error(e.message || "保存失败");
   } finally {
@@ -280,7 +272,6 @@ function fetchCover(idx: number) {
     throw new Error("未抓取到封面图");
   }).then(() => {
     message.success("封面已抓取并保存");
-    loadCover(w.image);
   }).catch((e: any) => message.error(e.message || "抓取失败"));
 }
 
@@ -303,7 +294,6 @@ function uploadCover(idx: number) {
         workflows.value = [...workflows.value];
         await apiPost("config", { config: { workflows: workflows.value } });
         message.success("封面已上传");
-        loadCover(w.image);
       };
     } catch (e: any) {
       message.error(e.message || "上传失败");

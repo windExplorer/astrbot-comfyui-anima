@@ -17,7 +17,7 @@
       <div v-else class="card-grid">
         <div v-for="(l, idx) in loras" :key="idx" class="lora-card">
           <div class="card-cover" @click="openImage(l.image, l.name)">
-            <img v-if="l.image && coverCache[l.image]" :src="coverCache[l.image]" alt="" loading="lazy" />
+            <img v-if="l.image" v-cover-lazy="l.image" alt="" loading="lazy" />
             <div v-else class="cover-empty">无封面</div>
           </div>
           <div class="card-body">
@@ -105,7 +105,6 @@ const dialog = useDialog();
 const loading = ref(false);
 const saving = ref(false);
 const loras = ref<any[]>([]);
-const coverCache = reactive<Record<string, string>>({});
 
 const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
 
@@ -114,19 +113,11 @@ async function load() {
   try {
     const cfg = await apiGet("config");
     loras.value = Array.isArray(cfg.loras) ? cfg.loras : [];
-    loras.value.forEach((l) => loadCover(l.image));
   } catch (e: any) {
     message.error(e.message || "加载 LoRA 失败");
   } finally {
     loading.value = false;
   }
-}
-
-function loadCover(fname: string) {
-  if (!fname || coverCache[fname]) return;
-  apiGet("lora/image", { name: fname }).then((d) => {
-    if (d && d.url) coverCache[fname] = d.url;
-  }).catch(() => {});
 }
 
 function aliasFirst(raw: string): string {
@@ -141,13 +132,16 @@ const previewTitle = ref("");
 
 function openImage(fname: string, name: string) {
   if (!fname) { message.info("该 LoRA 没有封面图，可先上传或抓取封面"); return; }
-  if (coverCache[fname]) {
-    previewSrc.value = coverCache[fname];
-    previewTitle.value = name || fname;
-    previewShow.value = true;
-  } else {
-    message.info("封面加载中，请稍后再试");
-  }
+  message.loading("加载预览…", { duration: 8000 });
+  apiGet("lora/image", { name: fname }).then((d) => {
+    if (d && d.url) {
+      previewSrc.value = d.url;
+      previewTitle.value = name || fname;
+      previewShow.value = true;
+    } else {
+      message.error("封面加载失败");
+    }
+  }).catch(() => message.error("封面加载失败"));
 }
 
 // 详情
@@ -204,7 +198,6 @@ async function saveEdit() {
     await apiPost("config", { config: { loras: loras.value } });
     message.success("LoRA 已保存");
     editShow.value = false;
-    loadCover(v.image);
   } catch (e: any) {
     message.error(e.message || "保存失败");
   } finally {
@@ -248,7 +241,6 @@ function fetchLora(idx: number) {
     return apiPost("config", { config: { loras: loras.value } });
   }).then(() => {
     message.success("抓取完成并已保存");
-    loadCover(loras.value[idx].image);
   }).catch((e: any) => message.error(e.message || "抓取失败"));
 }
 
@@ -271,7 +263,6 @@ function uploadCover(idx: number) {
         loras.value = [...loras.value];
         await apiPost("config", { config: { loras: loras.value } });
         message.success("封面已上传");
-        loadCover(l.image);
       } catch (e: any) {
         message.error(e.message || "上传失败");
       }
