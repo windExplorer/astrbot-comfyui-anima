@@ -759,8 +759,8 @@
       var val = state.config ? state.config[key] : undefined;
       var html = '';
       html += '<section class="cfg-section" data-key="' + escapeHtml(key) + '">';
-      html += '<div class="cfg-section-title"><h3>' + escapeHtml(key) + '</h3>' +
-        (field.description ? '<span>' + escapeHtml(field.description) + '</span>' : '') + '</div>';
+      html += '<div class="cfg-section-title"><h3>' + escapeHtml(field.label || field.description || key) + '</h3>' +
+        (field.hint && field.type !== "template_list" ? '<span>' + escapeHtml(field.hint) + '</span>' : '') + '</div>';
       html += '<div class="cfg-section-body">';
       if (field.type === "object") {
         html += renderObject(key, field, val);

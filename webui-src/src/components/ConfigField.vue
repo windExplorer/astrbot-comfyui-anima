@@ -1,7 +1,7 @@
 <template>
   <div class="cfg-field">
     <label class="field-label">
-      <span class="field-name">{{ fieldKey }}</span>
+      <span class="field-name">{{ fieldName }}</span>
       <span v-if="field?.hint && !field?.obvious_hint" class="field-hint" :title="field.hint">ⓘ</span>
     </label>
 
@@ -69,13 +69,17 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
 import { NSwitch, NInput, NInputNumber, NSlider, NSelect } from "naive-ui";
 
-defineProps<{
+const props = defineProps<{
   fieldKey: string;
   field: any;
   modelValue: any;
 }>();
+
+// 字段名：优先 label，其次 description，最后回退英文字段名
+const fieldName = computed(() => props.field?.label || props.field?.description || props.fieldKey);
 
 const emit = defineEmits<{
   (e: "update:modelValue", value: any): void;

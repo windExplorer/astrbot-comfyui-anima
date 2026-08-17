@@ -1,8 +1,8 @@
 <template>
   <div class="cfg-section">
     <div class="cfg-section-title">
-      <h4>{{ key }}</h4>
-      <span v-if="schema?.description">{{ schema.description }}</span>
+      <h4>{{ sectionTitle }}</h4>
+      <span v-if="schema?.hint && schema?.type !== 'template_list'">{{ schema.hint }}</span>
     </div>
     <div class="cfg-section-body">
       <!-- object：嵌套字段 -->
@@ -80,6 +80,9 @@ const emit = defineEmits<{
 }>();
 
 const arrValue = computed<any[]>(() => (Array.isArray(props.value) ? props.value : []));
+
+// 标题：优先 label，其次 description，最后回退英文字段名
+const sectionTitle = computed(() => props.schema?.label || props.schema?.description || props.key);
 
 function displayName(item: any): string {
   const disp = props.schema?.templates?.default?.display_item;
