@@ -326,6 +326,14 @@ function fetchLora(idx: number) {
     if (d.trigger_words) updates.trigger_words = d.trigger_words;
     if (d.description) updates.description = d.description;
     if (d.base_model) updates.base_model = d.base_model;
+    // C 站标题并入别名（若不存在）：别名可能为换行/逗号分隔，避免重复
+    if (d.title) {
+      const oldKw = String(l.keywords || "").trim();
+      const kwList = oldKw ? oldKw.split(/[,，\n\r]+/).map((s) => s.trim()).filter(Boolean) : [];
+      if (!kwList.includes(d.title)) {
+        updates.keywords = oldKw ? oldKw + "\n" + d.title : d.title;
+      }
+    }
     const covers = (Array.isArray(d.images) && d.images.length) ? d.images : (d.image ? [d.image] : []);
     // 底模兜底归一化：C 站可能返回 "Anima" 等大写，需转小写并与白名单匹配，
     // 否则与编辑下拉 / 底模筛选的小写选项对不上。
