@@ -48,6 +48,8 @@
     <!-- 大图预览 -->
     <!-- 大图详情（全屏：左侧封面，右侧字段信息） -->
     <ItemViewer v-model:show="previewShow" :src="previewSrc" :title="previewTitle" :fields="detailFields" />
+    <!-- 抓取封面选择（多张候选时弹出） -->
+    <CoverPicker v-model:show="coverPickShow" :covers="coverPickCovers" :title="coverPickTitle" @pick="onCoverPick" />
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" style="width:720px" :bordered="false">
@@ -113,6 +115,7 @@ import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
+import CoverPicker from "@/components/CoverPicker.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -271,20 +274,43 @@ function removeWorkflow(idx: number) {
   });
 }
 
+// 抓取封面选择（多张候选时弹出）
+const coverPickShow = ref(false);
+const coverPickCovers = ref<string[]>([]);
+const coverPickTitle = ref("");
+let coverPickOnPick: ((name: string) => void) | null = null;
+
+function onCoverPick(name: string) {
+  if (coverPickOnPick) coverPickOnPick(name);
+  coverPickOnPick = null;
+}
+
+// 应用封面并保存
+function applyCoverFetch(idx: number, w: any, chosenName: string) {
+  w.image = chosenName;
+  workflows.value = [...workflows.value];
+  apiPost("config", { config: { workflows: workflows.value } }).then(() => {
+    message.success("封面已保存");
+  }).catch((e: any) => message.error(e.message || "保存失败"));
+}
+
 function fetchCover(idx: number) {
   const w = workflows.value[idx];
   if (!w) return;
   if (!w.civitai_url) { message.warning("请先填写 C 站链接"); return; }
   message.loading("正在抓取封面…", { duration: 10000 });
   apiPost("lora/fetch", { url: w.civitai_url }).then((d) => {
-    if (d && d.images && d.images.length) {
-      w.image = d.images[0];
-      workflows.value = [...workflows.value];
-      return apiPost("config", { config: { workflows: workflows.value } });
+    const covers = (Array.isArray(d.images) && d.images.length) ? d.images : (d.image ? [d.image] : []);
+    if (!covers.length) throw new Error("未抓取到封面图");
+    if (covers.length > 1) {
+      // 多张候选 → 弹封面选择
+      coverPickCovers.value = covers;
+      coverPickTitle.value = `为「${w.name || "工作流"}」选择封面`;
+      coverPickOnPick = (chosen) => applyCoverFetch(idx, w, chosen);
+      coverPickShow.value = true;
+      return;
     }
-    throw new Error("未抓取到封面图");
-  }).then(() => {
-    message.success("封面已抓取并保存");
+    applyCoverFetch(idx, w, covers[0]);
   }).catch((e: any) => message.error(e.message || "抓取失败"));
 }
 
