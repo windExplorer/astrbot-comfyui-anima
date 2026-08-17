@@ -3064,8 +3064,50 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("绘图统计", alias={"drawstats", "画图统计"})
     async def cmd_draw_stats(self, event: AstrMessageEvent):
-        """统计：累计/今日出图数量、今日 token 用量、热门工作流出图数与平均耗时。"""
-        lines = ["📊 绘图统计"]
+        """统计：累计出图、指定范围（今天/昨天/最近一周等）出图数量、token 用量、热门工作流出图数与平均耗时。
+
+        用法：/绘图统计 [今天|昨天|周|月|全部]（默认今天）。
+        """
+        args = (self._strip_command(event.message_str, "绘图统计") or "").strip().lower()
+        # 解析时间范围
+        scope_label = "今天"
+        start_ts: float | None = None
+        end_ts: float | None = None
+        days: int | None = 0  # 供 user_ranking / workflow_stats / list_daily 使用；昨天用区间
+        if args in ("", "今天", "today"):
+            scope_label = "今天"
+            start_ts, end_ts, days = None, None, 0
+        elif args in ("昨天", "yesterday", "y"):
+            scope_label = "昨天"
+            start_ts, end_ts, days = None, None, -1  # -1 占位，走区间
+        elif args in ("周", "周7", "7", "week", "w"):
+            scope_label = "最近一周"
+            start_ts, end_ts, days = None, None, 7
+        elif args in ("月", "30", "month", "m"):
+            scope_label = "最近30天"
+            start_ts, end_ts, days = None, None, 30
+        elif args in ("全部", "all"):
+            scope_label = "全部"
+            start_ts, end_ts, days = None, None, None
+        else:
+            await self._send(event, "用法：/绘图统计 [今天|昨天|周|月|全部]（默认今天）")
+            event.stop_event()
+            return
+        # 计算昨天范围 / 今天范围起点（本地时区）
+        now = time.time()
+        lt = time.localtime(now)
+        day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        if days == 0:  # 今天
+            start_ts = day_start
+        elif days == -1:  # 昨天
+            start_ts = day_start - 86400
+            end_ts = day_start
+        elif days == 7:
+            start_ts = day_start - 6 * 86400
+        elif days == 30:
+            start_ts = day_start - 29 * 86400
+
+        lines = [f"📊 绘图统计（{scope_label}）"]
         # 出图数量
         if self.gallery is not None:
             try:
@@ -3075,26 +3117,42 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 lines.append(f"· 累计出图：读取失败（{e}）")
             try:
-                today = self.gallery.user_ranking(days=0).get("total", 0)
-                lines.append(f"· 今日出图：{today} 张")
+                if days == -1 or days == 0:
+                    # 昨天/今天用区间精确统计
+                    scope_total = self.gallery.range_stats(start_ts=start_ts, end_ts=end_ts).get("total", 0)
+                elif days is not None:
+                    scope_total = self.gallery.user_ranking(days=days).get("total", 0)
+                else:
+                    scope_total = self.gallery.user_ranking(days=None).get("total", 0)
+                lines.append(f"· {scope_label}出图：{scope_total} 张")
             except Exception as e:
-                lines.append(f"· 今日出图：读取失败（{e}）")
+                lines.append(f"· {scope_label}出图：读取失败（{e}）")
         else:
             lines.append("· 累计出图：图库未启用")
-        # 今日 token 用量
+        # 范围 token 用量
         if self.token_store is not None:
             try:
-                d = self.token_store.list_daily(days=1)
-                tok = int(d[0]["total"]) if d else 0
-                lines.append(f"· 今日 Token 用量：{self._fmt_token(tok)}")
+                if days == 0 or days == -1:
+                    d = self.token_store.list_daily(days=1 if days == 0 else 2)
+                    tok = int(d[0]["total"]) if d else 0
+                elif days is not None:
+                    d = self.token_store.list_daily(days=days)
+                    tok = sum(int(x["total"] or 0) for x in d)
+                else:
+                    d = self.token_store.list_daily(days=0)  # 全部历史
+                    tok = sum(int(x["total"] or 0) for x in d)
+                lines.append(f"· {scope_label} Token 用量：{self._fmt_token(tok)}")
             except Exception as e:
-                lines.append(f"· 今日 Token 用量：读取失败（{e}）")
+                lines.append(f"· {scope_label} Token 用量：读取失败（{e}）")
         else:
-            lines.append("· 今日 Token 用量：统计未启用")
+            lines.append(f"· {scope_label} Token 用量：统计未启用")
         # 热门工作流 Top5（出图数量 + 平均耗时）
         if self.gallery is not None:
             try:
-                wfs = self.gallery.workflow_stats(top=5)
+                if days == -1 or days == 0:
+                    wfs = self.gallery.range_stats(start_ts=start_ts, end_ts=end_ts).get("workflows", [])
+                else:
+                    wfs = self.gallery.workflow_stats(top=5, days=days)
                 if wfs:
                     lines.append("· 热门工作流出图：")
                     for w in wfs:
@@ -3105,6 +3163,45 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 lines.append(f"· 热门工作流：读取失败（{e}）")
         await self._send(event, "\n".join(lines))
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
+    # 指令：/绘图排行 今日生图前五
+    # ------------------------------------------------------------------ #
+    @filter.command("绘图排行", alias={"drawrank", "画图排行"})
+    async def cmd_draw_rank(self, event: AstrMessageEvent):
+        """展示今日生图数量前五名的用户（排除伴侣插件自动生图）。"""
+        if self.gallery is None:
+            await self._send(event, "图库未启用，无法统计排行。")
+            event.stop_event()
+            return
+        try:
+            data = self.gallery.user_ranking(days=0, limit=50)
+            rows = data.get("rows") or []
+            # 过滤掉插件自动生图（无真实 user_id，或 user_name 为伴侣插件名）
+            plugin_names = {SOURCE_COMPANION_PLUGIN, "PrivateCompanion"}
+            human = []
+            for r in rows:
+                name = (r.get("user_name") or "").strip()
+                uid = (r.get("user_id") or "").strip()
+                if name in plugin_names:
+                    continue
+                if not uid or uid in ("__system__",) or uid.startswith("__"):
+                    continue
+                human.append(r)
+            top = human[:5]
+            lines = ["🏆 今日绘图排行（前 5）"]
+            if not top:
+                lines.append("· 今天还没有人生图～")
+            else:
+                medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+                for i, r in enumerate(top):
+                    medal = medals[i] if i < len(medals) else f"{i + 1}."
+                    name = r.get("user_name") or r.get("user_id") or "未知用户"
+                    lines.append(f"{medal} {name}：{r.get('count', 0)} 张")
+            await self._send(event, "\n".join(lines))
+        except Exception as e:
+            await self._send(event, f"读取排行失败：{e}")
         event.stop_event()
 
     # ------------------------------------------------------------------ #
@@ -3156,6 +3253,22 @@ class ComfyUIDrawPlugin(Star):
                 state = "正在出图" if local > 0 else "空闲"
             lines.append(f"· 服务器{idx}：🟢 正常（HTTP 往返 {latency}ms）· {state}")
             await self._safe_close(client)
+        # 生图限额配置
+        lines.append("")
+        lines.append("📊 生图限额配置")
+        try:
+            qc = self._draw_limit_cfg()
+            enabled = bool(qc.get("enabled", False))
+            lines.append(f"· 开关：{'已开启' if enabled else '未开启'}")
+            fmt_n = lambda n: "不限" if int(n) < 0 else str(n)
+            lines.append(f"· 总次数 / 每小时 / 每天：{fmt_n(qc.get('max_total', -1))} / {fmt_n(qc.get('max_hour', -1))} / {fmt_n(qc.get('max_day', -1))}")
+            lines.append(f"· 管理员豁免：{'是' if qc.get('admin_exempt', False) else '否'}")
+            if self.quota is not None:
+                users = self.quota.list_users()
+                day_total = sum(int(u.get("day_used") or 0) for u in users)
+                lines.append(f"· 今日全群已生图：{day_total} 次")
+        except Exception as e:
+            lines.append(f"· 限额配置读取失败（{e}）")
         await self._send(event, "\n".join(lines))
         event.stop_event()
 

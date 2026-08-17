@@ -1120,6 +1120,48 @@ class ImageStore:
             logger.warning(f"[图库] 工作流统计失败: {e}")
             return []
 
+    def range_stats(self, start_ts: float | None = None, end_ts: float | None = None, top: int = 5) -> dict:
+        """统计指定时间区间 ``[start_ts, end_ts)`` 内的成功成品图。
+
+        只统计成功生成的成品图（source='gen' 且 status=0 且未删除）。
+        ``start_ts``/``end_ts`` 为本地时间戳，None 表示不设边界（end_ts 默认 now）。
+        返回 ``{"total": int, "workflows": [{workflow, count, avg_sec}]}``；
+        无记录或异常时 total=0、workflows=[]。供「/绘图统计」指令按昨天/周等范围统计。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return {"total": 0, "workflows": []}
+        conn = self._conn_get()
+        try:
+            base = "source=? AND status=0 AND deleted=0"
+            params: list = [SRC_GEN]
+            if start_ts is not None:
+                base += " AND created_at>=?"
+                params.append(start_ts)
+            if end_ts is not None:
+                base += " AND created_at<?"
+                params.append(end_ts)
+            total = conn.execute(
+                f"SELECT COUNT(*) AS c FROM images WHERE {base}", tuple(params)
+            ).fetchone()["c"]
+            sql = (
+                f"SELECT workflow, COUNT(*) AS c, AVG(cost_sec) AS avg_sec "
+                f"FROM images WHERE {base} AND workflow IS NOT NULL AND workflow<>'' "
+                f"GROUP BY workflow ORDER BY c DESC, MAX(created_at) DESC LIMIT ?"
+            )
+            rows = conn.execute(sql, (*params, int(max(1, top)))).fetchall()
+            workflows = [
+                {
+                    "workflow": r["workflow"],
+                    "count": int(r["c"]),
+                    "avg_sec": round(float(r["avg_sec"] or 0), 1),
+                }
+                for r in rows
+            ]
+            return {"total": int(total), "workflows": workflows}
+        except Exception as e:
+            logger.warning(f"[图库] 区间统计失败: {e}")
+            return {"total": 0, "workflows": []}
+
     # ------------------------------------------------------------------ #
     # 用户生图统计（WebUI「统计」页）
     # ------------------------------------------------------------------ #
