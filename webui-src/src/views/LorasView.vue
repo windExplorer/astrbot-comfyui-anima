@@ -11,21 +11,33 @@
       </div>
     </div>
 
+    <div class="filter-bar">
+      <span class="filter-label">底模：</span>
+      <n-radio-group v-model:value="filterModel" size="small">
+        <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
+        <n-radio-button value="anima">anima ({{ countByModel("anima") }})</n-radio-button>
+        <n-radio-button value="z-image-turbo">z-image-turbo ({{ countByModel("z-image-turbo") }})</n-radio-button>
+        <n-radio-button value="krea2">krea2 ({{ countByModel("krea2") }})</n-radio-button>
+        <n-radio-button value="illustrious">illustrious ({{ countByModel("illustrious") }})</n-radio-button>
+        <n-radio-button value="__none__">通用 ({{ countByModel("__none__") }})</n-radio-button>
+      </n-radio-group>
+    </div>
     <div class="lora-scroll">
     <n-spin :show="loading">
       <n-empty v-if="!loading && !loras.length" description="尚未配置任何 LoRA，点「新增 LoRA」添加。" style="padding:60px" />
+      <n-empty v-else-if="!loading && !filteredIndexes.length" description="当前底模分类下暂无 LoRA。" style="padding:60px" />
       <div v-else class="card-grid">
-        <div v-for="(l, idx) in loras" :key="idx" class="lora-card">
-          <div class="card-cover" @click="openImage(l.image, l.name)">
-            <img v-if="l.image" v-cover-lazy="l.image" alt="" loading="lazy" />
+        <div v-for="idx in filteredIndexes" :key="idx" class="lora-card">
+          <div class="card-cover" @click="openImage(loras[idx].image, loras[idx].name)">
+            <img v-if="loras[idx].image" v-cover-lazy="loras[idx].image" alt="" loading="lazy" />
             <div v-else class="cover-empty">无封面</div>
           </div>
           <div class="card-body">
-            <div class="card-title">{{ l.name || "(未命名)" }}</div>
-            <div class="card-alias">别名：{{ aliasFirst(l.keywords) }}</div>
+            <div class="card-title">{{ loras[idx].name || "(未命名)" }}</div>
+            <div class="card-alias">别名：{{ aliasFirst(loras[idx].keywords) }}</div>
             <div class="card-meta">
-              <n-tag size="tiny" :bordered="false">{{ l.base_model?.trim() || "通用" }}</n-tag>
-              <a v-if="l.civitai_url" :href="l.civitai_url" target="_blank" rel="noopener noreferrer" class="civ-link">C站 ↗</a>
+              <n-tag size="tiny" :bordered="false">{{ loras[idx].base_model?.trim() || "通用" }}</n-tag>
+              <a v-if="loras[idx].civitai_url" :href="loras[idx].civitai_url" target="_blank" rel="noopener noreferrer" class="civ-link">C站 ↗</a>
             </div>
             <div class="card-actions">
               <n-button size="tiny" @click="showDetail(idx)">详情</n-button>
@@ -93,8 +105,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NEmpty, NSpin } from "naive-ui";
+import { computed, onMounted, reactive, ref } from "vue";
+import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NEmpty, NSpin, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
@@ -107,6 +119,30 @@ const saving = ref(false);
 const loras = ref<any[]>([]);
 
 const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
+
+// 底模分类筛选：all=全部；__none__=通用（base_model 为空）；其余=对应底模
+const filterModel = ref("all");
+
+// 筛选后命中的 LoRA 在 loras 全量数组中的下标（操作按钮沿用全量 idx）
+const filteredIndexes = computed<number[]>(() => {
+  const m = filterModel.value;
+  return loras.value
+    .map((l, i) => ({ l, i }))
+    .filter(({ l }) => {
+      const bm = (l.base_model || "").trim();
+      if (m === "all") return true;
+      if (m === "__none__") return bm === "";
+      return bm === m;
+    })
+    .map(({ i }) => i);
+});
+
+// 各底模分类的数量（用于筛选栏计数）
+function countByModel(m: string): number {
+  if (m === "all") return loras.value.length;
+  if (m === "__none__") return loras.value.filter((l) => !((l.base_model || "").trim())).length;
+  return loras.value.filter((l) => ((l.base_model || "").trim()) === m).length;
+}
 
 async function load() {
   loading.value = true;
@@ -286,6 +322,8 @@ onMounted(load);
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
+.filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex: 0 0 auto; flex-wrap: wrap; }
+.filter-label { color: var(--text-sub); font-size: 13px; }
 .lora-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .lora-card {
