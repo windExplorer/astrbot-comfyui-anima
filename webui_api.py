@@ -395,6 +395,9 @@ class WebUIApi:
             scope = (request.query.get("scope") or "").strip().lower()
             user_id = (request.query.get("user_id") or "").strip()
             merge = request.query.get("merge", "0") == "1"
+            # 明细分页：page 从 1 起；page_size 默认 30，上限 200
+            page = max(1, int(request.query.get("page") or 1))
+            page_size = max(1, min(int(request.query.get("page_size") or 30), 200))
             merge_names = ["PrivateCompanion"] if merge else None
             summary = ts.query_summary(user_id=user_id, days=max(days, 1))
             scenes = ts.list_scenes(days=max(days, 1))
@@ -410,7 +413,13 @@ class WebUIApi:
                 hourly = ts.list_hourly(hours=24)
             else:
                 hourly = []
-            detail = ts.list_detail(user_id=user_id, days=max(days, 1))
+            detail_total = ts.count_detail(user_id=user_id, days=max(days, 1))
+            detail = ts.list_detail(
+                user_id=user_id,
+                days=max(days, 1),
+                offset=(page - 1) * page_size,
+                limit=page_size,
+            )
             return json_response(
                 {
                     "summary": summary,
@@ -420,6 +429,9 @@ class WebUIApi:
                     "daily": daily,
                     "hourly": hourly,
                     "detail": detail,
+                    "detail_total": detail_total,
+                    "page": page,
+                    "page_size": page_size,
                     "days": days,
                     "merge": merge,
                 }

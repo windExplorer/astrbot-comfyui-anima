@@ -349,26 +349,35 @@ class TokenStore:
             ranked = owner_rows
         return ranked
 
-    def list_detail(self, user_id: str = "", days: int = 30) -> list[dict]:
+    def list_detail(
+        self,
+        user_id: str = "",
+        days: int = 30,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> list[dict]:
         """明细查询，可按 user_id 过滤；返回按时间倒序的 (scene/model/时间) 明细。
 
         返回的 ``hour_bucket`` 为 ``YYYY-MM-DD HH:00`` 小时桶，同时派生出
-        ``day_bucket``（前 10 位日期）供前端按日展示。
+        ``day_bucket``（前 10 位日期）供前端按日展示。支持后端分页：
+        ``offset`` 为跳过条数，``limit`` 为返回条数上限（None 表示不分页，全量返回）。
         """
         bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         conn = self._conn_get()
+        base_sql = (
+            "SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
+            "FROM llm_usage WHERE hour_bucket>=? "
+        )
         if user_id:
-            rows = conn.execute(
-                "SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
-                "FROM llm_usage WHERE user_id=? AND hour_bucket>=? ORDER BY hour_bucket DESC, total DESC",
-                (user_id, bucket_min),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
-                "FROM llm_usage WHERE hour_bucket>=? ORDER BY hour_bucket DESC, total DESC",
-                (bucket_min,),
-            ).fetchall()
+            base_sql += "AND user_id=? "
+        base_sql += "ORDER BY hour_bucket DESC, total DESC"
+        params: list = [bucket_min]
+        if user_id:
+            params.append(user_id)
+        if limit is not None:
+            base_sql += " LIMIT ? OFFSET ?"
+            params += [int(max(limit, 1)), int(max(offset, 0))]
+        rows = conn.execute(base_sql, params).fetchall()
         return [
             {
                 "user_id": r["user_id"],
@@ -384,6 +393,22 @@ class TokenStore:
             }
             for r in rows
         ]
+
+    def count_detail(self, user_id: str = "", days: int = 30) -> int:
+        """返回明细总条数（与 list_detail 同过滤条件），供前端分页计算总页数。"""
+        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
+        conn = self._conn_get()
+        if user_id:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM llm_usage WHERE user_id=? AND hour_bucket>=?",
+                (user_id, bucket_min),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM llm_usage WHERE hour_bucket>=?",
+                (bucket_min,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def list_scenes(self, days: int = 30) -> list[dict]:
         """按调用场景（scene）汇总，用于 WebUI 分类展示。"""

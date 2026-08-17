@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.2.14
+
+- **WebUI 大图查看器补充「触发消息」展示**：图片信息面板新增「触发消息」字段，展示触发本次生图的用户消息原文（`trigger_msg`），与旧版控制台一致；该字段来自图库元数据，无记录时自动隐藏。
+- **Token 用量「明细」改为后端分页**：明细不再一次性返回全部（数据量大时会拉取过重、渲染卡顿）。`token/summary` 新增 `page`/`page_size` 参数，后端 `list_detail` 支持 `offset`/`limit` 并新增 `count_detail` 统计总条数；WebUI 明细表下方接入分页器，支持每页条数切换（10~100），切换时间范围/合并插件时自动回到第 1 页。
+
 ## v4.2.13
 
 - **修复 v4.2.12 升级后 Token 统计报 `no such column: hour_bucket`**：旧库仍为 `day_bucket` 结构时，`_init_db` 在**迁移旧表之前**就执行了 `CREATE INDEX ... ON llm_usage (hour_bucket)`，旧表尚无该列导致建索引抛错、迁移流程中断，后续查询 hour_bucket 列失败。现调整初始化顺序为「先迁移旧表、再建 hour_bucket 索引」，旧库升级后会自动平滑重建为小时粒度，不再报错。

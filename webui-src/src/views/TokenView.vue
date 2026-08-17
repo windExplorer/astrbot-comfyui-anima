@@ -13,7 +13,7 @@
 
     <div class="token-scroll">
     <div class="scope-toolbar">
-      <n-radio-group v-model:value="scope" size="small" @update:value="load">
+      <n-radio-group v-model:value="scope" size="small" @update:value="onScopeChange">
         <n-radio-button value="today">今天</n-radio-button>
         <n-radio-button value="1">近 1 天</n-radio-button>
         <n-radio-button value="3">近 3 天</n-radio-button>
@@ -22,7 +22,7 @@
         <n-radio-button value="90">近 90 天</n-radio-button>
         <n-radio-button value="all">全部</n-radio-button>
       </n-radio-group>
-      <n-checkbox v-model:checked="merge" size="small" @update:checked="load">合并插件记录</n-checkbox>
+      <n-checkbox v-model:checked="merge" size="small" @update:checked="onScopeChange">合并插件记录</n-checkbox>
     </div>
 
     <n-spin :show="loading">
@@ -66,6 +66,7 @@
       <div class="panel">
         <div class="panel-title"><h3>明细</h3></div>
         <n-data-table :columns="detailColumns" :data="detail" :bordered="false" size="small" />
+        <Pager :page="page" :page-size="pageSize" :total="detailTotal" @update:page="onPage" @update:page-size="onPageSize" />
       </div>
     </n-spin>
     </div>
@@ -76,6 +77,7 @@
 import { computed, h, onMounted, ref } from "vue";
 import { useMessage, useDialog, NButton, NRadioGroup, NRadioButton, NCheckbox, NCard, NDataTable, NSpin, NTag, type DataTableColumns } from "naive-ui";
 import AreaChart from "@/components/AreaChart.vue";
+import Pager from "@/components/Pager.vue";
 import { apiGet, apiPost } from "@/api/bridge";
 import { fmtDateTime } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
@@ -85,6 +87,9 @@ const dialog = useDialog();
 const loading = ref(false);
 const scope = ref("1");
 const merge = ref(false);
+const page = ref(1);
+const pageSize = ref(30);
+const detailTotal = ref(0);
 
 const summary = ref<any>(null);
 const scenes = ref<any[]>([]);
@@ -119,12 +124,19 @@ async function load() {
   loading.value = true;
   try {
     const days = SCOPE_DAYS[scope.value] || "30";
-    const data = await apiGet("token/summary", { days, scope: scope.value, merge: merge.value ? 1 : 0 });
+    const data = await apiGet("token/summary", {
+      days,
+      scope: scope.value,
+      merge: merge.value ? 1 : 0,
+      page: page.value,
+      page_size: pageSize.value,
+    });
     summary.value = data && data.summary ? data.summary : null;
     scenes.value = (data && Array.isArray(data.scenes)) ? data.scenes : [];
     models.value = (data && Array.isArray(data.models)) ? data.models : [];
     users.value = (data && Array.isArray(data.users)) ? data.users : [];
     detail.value = (data && Array.isArray(data.detail)) ? data.detail : [];
+    detailTotal.value = (data && typeof data.detail_total === "number") ? data.detail_total : detail.value.length;
     daily.value = (data && Array.isArray(data.daily)) ? data.daily : [];
     hourly.value = (data && Array.isArray(data.hourly)) ? data.hourly : [];
   } catch (e: any) {
@@ -132,6 +144,22 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+
+// 切换时间范围 / 合并插件记录时，明细范围变化，页码重置到第 1 页
+function onScopeChange() {
+  page.value = 1;
+  load();
+}
+
+function onPage(p: number) {
+  page.value = p;
+  load();
+}
+function onPageSize(s: number) {
+  pageSize.value = s;
+  page.value = 1;
+  load();
 }
 
 const trendData = computed(() => {

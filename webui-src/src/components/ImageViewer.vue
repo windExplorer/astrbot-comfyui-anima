@@ -35,6 +35,7 @@
             <div class="iv-row"><span class="k">SHA</span><span class="v">{{ shortSha }}</span></div>
             <div class="iv-row"><span class="k">类型</span><span class="v">{{ typeText }}</span></div>
             <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
+            <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
             <div v-if="item.size_bytes != null" class="iv-row"><span class="k">大小</span><span class="v">{{ fmtBytes(item.size_bytes) }}</span></div>
             <div v-if="item.cost_sec != null" class="iv-row"><span class="k">耗时</span><span class="v">{{ fmtDuration(item.cost_sec) }}</span></div>
@@ -67,6 +68,7 @@ interface ViewerImage {
   is_img2img?: boolean;
   prompt?: string;
   prompt_raw?: string;
+  trigger_msg?: string;
   workflow?: string;
   w?: number;
   h?: number;
