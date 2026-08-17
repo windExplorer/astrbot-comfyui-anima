@@ -746,7 +746,7 @@
       "Anima 翻译": { description: "Anima 工作流中文提示词翻译模式与接口（danbooru / llm / api）", icon: "translate", keys: ["translator_mode", "translate_llm_model", "translate_api", "danbooru"] },
       "出图行为": { description: "出图等待、轮询、webp 转换与小报告等行为", icon: "image", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report"] },
       "网络与代理": { description: "外部网络访问（如 C 站抓取）的代理设置与 C 站 API Key", icon: "network", keys: ["http_proxy", "civitai_api_key"] },
-      "权限与图库": { description: "发图白名单、生图次数限制与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "draw_limit", "gallery"] }
+      "权限与图库": { description: "发图白名单、生图次数限制、黑名单与图片画廊归档", icon: "lock", keys: ["allow_draw_users", "draw_limit", "blacklist", "gallery"] }
     };
     var groupsMeta = CFG_GROUPS || {};
     // 收集所有已分区 key

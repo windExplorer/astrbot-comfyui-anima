@@ -2124,6 +2124,12 @@ class ComfyUIDrawPlugin(Star):
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
+        # 绘图黑名单：被拉黑的用户/群直接拒绝（覆盖指令、AI 对话、伴侣插件等所有画图方式）。
+        _bl_ok, _bl_reason = self._check_blacklist(event)
+        if not _bl_ok:
+            logger.info(f"[绘图] 黑名单拦截：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
+            await self._send(event, _bl_reason)
+            return
         # 发图白名单：allow_draw_users 非空时，非白名单用户直接拒绝，不进入生图流程。
         # 空名单 = 所有用户都允许（含未识别到 user_id 的情况）。
         if not self._is_draw_allowed(user_id):
@@ -3273,6 +3279,100 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # ------------------------------------------------------------------ #
+    # 指令：/拉黑 /解黑 /黑名单 绘图黑名单管理（仅管理员）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_blacklist_arg(args: str) -> tuple[str, str]:
+        """解析黑名单指令参数，返回 (类型, 号码)。类型为 'group' 或 'user'。
+        支持 `/拉黑 123`（用户）、`/拉黑 群 123`（群）、`/拉黑 用户 123`。"""
+        args = (args or "").strip()
+        parts = args.split(None, 1)
+        if not parts:
+            return "user", ""
+        first = parts[0].strip()
+        if first in ("群", "群号", "group", "g"):
+            return "group", (parts[1].strip() if len(parts) > 1 else "")
+        if first in ("用户", "人", "user", "u"):
+            return "user", (parts[1].strip() if len(parts) > 1 else "")
+        return "user", args
+
+    def _set_blacklist_entry(self, key: str, num: str, add: bool) -> tuple[bool, str]:
+        """在黑名单配置里添加/移除一个号码。返回 (是否变更, 提示)。"""
+        bl = dict(self._blacklist_cfg())
+        cur = self._parse_id_list(bl.get(key, ""))
+        if add:
+            if num in cur:
+                return False, "已在黑名单中。"
+            cur.add(num)
+            bl[key] = "\n".join(sorted(cur))
+            bl["enabled"] = True  # 拉黑时自动开启黑名单
+        else:
+            if num not in cur:
+                return False, "不在黑名单中。"
+            cur.discard(num)
+            bl[key] = "\n".join(sorted(cur))
+            if not cur and key == "users" and not self._parse_id_list(bl.get("groups", "")):
+                bl["enabled"] = False  # 全部清空时关闭开关
+        self.config["blacklist"] = bl
+        self.config.save_config()
+        return True, ""
+
+    @filter.command("拉黑", alias={"blacklist_add", "加黑名单"})
+    async def cmd_blacklist_add(self, event: AstrMessageEvent):
+        """把用户或群加入绘图黑名单。用法：/拉黑 [群|用户] 号码（缺省按用户）。仅管理员。"""
+        if not self._is_admin(event):
+            await self._send(event, "只有管理员可以管理黑名单。")
+            event.stop_event()
+            return
+        kind, num = self._parse_blacklist_arg(self._strip_command(event.message_str, "拉黑"))
+        if not num:
+            await self._send(event, "用法：/拉黑 [群|用户] 号码  （缺省按用户）")
+            event.stop_event()
+            return
+        key = "groups" if kind == "group" else "users"
+        label = "群" if kind == "group" else "用户"
+        changed, tip = self._set_blacklist_entry(key, num, add=True)
+        await self._send(event, f"已将{label}「{num}」{tip if not changed else '加入绘图黑名单。'}")
+        event.stop_event()
+
+    @filter.command("解黑", alias={"blacklist_remove", "移出黑名单"})
+    async def cmd_blacklist_remove(self, event: AstrMessageEvent):
+        """把用户或群移出绘图黑名单。用法：/解黑 [群|用户] 号码（缺省按用户）。仅管理员。"""
+        if not self._is_admin(event):
+            await self._send(event, "只有管理员可以管理黑名单。")
+            event.stop_event()
+            return
+        kind, num = self._parse_blacklist_arg(self._strip_command(event.message_str, "解黑"))
+        if not num:
+            await self._send(event, "用法：/解黑 [群|用户] 号码  （缺省按用户）")
+            event.stop_event()
+            return
+        key = "groups" if kind == "group" else "users"
+        label = "群" if kind == "group" else "用户"
+        changed, tip = self._set_blacklist_entry(key, num, add=False)
+        await self._send(event, f"已将{label}「{num}」{tip if not changed else '移出绘图黑名单。'}")
+        event.stop_event()
+
+    @filter.command("黑名单", alias={"blacklist", "查看黑名单"})
+    async def cmd_blacklist_show(self, event: AstrMessageEvent):
+        """查看当前绘图黑名单（用户 + 群 + 开关）。仅管理员。"""
+        if not self._is_admin(event):
+            await self._send(event, "只有管理员可以查看黑名单。")
+            event.stop_event()
+            return
+        bl = self._blacklist_cfg()
+        users = sorted(self._parse_id_list(bl.get("users", "")))
+        groups = sorted(self._parse_id_list(bl.get("groups", "")))
+        enabled = bool(bl.get("enabled", False))
+        lines = ["🚫 绘图黑名单"]
+        lines.append(f"· 开关：{'已开启' if enabled else '已关闭'}")
+        lines.append(f"· 黑名单用户（{len(users)}）：" + (("、".join(users)) if users else "（空）"))
+        lines.append(f"· 黑名单群（{len(groups)}）：" + (("、".join(groups)) if groups else "（空）"))
+        lines.append("· 管理员豁免：是" if bl.get("admin_exempt", True) else "· 管理员豁免：否")
+        await self._send(event, "\n".join(lines))
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
     # 指令：/workflows 列出/选择默认工作流
     # ------------------------------------------------------------------ #
     @filter.command("workflows")
@@ -3412,6 +3512,45 @@ class ComfyUIDrawPlugin(Star):
             if x.strip()
         }
         return user_id in allowed
+
+    def _blacklist_cfg(self) -> dict:
+        """绘图黑名单配置块（blacklist）。"""
+        return self._cfg("blacklist", {}) or {}
+
+    def _parse_id_list(self, raw: str) -> set[str]:
+        """把配置里的 ID 列表（逗号/换行/全角逗号分隔）解析为去重集合。"""
+        if not raw:
+            return set()
+        return {x.strip() for x in re.split(r"[,，\n\r]+", str(raw)) if x.strip()}
+
+    def _check_blacklist(self, event) -> tuple[bool, str]:
+        """绘图黑名单校验。返回 (是否允许, 拒绝原因)。
+
+        按用户（get_sender_id）或群（get_group_id，群聊返回群号、私聊为 None）命中
+        黑名单即拒绝。管理员默认豁免（blacklist.admin_exempt=true 时）。
+        """
+        bl = self._blacklist_cfg()
+        if not bl.get("enabled", False):
+            return True, ""
+        # 管理员豁免（默认开启，避免误把自己锁死）
+        if bl.get("admin_exempt", True) and self._is_admin(event):
+            return True, ""
+        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        # 群号：优先 get_group_id（AstrBot 标准方法）；不存在则从 session_id 兜底
+        group_id = ""
+        try:
+            get_g = getattr(event, "get_group_id", None)
+            if callable(get_g):
+                group_id = str(get_g() or "").strip()
+        except Exception:
+            group_id = ""
+        users = self._parse_id_list(bl.get("users", ""))
+        groups = self._parse_id_list(bl.get("groups", ""))
+        if user_id and user_id in users:
+            return False, "你已被加入绘图黑名单，无法使用绘图功能。"
+        if group_id and group_id in groups:
+            return False, "本群已被加入绘图黑名单，无法使用绘图功能。"
+        return True, ""
 
     # ------------------------------------------------------------------ #
     # 生图次数限制（配额）

@@ -647,6 +647,37 @@
       }
     }
   },
+  "blacklist": {
+    "type": "object",
+    "description": "绘图黑名单（按群 / 按人）",
+    "hint": "拉黑后，被拉黑的用户（QQ 号）或群无法使用任何画图方式（指令绘图、AI 对话画图、伴侣插件等）。在 _do_draw 统一入口拦截。users 填用户 ID（QQ 号），groups 填群号，每行一个（也支持逗号分隔）。可配合 /拉黑、/解黑、/黑名单 指令管理。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用绘图黑名单",
+        "hint": "总开关。关闭后黑名单不生效（列表保留）。",
+        "default": false
+      },
+      "users": {
+        "type": "text",
+        "description": "黑名单用户 ID（QQ 号）",
+        "hint": "填写被拉黑的用户 ID，每行一个（也支持逗号分隔）。命中的用户无法使用任何画图方式。",
+        "default": ""
+      },
+      "groups": {
+        "type": "text",
+        "description": "黑名单群号",
+        "hint": "填写被拉黑的群号，每行一个（也支持逗号分隔）。命中群内的所有人都无法使用任何画图方式。",
+        "default": ""
+      },
+      "admin_exempt": {
+        "type": "bool",
+        "description": "管理员豁免黑名单",
+        "hint": "开启后管理员（event.is_admin 判定）不受黑名单限制，避免误把自己锁死。",
+        "default": true
+      }
+    }
+  },
   "http_proxy": {
     "type": "string",
     "description": "HTTP/HTTPS 代理（用于 C 站抓取等外部请求）",
