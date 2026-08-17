@@ -65,8 +65,8 @@
       </div>
     </n-modal>
 
-    <!-- 大图预览 -->
-    <ImagePreview v-model:show="previewShow" :src="previewSrc" :title="previewTitle" />
+    <!-- 大图详情（全屏：左侧封面，右侧字段信息） -->
+    <ItemViewer v-model:show="previewShow" :src="previewSrc" :title="previewTitle" :fields="detailFields" />
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" style="width:680px" :bordered="false">
@@ -110,7 +110,7 @@ import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInpu
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
-import ImagePreview from "@/components/ImagePreview.vue";
+import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -161,23 +161,35 @@ function aliasFirst(raw: string): string {
   return a.length ? a[0] : "—";
 }
 
-// 大图预览（用弹窗显示 data URL，避免沙箱 iframe 下 window.open 被拦截）
+// 大图详情（全屏：左侧封面，右侧字段信息）
 const previewShow = ref(false);
 const previewSrc = ref("");
 const previewTitle = ref("");
+const detailFields = ref<ItemViewerField[]>([]);
 
 function openImage(fname: string, name: string) {
-  if (!fname) { message.info("该 LoRA 没有封面图，可先上传或抓取封面"); return; }
-  message.loading("加载预览…", { duration: 8000 });
-  apiGet("lora/image", { name: fname }).then((d) => {
-    if (d && d.url) {
-      previewSrc.value = d.url;
-      previewTitle.value = name || fname;
-      previewShow.value = true;
-    } else {
-      message.error("封面加载失败");
-    }
-  }).catch(() => message.error("封面加载失败"));
+  const l = loras.value.find((x) => x.image === fname) || {};
+  const realName = name || l.name || fname;
+  previewSrc.value = ""; // 重置后组件显示"封面加载中…"
+  detailFields.value = [
+    { key: "名称", value: realName },
+    { key: "别名", value: parseAliases(l.keywords || "").join(" / ") || "—" },
+    { key: "底模", value: l.base_model?.trim() || "通用" },
+    { key: "模型", value: l.model_name?.trim() || "—" },
+    { key: "默认权重", value: l.weight ?? 1 },
+    { key: "触发词", value: l.trigger_words?.trim() || "—" },
+    { key: "提示词预设", value: l.presets?.trim() || "—" },
+    { key: "描述", value: l.description?.trim() || "—" },
+    { key: "封面文件", value: fname },
+  ];
+  if (l.civitai_url) detailFields.value.push({ key: "C 站", value: l.civitai_url, href: l.civitai_url });
+  previewTitle.value = realName;
+  previewShow.value = true;
+  if (fname) {
+    apiGet("lora/image", { name: fname }).then((d) => {
+      if (d && d.url) previewSrc.value = d.url;
+    }).catch(() => {});
+  }
 }
 
 // 详情

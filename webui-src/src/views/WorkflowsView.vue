@@ -46,7 +46,8 @@
     </div>
 
     <!-- 大图预览 -->
-    <ImagePreview v-model:show="previewShow" :src="previewSrc" :title="previewTitle" />
+    <!-- 大图详情（全屏：左侧封面，右侧字段信息） -->
+    <ItemViewer v-model:show="previewShow" :src="previewSrc" :title="previewTitle" :fields="detailFields" />
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" style="width:720px" :bordered="false">
@@ -111,7 +112,7 @@ import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInpu
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
-import ImagePreview from "@/components/ImagePreview.vue";
+import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -151,23 +152,35 @@ function availLoras(w: any): string[] {
     .filter(Boolean);
 }
 
-// 大图预览（用弹窗显示 data URL，避免沙箱 iframe 下 window.open 被拦截）
+// 大图详情（全屏：左侧封面，右侧字段信息）
 const previewShow = ref(false);
 const previewSrc = ref("");
 const previewTitle = ref("");
+const detailFields = ref<ItemViewerField[]>([]);
 
 function openImage(fname: string, name: string) {
-  if (!fname) { message.info("该工作流没有封面图，可先上传或抓取封面"); return; }
-  message.loading("加载预览…", { duration: 8000 });
-  apiGet("lora/image", { name: fname }).then((d) => {
-    if (d && d.url) {
-      previewSrc.value = d.url;
-      previewTitle.value = name || fname;
-      previewShow.value = true;
-    } else {
-      message.error("封面加载失败");
-    }
-  }).catch(() => message.error("封面加载失败"));
+  const w = workflows.value.find((x) => x.image === fname) || {};
+  const realName = name || w.name || fname;
+  previewSrc.value = ""; // 重置后组件显示"封面加载中…"
+  detailFields.value = [
+    { key: "名称", value: realName },
+    { key: "别名", value: aliasStr(w.aliases || "") },
+    { key: "底模", value: w.base_model?.trim() || "通用" },
+    { key: "服务器", value: w.server_name?.trim() || "默认" },
+    { key: "工作流文件", value: w.workflow_name?.trim() || "—" },
+    { key: "Anima 模式", value: w.is_anima ? "是" : "否" },
+    { key: "默认尺寸", value: w.default_width && w.default_height ? `${w.default_width} × ${w.default_height}` : "—" },
+    { key: "预设 LoRA", value: w.loras_text?.trim() || "—" },
+    { key: "封面文件", value: fname },
+  ];
+  if (w.civitai_url) detailFields.value.push({ key: "C 站", value: w.civitai_url, href: w.civitai_url });
+  previewTitle.value = realName;
+  previewShow.value = true;
+  if (fname) {
+    apiGet("lora/image", { name: fname }).then((d) => {
+      if (d && d.url) previewSrc.value = d.url;
+    }).catch(() => {});
+  }
 }
 
 // 编辑
