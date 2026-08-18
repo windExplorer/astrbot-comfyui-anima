@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.7
+
+- **修复 `gallery/check_nsfw` 400（单图检测）**：`check_nsfw` 查询用精确匹配 `sha256=?`，前端传的 sha 可能是内容寻址前缀（sha256[:16]），导致查不到而返回 400「未找到该图」。现改为前缀 `LIKE` 匹配并取第一条；`set_nsfw_blur` / `clear_nsfw_blur` 同步改为「先解析完整 sha 再更新」，避免前缀 UPDATE 命中多条。
+
 ## v4.4.6
 
 - **修复 NSFW 检测报 `No module named 'nsfw_detector'`**：`image_store` 里对 `nsfw_detector` 用的是绝对导入 `from nsfw_detector import ...`，在 AstrBot 用相对导入加载插件时找不到模块，导致归档 NSFW 检测异常（但不阻塞归档）。现改为模块级兼容性导入 `_get_detector()`（先试相对导入 `.nsfw_detector`，再退回到绝对导入 `nsfw_detector`），所有调用点统一走它；检测不可用时静默降级。

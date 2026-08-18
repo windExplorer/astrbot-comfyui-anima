@@ -365,11 +365,15 @@ class ImageStore:
                     "msg": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
         conn = self._conn_get()
         try:
+            # 支持前缀匹配（前端传的 sha 可能是 sha256[:16] 内容寻址前缀）
+            sha_prefix = sha256.strip()
             row = conn.execute(
-                "SELECT sha256, ext, month, source FROM images WHERE sha256=? LIMIT 1", (sha256,)
+                "SELECT sha256, ext, month, source FROM images WHERE sha256 LIKE ? "
+                "ORDER BY sha256 LIMIT 1", (f"{sha_prefix}%",)
             ).fetchone()
             if not row:
                 return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "未找到该图"}
+            full_sha = row["sha256"]
             p = self._path_of_row(row)
             if not p.exists():
                 return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "图片文件不存在"}
@@ -378,7 +382,7 @@ class ImageStore:
                 return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "检测失败"}
             conn.execute(
                 "UPDATE images SET nsfw=?, nsfw_score=?, nsfw_checked=1 WHERE sha256=?",
-                (1 if is_nsfw else 0, score, sha256),
+                (1 if is_nsfw else 0, score, full_sha),
             )
             conn.commit()
             return {"ok": True, "nsfw": is_nsfw, "nsfw_score": score, "available": True, "msg": "检测完成"}
@@ -1214,9 +1218,16 @@ class ImageStore:
             return False
         conn = self._conn_get()
         try:
+            # 支持前缀匹配：先解析完整 sha，避免前缀 UPDATE 命中多条
+            row = conn.execute(
+                "SELECT sha256 FROM images WHERE sha256 LIKE ? ORDER BY sha256 LIMIT 1",
+                (f"{sha256.strip()}%",),
+            ).fetchone()
+            if not row:
+                return False
             conn.execute(
                 "UPDATE images SET nsfw_blur=? WHERE sha256=?",
-                (1 if on else 0, sha256),
+                (1 if on else 0, row["sha256"]),
             )
             conn.commit()
             return True
@@ -1230,7 +1241,13 @@ class ImageStore:
             return False
         conn = self._conn_get()
         try:
-            conn.execute("UPDATE images SET nsfw_blur=NULL WHERE sha256=?", (sha256,))
+            row = conn.execute(
+                "SELECT sha256 FROM images WHERE sha256 LIKE ? ORDER BY sha256 LIMIT 1",
+                (f"{sha256.strip()}%",),
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute("UPDATE images SET nsfw_blur=NULL WHERE sha256=?", (row["sha256"],))
             conn.commit()
             return True
         except Exception as e:
