@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.3.2
+
+- **移除「伴侣插件提示词过滤」功能**：该功能已不再使用，现已彻底移除——删除配置项 `filter_companion_prompt`、专属格式化方法 `_format_companion_prompt` 及其在 `llm_draw` 里的过滤分支。提示词现原样透传给 ComfyUI 出图（通用拆分 `_split_external_prompt` 仍在 `llm_img2img` 中保留使用）。
+
 ## v4.3.1
 
 - **`/绘图lora`（`/loralist`）输出简化**：只返回 LoRA 名称，去掉别名/分类/底模/文件等冗余信息；新增可选分类过滤 `角色` / `风格`，如 `/绘图lora 角色` 只列角色 LoRA。

@@ -1710,118 +1710,6 @@ class ComfyUIDrawPlugin(Star):
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
-    @staticmethod
-    def _format_companion_prompt(raw: str) -> tuple[str, str]:
-        """针对「我会永远陪着你」伴侣插件的生图提示词做专属格式化与过滤。
-
-        伴侣传来的整段含 Positive/Negative 分段、分节标题、'[section compacted]' 占位符，
-        以及大量与出图无关的事实描述（时间/日程/位置/情绪等）和元指令。这里只抽取对
-        出图真正有用的部分，采用「白名单段保留」策略：保留那些承载 SD 风格标签的节，
-        丢弃纯事实 / 元指令段。
-
-        保留的节（标题大小写不敏感，方括号可有可无）：
-        - user request / [User image request]：用户原始出图诉求（首行）
-        - additional visual recognition notes：角色外观识别要点（狐娘人设等）
-        - additional outfit preference：穿搭偏好（daily_outfit_photo_prompt 落在此处）
-        - visual continuity reference：跨轮视觉连续性参考
-        - [Composition and continuity]：构图连续性标准 SD 标签
-        负向段（Negative prompt:）单独保留，去掉其中的 'Do not ...' 元指令与占位符。
-
-        其余噪声（场景事实、分节标题、元指令、截断占位符）一律丢弃。
-        """
-        if not raw:
-            return "", ""
-        # 1) 先按 Negative prompt: 切分正/负原始段
-        m = re.search(r"negative\s*prompt\s*[:：]", raw, re.IGNORECASE)
-        pos_raw = raw[: m.start()].strip() if m else raw.strip()
-        neg_raw = raw[m.end():].strip() if m else ""
-
-        # 2) 正向：白名单段抽取
-        # 各保留节的标题正则（允许带或不带方括号）
-        keep_sections = [
-            r"user\s*image\s*request",
-            r"user\s*request",
-            r"additional\s*visual\s*recognition\s*notes",
-            r"additional\s*outfit\s*preference",
-            r"visual\s*continuity\s*reference",
-            r"composition\s*and\s*continuity",
-        ]
-        # 用统一正则把正向段按标题切成 (标题, 内容) 块
-        split_pat = re.compile(
-            r"(?:^|\n)\s*\[?\s*("
-            + "|".join(keep_sections)
-            + r")\s*\]?\s*[:：]?\s*\n",
-            re.IGNORECASE,
-        )
-        # 先把正向段按标题切分；没有命中任何白名单标题的零散首行视为 user request 首行
-        chunks: list[str] = []
-
-        # 提取所有白名单块
-        matches = list(split_pat.finditer(pos_raw))
-        if matches:
-            for i, mt in enumerate(matches):
-                start = mt.end()
-                end = matches[i + 1].start() if i + 1 < len(matches) else len(pos_raw)
-                content = pos_raw[start:end].strip()
-                content = re.sub(r"\[\s*section\s*compacted\s*\]", " ", content, flags=re.IGNORECASE)
-                content = re.sub(r"\s+", " ", content).strip()
-                if content:
-                    chunks.append(content)
-            # 首个白名单块之前、且不以白名单标题开头的文本，当作 user request 首行补上
-            head = pos_raw[: matches[0].start()].strip()
-            if head:
-                head = re.sub(r"\[\s*section\s*compacted\s*\]", " ", head, flags=re.IGNORECASE)
-                head = re.sub(r"\s+", " ", head).strip()
-                # 仅取首行，避免把分节标题后残留的噪声带进来
-                head_first = head.split("\n")[0].strip()
-                if head_first and not re.search(r"user\s*request", head_first, re.IGNORECASE):
-                    chunks.insert(0, head_first)
-        else:
-            # 没有任何白名单标题：退回旧逻辑，取首行作为 user request
-            um = re.search(r"user\s*request\s*[:：]\s*(.+)", pos_raw, re.IGNORECASE)
-            if um:
-                chunk = um.group(1).split("\n")[0].strip()
-            else:
-                chunk = pos_raw.split("\n")[0].strip()
-            chunk = re.sub(r"\[\s*section\s*compacted\s*\]", " ", chunk, flags=re.IGNORECASE)
-            chunk = re.sub(r"\s+", " ", chunk).strip()
-            if chunk:
-                chunks.append(chunk)
-
-        positive = ", ".join(p for p in chunks if p)
-
-        # 2.5) 中文保护：伴侣 prompt 里用户的**中文描图**往往不在白名单英文标题段内
-        # （例如裸中文段落、[Scene, style and final preset] 等非白名单段里的中文）。
-        # 白名单策略只保留「带英文标题」的段，会把这些中文整体丢弃——这是 bug。
-        # 这里兜底：扫描所有未被白名单块覆盖、含中文且非方括号标题行的内容，追加保留。
-        # 原则：**中文是用户出图意图核心，绝不丢；纯英文事实段仍按白名单丢弃**。
-        if re.search(r"[\u4e00-\u9fff]", pos_raw):
-            # 先把已收集 chunk 拼成一段用于「去重判断」（避免重复追加同一行）
-            used_blob = "\n".join(chunks)
-            for raw_line in pos_raw.split("\n"):
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if not re.search(r"[\u4e00-\u9fff]", line):
-                    continue  # 纯英文/数字行：按白名单策略，不兜底保留
-                if line.startswith("["):
-                    continue  # 方括号标题行（含中文标题）本身不是描图，跳过
-                # 已作为某 chunk 一部分存在则跳过（允许子串，避免重复）
-                if line in used_blob:
-                    continue
-                chunks.append(line)
-            positive = ", ".join(p for p in chunks if p)
-
-        # 3) 负向：取 Negative prompt 区块，去掉元指令与占位符
-        neg = neg_raw
-        neg = re.sub(r"\[\s*section\s*compacted\s*\]", " ", neg, flags=re.IGNORECASE)
-        neg = re.sub(r"do\s+not\s+[^\n;；]*", " ", neg, flags=re.IGNORECASE)
-        neg = re.sub(r"\bdup\b", " ", neg, flags=re.IGNORECASE)
-        neg = re.sub(r"\[[^\]]*?\s.+?\]", " ", neg)
-        negative = re.sub(r"\s+", " ", neg).strip()
-
-        return positive, negative
-
     # ------------------------------------------------------------------ #
     # 核心：提交并等待出图（异步生成器，yield 消息）
     # ------------------------------------------------------------------ #
@@ -4627,31 +4515,10 @@ class ComfyUIDrawPlugin(Star):
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
 
-        # 提示词过滤总开关（默认关闭）：
-        # - 关闭（默认）：无论原生调用还是伴侣插件调用，都**完全不做任何提示词改写**，
-        #   原始提示词原样透传给 ComfyUI（连通用拆分/清洗都不做）。
-        # - 开启：仅当调用方为伴侣插件（source == SOURCE_COMPANION_PLUGIN，
-        #   即 astrbot_plugin_private_companion）时，自动做完整过滤——先按通用规则
-        #   拆分正/负向并清洗方括号分节标记，再做专属过滤（抽取用户诉求与构图连续性，
-        #   过滤时间/日程/位置/情绪等无关事实与元指令、Avoid/Do not 负面约束）。
-        #   原生调用（/draw、AI 对话、Agent 等）即使开启开关也归属同一过滤功能，
-        #   由本总开关统一控制，这里同走过滤分支即可。
-        _filter_on = plugin._cfg("filter_companion_prompt", False)
-        is_companion_src = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
-        logger.info(
-            f"[llm_draw] 提示词过滤开关={_filter_on}, 来源={source!r}, 是否伴侣插件={is_companion_src}"
-        )
-        if _filter_on:
-            positive, parsed_neg = plugin._split_external_prompt(prompt)
-            cpos, cneg = plugin._format_companion_prompt(prompt)
-            if cpos:
-                positive = cpos
-            if cneg:
-                parsed_neg = cneg
-            positive = plugin._strip_inline_negative(positive)
-        else:
-            positive, parsed_neg = prompt.strip(), ""
-        negative = parsed_neg or (negative_prompt or "")
+        # 提示词原样透传（已移除「伴侣插件提示词过滤」功能）：原始提示词不做过多的
+        # 拆分/改写，直接传给 ComfyUI 出图。
+        positive = prompt.strip()
+        negative = negative_prompt or ""
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
         # （如 astrbot_plugin_private_companion 主动生图）。_do_draw 现以
