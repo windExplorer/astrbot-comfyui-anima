@@ -958,15 +958,21 @@ class ComfyUIDrawPlugin(Star):
             pass
 
     @staticmethod
-    def _strip_command(message_str: str, cmd: str) -> str:
-        """从消息文本中去掉命令触发词（如 /draw），返回剩余参数文本。"""
+    def _strip_command(message_str: str, cmd: str, aliases: tuple[str, ...] = ()) -> str:
+        """从消息文本中去掉命令触发词（如 /draw 或其别名 /图生图），返回剩余参数文本。
+
+        ``cmd`` 为主触发词，``aliases`` 为可选的别名集合（如中文别名），均支持剥离。
+        """
         text = (message_str or "").strip()
         parts = text.split(None, 1)
         if not parts:
             return ""
-        first = parts[0]
-        if first.lower().endswith(cmd.lower()) or first.lower() == cmd.lower():
-            return parts[1].strip() if len(parts) > 1 else ""
+        first = parts[0].lower()
+        targets = [cmd.lower(), *(a.lower() for a in aliases)]
+        for t in targets:
+            t = t.lstrip("/")
+            if first == t or first.endswith("/" + t) or first.endswith(t):
+                return parts[1].strip() if len(parts) > 1 else ""
         return text
 
     def _danbooru_cfg(self) -> dict:
@@ -2694,10 +2700,10 @@ class ComfyUIDrawPlugin(Star):
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
         event.stop_event()
 
-    @filter.command("img2img")
+    @filter.command("img2img", alias={"图生图", "图转图"})
     async def cmd_img2img(self, event: AstrMessageEvent):
-        """图生图：用附带的一张图片作为参考图重绘。用法：/img2img 描述 [--wf 工作流] [...]"""
-        args = self._strip_command(event.message_str, "img2img")
+        """图生图：用附带的一张图片作为参考图重绘。用法：/图生图 描述 [--wf 工作流] [...]"""
+        args = self._strip_command(event.message_str, "img2img", ("图生图", "图转图"))
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         images = await self._extract_images(event)
         # 图生图专用兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API
@@ -2925,14 +2931,14 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 指令：/loralist 列出可配置 LoRA
     # ------------------------------------------------------------------ #
-    @filter.command("loralist")
+    @filter.command("loralist", alias={"绘图lora", "绘图LoRA", "lora列表"})
     async def cmd_loralist(self, event: AstrMessageEvent):
         """列出已配置的 LoRA。
 
         默认列出全局 LoRA 库（含名称、别名、分类、底模、文件）。可用 --wf 名称 指定查看
         某工作流实际配置/启用的 LoRA。
         """
-        args = self._strip_command(event.message_str, "loralist")
+        args = self._strip_command(event.message_str, "loralist", ("绘图lora", "绘图LoRA", "lora列表"))
         m = re.search(r"--wf\s+(\S+)", args or "")
         if m:
             # 指定工作流：列出该工作流实际配置的 LoRA 及其启用状态
@@ -3070,10 +3076,10 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 指令：/queuestatus 查询队列
     # ------------------------------------------------------------------ #
-    @filter.command("queuestatus")
+    @filter.command("queuestatus", alias={"绘图队列", "队列状态"})
     async def cmd_queuestatus(self, event: AstrMessageEvent):
         """查询本地队列状态，以及你最近一次任务前面还有多少位。可用 --wf 指定服务器所在工作流。"""
-        args = self._strip_command(event.message_str, "queuestatus")
+        args = self._strip_command(event.message_str, "queuestatus", ("绘图队列", "队列状态"))
         m = re.search(r"--wf\s+(\S+)", args or "")
         wf_name = m.group(1) if m else None
         try:
@@ -3410,10 +3416,10 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 指令：/workflows 列出/选择默认工作流
     # ------------------------------------------------------------------ #
-    @filter.command("workflows")
+    @filter.command("workflows", alias={"绘图工作流", "工作流列表"})
     async def cmd_workflows(self, event: AstrMessageEvent):
-        """列出工作流，或设置默认工作流：/workflows set 动漫文生图 | set_real 真人文生图 | set_img2img 动漫图生图 | set_img2img_real 真人图生图"""
-        args = self._strip_command(event.message_str, "workflows")
+        """列出工作流，或设置默认工作流：/绘图工作流 set 动漫文生图 | set_real 真人文生图 | set_img2img 动漫图生图 | set_img2img_real 真人图生图"""
+        args = self._strip_command(event.message_str, "workflows", ("绘图工作流", "工作流列表"))
         # set_img2img_real / set_img2img / set_real / set 按长度优先匹配，防止被 set 正则吞掉后缀
         m_i2i_real = re.match(r"set_img2img_real\s+(\S+)", (args or "").strip())
         m_i2i = re.match(r"set_img2img\s+(\S+)", (args or "").strip())
@@ -3502,10 +3508,10 @@ class ComfyUIDrawPlugin(Star):
             "· 画图：直接说「画一张…」或「画…」，如「画一只猫」；也可说「用 xxx 风格画…」\n"
             "· /画 提示词   用默认或指定工作流画（如 /画 真人 一个女孩）\n"
             "· /绘图 /绘画 /生图 /画图 /作画 /画画 提示词   用默认工作流画\n"
-            "· /img2img 描述 + 参考图   图生图\n"
-            "· /loralist   查看可用 LoRA\n"
-            "· /workflows   查看 / 设置默认工作流\n"
-            "· /queuestatus   查看排队状态\n"
+            "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
+            "· /绘图lora   查看可用 LoRA（英文 /loralist 亦可）\n"
+            "· /绘图工作流   查看 / 设置默认工作流（英文 /workflows 亦可）\n"
+            "· /绘图队列   查看排队状态（英文 /queuestatus 亦可）\n"
             "· /绘图统计 [今天|昨天|周|月|全部]   出图统计\n"
             "· /绘图排行   今日绘图前五\n"
             "· /绘图状态   服务器状态与生图限额\n"
