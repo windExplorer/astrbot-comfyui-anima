@@ -248,6 +248,11 @@ function onCheckNsfw() {
       it.nsfw_score = res?.nsfw_score ?? null;
       it.nsfw_checked = true;
       message.success(res?.msg || "检测完成");
+      // 通知图库列表等页面本地同步该图的 NSFW 状态（无需重新请求接口）
+      const fullSha = it?.sha256 || sha;
+      window.dispatchEvent(new CustomEvent("anima:nsfw-updated", {
+        detail: { sha: fullSha, nsfw: !!res?.nsfw, nsfw_score: res?.nsfw_score ?? null },
+      }));
     })
     .catch((e: any) => {
       if (isNsfwUnavailable(e)) showNsfwInstallDialog();

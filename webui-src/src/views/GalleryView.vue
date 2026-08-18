@@ -145,7 +145,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, onUnmounted, reactive, ref } from "vue";
 import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane, NSwitch, NTooltip } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { fmtBytes, truncate } from "@/utils/format";
@@ -404,10 +404,28 @@ function refresh() {
 }
 
 useRefresh(refresh);
+// 监听大图检测结果，本地同步图库列表对应图的 NSFW 状态（封面立即模糊，无需重新搜索）
+function onNsfwUpdated(e: Event) {
+  const detail = (e as CustomEvent)?.detail;
+  if (!detail?.sha) return;
+  const arr = images.value;
+  for (let i = 0; i < arr.length; i++) {
+    const it = arr[i];
+    if ((it.sha || it.sha256) === detail.sha) {
+      it.nsfw = !!detail.nsfw;
+      it.nsfw_score = detail.nsfw_score ?? null;
+      it.nsfw_checked = true;
+      break;
+    }
+  }
+}
 onMounted(() => {
   loadStats();
   doSearch(1);
+  window.addEventListener("anima:nsfw-updated", onNsfwUpdated);
 });
+// 组件卸载时清理监听，避免重复监听导致内存泄漏
+onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated));
 </script>
 
 <style scoped>
