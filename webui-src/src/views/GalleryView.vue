@@ -81,6 +81,22 @@
         </template>
         一键开关所有 NSFW 图的模糊显示
       </n-tooltip>
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <n-button size="small" @click="startScan" :disabled="scanState.running" :loading="scanState.running">
+            {{ scanState.running ? "检测中…" : "一键检测" }}
+          </n-button>
+        </template>
+        检测图库中所有未检测的图
+      </n-tooltip>
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <n-button size="small" quaternary @click="refreshScanProgress">↻</n-button>
+        </template>
+        刷新检测进度
+      </n-tooltip>
+      <span v-if="scanState.running" class="scan-progress">检测中 {{ scanState.done }}/{{ scanState.total || "?" }}</span>
+      <span v-else-if="scanState.finished_at" class="scan-progress scan-done">上次检测 {{ scanState.done }} 张，NSFW {{ scanState.nsfw }}</span>
       <span class="count">{{ total ? total + " 条" : "" }}</span>
     </div>
 
@@ -176,6 +192,26 @@ try {
 } catch { /* ignore */ }
 function onBlurGlobalChange() {
   try { localStorage.setItem("anima_gal_nsfw_blur", nsfwBlurGlobal.value ? "1" : "0"); } catch { /* ignore */ }
+}
+// ---- NSFW 一键检测 + 进度 ----
+const scanState = ref<{ running: boolean; total: number; done: number; nsfw: number; finished_at: number | null }>({
+  running: false, total: 0, done: 0, nsfw: 0, finished_at: null,
+});
+function startScan() {
+  apiGet("gallery/scan_nsfw", { only: 1 })
+    .then((res: any) => { scanState.value = { ...scanState.value, ...res }; })
+    .catch((e: any) => message.error(e.message || "启动检测失败"));
+}
+function refreshScanProgress() {
+  apiGet("gallery/scan_nsfw_progress")
+    .then((res: any) => {
+      scanState.value = { ...scanState.value, ...res };
+      if (res?.finished_at && !res?.running) {
+        // 检测完成，刷新列表与统计
+        doSearch(1);
+      }
+    })
+    .catch((e: any) => message.error(e.message || "刷新进度失败"));
 }
 // 该图是否应模糊显示：NSFW 图 && 全局开关开 && 单图未强制取消（nsfw_blur=0 时单图不模糊，=1 时单图模糊）
 function isNsfwBlurred(img: any): boolean {
@@ -428,6 +464,14 @@ onMounted(() => {
   padding: 1px 8px;
   border-radius: 12px;
   backdrop-filter: blur(3px);
+}
+.scan-progress {
+  font-size: 12px;
+  color: #f0c060;
+  margin-left: 4px;
+}
+.scan-progress.scan-done {
+  color: #7fd0a0;
 }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }

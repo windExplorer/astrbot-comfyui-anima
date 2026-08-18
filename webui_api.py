@@ -1022,20 +1022,28 @@ class WebUIApi:
             return error_response(f"操作失败: {e}")
 
     async def gallery_scan_nsfw(self):
-        """手动扫描图库旧图做 NSFW 检测。GET ?limit=50&only=1（默认只扫未检测的图）。"""
+        """后台启动一键 NSFW 扫描（默认只扫未检测的图）。GET ?only=1/0。"""
         g = self._gallery()
         if g is None:
             return error_response("图库未启用或初始化失败")
         try:
-            try:
-                limit = max(1, min(int(request.query.get("limit", 50) or 50), 2000))
-            except Exception:
-                limit = 50
             only = request.query.get("only", "1") != "0"
-            res = g.scan_nsfw(limit=limit, only_unchecked=only)
+            res = g.scan_nsfw_start(only_unchecked=only)
+            if res.get("last_err"):
+                return error_response(res["last_err"])
             return json_response(res)
         except Exception as e:
             return error_response(f"扫描失败: {e}")
+
+    async def gallery_scan_nsfw_progress(self):
+        """查询 NSFW 扫描进度。GET，返回 {running, total, done, nsfw, started_at, finished_at, last_err}。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            return json_response(g.scan_nsfw_progress())
+        except Exception as e:
+            return error_response(f"查询进度失败: {e}")
 
     async def gallery_check_nsfw(self):
         """对单张图做 NSFW 检测。GET ?sha=xxx，返回检测结果并写回库。"""
@@ -1278,7 +1286,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
         (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
         (f"{prefix}/gallery/set_blur", api.gallery_set_blur, ["POST"], "图库单图NSFW模糊"),
-        (f"{prefix}/gallery/scan_nsfw", api.gallery_scan_nsfw, ["GET"], "图库NSFW扫描"),
+        (f"{prefix}/gallery/scan_nsfw", api.gallery_scan_nsfw, ["GET"], "图库NSFW一键扫描"),
+        (f"{prefix}/gallery/scan_nsfw_progress", api.gallery_scan_nsfw_progress, ["GET"], "图库NSFW扫描进度"),
         (f"{prefix}/gallery/check_nsfw", api.gallery_check_nsfw, ["GET"], "图库单图NSFW检测"),
         (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除(移入回收站)"),
         (f"{prefix}/gallery/trash", api.gallery_trash, ["GET"], "图库回收站"),

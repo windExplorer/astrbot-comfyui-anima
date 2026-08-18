@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -69,6 +70,13 @@ class ImageStore:
         self.db_path = self.data_dir / "gallery.db"
         self.cfg = cfg or {}
         self._conn = None
+        # 后台 NSFW 扫描任务状态（线程内更新，读取加锁）
+        self._scan_lock = threading.Lock()
+        self._scan_thread: "threading.Thread | None" = None
+        self._scan_state: dict = {
+            "running": False, "total": 0, "done": 0, "nsfw": 0,
+            "started_at": None, "finished_at": None, "last_err": "",
+        }
         self._init_db()
 
     # ------------------------------------------------------------------ #
@@ -205,58 +213,111 @@ class ImageStore:
     def _nsfw_default_blur(self) -> bool:
         return bool(self._nsfw_cfg().get("blur_default", True))
 
-    def scan_nsfw(self, limit: int = 50, only_unchecked: bool = True) -> dict:
-        """手动扫描图库旧图做 NSFW 检测。
+    def scan_nsfw_start(self, only_unchecked: bool = True) -> dict:
+        """后台启动「一键检测所有未检测图」。返回立即状态，扫描在后台线程执行。
 
         - 默认只扫 ``nsfw_checked=0`` 的未检测图；``only_unchecked=False`` 时全量重扫。
-        - 一次最多处理 ``limit`` 张（避免长阻塞），返回 {"scanned": n, "nsfw": n, "total_unchecked": m}。
-        - 模型不可用时不报错，返回 scanned=0。
+        - 若已在扫描，返回当前状态而非重复启动。
         """
-        if not self.enabled() or not _HAS_SQLITE:
-            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
-        if not self._nsfw_enabled():
-            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
-        from nsfw_detector import get_detector
-        det = get_detector(self._nsfw_threshold())
-        if not det.available():
-            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
-        conn = self._conn_get()
+        with self._scan_lock:
+            if self._scan_state.get("running"):
+                return dict(self._scan_state)
+            if not self.enabled() or not _HAS_SQLITE:
+                return {"running": False, "total": 0, "done": 0, "nsfw": 0,
+                        "started_at": None, "finished_at": None, "last_err": "图库未启用"}
+            if not self._nsfw_enabled():
+                return {"running": False, "total": 0, "done": 0, "nsfw": 0,
+                        "started_at": None, "finished_at": None, "last_err": "NSFW 检测已禁用"}
+            from nsfw_detector import get_detector
+            det = get_detector(self._nsfw_threshold())
+            if not det.available():
+                return {"running": False, "total": 0, "done": 0, "nsfw": 0,
+                        "started_at": None, "finished_at": None, "last_err": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
+            self._scan_state = {
+                "running": True, "total": 0, "done": 0, "nsfw": 0,
+                "started_at": time.time(), "finished_at": None, "last_err": "",
+            }
+            t = threading.Thread(
+                target=self._scan_nsfw_worker,
+                args=(only_unchecked,),
+                daemon=True,
+            )
+            self._scan_thread = t
+            t.start()
+            return dict(self._scan_state)
+
+    def _scan_nsfw_worker(self, only_unchecked: bool) -> None:
+        """后台线程执行扫描。用独立 SQLite 连接（避免跨线程共用连接）。"""
+        # 在子线程内创建独立连接（check_same_thread=False 以支持多线程安全访问）
+        try:
+            wconn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            wconn.row_factory = sqlite3.Row
+        except Exception as e:
+            self._set_scan_state({"running": False, "last_err": f"数据库连接失败: {e}"})
+            return
         try:
             where = "deleted=0"
             if only_unchecked:
                 where += " AND nsfw_checked=0"
-            total_unchecked = conn.execute(
-                f"SELECT COUNT(*) AS c FROM images WHERE deleted=0 AND nsfw_checked=0"
+            total = wconn.execute(
+                "SELECT COUNT(*) AS c FROM images WHERE deleted=0 AND nsfw_checked=0"
             ).fetchone()["c"]
-            rows = conn.execute(
+            self._set_scan_state({"total": int(total)})
+            rows = wconn.execute(
                 f"SELECT sha256, ext, month, source FROM images WHERE {where} "
-                f"ORDER BY created_at ASC LIMIT ?",
-                (int(max(1, limit)),),
+                f"ORDER BY created_at ASC"
             ).fetchall()
-            scanned = 0
             nsfw_cnt = 0
+            done = 0
+            from nsfw_detector import get_detector
+            det = get_detector(self._nsfw_threshold())
             for r in rows:
+                # 检查是否被停止（模块卸载/切换配置等场景）
+                with self._scan_lock:
+                    if not self._scan_state.get("running"):
+                        break
                 p = self._path_of_row(r)
                 if not p.exists():
-                    # 文件不存在：标记已检测（避免反复扫同一缺失文件）
-                    conn.execute("UPDATE images SET nsfw_checked=1 WHERE sha256=?", (r["sha256"],))
+                    wconn.execute("UPDATE images SET nsfw_checked=1 WHERE sha256=?", (r["sha256"],))
+                    done += 1
+                    self._set_scan_state({"done": done, "nsfw": nsfw_cnt})
                     continue
                 is_nsfw, score, avail = det.detect(str(p))
                 if not avail:
+                    # 模型中途失效：停止扫描，保留已扫结果
                     break
-                scanned += 1
+                done += 1
                 if is_nsfw:
                     nsfw_cnt += 1
-                conn.execute(
+                wconn.execute(
                     "UPDATE images SET nsfw=?, nsfw_score=?, nsfw_checked=1 WHERE sha256=?",
                     (1 if is_nsfw else 0, score, r["sha256"]),
                 )
-            conn.commit()
-            logger.info(f"[图库] NSFW 扫描完成：本次 {scanned} 张（NSFW {nsfw_cnt}），剩余未检测 {max(0, total_unchecked - scanned)}")
-            return {"scanned": scanned, "nsfw": nsfw_cnt, "total_unchecked": max(0, total_unchecked - scanned)}
+                if done % 10 == 0:
+                    wconn.commit()
+                    self._set_scan_state({"done": done, "nsfw": nsfw_cnt})
+            wconn.commit()
+            self._set_scan_state({
+                "running": False, "done": done, "nsfw": nsfw_cnt, "finished_at": time.time(),
+            })
+            logger.info(f"[图库] NSFW 后台扫描完成：{done}/{total} 张，NSFW {nsfw_cnt}")
         except Exception as e:
-            logger.warning(f"[图库] NSFW 扫描失败: {e}")
-            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
+            logger.warning(f"[图库] NSFW 后台扫描失败: {e}")
+            self._set_scan_state({"running": False, "last_err": str(e)})
+        finally:
+            try:
+                wconn.close()
+            except Exception:
+                pass
+
+    def _set_scan_state(self, patch: dict) -> None:
+        with self._scan_lock:
+            self._scan_state.update(patch)
+
+    def scan_nsfw_progress(self) -> dict:
+        """返回当前 NSFW 扫描进度。{running, total, done, nsfw, started_at, finished_at, last_err}"""
+        with self._scan_lock:
+            return dict(self._scan_state)
 
     def check_nsfw(self, sha256: str) -> dict:
         """对单张图做一次 NSFW 检测，并把结果写回数据库。
