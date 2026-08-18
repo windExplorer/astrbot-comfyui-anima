@@ -113,8 +113,8 @@
             <div class="gal-item-overlay">
               <span v-if="img.starred" class="gal-star">★</span>
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
-              <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ img.user_name }}</span>
             </div>
+            <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ cutName(img.user_name) }}</span>
           </div>
         </div>
       </n-spin>
@@ -232,6 +232,10 @@ function typeKey(img: any): string {
 function typeLabel(img: any): string {
   const k = typeKey(img);
   return { gen: "文生图", img2img: "图生图", ref: "参考图", user: "收藏" }[k] || "图片";
+}
+// 出图人昵称最多显示 8 个字（超出省略号，完整名在 title 悬浮提示）
+function cutName(name: string): string {
+  return truncate(name, 8);
 }
 
 async function loadStats() {
@@ -453,6 +457,7 @@ onMounted(() => {
   position: absolute;
   left: 6px;
   bottom: 6px;
+  z-index: 3;
   max-width: 70%;
   overflow: hidden;
   text-overflow: ellipsis;
