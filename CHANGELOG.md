@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.14
+
+- **修复打包漏掉 `nsfw_detector.py` 导致 NSFW 检测不可用**：此前 `build_zip.ps1` 的打包清单（`$includeList`）没有包含新模块 `nsfw_detector.py`，导致打出的所有 zip 都缺该文件，用户安装后 `import nsfw_detector` 失败，检测器加载报「无法加载检测器」——即使依赖已装好也无用。现已在打包清单中补上 `nsfw_detector.py`。
+
 ## v4.4.13
 
 - **NSFW 依赖安装提示改回 Naive UI dialog 并提升层级**：上一版改用 `window.alert`，但 WebUI 运行在 iframe 沙箱中（未开 `allow-modals`），`alert()` 被浏览器直接忽略、无法弹出。现改回 Naive UI `dialog.warning`，并在 App.vue 全局把 dialog 容器的 z-index 提升到 10001（高于大图查看器的 9999），确保弹窗既正常显示、又不被大图查看器遮挡。

@@ -41,6 +41,7 @@ $includeList = @(
     "image_store.py",
     "quota_store.py",
     "token_store.py",
+    "nsfw_detector.py",
     "logo.png",
     "metadata.yaml",
     "requirements.txt",
