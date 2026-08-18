@@ -94,10 +94,11 @@ function onClose() {
 .iv-imgs {
   flex: 1 1 auto;
   display: flex;
-  align-items: center;
+  align-items: stretch;   /* 让 figure 撑满左侧可用高度 */
   justify-content: center;
   padding: 28px;
   min-width: 0;
+  min-height: 0;
 }
 .iv-fig {
   margin: 0;
@@ -105,10 +106,12 @@ function onClose() {
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  width: 100%;
   max-width: 100%;
   align-items: center;
 }
 .iv-cap {
+  flex: 0 0 auto;
   font-size: 0.74rem;
   font-weight: 700;
   padding: 3px 14px;
@@ -119,6 +122,9 @@ function onClose() {
   user-select: none;
 }
 .iv-imgwrap {
+  flex: 1 1 auto;          /* 撑满剩余高度 */
+  width: 100%;
+  min-height: 0;
   background: #0c0d11;
   display: flex;
   align-items: center;
@@ -128,12 +134,10 @@ function onClose() {
   overflow: hidden;
 }
 .iv-imgwrap img {
-  max-width: calc(100% - 40px);
-  max-height: calc(100vh - 90px);
-  width: auto;
-  height: auto;
+  width: 100%;            /* 铺满容器宽度 */
+  height: 100%;           /* 铺满容器高度 */
+  object-fit: contain;    /* 保持比例，撑满左侧（宽度或高度取较小约束） */
   display: block;
-  object-fit: contain;
 }
 .iv-loading {
   color: rgba(255, 255, 255, 0.6);
