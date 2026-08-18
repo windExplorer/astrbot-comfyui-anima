@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.15
+
+- **出图记录（日志页）缩略图支持 NSFW 模糊**：出图记录表格的预览缩略图，对 NSFW 图同样按 `nsfw` + 全局模糊开关 + 单图 `nsfw_blur` 做模糊处理（并在右上角加 🔞 角标），与图库封面行为一致。逻辑复用图库相同的全局开关（localStorage `anima_gal_nsfw_blur`）。
+
 ## v4.4.14
 
 - **修复打包漏掉 `nsfw_detector.py` 导致 NSFW 检测不可用**：此前 `build_zip.ps1` 的打包清单（`$includeList`）没有包含新模块 `nsfw_detector.py`，导致打出的所有 zip 都缺该文件，用户安装后 `import nsfw_detector` 失败，检测器加载报「无法加载检测器」——即使依赖已装好也无用。现已在打包清单中补上 `nsfw_detector.py`。

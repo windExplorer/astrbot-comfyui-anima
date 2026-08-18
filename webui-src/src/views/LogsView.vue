@@ -140,6 +140,20 @@ function thumbFor(row: any): string {
   return sha ? (recThumbCache[sha] || "") : "";
 }
 
+// NSFW 模糊（与图库封面一致）：NSFW 图 && 全局开关开 && 单图未强制取消
+const nsfwBlurGlobal = ref(true);
+try {
+  const v = localStorage.getItem("anima_gal_nsfw_blur");
+  if (v != null) nsfwBlurGlobal.value = v === "1";
+} catch { /* ignore */ }
+function isNsfwBlurred(img: any): boolean {
+  if (!img || !img.nsfw) return false;
+  if (!nsfwBlurGlobal.value) return false;
+  if (img.nsfw_blur === 0) return false;
+  if (img.nsfw_blur === 1) return true;
+  return true;
+}
+
 // 大图查看器：点击缩略图打开，支持图生图（参考图 + 结果图并排）
 const viewerShow = ref(false);
 const viewerSha = ref("");
@@ -173,13 +187,17 @@ const recColumns: DataTableColumns = [
   { title: "预览", key: "thumb", width: 90, render: (row) => {
     const sha = row.sha || row.sha256;
     const isI2i = !!(row.is_img2img || row.ref_sha256);
+    const blurred = isNsfwBlurred(row);
     const src = thumbFor(row);
     return h("div", { class: "rec-thumb", style: "position:relative;cursor:zoom-in;display:inline-block", onClick: () => openViewer(row) }, [
       src
-        ? h("img", { src, style: "width:60px;height:60px;object-fit:cover;border-radius:6px;display:block;background:#00000010" })
+        ? h("img", { src, style: `width:60px;height:60px;object-fit:cover;border-radius:6px;display:block;background:#00000010${blurred ? ";filter:blur(8px)" : ""}` })
         : h("div", { style: "width:60px;height:60px;border-radius:6px;background:#00000010;display:flex;align-items:center;justify-content:center;color:#999;font-size:11px" }, "加载…"),
       isI2i
         ? h("span", { class: "rec-i2i-badge", style: "position:absolute;left:2px;bottom:2px;background:linear-gradient(135deg,#ffb3d1,#ff8fb3);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px" }, "图生图")
+        : null,
+      blurred
+        ? h("span", { style: "position:absolute;top:2px;right:2px;font-size:11px;text-shadow:0 1px 3px rgba(0,0,0,0.6)" }, "🔞")
         : null,
     ]);
   }},
