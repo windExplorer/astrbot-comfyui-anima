@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.6
+
+- **修复 NSFW 检测报 `No module named 'nsfw_detector'`**：`image_store` 里对 `nsfw_detector` 用的是绝对导入 `from nsfw_detector import ...`，在 AstrBot 用相对导入加载插件时找不到模块，导致归档 NSFW 检测异常（但不阻塞归档）。现改为模块级兼容性导入 `_get_detector()`（先试相对导入 `.nsfw_detector`，再退回到绝对导入 `nsfw_detector`），所有调用点统一走它；检测不可用时静默降级。
+
 ## v4.4.5
 
 - **修复图库封面出图人昵称与类型标签重叠**：`.gal-user` 昵称标签原先放在顶部 overlay 容器内，`bottom` 定位相对该容器导致与左上角「文生图/图生图」类型标签重叠。现将其移出 overlay、作为封面项直接子元素，定位到图片左下角（`z-index` 提升），不再重叠。

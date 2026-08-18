@@ -14,6 +14,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -36,6 +37,32 @@ PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 SRC_GEN = "gen"  # 本插件生图成品
 SRC_REF = "ref"  # 图生图参考图
 SRC_USER = "user"  # 用户发来/收藏的图
+
+# NSFW 检测器懒加载导入（兼容「相对导入 / 绝对导入」两种插件加载方式）
+_NSFW_DET_MODULE = None
+
+
+def _get_detector(threshold: float = 0.5):
+    """获取 NSFW 检测器（模块级，兼容性导入 nsfw_detector）。"""
+    global _NSFW_DET_MODULE
+    if _NSFW_DET_MODULE is None:
+        try:
+            from . import nsfw_detector
+            _NSFW_DET_MODULE = nsfw_detector
+        except Exception:
+            try:
+                import nsfw_detector
+                _NSFW_DET_MODULE = nsfw_detector
+            except Exception as e:
+                logger = logging.getLogger("astrbot_plugin_comfyui_anima.image_store")
+                logger.warning(f"[图库] 无法导入 nsfw_detector（NSFW 检测不可用）: {e}")
+                _NSFW_DET_MODULE = False
+    if not _NSFW_DET_MODULE:
+        return None
+    try:
+        return _NSFW_DET_MODULE.get_detector(threshold)
+    except Exception:
+        return None
 
 
 def _sha256_of(path: str) -> str | None:
@@ -228,9 +255,8 @@ class ImageStore:
             if not self._nsfw_enabled():
                 return {"running": False, "total": 0, "done": 0, "nsfw": 0,
                         "started_at": None, "finished_at": None, "last_err": "NSFW 检测已禁用"}
-            from nsfw_detector import get_detector
-            det = get_detector(self._nsfw_threshold())
-            if not det.available():
+            det = _get_detector(self._nsfw_threshold())
+            if det is None or not det.available():
                 return {"running": False, "total": 0, "done": 0, "nsfw": 0,
                         "started_at": None, "finished_at": None, "last_err": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
             self._scan_state = {
@@ -269,8 +295,9 @@ class ImageStore:
             ).fetchall()
             nsfw_cnt = 0
             done = 0
-            from nsfw_detector import get_detector
-            det = get_detector(self._nsfw_threshold())
+            det = _get_detector(self._nsfw_threshold())
+            if det is None:
+                raise RuntimeError("NSFW 检测器不可用")
             for r in rows:
                 # 检查是否被停止（模块卸载/切换配置等场景）
                 with self._scan_lock:
@@ -332,9 +359,8 @@ class ImageStore:
             return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "图库未启用"}
         if not self._nsfw_enabled():
             return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "NSFW 检测已禁用"}
-        from nsfw_detector import get_detector
-        det = get_detector(self._nsfw_threshold())
-        if not det.available():
+        det = _get_detector(self._nsfw_threshold())
+        if det is None or not det.available():
             return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False,
                     "msg": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
         conn = self._conn_get()
@@ -503,8 +529,9 @@ class ImageStore:
         _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
         try:
             if self._nsfw_enabled():
-                from nsfw_detector import get_detector
-                _det = get_detector(self._nsfw_threshold())
+                _det = _get_detector(self._nsfw_threshold())
+                if _det is None:
+                    raise RuntimeError("NSFW 检测器不可用")
                 _is_nsfw, _score, _avail = _det.detect(str(dest))
                 if _avail:
                     _nsfw = 1 if _is_nsfw else 0
