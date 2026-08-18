@@ -82,12 +82,14 @@ const saveMsg = ref("");
 const saveMsgType = ref<"success" | "error">("success");
 const schema = ref<any>(null);
 const config = reactive<Record<string, any>>({});
-const expanded = ref<string[]>(["服务器与模型"]);
+const expanded = ref<string[]>(["服务器与模型", "工作流列表"]);
 const baseConfig: Record<string, any> = {};
 
-// 配置分区元数据（与旧版一致）
+// 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）
 const GROUP_META = [
-  { name: "服务器与模型", description: "ComfyUI 服务器、工作流与 LoRA 库", icon: "🖥️", keys: ["comfyui_servers", "workflows", "loras"] },
+  { name: "服务器与模型", description: "ComfyUI 服务器连接配置", icon: "🖥️", keys: ["comfyui_servers"] },
+  { name: "工作流列表", description: "各工作流的启用与参数（含封面/底模等）", icon: "🗂️", keys: ["workflows"] },
+  { name: "LoRA 列表", description: "LoRA 库的启用与分类", icon: "🧩", keys: ["loras"] },
   { name: "默认工作流", description: "未指定工作流时的默认选择与风格优先级", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback"] },
   { name: "AI 对话与 LLM", description: "AI 对话调用的 LLM 工具开关与专用模型", icon: "🤖", keys: ["enable_llm_tools", "llm_model"] },
   { name: "Anima 翻译", description: "Anima 工作流中文提示词翻译模式与接口", icon: "🌐", keys: ["translator_mode", "translate_llm_model", "translate_api", "danbooru"] },
