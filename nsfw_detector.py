@@ -7,21 +7,26 @@ open_nsfw（Yahoo ResNet-50）输出 P(nsfw)，模型权重已内置在 ``openns
 
 import logging
 import os
+import time
 
 logger = logging.getLogger("astrbot_plugin_comfyui_anima.nsfw")
 
-# 可选依赖（装不上则检测功能不可用，但插件不崩）
-try:
-    import onnxruntime  # noqa: F401
-    _HAS_ONNX = True
-except Exception:  # pragma: no cover
-    _HAS_ONNX = False
 
-try:
-    from opennsfw_onnx import NSFWClassifier
-    _HAS_OPENNSFW = True
-except Exception:  # pragma: no cover
-    _HAS_OPENNSFW = False
+def _deps_ready() -> tuple[bool, object | None]:
+    """动态检查依赖是否已安装；返回 (ready, NSFWClassifier 类型)。
+
+    每次调用都重新 import，而不是在模块加载时缓存，这样用户后装依赖、
+    无需重启插件即可生效。
+    """
+    try:
+        import onnxruntime  # noqa: F401
+    except Exception:  # pragma: no cover
+        return False, None
+    try:
+        from opennsfw_onnx import NSFWClassifier
+        return True, NSFWClassifier
+    except Exception:  # pragma: no cover
+        return False, None
 
 
 class NSFWDetector:
@@ -29,7 +34,7 @@ class NSFWDetector:
 
     def __init__(self, threshold: float = 0.5):
         self._clf = None
-        self._init_failed = False
+        self._last_fail_ts = 0.0
         try:
             self.threshold = max(0.0, min(1.0, float(threshold or 0.5)))
         except (TypeError, ValueError):
@@ -40,25 +45,27 @@ class NSFWDetector:
         return self._ensure() is not None
 
     def _ensure(self):
-        """懒加载分类器。失败返回 None 并记一次日志。"""
+        """懒加载分类器。失败返回 None 并记一次日志（不永久锁死，装好依赖后可恢复）。"""
         if self._clf is not None:
             return self._clf
-        if self._init_failed:
-            return None
-        if not _HAS_ONNX or not _HAS_OPENNSFW:
-            logger.warning(
-                "[NSFW] 依赖缺失（onnxruntime / opennsfw-onnx），NSFW 检测不可用。"
-                "请执行：pip install onnxruntime opennsfw-onnx"
-            )
-            self._init_failed = True
+        # 依赖缺失时不缓存失败状态：每次调用都重新尝试，便于后装依赖后无需重启生效
+        ready, cls = _deps_ready()
+        if not ready:
+            # 避免疯狂刷日志：至少间隔 10 秒记一次
+            now = time.time()
+            if now - self._last_fail_ts > 10.0:
+                logger.warning(
+                    "[NSFW] 依赖缺失（onnxruntime / opennsfw-onnx），NSFW 检测不可用。"
+                    "请在 AstrBot 日志页右上角「安装 pip 库」入口安装 onnxruntime、opennsfw-onnx"
+                )
+                self._last_fail_ts = now
             return None
         try:
-            self._clf = NSFWClassifier()
+            self._clf = cls()
             logger.info("[NSFW] opennsfw-onnx 分类器已就绪")
             return self._clf
         except Exception as e:  # pragma: no cover
             logger.warning(f"[NSFW] 初始化分类器失败（NSFW 检测不可用）: {e}")
-            self._init_failed = True
             return None
 
     def detect(self, image_path: str):
