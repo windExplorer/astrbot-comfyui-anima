@@ -4185,7 +4185,7 @@ class ComfyUIDrawPlugin(Star):
         height: int = 0,
         loras: list = None,
         seed: int = 0,
-        count: int = 1,
+        count: int = 0,
         source: str = "",
         image: str = "",
         denoise: float = -1,
@@ -4212,7 +4212,7 @@ class ComfyUIDrawPlugin(Star):
         - 用户明确说不要/取消/别发/不需要图。
         - 与画图无关的普通闲聊。
         
-        数量：默认只出 1 张。用户明确说了"几张/多张/各来一版/所有姿势"才按数量多画；否则一次一张就停。
+        数量：默认出 3 张（用户说「来几张」「来多张」或没提数量时）。用户明确说具体数（如「来 3 张」「来 5 张」「各来一版」「所有姿势」）才按具体数把数量填进 count 参数；一次不要超发太多，受插件单次上限约束。
         
         图生图判定（重要）：只有当用户**当前消息里附带了参考图**（或明确说"把这张图/参考这张图/这张照片变成XX"）时，才按图生图处理（传 image 或依赖插件自动提取）。**普通文字请求一律文生图**，不要因为群里/历史里有图就当作图生图。
         
@@ -4239,7 +4239,7 @@ class ComfyUIDrawPlugin(Star):
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
-            count(number): 本次要生成的图片张数，默认 1。仅当用户明确要求"来 N 张 / 发几张 / 一次出几张"时才传；用户没说具体数字只说了"几张/多张"时传 3。用户没要求多张就保持 1。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            count(number): 本次要生成的图片张数。用户没说数量时不要传（插件会用默认张数）；用户明确说"来 N 张"（如"来 3 张"）时传 N；用户说"来几张/来多张/多画几张"（没具体数字）时传 3。一次最多不要超过 9 张，受插件单次上限约束。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
@@ -4280,7 +4280,12 @@ class ComfyUIDrawPlugin(Star):
 
         # 会话级出图预算：限制「同一次用户请求」内模型连续画图的最大张数（防无脑连发）。
         # count 多张（用户明确要 N 张）也在预算内受限（非管理员）；伴侣/主动来源不受限。
-        _count = max(1, int(count or 1))
+        # 模型没传 count（=0/空，即用户说「来几张」或没提数量）时，用 default_count 作为默认张数；
+        # 明确填了具体数则按具体数，但仍受 _llm_draw_budget 的 max 单次上限约束。
+        if count:
+            _count = max(1, int(count))
+        else:
+            _count = max(1, int((plugin._cfg("draw_auto", {}) or {}).get("default_count", 3) or 3))
         _allowed, _budget_hint = plugin._llm_draw_budget(event, _count, source=source)
         if _allowed <= 0:
             logger.info(f"[llm_draw] 会话出图预算已用尽，拦截本次调用")
@@ -5142,7 +5147,7 @@ class ComfyUIDrawPlugin(Star):
         seed: int = 0,
         image: str = "",
         denoise: float = -1,
-        count: int = 1,
+        count: int = 0,
         source: str = "",
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
@@ -5216,7 +5221,7 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
-            count(number): 本次要生成的图片张数，默认 1。仅当用户明确要求"来 N 张 / 发几张"时才传；没说具体数字只说了"几张/多张"时传 3。用户没要求多张就保持 1，不要自己擅自连续多张。
+            count(number): 本次要生成的图片张数。用户没说数量时不要传（插件会用默认张数）；用户明确说"来 N 张"（如"来 3 张"）时传 N；用户说"来几张/来多张"（没具体数字）时传 3。一次最多不要超过 9 张，受插件单次上限约束。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
 
         补充说明：
         - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -5248,7 +5253,11 @@ class ComfyUIDrawPlugin(Star):
             pass
 
         # 会话级出图预算：同 llm_draw，限制「同一次用户请求」内连续画图最大张数（防无脑连发）
-        _count2 = max(1, int(count or 1))
+        # 同 llm_draw：模型没传 count（=0/空）时用 default_count 作为默认张数；填了具体数则按具体数。
+        if count:
+            _count2 = max(1, int(count))
+        else:
+            _count2 = max(1, int((plugin._cfg("draw_auto", {}) or {}).get("default_count", 3) or 3))
         _allowed2, _budget_hint2 = plugin._llm_draw_budget(event, _count2, source=source)
         if _allowed2 <= 0:
             logger.info(f"[llm_img2img] 会话出图预算已用尽，拦截本次调用")
