@@ -256,9 +256,13 @@ class ImageStore:
                 return {"running": False, "total": 0, "done": 0, "nsfw": 0,
                         "started_at": None, "finished_at": None, "last_err": "NSFW 检测已禁用"}
             det = _get_detector(self._nsfw_threshold())
-            if det is None or not det.available():
+            if det is None:
                 return {"running": False, "total": 0, "done": 0, "nsfw": 0,
-                        "started_at": None, "finished_at": None, "last_err": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
+                        "started_at": None, "finished_at": None, "last_err": "NSFW 检测不可用（无法加载检测器）"}
+            if not det.available():
+                _err = getattr(det, "last_error", "") or "依赖或模型未就绪"
+                return {"running": False, "total": 0, "done": 0, "nsfw": 0,
+                        "started_at": None, "finished_at": None, "last_err": f"NSFW 检测不可用：{_err}"}
             self._scan_state = {
                 "running": True, "total": 0, "done": 0, "nsfw": 0,
                 "started_at": time.time(), "finished_at": None, "last_err": "",
@@ -360,9 +364,13 @@ class ImageStore:
         if not self._nsfw_enabled():
             return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "NSFW 检测已禁用"}
         det = _get_detector(self._nsfw_threshold())
-        if det is None or not det.available():
+        if det is None:
             return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False,
-                    "msg": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
+                    "msg": "NSFW 检测不可用（无法加载检测器）"}
+        if not det.available():
+            _err = getattr(det, "last_error", "") or "依赖或模型未就绪"
+            return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False,
+                    "msg": f"NSFW 检测不可用：{_err}"}
         conn = self._conn_get()
         try:
             # 支持前缀匹配（前端传的 sha 可能是 sha256[:16] 内容寻址前缀）

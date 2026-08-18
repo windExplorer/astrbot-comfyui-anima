@@ -35,6 +35,7 @@ class NSFWDetector:
     def __init__(self, threshold: float = 0.5):
         self._clf = None
         self._last_fail_ts = 0.0
+        self.last_error = ""
         try:
             self.threshold = max(0.0, min(1.0, float(threshold or 0.5)))
         except (TypeError, ValueError):
@@ -51,6 +52,7 @@ class NSFWDetector:
         # 依赖缺失时不缓存失败状态：每次调用都重新尝试，便于后装依赖后无需重启生效
         ready, cls = _deps_ready()
         if not ready:
+            self.last_error = "依赖缺失（onnxruntime / opennsfw-onnx）"
             # 避免疯狂刷日志：至少间隔 10 秒记一次
             now = time.time()
             if now - self._last_fail_ts > 10.0:
@@ -62,9 +64,11 @@ class NSFWDetector:
             return None
         try:
             self._clf = cls()
+            self.last_error = ""
             logger.info("[NSFW] opennsfw-onnx 分类器已就绪")
             return self._clf
         except Exception as e:  # pragma: no cover
+            self.last_error = f"模型初始化失败: {e}"
             logger.warning(f"[NSFW] 初始化分类器失败（NSFW 检测不可用）: {e}")
             return None
 
