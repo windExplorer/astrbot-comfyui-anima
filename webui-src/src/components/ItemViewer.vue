@@ -21,6 +21,7 @@
               <span class="k">{{ f.key }}</span>
               <span class="v">
                 <a v-if="f.href" :href="f.href" target="_blank" rel="noopener noreferrer">{{ f.value || f.href }} ↗</a>
+                <span v-else-if="f.html" v-html="sanitizeHtml(String(f.value || ''))"></span>
                 <template v-else>{{ f.value || "—" }}</template>
               </span>
             </div>
@@ -32,11 +33,15 @@
 </template>
 
 <script setup lang="ts">
+import { sanitizeHtml } from "@/utils/sanitizeHtml";
+
 export interface ItemViewerField {
   key: string;
   value?: string | number | null;
   /** 存在时渲染为可点击外链 */
   href?: string;
+  /** 为 true 时 value 按净化后的 HTML 渲染（用于富文本描述） */
+  html?: boolean;
 }
 
 defineProps<{

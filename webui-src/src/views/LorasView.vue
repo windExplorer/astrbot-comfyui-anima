@@ -71,7 +71,7 @@
         <div class="detail-row"><b>别名：</b>{{ detailItem.keywords || "—" }}</div>
         <div class="detail-row"><b>模型文件：</b>{{ detailItem.model_name || "—" }}</div>
         <div class="detail-row"><b>触发词：</b><pre>{{ detailItem.trigger_words || "—" }}</pre></div>
-        <div class="detail-row"><b>描述：</b><pre>{{ detailItem.description || "—" }}</pre></div>
+        <div class="detail-row"><b>描述：</b><pre v-if="detailItem.description" v-html="sanitizeHtml(detailItem.description)"></pre><span v-else>—</span></div>
         <div class="detail-row"><b>提示词预设：</b><pre>{{ detailItem.presets || "—" }}</pre></div>
       </div>
     </n-modal>
@@ -127,6 +127,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NEmpty, NSpin, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases } from "@/utils/format";
+import { sanitizeHtml } from "@/utils/sanitizeHtml";
 import { useRefresh } from "@/composables/useRefresh";
 import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 import CoverPicker from "@/components/CoverPicker.vue";
@@ -237,7 +238,7 @@ function openImage(fname: string, name: string) {
     { key: "默认权重", value: l.weight ?? 1 },
     { key: "触发词", value: l.trigger_words?.trim() || "—" },
     { key: "提示词预设", value: l.presets?.trim() || "—" },
-    { key: "描述", value: l.description?.trim() || "—" },
+    { key: "描述", value: l.description?.trim() || "", html: true },
     { key: "封面文件", value: fname },
   ];
   if (l.civitai_url) detailFields.value.push({ key: "C 站", value: l.civitai_url, href: l.civitai_url });
