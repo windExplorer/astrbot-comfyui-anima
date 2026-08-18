@@ -3585,6 +3585,44 @@ class ComfyUIDrawPlugin(Star):
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
         self.quota.record_used(user_id, user_name)
 
+    def _llm_draw_budget(self, event, count: int, source: str = "") -> tuple[int, str]:
+        """AI 对话（LLM 工具调用）的会话级出图预算控制，返回 (本次允许张数, 拦截提示)。
+
+        作用：防止模型在「同一次用户请求」里无脑连续画图停不下来。
+        - 伴侣插件主动调用（带 source）不限制（未来「目标模式」同样可用 source 标记豁免）；
+        - 管理员豁免开启时管理员不受限；
+        - 否则在 draw_auto.window 秒内，同一会话累计出图 ≤ draw_auto.max。
+        返回的 allowed ≤ count；allowed 为 0 表示本次被拦截。
+        """
+        cfg = self._cfg("draw_auto", {}) or {}
+        # 伴侣插件/主动来源不限制
+        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+            return count, ""
+        # 管理员豁免
+        if cfg.get("admin_exempt", True) and self._is_admin(event):
+            return count, ""
+        dmax = int(cfg.get("max", 3) or 3)
+        if dmax <= 0:
+            return count, ""
+        window = int(cfg.get("window", 90) or 90)
+        sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+        _now = time.time()
+        bucket = getattr(self, "_llm_draw_ts", None)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            self._llm_draw_ts = bucket
+        # 清理窗口外的时间戳
+        ts_list = [t for t in bucket.get(sid, []) if _now - t < window]
+        used = len(ts_list)
+        allowed = max(0, dmax - used)
+        if allowed <= 0:
+            return 0, "已连续出图多张。请直接简短收尾即可，不要继续调用画图工具；等待用户下一条明确指示再画。"
+        # 本次按 allowed 记入时间戳
+        for _ in range(allowed):
+            ts_list.append(_now)
+        bucket[sid] = ts_list
+        return min(count, allowed), ""
+
     def _can_operate_image(self, event, row: dict, owner: str = "") -> tuple[bool, str]:
         """图库「修改类操作」（打标签/删除/清空/改可见性等）的归属校验。
 
@@ -4147,6 +4185,7 @@ class ComfyUIDrawPlugin(Star):
         height: int = 0,
         loras: list = None,
         seed: int = 0,
+        count: int = 1,
         source: str = "",
         image: str = "",
         denoise: float = -1,
@@ -4200,6 +4239,7 @@ class ComfyUIDrawPlugin(Star):
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
+            count(number): 本次要生成的图片张数，默认 1。仅当用户明确要求"来 N 张 / 发几张 / 一次出几张"时才传；用户没说具体数字只说了"几张/多张"时传 3。用户没要求多张就保持 1。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
@@ -4237,6 +4277,15 @@ class ComfyUIDrawPlugin(Star):
                 return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
         except Exception:
             pass
+
+        # 会话级出图预算：限制「同一次用户请求」内模型连续画图的最大张数（防无脑连发）。
+        # count 多张（用户明确要 N 张）也在预算内受限（非管理员）；伴侣/主动来源不受限。
+        _count = max(1, int(count or 1))
+        _allowed, _budget_hint = plugin._llm_draw_budget(event, _count, source=source)
+        if _allowed <= 0:
+            logger.info(f"[llm_draw] 会话出图预算已用尽，拦截本次调用")
+            return _budget_hint
+        count = _allowed
 
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -4529,47 +4578,57 @@ class ComfyUIDrawPlugin(Star):
         #   image_path 后自己发图，本函数不重复发图；
         # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，主动 event.send
         #   图片，再 return 简短文本告知模型已处理。
-        img_path = ""
-        img_node = None
-        async for node, p in plugin._do_draw(
-            event,
-            resolved_wf,
-            positive,
-            negative,
-            width or None,
-            height or None,
-            lora_map,
-            None,
-            seed or None,
-            init_images=init_images or None,
-            is_img2img=is_img2img,
-            denoise=denoise if denoise >= 0 else None,
-            # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
-            # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
-            notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
-            source=source,
-        ):
-            if not img_node:
-                img_node = node
-            if not img_path:
-                img_path = p
+        img_paths: list[str] = []
+        img_nodes = []
+        # count 张：循环出图（每次用不同 seed 避免重复），collect 所有图片。
+        # 注意：_do_draw 每次调用会完整等待一次出图，count 次串行；这是「来 N 张」的预期成本。
+        _draw_n = max(1, int(count or 1))
+        for _i in range(_draw_n):
+            _seed_i = ((seed or 0) + _i) if _draw_n > 1 else seed
+            async for node, p in plugin._do_draw(
+                event,
+                resolved_wf,
+                positive,
+                negative,
+                width or None,
+                height or None,
+                lora_map,
+                None,
+                _seed_i or None,
+                init_images=init_images or None,
+                is_img2img=is_img2img,
+                denoise=denoise if denoise >= 0 else None,
+                # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
+                # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
+                notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
+                source=source,
+            ):
+                if node is not None:
+                    img_nodes.append(node)
+                if p:
+                    img_paths.append(p)
 
         is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
-        if img_path:
+        if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
-                return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+                return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
             # 原生 / Agent 调用：LLM 工具的 return 值只会作为工具结果文本回传给
             # 模型，框架并不会自动把 MessageChain 渲染成图片发给用户。因此这里必须
             # 主动 event.send 把图真正发出去，再 return 一句简短文本让模型知道已处理。
-            try:
-                await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
-            except Exception as _e:
-                logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
+            for _nd in img_nodes:
+                try:
+                    await event.send(_nd if isinstance(_nd, MessageChain) else MessageChain([_nd]))
+                except Exception as _e:
+                    logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
             # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
             # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
-            # 技术元数据复述给用户；只做极简收尾指示即可。
-            return "图片已发送给用户。请用一句话简短、自然地收尾即可；不要描述图片的文件名、尺寸、大小、耗时、格式或任何技术细节。"
+            # 技术元数据复述给用户；只做极简收尾指示，并明确「不要自我驱动再画」。
+            return (
+                f"本次已向用户发送 {len(img_paths)} 张图片。请用一句话简短、自然地收尾即可；"
+                "不要描述文件名/尺寸/耗时等技术细节。注意：除非用户当前这条消息又明确要求改图/加图/再来几张，"
+                "否则不要自己再主动调用画图工具；也不要基于对话历史里较早的负面反馈（如『画得不对』）继续画。"
+            )
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
@@ -5083,6 +5142,7 @@ class ComfyUIDrawPlugin(Star):
         seed: int = 0,
         image: str = "",
         denoise: float = -1,
+        count: int = 1,
         source: str = "",
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
@@ -5156,6 +5216,7 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
+            count(number): 本次要生成的图片张数，默认 1。仅当用户明确要求"来 N 张 / 发几张"时才传；没说具体数字只说了"几张/多张"时传 3。用户没要求多张就保持 1，不要自己擅自连续多张。
 
         补充说明：
         - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -5185,6 +5246,14 @@ class ComfyUIDrawPlugin(Star):
                 return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
         except Exception:
             pass
+
+        # 会话级出图预算：同 llm_draw，限制「同一次用户请求」内连续画图最大张数（防无脑连发）
+        _count2 = max(1, int(count or 1))
+        _allowed2, _budget_hint2 = plugin._llm_draw_budget(event, _count2, source=source)
+        if _allowed2 <= 0:
+            logger.info(f"[llm_img2img] 会话出图预算已用尽，拦截本次调用")
+            return _budget_hint2
+        count = _allowed2
 
         # 与 llm_draw 同样的兜底处理
         if not isinstance(event, AstrMessageEvent):
@@ -5313,46 +5382,50 @@ class ComfyUIDrawPlugin(Star):
         positive, parsed_neg = plugin._split_external_prompt(prompt)
         negative = parsed_neg or (negative_prompt or "")
 
-        img_path = ""
-        img_node = None
-        async for node, p in plugin._do_draw(
-            event,
-            resolved_wf,
-            positive,
-            negative,
-            None,
-            None,
-            lora_map,
-            None,
-            seed or None,
-            init_images=init_images,
-            is_img2img=True,
-            denoise=denoise if denoise >= 0 else None,
-            source=source,
-        ):
-            # 本插件只负责生图与返回，不再主动 event.send（避免与调用方重复发图）：
-            # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
-            #   image_path 后自己发图；
-            # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，直接 return
-            #   图片节点，由 AstrBot 框架把工具结果里的图片渲染给用户。
-            if not img_node:
-                img_node = node
-            if not img_path:
-                img_path = p
+        img_paths: list[str] = []
+        img_nodes = []
+        # count 张：循环出图（每次用不同 seed 避免重复），collect 所有图片
+        _draw_n2 = max(1, int(count or 1))
+        for _j in range(_draw_n2):
+            _seed_j = ((seed or 0) + _j) if _draw_n2 > 1 else seed
+            async for node, p in plugin._do_draw(
+                event,
+                resolved_wf,
+                positive,
+                negative,
+                None,
+                None,
+                lora_map,
+                None,
+                _seed_j or None,
+                init_images=init_images,
+                is_img2img=True,
+                denoise=denoise if denoise >= 0 else None,
+                source=source,
+            ):
+                if node is not None:
+                    img_nodes.append(node)
+                if p:
+                    img_paths.append(p)
 
         is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
-        if img_path:
+        if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
-                return json.dumps({"image_path": img_path, "status": "ok"}, ensure_ascii=False)
+                return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
             # 原生 / Agent 调用：LLM 工具的 return 值只会作为工具结果文本回传给模型，
             # 框架不会自动渲染图片，必须主动 event.send 把图发到聊天里。
-            try:
-                await event.send(img_node if isinstance(img_node, MessageChain) else MessageChain([img_node]))
-            except Exception as _e:
-                logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
+            for _nd in img_nodes:
+                try:
+                    await event.send(_nd if isinstance(_nd, MessageChain) else MessageChain([_nd]))
+                except Exception as _e:
+                    logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
             # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
             # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
-            # 技术元数据复述给用户；只做极简收尾指示即可。
-            return "图片已发送给用户。请用一句话简短、自然地收尾即可；不要描述图片的文件名、尺寸、大小、耗时、格式或任何技术细节。"
+            # 技术元数据复述给用户；只做极简收尾指示，并明确「不要自我驱动再画」。
+            return (
+                f"本次已向用户发送 {len(img_paths)} 张图片。请用一句话简短、自然地收尾即可；"
+                "不要描述文件名/尺寸/耗时等技术细节。注意：除非用户当前这条消息又明确要求改图/加图/再来几张，"
+                "否则不要自己再主动调用画图工具；也不要基于对话历史里较早的负面反馈（如『画得不对』）继续画。"
+            )
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
