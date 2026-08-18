@@ -67,12 +67,11 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, useDialog, useMessage } from "naive-ui";
+import { NButton, useMessage } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
 const message = useMessage();
-const dialog = useDialog();
 
 interface ViewerImage {
   sha?: string;
@@ -261,12 +260,10 @@ function isNsfwUnavailable(e: any): boolean {
   return /NSFW 检测不可用|onnxruntime|opennsfw/.test(m);
 }
 function showNsfwInstallDialog() {
-  dialog.warning({
-    title: "NSFW 检测不可用",
-    content: "NSFW 检测需要两个依赖库。请在 AstrBot 日志页右上角的「安装 pip 库」入口依次填入以下库名并安装，完成后重启插件：\n\n· onnxruntime\n· opennsfw-onnx",
-    positiveText: "知道了",
-    closable: true,
-  });
+  // 用原生 alert，确保显示在最高层（不被大图查看器的全屏覆盖层遮挡）
+  window.alert(
+    "NSFW 检测不可用\n\nNSFW 检测需要两个依赖库。请在 AstrBot 日志页右上角的「安装 pip 库」入口依次填入以下库名并安装，完成后重启插件：\n\n· onnxruntime\n· opennsfw-onnx"
+  );
 }
 
 function copySha() {

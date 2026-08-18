@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.10
+
+- **修复大图内点检测时 NSFW 安装提示被大图遮挡**：NSFW 检测不可用的弹窗原用 Naive UI dialog，其层级低于大图查看器的全屏覆盖层（z-index: 9999），会被遮住。改为原生 `window.alert`，必定显示在浏览器最顶层，不再被遮挡。
+
 ## v4.4.9
 
 - **NSFW 依赖安装提示改为引导 AstrBot 内置安装入口**：把弹窗文案从「执行 pip 命令」改为「在 AstrBot 日志页右上角的『安装 pip 库』入口依次填入 `onnxruntime`、`opennsfw-onnx` 并安装」，更贴合实际使用方式。
