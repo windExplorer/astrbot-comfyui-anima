@@ -3101,13 +3101,47 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("绘图排行", alias={"drawrank", "画图排行"})
     async def cmd_draw_rank(self, event: AstrMessageEvent):
-        """展示今日生图数量前五名的用户（排除伴侣插件自动生图）。"""
+        """展示生图数量前五名的用户（排除伴侣插件自动生图），支持日期范围参数。
+
+        用法：/绘图排行 [今天|昨天|周|月|全部]（默认今天）。"""
         if self.gallery is None:
             await self._send(event, "图库未启用，无法统计排行。")
             event.stop_event()
             return
         try:
-            data = self.gallery.user_ranking(days=0, limit=50)
+            args = (self._strip_command(event.message_str, "绘图排行") or "").strip().lower()
+            # 解析时间范围（与 /绘图统计 一致）
+            scope_label = "今天"
+            start_ts: float | None = None
+            end_ts: float | None = None
+            days: int | None = 0
+            if args in ("", "今天", "today"):
+                scope_label, days = "今天", 0
+            elif args in ("昨天", "yesterday", "y"):
+                scope_label, days = "昨天", -1
+            elif args in ("周", "周7", "7", "week", "w"):
+                scope_label, days = "最近一周", 7
+            elif args in ("月", "30", "month", "m"):
+                scope_label, days = "最近30天", 30
+            elif args in ("全部", "all"):
+                scope_label, days = "全部", None
+            else:
+                await self._send(event, "用法：/绘图排行 [今天|昨天|周|月|全部]（默认今天）")
+                event.stop_event()
+                return
+            # 昨天用区间（昨天 0 点到今天 0 点）；今天/周/月/全部用 user_ranking 的 days 语义
+            if days == -1:
+                now = time.time()
+                lt = time.localtime(now)
+                day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+                start_ts = day_start - 86400
+                end_ts = day_start
+                rank_days = None
+            else:
+                rank_days = days
+            data = self.gallery.user_ranking(
+                days=rank_days, limit=50, start_ts=start_ts, end_ts=end_ts,
+            )
             rows = data.get("rows") or []
             # 过滤掉插件自动生图（无真实 user_id，或 user_name 为伴侣插件名）
             plugin_names = {SOURCE_COMPANION_PLUGIN, "PrivateCompanion"}
@@ -3121,9 +3155,9 @@ class ComfyUIDrawPlugin(Star):
                     continue
                 human.append(r)
             top = human[:5]
-            lines = ["🏆 今日绘图排行（前 5）"]
+            lines = [f"🏆 {scope_label}绘图排行（前 5）"]
             if not top:
-                lines.append("· 今天还没有人生图～")
+                lines.append(f"· {scope_label}还没有人生图～")
             else:
                 medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
                 for i, r in enumerate(top):
@@ -3398,7 +3432,7 @@ class ComfyUIDrawPlugin(Star):
             "· /绘图工作流   查看 / 设置默认工作流（英文 /workflows 亦可）\n"
             "· /绘图队列   查看排队状态（英文 /queuestatus 亦可）\n"
             "· /绘图统计 [今天|昨天|周|月|全部]   出图统计\n"
-            "· /绘图排行   今日绘图前五\n"
+            "· /绘图排行 [今天|昨天|周|月|全部]   绘图排行前五\n"
             "· /绘图状态   服务器状态与生图限额\n"
             "· /图库 列表|搜索|收藏…   图库管理\n"
             "· 想查看详细参数，回复「画画帮助」即可"

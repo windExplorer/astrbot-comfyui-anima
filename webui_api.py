@@ -275,16 +275,27 @@ class WebUIApi:
     # 用户生图统计
     # -------------------------------------------------------------- #
     async def stats_ranking(self):
-        """用户生图数量排行。query: days=today|3|7|all（默认 all）；merge=1 时合并其他插件记录。"""
+        """用户生图数量排行。query: days=today|yesterday|3|7|all（默认 all）；merge=1 时合并其他插件记录。"""
         g = self._gallery()
         if g is None:
             return json_response({"scope": "all", "total": 0, "rows": []})
         try:
-            days_raw = request.query.get("days", "all")
-            days = {"today": 0, "3": 3, "7": 7, "all": None}.get(str(days_raw).strip().lower(), None)
+            days_raw = str(request.query.get("days", "all")).strip().lower()
+            start_ts = end_ts = None
+            if days_raw == "yesterday":
+                # 昨天：昨天 0 点到今天 0 点（自然日）
+                _lt = time.localtime(time.time())
+                _today0 = time.mktime((_lt.tm_year, _lt.tm_mon, _lt.tm_mday, 0, 0, 0, 0, 0, -1))
+                start_ts = _today0 - 86400
+                end_ts = _today0
+                days = None
+            else:
+                days = {"today": 0, "3": 3, "7": 7, "all": None}.get(days_raw, None)
             merge = request.query.get("merge", "0") == "1"
             merge_names = ["PrivateCompanion"] if merge else None
-            return json_response(g.user_ranking(days=days, merge_alsoknown=merge_names))
+            return json_response(g.user_ranking(
+                days=days, merge_alsoknown=merge_names, start_ts=start_ts, end_ts=end_ts,
+            ))
         except Exception as e:
             return error_response(f"统计排行失败: {e}")
 
@@ -419,26 +430,58 @@ class WebUIApi:
             page = max(1, int(request.query.get("page") or 1))
             page_size = max(1, min(int(request.query.get("page_size") or 30), 200))
             merge_names = ["PrivateCompanion"] if merge else None
-            summary = ts.query_summary(user_id=user_id, days=max(days, 1))
-            scenes = ts.list_scenes(days=max(days, 1))
-            users = ts.list_users(days=max(days, 1), merge_alsoknown=merge_names)
-            models = ts.list_models(days=max(days, 1))
-            daily = ts.list_daily(days=days)
-            # 小时趋势：仅「今天 / 近 1 天」范围提供
+            # 自然日边界：today=今天0点到明天0点；yesterday=昨天0点到今天0点。
+            # 提供时所有聚合用精确区间，避免「今天」凌晨混入昨天数据。
+            _now = time.time()
+            _lt = time.localtime(_now)
+            _today0 = time.mktime((_lt.tm_year, _lt.tm_mon, _lt.tm_mday, 0, 0, 0, 0, 0, -1))
+            _start_bucket = None
+            _end_bucket = None
+
+            def _hb(t: float) -> str:
+                lt2 = time.localtime(t)
+                return f"{lt2.tm_year:04d}-{lt2.tm_mon:02d}-{lt2.tm_mday:02d} {lt2.tm_hour:02d}:00"
+
             if scope == "today":
-                # 今天：从今天 0 点起
+                _start_bucket = _hb(_today0)
+                _end_bucket = _hb(_today0 + 86400)
+            elif scope == "yesterday":
+                _start_bucket = _hb(_today0 - 86400)
+                _end_bucket = _hb(_today0)
+            # 聚合查询：today/yesterday 用自然日区间，其余用 days 滚动窗口
+            summary = ts.query_summary(
+                user_id=user_id, days=max(days, 1),
+                start_bucket=_start_bucket, end_bucket=_end_bucket,
+            )
+            scenes = ts.list_scenes(days=max(days, 1), start_bucket=_start_bucket, end_bucket=_end_bucket)
+            users = ts.list_users(days=max(days, 1), merge_alsoknown=merge_names,
+                                  start_bucket=_start_bucket, end_bucket=_end_bucket)
+            models = ts.list_models(days=max(days, 1), start_bucket=_start_bucket, end_bucket=_end_bucket)
+            if scope == "today":
+                daily = ts.list_daily(days=1)
+            elif scope == "yesterday":
+                daily = ts.list_daily(days=2, start_bucket=_start_bucket, end_bucket=_end_bucket)
+            else:
+                daily = ts.list_daily(days=days)
+            # 小时趋势：今天/昨天用自然日区间，近1天用滚动24小时，其余不提供
+            if scope == "today":
                 hourly = ts.list_hourly(since_day_start=True)
+            elif scope == "yesterday":
+                hourly = ts.list_hourly(start_ts=_today0 - 86400, end_ts=_today0)
             elif scope == "1":
-                # 近 1 天：过去 24 小时滚动窗口
                 hourly = ts.list_hourly(hours=24)
             else:
                 hourly = []
-            detail_total = ts.count_detail(user_id=user_id, days=max(days, 1))
+            detail_total = ts.count_detail(
+                user_id=user_id, days=max(days, 1),
+                start_bucket=_start_bucket, end_bucket=_end_bucket,
+            )
             detail = ts.list_detail(
                 user_id=user_id,
                 days=max(days, 1),
                 offset=(page - 1) * page_size,
                 limit=page_size,
+                start_bucket=_start_bucket, end_bucket=_end_bucket,
             )
             return json_response(
                 {

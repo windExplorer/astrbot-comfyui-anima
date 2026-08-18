@@ -47,6 +47,26 @@ def _hour_bucket(ts: float) -> str:
     return f"{lt.tm_year:04d}-{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}:00"
 
 
+def _day_start_ts(offset_days: int = 0) -> float:
+    """返回「今天往前 offset_days 天」的本地 0 点时间戳。0=今天0点，1=昨天0点。"""
+    lt = time.localtime(time.time())
+    today_0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    return today_0 - int(max(offset_days, 0)) * 86400.0
+
+
+def _day_range_buckets(offset_start_days: int, offset_end_days: int = 0) -> tuple[str, str]:
+    """返回一个「自然日区间」的 (起始小时桶, 结束小时桶[不含])。
+
+    ``offset_start_days`` 为区间起点相对今天的天数（0=今天0点，1=昨天0点），
+    ``offset_end_days`` 为区间终点相对今天的天数（默认 0=今天0点，即结束不含今天0点）。
+    例如 offset_start_days=1、offset_end_days=0 表示「昨天 0 点 到 今天 0 点」。
+    返回的 end_bucket 为区间终点的小时桶，查询时用 ``hour_bucket < end_bucket``（不含）。
+    """
+    start_ts = _day_start_ts(offset_start_days)
+    end_ts = _day_start_ts(offset_end_days)
+    return _hour_bucket(start_ts), _hour_bucket(end_ts)
+
+
 class TokenStore:
     """LLM token 用量存储。单线程事件循环使用，线程不安全但足够。"""
 
@@ -226,42 +246,33 @@ class TokenStore:
     # ------------------------------------------------------------------ #
     # 查询 / 汇总
     # ------------------------------------------------------------------ #
-    def query_summary(self, user_id: str = "", days: int = 30) -> dict:
+    def query_summary(self, user_id: str = "", days: int = 30,
+                      start_bucket: str | None = None, end_bucket: str | None = None) -> dict:
         """返回汇总统计。
 
         若 ``user_id`` 非空，只统计该用户；否则统计全部。``days`` 限定最近
-        N 天的桶。返回总 input_other / input_cached / output / total /
-        call_count 及覆盖天数与模型数。
+        N 天的桶（滚动窗口）；也可通过 ``start_bucket``/``end_bucket`` 指定精确的
+        起始/结束小时桶（结束不含），用于「今天/昨天」自然日区间，优先级高于 ``days``。
+        返回总 input_other / input_cached / output / total / call_count 及覆盖天数与模型数。
         """
-        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
-        conn = self._conn_get()
-        if user_id:
-            row = conn.execute(
-                "SELECT SUM(input_other), SUM(input_cached), SUM(output), SUM(total), SUM(call_count) "
-                "FROM llm_usage WHERE user_id=? AND hour_bucket>=?",
-                (user_id, bucket_min),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT SUM(input_other), SUM(input_cached), SUM(output), SUM(total), SUM(call_count) "
-                "FROM llm_usage WHERE hour_bucket>=?",
-                (bucket_min,),
-            ).fetchone()
+        bucket_min, bucket_max, conds, params = self._range_conds(
+            days, start_bucket, end_bucket, user_id
+        )
+        sql_sum = (
+            "SELECT SUM(input_other), SUM(input_cached), SUM(output), SUM(total), SUM(call_count) "
+            f"FROM llm_usage WHERE {conds}"
+        )
+        row = self._conn_get().execute(sql_sum, tuple(params)).fetchone()
         in_other = row["SUM(input_other)"] or 0
         in_cached = row["SUM(input_cached)"] or 0
         out = row["SUM(output)"] or 0
         total = row["SUM(total)"] or 0
         calls = row["SUM(call_count)"] or 0
-        if user_id:
-            model_count = conn.execute(
-                "SELECT COUNT(DISTINCT model) FROM llm_usage WHERE user_id=? AND hour_bucket>=? AND model<>''",
-                (user_id, bucket_min),
-            ).fetchone()[0]
-        else:
-            model_count = conn.execute(
-                "SELECT COUNT(DISTINCT model) FROM llm_usage WHERE hour_bucket>=? AND model<>''",
-                (bucket_min,),
-            ).fetchone()[0]
+        sql_model = (
+            "SELECT COUNT(DISTINCT model) FROM llm_usage "
+            f"WHERE {conds} AND model<>''"
+        )
+        model_count = self._conn_get().execute(sql_model, tuple(params)).fetchone()[0]
         return {
             "user_id": user_id or "",
             "days": int(days),
@@ -273,30 +284,59 @@ class TokenStore:
             "model_count": int(model_count),
         }
 
+    def _range_conds(self, days: int = 30,
+                     start_bucket: str | None = None,
+                     end_bucket: str | None = None,
+                     user_id: str = "") -> tuple[str, str, str, list]:
+        """构造 llm_usage 的过滤条件，返回 (bucket_min, bucket_max, where_sql, params)。
+
+        - 若提供了 ``start_bucket``，用它作为起始（>=）；否则用 ``days`` 算滚动窗口。
+        - ``end_bucket`` 可选，提供则加 ``hour_bucket < end_bucket``（不含），用于「昨天」区间。
+        - ``user_id`` 可选，提供则加 ``user_id=?`` 过滤。
+        返回的 where_sql 不含 WHERE 关键字，params 按占位符顺序排列。
+        """
+        if start_bucket:
+            bucket_min = start_bucket
+        else:
+            bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
+        bucket_max = end_bucket or ""
+        conds = "hour_bucket>=?"
+        params: list = [bucket_min]
+        if bucket_max:
+            conds += " AND hour_bucket<?"
+            params.append(bucket_max)
+        if user_id:
+            conds += " AND user_id=?"
+            params.append(user_id)
+        return bucket_min, bucket_max, conds, params
+
     def list_users(
         self,
         days: int = 30,
         merge_alsoknown: list[str] | None = None,
+        start_bucket: str | None = None,
+        end_bucket: str | None = None,
     ) -> list[dict]:
         """用户维度汇总，按 total 倒序。用于 WebUI 用户排行。
 
         ``merge_alsoknown``：可选。给出一组「其他插件/别名」名（如 ["PrivateCompanion"]），
         命中 user_name 的记录合并为一行（user_id 逗号拼接、token 求和、调用次数求和），
         便于把同一插件/非真人来源的分散记录整合；传空列表/None 则不合并。
+        ``start_bucket``/``end_bucket``：可选，指定精确的自然日区间（见 query_summary）。
         返回项含 user_name（供前端展示）与 total/call_count 等。
         """
-        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
+        _, _, conds, params = self._range_conds(days, start_bucket, end_bucket)
         rows = self._conn_get().execute(
-            """
+            f"""
             SELECT user_id, MAX(user_name) AS user_name, SUM(input_other) AS in_other,
                    SUM(input_cached) AS in_cached, SUM(output) AS out, SUM(total) AS total,
                    SUM(call_count) AS calls
             FROM llm_usage
-            WHERE hour_bucket>=?
+            WHERE {conds}
             GROUP BY user_id
             ORDER BY total DESC
             """,
-            (bucket_min,),
+            tuple(params),
         ).fetchall()
         ranked = [
             {
@@ -355,25 +395,21 @@ class TokenStore:
         days: int = 30,
         offset: int = 0,
         limit: int | None = None,
+        start_bucket: str | None = None,
+        end_bucket: str | None = None,
     ) -> list[dict]:
         """明细查询，可按 user_id 过滤；返回按时间倒序的 (scene/model/时间) 明细。
 
         返回的 ``hour_bucket`` 为 ``YYYY-MM-DD HH:00`` 小时桶，同时派生出
         ``day_bucket``（前 10 位日期）供前端按日展示。支持后端分页：
         ``offset`` 为跳过条数，``limit`` 为返回条数上限（None 表示不分页，全量返回）。
+        ``start_bucket``/``end_bucket``：可选，指定精确的自然日区间。
         """
-        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
-        conn = self._conn_get()
+        _, _, conds, params = self._range_conds(days, start_bucket, end_bucket, user_id)
         base_sql = (
-            "SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
-            "FROM llm_usage WHERE hour_bucket>=? "
+            f"SELECT user_id, scene, model, hour_bucket, input_other, input_cached, output, total, call_count "
+            f"FROM llm_usage WHERE {conds} ORDER BY hour_bucket DESC, total DESC"
         )
-        if user_id:
-            base_sql += "AND user_id=? "
-        base_sql += "ORDER BY hour_bucket DESC, total DESC"
-        params: list = [bucket_min]
-        if user_id:
-            params.append(user_id)
         if limit is not None:
             base_sql += " LIMIT ? OFFSET ?"
             params += [int(max(limit, 1)), int(max(offset, 0))]
@@ -394,35 +430,29 @@ class TokenStore:
             for r in rows
         ]
 
-    def count_detail(self, user_id: str = "", days: int = 30) -> int:
+    def count_detail(self, user_id: str = "", days: int = 30,
+                     start_bucket: str | None = None, end_bucket: str | None = None) -> int:
         """返回明细总条数（与 list_detail 同过滤条件），供前端分页计算总页数。"""
-        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
-        conn = self._conn_get()
-        if user_id:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM llm_usage WHERE user_id=? AND hour_bucket>=?",
-                (user_id, bucket_min),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM llm_usage WHERE hour_bucket>=?",
-                (bucket_min,),
-            ).fetchone()
+        _, _, conds, params = self._range_conds(days, start_bucket, end_bucket, user_id)
+        row = self._conn_get().execute(
+            f"SELECT COUNT(*) FROM llm_usage WHERE {conds}", tuple(params)
+        ).fetchone()
         return int(row[0]) if row else 0
 
-    def list_scenes(self, days: int = 30) -> list[dict]:
+    def list_scenes(self, days: int = 30, start_bucket: str | None = None,
+                    end_bucket: str | None = None) -> list[dict]:
         """按调用场景（scene）汇总，用于 WebUI 分类展示。"""
-        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
+        _, _, conds, params = self._range_conds(days, start_bucket, end_bucket)
         rows = self._conn_get().execute(
-            """
+            f"""
             SELECT scene, SUM(input_other) AS in_other, SUM(input_cached) AS in_cached,
                    SUM(output) AS out, SUM(total) AS total, SUM(call_count) AS calls
             FROM llm_usage
-            WHERE hour_bucket>=?
+            WHERE {conds}
             GROUP BY scene
             ORDER BY total DESC
             """,
-            (bucket_min,),
+            tuple(params),
         ).fetchall()
         return [
             {
@@ -436,14 +466,39 @@ class TokenStore:
             for r in rows
         ]
 
-    def list_daily(self, days: int = 30) -> list[dict]:
+    def list_daily(self, days: int = 30, start_bucket: str | None = None,
+                   end_bucket: str | None = None) -> list[dict]:
         """按日期聚合的每日 token 用量（供趋势面积图/柱状图）。
 
         由小时粒度数据按日期前缀（YYYY-MM-DD）聚合，返回按日期升序的每日
         total 与调用次数，并补全无记录日期为 0，保证连续日期可用于折线/柱状图。
-        days<=0 表示全部历史。
+        days<=0 表示全部历史；days>0 为「今天往前 N 天」连续窗口。
+        也可通过 ``start_bucket``/``end_bucket`` 指定精确自然日区间（如「昨天」），
+        此时返回该区间内逐日数据（补全 0），优先级高于 days。
         """
         conn = self._conn_get()
+        if start_bucket:
+            # 精确区间：从 start_bucket 对应日期逐天补全到 end_bucket 前一天
+            rows = conn.execute(
+                "SELECT substr(hour_bucket, 1, 10) AS day_bucket, SUM(total) AS total, "
+                "SUM(call_count) AS calls "
+                "FROM llm_usage WHERE hour_bucket>=? AND hour_bucket<? "
+                "GROUP BY day_bucket ORDER BY day_bucket",
+                (start_bucket, end_bucket or _hour_bucket(time.time())),
+            ).fetchall()
+            data = {r["day_bucket"]: {"total": int(r["total"] or 0), "call_count": int(r["calls"] or 0)} for r in rows}
+            start_day = start_bucket[:10]
+            end_day = (end_bucket or _hour_bucket(time.time()))[:10]
+            out = []
+            cursor_day = start_day
+            while cursor_day <= end_day:
+                d = data.get(cursor_day, {"total": 0, "call_count": 0})
+                out.append({"day_bucket": cursor_day, "total": d["total"], "call_count": d["call_count"]})
+                # 下一天
+                lt = time.strptime(cursor_day, "%Y-%m-%d")
+                nxt = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)) + 86400
+                cursor_day = _day_bucket(nxt)
+            return out
         bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
         if days > 0:
             rows = conn.execute(
@@ -477,7 +532,8 @@ class TokenStore:
             cursor += 86400
         return out
 
-    def list_hourly(self, hours: int = 24, since_day_start: bool = False) -> list[dict]:
+    def list_hourly(self, hours: int = 24, since_day_start: bool = False,
+                    start_ts: float | None = None, end_ts: float | None = None) -> list[dict]:
         """token 用量的逐小时面积图数据（按本地时区小时分桶）。
 
         llm_usage 已是小时粒度表，`hour_bucket`（YYYY-MM-DD HH:00）直接作为分桶键，
@@ -486,7 +542,9 @@ class TokenStore:
 
         返回按小时升序的 {hour, total, call_count}，无记录时段补 0。
 
-        起始时间有两种：
+        起始时间有三种：
+        - ``start_ts``/``end_ts`` 均提供：从 start_ts 所在整点补全到 end_ts 所在整点
+          （用于「昨天」等精确自然日区间）；
         - ``since_day_start=True``：从「今天 0 点的整点」开始，覆盖今天已过去的各小时
           （用于「今天」范围）；
         - ``since_day_start=False``（默认）：从「当前整点 - (hours-1) 小时」开始滚动窗口
@@ -496,16 +554,24 @@ class TokenStore:
         now = time.time()
         hours = max(1, min(int(hours), 24 * 7))
         cur_lt = time.localtime(now)
-        if since_day_start:
+        if start_ts is not None and end_ts is not None:
+            start_ts = float(start_ts)
+            end_ts = float(end_ts)
+            start_bucket = _hour_bucket(start_ts)
+        elif since_day_start:
             start_ts = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, 0, 0, 0, 0, 0, -1))
+            end_ts = now
             start_bucket = _hour_bucket(start_ts)
         else:
             start_ts = now - hours * 3600.0
+            end_ts = now
             start_bucket = _hour_bucket(start_ts)
+        end_bucket = _hour_bucket(end_ts)
         rows = conn.execute(
             "SELECT hour_bucket, SUM(total) AS total, SUM(call_count) AS calls "
-            "FROM llm_usage WHERE hour_bucket>=? GROUP BY hour_bucket ORDER BY hour_bucket",
-            (start_bucket,),
+            "FROM llm_usage WHERE hour_bucket>=? AND hour_bucket<=? "
+            "GROUP BY hour_bucket ORDER BY hour_bucket",
+            (start_bucket, end_bucket),
         ).fetchall()
         # 按「本地小时」直接映射（hour_bucket 即键）
         data: dict[str, dict] = {}
@@ -515,12 +581,19 @@ class TokenStore:
                 "total": int(r["total"] or 0),
                 "call_count": int(r["calls"] or 0),
             }
-        # 从起始整点逐小时补全到当前整点
-        cursor = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, cur_lt.tm_hour, 0, 0, 0, 0, -1))
-        if since_day_start:
-            start = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        # 从起始整点逐小时补全到结束整点（含）
+        cursor = end_ts
+        end_hour_ts = int(end_ts // 3600) * 3600
+        if start_ts is not None and end_ts is not None and not since_day_start:
+            start_hour_ts = int(start_ts // 3600) * 3600
+            start = start_hour_ts
+            cursor = end_hour_ts
         else:
-            start = cursor - (hours - 1) * 3600.0
+            cursor = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, cur_lt.tm_hour, 0, 0, 0, 0, -1))
+            if since_day_start:
+                start = time.mktime((cur_lt.tm_year, cur_lt.tm_mon, cur_lt.tm_mday, 0, 0, 0, 0, 0, -1))
+            else:
+                start = cursor - (hours - 1) * 3600.0
         out = []
         while cursor >= start:
             lt = time.localtime(cursor)
@@ -531,19 +604,20 @@ class TokenStore:
         out.reverse()
         return out
 
-    def list_models(self, days: int = 30) -> list[dict]:
+    def list_models(self, days: int = 30, start_bucket: str | None = None,
+                    end_bucket: str | None = None) -> list[dict]:
         """按所用 LLM 模型（provider id）汇总，用于模型对比进度条/柱状图。"""
-        bucket_min = _hour_bucket(time.time() - int(max(days, 1)) * 86400)
+        _, _, conds, params = self._range_conds(days, start_bucket, end_bucket)
         rows = self._conn_get().execute(
-            """
+            f"""
             SELECT model, SUM(input_other) AS in_other, SUM(input_cached) AS in_cached,
                    SUM(output) AS out, SUM(total) AS total, SUM(call_count) AS calls
             FROM llm_usage
-            WHERE hour_bucket>=? AND model<>''
+            WHERE {conds} AND model<>''
             GROUP BY model
             ORDER BY total DESC
             """,
-            (bucket_min,),
+            tuple(params),
         ).fetchall()
         return [
             {

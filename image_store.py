@@ -1166,26 +1166,32 @@ class ImageStore:
     # 用户生图统计（WebUI「统计」页）
     # ------------------------------------------------------------------ #
     def user_ranking(self, days: int | None = None, limit: int = 50,
-                     merge_alsoknown: list[str] | None = None) -> dict:
+                     merge_alsoknown: list[str] | None = None,
+                     start_ts: float | None = None, end_ts: float | None = None) -> dict:
         """按用户统计生图数量排行（只统计成功生成的成品图 source='gen' 且 status=0）。
 
         days: None=全部；0=今天（自然日，本地时区）；其他正整数=最近 N 天（含今天）。
-        merge_alsoknown: 可选。给出一组「其他插件/别名」名称（如 ["PrivateCompanion"]），
-        命中 user_name 的这些记录会被合并成一行（user_id 用逗号拼接、count 求和），
-        便于把同一插件/非真人来源的分散记录整合。传空列表/None 则不合并。
+        start_ts/end_ts: 可选。显式起始/结束时间戳（end 不含），提供时优先级高于
+        ``days``，用于「昨天」等精确区间统计。merge_alsoknown: 可选。给出一组
+        「其他插件/别名」名称（如 ["PrivateCompanion"]），命中 user_name 的这些记录
+        会被合并成一行（user_id 用逗号拼接、count 求和），便于把同一插件/非真人来源的
+        分散记录整合。传空列表/None 则不合并。
         返回 {"scope": str, "total": int, "rows": [{user_id, user_name, count, rank}]}
         """
         if not self.enabled() or not _HAS_SQLITE:
             return {"scope": "all", "total": 0, "rows": []}
         conn = self._conn_get()
         try:
-            since = self._stats_since_ts(days)
+            since = start_ts if start_ts is not None else self._stats_since_ts(days)
             params: list = []
             where = "source=? AND status=0 AND deleted=0"
             params.append(SRC_GEN)
             if since is not None:
                 where += " AND created_at>=?"
                 params.append(since)
+            if end_ts is not None:
+                where += " AND created_at<?"
+                params.append(float(end_ts))
             rows = conn.execute(
                 f"SELECT user_id, MAX(user_name) AS user_name, COUNT(*) AS c, MAX(created_at) AS last_ts FROM images "
                 f"WHERE {where} GROUP BY user_id ORDER BY c DESC, MAX(created_at) DESC "

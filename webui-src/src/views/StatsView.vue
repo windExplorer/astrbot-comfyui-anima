@@ -13,6 +13,7 @@
       <div class="stats-toolbar">
         <n-radio-group v-model:value="scope" size="small" @update:value="load">
           <n-radio-button value="today">今天</n-radio-button>
+          <n-radio-button value="yesterday">昨天</n-radio-button>
           <n-radio-button value="3">近 3 天</n-radio-button>
           <n-radio-button value="7">近 7 天</n-radio-button>
           <n-radio-button value="all">全部</n-radio-button>
@@ -66,7 +67,7 @@ const merge = ref(false);
 const ranking = ref<{ rows: any[]; total: number }>({ rows: [], total: 0 });
 const trend = ref<{ buckets: any[] }>({ buckets: [] });
 
-const SCOPE_MAP: Record<string, string> = { today: "today", "3": "3", "7": "7", all: "all" };
+const SCOPE_MAP: Record<string, string> = { today: "today", yesterday: "yesterday", "3": "3", "7": "7", all: "all" };
 
 async function load() {
   loading.value = true;

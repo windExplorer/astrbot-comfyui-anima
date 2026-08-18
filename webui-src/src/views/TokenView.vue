@@ -15,6 +15,7 @@
     <div class="scope-toolbar">
       <n-radio-group v-model:value="scope" size="small" @update:value="onScopeChange">
         <n-radio-button value="today">今天</n-radio-button>
+        <n-radio-button value="yesterday">昨天</n-radio-button>
         <n-radio-button value="1">近 1 天</n-radio-button>
         <n-radio-button value="3">近 3 天</n-radio-button>
         <n-radio-button value="7">近 7 天</n-radio-button>
@@ -40,7 +41,7 @@
         <div class="panel-title"><h3>每日 Token 消耗趋势</h3></div>
         <div class="chart-wrap">
           <AreaChart v-if="trendData.length" :data="trendData" :format-y="fmtToken" />
-          <div v-else class="empty">暂无数据</div>
+          <div v-else class="empty">该时段无 token 消耗记录，请切换范围或等待使用后刷新</div>
         </div>
       </div>
 
@@ -118,7 +119,7 @@ function trimZero(s: string): string {
   return s.replace(/\.?0+$/, "");
 }
 
-const SCOPE_DAYS: Record<string, string> = { today: "1", "1": "1", "3": "3", "7": "7", "30": "30", "90": "90", all: "0" };
+const SCOPE_DAYS: Record<string, string> = { today: "1", yesterday: "2", "1": "1", "3": "3", "7": "7", "30": "30", "90": "90", all: "0" };
 
 async function load() {
   loading.value = true;
@@ -163,7 +164,8 @@ function onPageSize(s: number) {
 }
 
 const trendData = computed(() => {
-  const buckets = scope.value === "today" || scope.value === "1" ? hourly.value : daily.value;
+  const useHourly = scope.value === "today" || scope.value === "yesterday" || scope.value === "1";
+  const buckets = useHourly ? hourly.value : daily.value;
   if (!buckets || !buckets.length) return [];
   return buckets.map((b) => ({
     x: fmtBucketLabel(b),
