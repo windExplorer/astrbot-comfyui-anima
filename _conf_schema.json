@@ -754,6 +754,36 @@
         "description": "跨会话检索",
         "hint": "开启后所有会话的图都可被检索；关闭时 /gallery 与 comfyui_gallery 仅能检索「当前会话」范围内生成的图。"
       },
+      "nsfw": {
+        "type": "object",
+        "description": "NSFW 检测",
+        "hint": "基于本地 open_nsfw 模型对入库图片做色情内容检测。启用后归档时自动打标（需已安装 onnxruntime + opennsfw-onnx 依赖），WebUI 图库可据此筛选与模糊显示；模型不可用时仅标记不阻塞归档。",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "启用 NSFW 检测",
+            "hint": "关闭后归档不再自动检测 NSFW，图库的 NSFW 字段保持未检测状态；已检测的标记仍保留。"
+          },
+          "threshold": {
+            "type": "float",
+            "default": 0.5,
+            "description": "判定阈值",
+            "hint": "open_nsfw 输出 P(nsfw) 大于等于该值判定为 NSFW。越低越敏感（更易标为 NSFW），越高越宽松。默认 0.5。",
+            "slider": {
+              "min": 0,
+              "max": 1,
+              "step": 0.05
+            }
+          },
+          "blur_default": {
+            "type": "bool",
+            "default": true,
+            "description": "NSFW 图默认模糊",
+            "hint": "WebUI 图库中 NSFW 图默认以模糊遮罩显示，点击可查看；关闭后默认清晰显示。WebUI 工具栏的「NSFW 模糊」开关可一键覆盖全局，单图也可单独设置。"
+          }
+        }
+      },
       "keep_temp_hours": {
         "type": "int",
         "default": 24,

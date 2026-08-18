@@ -16,8 +16,9 @@
           <!-- 结果图 -->
           <figure class="iv-fig">
             <div class="iv-imgwrap">
-              <img v-if="mainSrc" :src="mainSrc" alt="图片" />
+              <img v-if="mainSrc" :src="mainSrc" alt="图片" :class="{ 'iv-nsfw-blur': mainBlurred }" />
               <div v-else class="iv-loading">加载中…</div>
+              <button v-if="mainBlurred" class="iv-nsfw-reveal" @click="revealMain">🔞 点击查看</button>
             </div>
             <figcaption class="iv-cap">{{ isPair ? "结果图" : typeText }}</figcaption>
           </figure>
@@ -28,12 +29,14 @@
           <template v-if="item">
             <div class="iv-actions">
               <button v-if="!isTrash" class="iv-star" :class="{ on: item.starred }" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</button>
+              <button v-if="isNsfw && !isTrash" class="iv-blur" :class="{ on: item.nsfw_blur === 1 || item.nsfw_blur == null }" @click="onToggleBlur(item)">{{ blurBtnLabel }}</button>
               <n-button v-if="!isTrash" size="small" type="error" ghost @click="onDelete(item)">删除</n-button>
               <n-button v-if="isTrash" size="small" type="success" @click="onRestore(item)">恢复</n-button>
               <n-button v-if="isTrash" size="small" type="error" ghost @click="onPurge(item)">彻底删除</n-button>
             </div>
             <div class="iv-row"><span class="k">SHA</span><span class="v">{{ shortSha }}</span></div>
             <div class="iv-row"><span class="k">类型</span><span class="v">{{ typeText }}</span></div>
+            <div v-if="item.nsfw != null" class="iv-row"><span class="k">NSFW</span><span class="v">{{ item.nsfw ? "是" : "否" }}<template v-if="item.nsfw_score != null && item.nsfw_score > 0">（{{ (item.nsfw_score * 100).toFixed(1) }}%）</template></span></div>
             <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
             <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
@@ -56,9 +59,11 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton } from "naive-ui";
-import { apiGet } from "@/api/bridge";
+import { NButton, useMessage } from "naive-ui";
+import { apiGet, apiPost } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
+
+const message = useMessage();
 
 interface ViewerImage {
   sha?: string;
@@ -82,6 +87,10 @@ interface ViewerImage {
   use_count?: number;
   starred?: boolean;
   status?: number;
+  nsfw?: boolean;
+  nsfw_score?: number;
+  nsfw_blur?: number | null;
+  nsfw_checked?: boolean;
 }
 
 const props = defineProps<{
@@ -179,6 +188,43 @@ function swapPair() {
   const m = mainSrc.value;
   mainSrc.value = refSrc.value;
   refSrc.value = m;
+}
+
+// ---- NSFW 模糊 ----
+const isNsfw = computed(() => Boolean(item.value && item.value.nsfw));
+// 结果图是否应模糊：NSFW 图默认模糊，单图 nsfw_blur=0 强制不模糊，=1 强制模糊
+const mainBlurred = ref(false);
+watch(
+  () => [item.value?.nsfw, item.value?.nsfw_blur] as const,
+  () => {
+    const it = item.value;
+    if (!it || !it.nsfw) { mainBlurred.value = false; return; }
+    if (it.nsfw_blur === 0) mainBlurred.value = false;
+    else mainBlurred.value = true;
+  },
+  { immediate: true }
+);
+const blurBtnLabel = computed(() => {
+  const it = item.value;
+  // 当前是否处于模糊状态（=1 或 null 跟随全局默认模糊）
+  const blurred = it && it.nsfw ? (it.nsfw_blur === 0 ? false : true) : false;
+  return blurred ? "取消模糊" : "设为模糊";
+});
+function revealMain() {
+  // 临时查看：仅取消本次查看的模糊，不写库（关闭再开后恢复）
+  mainBlurred.value = false;
+}
+function onToggleBlur(it: any) {
+  const sha = it.sha || it.sha256;
+  if (!sha) return;
+  const blurred = it.nsfw_blur === 0 ? false : true;
+  // 当前模糊→设为清晰(0)；当前清晰→设为模糊(1)
+  const on = blurred ? 0 : 1;
+  apiPost("gallery/set_blur", { sha, on }).then(() => {
+    it.nsfw_blur = on;
+    mainBlurred.value = !blurred;
+    message.success(on === 0 ? "已取消该图模糊" : "已设为该图模糊");
+  }).catch((e: any) => message.error(e.message || "设置失败"));
 }
 
 function onClose() {
@@ -320,6 +366,40 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-star:hover { background: rgba(255, 210, 87, 0.3); }
 .iv-star.on { background: #ffd257; color: #1a1206; border-color: #ffd257; }
+/* NSFW */
+.iv-nsfw-blur { filter: blur(20px) !important; transform: scale(1.05); }
+.iv-nsfw-reveal {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 22px;
+  border: none;
+  border-radius: 30px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  z-index: 3;
+}
+.iv-nsfw-reveal:hover { background: rgba(0, 0, 0, 0.75); }
+.iv-imgwrap { position: relative; }
+.iv-blur {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #ff6b6b;
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+  transition: all 0.15s;
+}
+.iv-blur:hover { background: rgba(255, 107, 107, 0.3); }
+.iv-blur.on { background: #ff6b6b; color: #fff; border-color: #ff6b6b; }
 .iv-row {
   display: flex;
   gap: 8px;

@@ -881,6 +881,7 @@ class WebUIApi:
                 stype = None
             starred = request.query.get("starred", "0") == "1"
             trash = request.query.get("trash", "0") == "1"
+            nsfw = str(request.query.get("nsfw", "") or "").strip() or ""
             try:
                 page = request.query.get("page", 1, type=int)
             except Exception:
@@ -897,9 +898,9 @@ class WebUIApi:
                 size = 200
             offset = (page - 1) * size
             rows = g.search(keyword=kw, type=stype, starred_only=starred,
-                            trash=trash, limit=size, offset=offset, user_filter=user_filter)
+                            trash=trash, limit=size, offset=offset, user_filter=user_filter, nsfw=nsfw)
             total = g.count_search(keyword=kw, type=stype,
-                                   starred_only=starred, trash=trash, user_filter=user_filter)
+                                   starred_only=starred, trash=trash, user_filter=user_filter, nsfw=nsfw)
             # 列表只返回元数据（含 sha256），不内联任何缩略图 base64——避免一次几十张
             # 图导致响应体爆炸/超时。缩略图由前端经 bridge 调用 gallery_thumb 按需、
             # 懒加载、带 LRU 缓存地拉取单张 data URL（参考 astrbot_plugin_stealer 图库）。
@@ -998,6 +999,43 @@ class WebUIApi:
             return json_response({"msg": "已更新收藏" if ok else "未找到该图"})
         except Exception as e:
             return error_response(f"操作失败: {e}")
+
+    async def gallery_set_blur(self):
+        """单图设置 NSFW 模糊覆盖。POST {sha, on(0/1)}；on 为空/null 时清除覆盖恢复跟随全局。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            sha = payload.get("sha", "")
+            if not sha:
+                return error_response("缺少 sha")
+            on = payload.get("on")
+            if on is None:
+                ok = g.clear_nsfw_blur(sha)
+                msg = "已恢复跟随全局模糊"
+            else:
+                ok = g.set_nsfw_blur(sha, 1 if on else 0)
+                msg = "已设置模糊" if on else "已取消模糊"
+            return json_response({"msg": msg if ok else "未找到该图"})
+        except Exception as e:
+            return error_response(f"操作失败: {e}")
+
+    async def gallery_scan_nsfw(self):
+        """手动扫描图库旧图做 NSFW 检测。GET ?limit=50&only=1（默认只扫未检测的图）。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            try:
+                limit = max(1, min(int(request.query.get("limit", 50) or 50), 2000))
+            except Exception:
+                limit = 50
+            only = request.query.get("only", "1") != "0"
+            res = g.scan_nsfw(limit=limit, only_unchecked=only)
+            return json_response(res)
+        except Exception as e:
+            return error_response(f"扫描失败: {e}")
 
     async def gallery_delete(self):
         g = self._gallery()
@@ -1219,6 +1257,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/thumb", api.gallery_thumb, ["GET"], "图库缩略图"),
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
         (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
+        (f"{prefix}/gallery/set_blur", api.gallery_set_blur, ["POST"], "图库单图NSFW模糊"),
+        (f"{prefix}/gallery/scan_nsfw", api.gallery_scan_nsfw, ["GET"], "图库NSFW扫描"),
         (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除(移入回收站)"),
         (f"{prefix}/gallery/trash", api.gallery_trash, ["GET"], "图库回收站"),
         (f"{prefix}/gallery/restore", api.gallery_restore, ["POST"], "图库恢复"),

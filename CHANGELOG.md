@@ -2,6 +2,22 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.0
+
+- **图库新增 NSFW 检测**（基于本地 open_nsfw 模型，离线、保护隐私）：
+  - 新增 `nsfw_detector.py`：懒加载封装 `opennsfw-onnx`（模型内置在包内约 22.5MB），容错降级——依赖/模型缺失时检测不可用但不阻塞归档。
+  - `images` 表新增 `nsfw` / `nsfw_score` / `nsfw_blur` / `nsfw_checked` 字段（旧库自动 ALTER 兼容）。
+  - 归档时自动检测打标；`image_store.scan_nsfw()` 支持手动扫描旧图（默认只扫未检测的，可全量重扫）。
+  - 检索支持 `nsfw` 筛选（`0`=仅常规 / `1`=仅 NSFW / 空=全部），统计接口返回 NSFW 数量与未检测数。
+- **WebUI 图库 NSFW 展示控制**：
+  - 工具栏新增 **NSFW 筛选**下拉（全部 / 仅常规 / 仅 NSFW）与 **NSFW 模糊**全局开关（localStorage 持久化，一键开/关所有 NSFW 图模糊）。
+  - NSFW 缩略图默认模糊遮罩（🔞 点击查看）；大图查看器同样默认模糊，可「点击查看」临时看清。
+  - **单图开关**：大图信息面板提供「取消模糊 / 设为模糊」按钮，写回该图 `nsfw_blur` 字段；信息面板显示 NSFW 判定与置信度。
+- **新增 API**：`gallery/set_blur`（单图模糊设置）、`gallery/scan_nsfw`（手动扫描）；`gallery/search` 支持 `nsfw` 参数。
+- **依赖**：`requirements.txt` 新增 `onnxruntime>=1.15.0`、`opennsfw-onnx>=0.1.0`（未安装时 NSFW 检测不可用，不影响其余功能）。
+- **配置**：`gallery` 新增 `nsfw` 子配置（`enabled` 启用开关 / `threshold` 判定阈值默认 0.5 / `blur_default` 默认模糊）。
+- 注意：本版暂**不**对检索/发图做强制 NSFW 过滤，仅标记 + 模糊展示，过滤策略后续版本再定。
+
 ## v4.3.8
 
 - **修复 Token 统计接口报 `name 'conn' is not defined`**：v4.3.7 为支持「今天/昨天」自然日区间改造 `token_store` 时，`list_detail` 误删了 `conn = self._conn_get()` 定义但仍用 `conn.execute`，导致打开 Token 用量页报错。已改为直接 `self._conn_get().execute`。经临时脚本验证，`query_summary` / `list_scenes` / `list_users` / `list_models` / `list_detail` / `count_detail` / `list_daily` / `list_hourly` 在昨天区间下均正常。

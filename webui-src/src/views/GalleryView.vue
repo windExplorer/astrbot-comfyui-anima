@@ -40,6 +40,13 @@
           <div class="stat-label">回收站</div>
         </div>
       </div>
+      <div class="stat-card sc-red">
+        <div class="stat-icon">🔞</div>
+        <div class="stat-body">
+          <div class="stat-num">{{ (stats.nsfw_count ?? 0).toLocaleString() }}</div>
+          <div class="stat-label">NSFW<template v-if="(stats.nsfw_unchecked ?? 0) > 0">（未检测 {{ stats.nsfw_unchecked }}）</template></div>
+        </div>
+      </div>
     </div>
 
     <div class="toolbar">
@@ -57,7 +64,23 @@
         @update:value="doSearch(1)"
       />
       <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
+      <n-select
+        v-model:value="nsfwFilter"
+        size="small"
+        style="width:120px"
+        :options="nsfwOptions"
+        @update:value="doSearch(1)"
+      />
       <n-button size="small" type="primary" @click="doSearch(1)">搜索</n-button>
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <n-switch v-model:value="nsfwBlurGlobal" size="small" @update:value="onBlurGlobalChange">
+            <template #checked>NSFW 模糊：开</template>
+            <template #unchecked>NSFW 模糊：关</template>
+          </n-switch>
+        </template>
+        一键开关所有 NSFW 图的模糊显示
+      </n-tooltip>
       <span class="count">{{ total ? total + " 条" : "" }}</span>
     </div>
 
@@ -66,7 +89,11 @@
         <div class="gal-grid">
           <n-empty v-if="!searching && !images.length" :description="activeTab === 'trash' ? '回收站为空' : '请输入关键词搜索或直接浏览图库'" style="padding:60px" />
           <div v-for="img in images" :key="img.sha || img.sha256" class="gal-item" @click="openDetail(img)">
-            <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" />
+            <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" :class="{ 'nsfw-blur': isNsfwBlurred(img) }" />
+            <div v-if="isNsfwBlurred(img)" class="gal-nsfw-mask">
+              <span>🔞</span>
+              <span class="gal-nsfw-tip">点击查看</span>
+            </div>
             <div class="gal-item-overlay">
               <span v-if="img.starred" class="gal-star">★</span>
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
@@ -102,7 +129,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane } from "naive-ui";
+import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane, NSwitch, NTooltip } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { fmtBytes, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
@@ -133,6 +160,31 @@ const typeOptions = [
   { label: "图生图", value: "img2img" },
   { label: "参考图", value: "ref" },
 ];
+// NSFW 筛选：""=全部；"0"=仅常规；"1"=仅NSFW
+const nsfwFilter = ref("");
+const nsfwOptions = [
+  { label: "全部（含 NSFW）", value: "" },
+  { label: "仅常规", value: "0" },
+  { label: "仅 NSFW", value: "1" },
+];
+// 全局 NSFW 模糊开关（localStorage 持久化，默认开启）
+const nsfwBlurGlobal = ref(true);
+try {
+  const v = localStorage.getItem("anima_gal_nsfw_blur");
+  if (v != null) nsfwBlurGlobal.value = v === "1";
+} catch { /* ignore */ }
+function onBlurGlobalChange() {
+  try { localStorage.setItem("anima_gal_nsfw_blur", nsfwBlurGlobal.value ? "1" : "0"); } catch { /* ignore */ }
+}
+// 该图是否应模糊显示：NSFW 图 && 全局开关开 && 单图未强制取消（nsfw_blur=0 时单图不模糊，=1 时单图模糊）
+function isNsfwBlurred(img: any): boolean {
+  if (!img || !img.nsfw) return false;
+  if (!nsfwBlurGlobal.value) return false;
+  // 单图覆盖：nsfw_blur=0 强制不模糊；=1 强制模糊；null 跟随全局
+  if (img.nsfw_blur === 0) return false;
+  if (img.nsfw_blur === 1) return true;
+  return true;
+}
 
 function typeKey(img: any): string {
   if (img?.is_img2img || img?.ref_sha256) return "img2img";
@@ -163,6 +215,7 @@ async function doSearch(p: number) {
       type: type.value || undefined,
       starred: starred.value ? 1 : 0,
       trash: activeTab.value === "trash" ? 1 : 0,
+      nsfw: nsfwFilter.value || undefined,
       page: p,
       size: pageSize,
     });
@@ -342,6 +395,23 @@ onMounted(() => {
 .sc-gold .stat-icon { background: rgba(255, 210, 87, 0.18); }
 .sc-blue .stat-icon { background: rgba(126, 182, 255, 0.18); }
 .sc-purple .stat-icon { background: rgba(181, 152, 255, 0.18); }
+.sc-red .stat-icon { background: rgba(255, 107, 107, 0.18); }
+/* NSFW 模糊 */
+.nsfw-blur { filter: blur(14px); transform: scale(1.08); }
+.gal-nsfw-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #fff;
+  pointer-events: none;
+  font-size: 26px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+.gal-nsfw-mask .gal-nsfw-tip { font-size: 12px; font-weight: 600; background: rgba(0,0,0,0.45); padding: 2px 10px; border-radius: 20px; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
 /* 图片网格滚动区：占满剩余空间，内部滚动，分页器固定底部 */

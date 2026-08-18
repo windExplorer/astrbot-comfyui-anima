@@ -131,6 +131,10 @@ class ImageStore:
                 ("deleted_at", "REAL DEFAULT NULL"),
                 ("is_public", "INTEGER NOT NULL DEFAULT 0"),
                 ("session_id", "TEXT DEFAULT ''"),
+                ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
+                ("nsfw_score", "REAL DEFAULT NULL"),
+                ("nsfw_blur", "INTEGER DEFAULT NULL"),
+                ("nsfw_checked", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -181,6 +185,78 @@ class ImageStore:
 
     def enabled(self) -> bool:
         return bool(self._cfg("enabled", True))
+
+    # ------------------------------------------------------------------ #
+    # NSFW 检测
+    # ------------------------------------------------------------------ #
+    def _nsfw_cfg(self) -> dict:
+        g = self.cfg.get("nsfw") or {}
+        return g if isinstance(g, dict) else {}
+
+    def _nsfw_enabled(self) -> bool:
+        return bool(self._nsfw_cfg().get("enabled", True))
+
+    def _nsfw_threshold(self) -> float:
+        try:
+            return float(self._nsfw_cfg().get("threshold", 0.5))
+        except (TypeError, ValueError):
+            return 0.5
+
+    def _nsfw_default_blur(self) -> bool:
+        return bool(self._nsfw_cfg().get("blur_default", True))
+
+    def scan_nsfw(self, limit: int = 50, only_unchecked: bool = True) -> dict:
+        """手动扫描图库旧图做 NSFW 检测。
+
+        - 默认只扫 ``nsfw_checked=0`` 的未检测图；``only_unchecked=False`` 时全量重扫。
+        - 一次最多处理 ``limit`` 张（避免长阻塞），返回 {"scanned": n, "nsfw": n, "total_unchecked": m}。
+        - 模型不可用时不报错，返回 scanned=0。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
+        if not self._nsfw_enabled():
+            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
+        from nsfw_detector import get_detector
+        det = get_detector(self._nsfw_threshold())
+        if not det.available():
+            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
+        conn = self._conn_get()
+        try:
+            where = "deleted=0"
+            if only_unchecked:
+                where += " AND nsfw_checked=0"
+            total_unchecked = conn.execute(
+                f"SELECT COUNT(*) AS c FROM images WHERE deleted=0 AND nsfw_checked=0"
+            ).fetchone()["c"]
+            rows = conn.execute(
+                f"SELECT sha256, ext, month, source FROM images WHERE {where} "
+                f"ORDER BY created_at ASC LIMIT ?",
+                (int(max(1, limit)),),
+            ).fetchall()
+            scanned = 0
+            nsfw_cnt = 0
+            for r in rows:
+                p = self._path_of_row(r)
+                if not p.exists():
+                    # 文件不存在：标记已检测（避免反复扫同一缺失文件）
+                    conn.execute("UPDATE images SET nsfw_checked=1 WHERE sha256=?", (r["sha256"],))
+                    continue
+                is_nsfw, score, avail = det.detect(str(p))
+                if not avail:
+                    break
+                scanned += 1
+                if is_nsfw:
+                    nsfw_cnt += 1
+                conn.execute(
+                    "UPDATE images SET nsfw=?, nsfw_score=?, nsfw_checked=1 WHERE sha256=?",
+                    (1 if is_nsfw else 0, score, r["sha256"]),
+                )
+            conn.commit()
+            logger.info(f"[图库] NSFW 扫描完成：本次 {scanned} 张（NSFW {nsfw_cnt}），剩余未检测 {max(0, total_unchecked - scanned)}")
+            return {"scanned": scanned, "nsfw": nsfw_cnt, "total_unchecked": max(0, total_unchecked - scanned)}
+        except Exception as e:
+            logger.warning(f"[图库] NSFW 扫描失败: {e}")
+            return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
 
     # ------------------------------------------------------------------ #
     # 内部：落盘 + 拼路径
@@ -321,6 +397,21 @@ class ImageStore:
                 logger.error(f"[图库] 落盘失败: {e}", exc_info=True)
                 return None
 
+        # NSFW 检测：归档时自动打标（模型不可用/失败则标记 nsfw_checked=0，不阻塞归档）
+        _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
+        try:
+            if self._nsfw_enabled():
+                from nsfw_detector import get_detector
+                _det = get_detector(self._nsfw_threshold())
+                _is_nsfw, _score, _avail = _det.detect(str(dest))
+                if _avail:
+                    _nsfw = 1 if _is_nsfw else 0
+                    _nsfw_score = _score
+                    _nsfw_checked = 1
+        except Exception as _ne:
+            logger.warning(f"[图库] NSFW 检测异常（忽略，不阻塞归档）: {_ne}")
+            _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
+
         try:
             conn.execute(
                 """
@@ -328,8 +419,10 @@ class ImageStore:
                 (sha256, ext, month, prompt, prompt_raw, workflow, loras,
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
                  use_count, starred, created_at, size_bytes, cost_sec,
-                 user_id, user_name, session_id, trigger_msg, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?)
+                 user_id, user_name, session_id, trigger_msg, status,
+                 nsfw, nsfw_score, nsfw_blur, nsfw_checked)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?,
+                        ?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -338,6 +431,7 @@ class ImageStore:
                     1 if is_img2img else 0, ref_sha256 or "", source,
                     time.time(), size_bytes, cost_sec,
                     user_id or "", user_name or "", session_id or "", trigger_msg or "", status,
+                    _nsfw, _nsfw_score, None, _nsfw_checked,
                 ),
             )
             conn.commit()
@@ -565,6 +659,10 @@ class ImageStore:
             "deleted": bool(row["deleted"]),
             "deleted_at": row["deleted_at"],
             "is_public": bool(row["is_public"]),
+            "nsfw": bool(row["nsfw"]) if "nsfw" in row.keys() else False,
+            "nsfw_score": row["nsfw_score"] if "nsfw_score" in row.keys() else None,
+            "nsfw_blur": row["nsfw_blur"] if "nsfw_blur" in row.keys() else None,
+            "nsfw_checked": bool(row["nsfw_checked"]) if "nsfw_checked" in row.keys() else False,
             "tags": self.tags_of(row["sha256"]),
         }
 
@@ -615,12 +713,14 @@ class ImageStore:
         owner: str = "",
         session=None,
         user_filter: str = "",
+        nsfw: str = "",
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
         owner: 用户隔离标识，与 search 保持一致。
         session: 会话ID；非空时额外按 session_id 过滤（用于「仅当前会话」视图，
         cross_session=false 场景）。注意：这只是检索范围，不改变权限——
-        owner（user_id 归属）与 is_public 过滤始终保留。"""
+        owner（user_id 归属）与 is_public 过滤始终保留。
+        nsfw: ""=不过滤；"0"=仅常规；"1"=仅NSFW。"""
         if not self.enabled() or not _HAS_SQLITE:
             return 0
         conn = self._conn_get()
@@ -657,6 +757,11 @@ class ImageStore:
             uf = f"%{user_filter.strip()}%"
             sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
             args += [uf, uf]
+        nsfw_f = str(nsfw or "").strip()
+        if nsfw_f == "0":
+            sql += " AND nsfw=0"
+        elif nsfw_f == "1":
+            sql += " AND nsfw=1"
         try:
             row = conn.execute(sql, args).fetchone()
             return int(row["c"]) if row else 0
@@ -675,6 +780,7 @@ class ImageStore:
         offset: int = 0,
         owner: str = "",
         user_filter: str = "",
+        nsfw: str = "",
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
@@ -682,6 +788,7 @@ class ImageStore:
         即 user_id 为空或相等的），避免跨用户串图。
         session: 会话ID；非空时额外按 session_id 过滤（用于「仅当前会话」视图，
         cross_session=false 场景）。这是检索范围缩小，不改变 owner 权限语义。
+        nsfw: ""=不过滤；"0"=仅常规（nsfw=0）；"1"=仅NSFW（nsfw=1）。
         """
         if not self.enabled() or not _HAS_SQLITE:
             return []
@@ -727,6 +834,11 @@ class ImageStore:
             uf = f"%{user_filter.strip()}%"
             sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
             args += [uf, uf]
+        nsfw_f = str(nsfw or "").strip()
+        if nsfw_f == "0":
+            sql += " AND nsfw=0"
+        elif nsfw_f == "1":
+            sql += " AND nsfw=1"
         sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"
         args.append(int(limit))
         args.append(int(offset))
@@ -964,6 +1076,38 @@ class ImageStore:
             logger.warning(f"[图库] 收藏失败: {e}")
             return False
 
+    def set_nsfw_blur(self, sha256: str, on: int = 1) -> bool:
+        """单图设置「NSFW 模糊」覆盖（nsfw_blur 字段）。on=1 模糊，on=0 不模糊。
+
+        nsfw_blur 为 NULL 时表示跟随全局默认；显式设置为 0/1 表示单图强制不模糊/模糊。
+        """
+        if not sha256:
+            return False
+        conn = self._conn_get()
+        try:
+            conn.execute(
+                "UPDATE images SET nsfw_blur=? WHERE sha256=?",
+                (1 if on else 0, sha256),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 设置 NSFW 模糊失败: {e}")
+            return False
+
+    def clear_nsfw_blur(self, sha256: str) -> bool:
+        """清除单图的 NSFW 模糊覆盖，恢复跟随全局默认（置 NULL）。"""
+        if not sha256:
+            return False
+        conn = self._conn_get()
+        try:
+            conn.execute("UPDATE images SET nsfw_blur=NULL WHERE sha256=?", (sha256,))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 清除 NSFW 模糊失败: {e}")
+            return False
+
     def delete(self, sha256: str) -> bool:
         """软删除：移入回收站（标记 deleted=1），不真删文件/记录。
 
@@ -1060,6 +1204,18 @@ class ImageStore:
             trash_count = conn.execute(
                 "SELECT COUNT(*) c FROM images WHERE deleted=1"
             ).fetchone()["c"]
+            try:
+                nsfw_count = conn.execute(
+                    "SELECT COUNT(*) c FROM images WHERE nsfw=1 AND deleted=0"
+                ).fetchone()["c"]
+            except Exception:
+                nsfw_count = 0
+            try:
+                nsfw_unchecked = conn.execute(
+                    "SELECT COUNT(*) c FROM images WHERE nsfw_checked=0 AND deleted=0"
+                ).fetchone()["c"]
+            except Exception:
+                nsfw_unchecked = 0
         except Exception as e:
             logger.warning(f"[图库] 统计失败: {e}")
             return {"enabled": self.enabled()}
@@ -1080,6 +1236,8 @@ class ImageStore:
             "trash_size_mb": round(trash_size / 1024 / 1024, 2),
             "max_total_mb": int(self._cfg("max_total_mb", 2048)),
             "trash_count": trash_count,
+            "nsfw_count": int(nsfw_count),
+            "nsfw_unchecked": int(nsfw_unchecked),
         }
 
     def workflow_stats(self, top: int = 3, days: int = 0) -> list[dict]:
