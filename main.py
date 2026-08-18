@@ -2927,45 +2927,80 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("loralist")
     async def cmd_loralist(self, event: AstrMessageEvent):
-        """列出当前工作流可配置的 LoRA 及其启用状态。可用 --wf 指定工作流。"""
+        """列出已配置的 LoRA。
+
+        默认列出全局 LoRA 库（含名称、别名、分类、底模、文件）。可用 --wf 名称 指定查看
+        某工作流实际配置/启用的 LoRA。
+        """
         args = self._strip_command(event.message_str, "loralist")
-        wf_name = None
         m = re.search(r"--wf\s+(\S+)", args or "")
         if m:
+            # 指定工作流：列出该工作流实际配置的 LoRA 及其启用状态
             wf_name = m.group(1)
-        try:
-            wf = self._resolve_workflow(wf_name)
-        except ValueError as e:
-            await self._send(event, str(e))
+            try:
+                wf = self._resolve_workflow(wf_name)
+            except ValueError as e:
+                await self._send(event, str(e))
+                return
+            loras = self._loras_of(wf)
+            if not loras:
+                await self._send(event, f"工作流「{wf.get('name')}」未配置任何 LoRA。")
+                return
+            wf_bm = (wf.get("base_model") or "").strip()
+            lines = [f"工作流「{wf.get('name')}」的 LoRA 列表："]
+            if wf_bm:
+                lines[0] += f"（底模：{wf_bm}）"
+            for l in loras:
+                state = "启用" if l.get("enabled") else "禁用"
+                model = l.get("model_name") or ""
+                mo = l.get("model_only", True)
+                presets = l.get("presets") or []
+                preset_names = [ (p.get("name") or "").strip() for p in presets if (p.get("name") or "").strip() ]
+                lora_bm = (l.get("base_model") or "").strip()
+                match_tag = ""
+                if wf_bm and lora_bm and lora_bm != wf_bm:
+                    match_tag = f"，⚠底模不匹配（LoRA={lora_bm}）"
+                elif lora_bm:
+                    match_tag = f"，底模 {lora_bm}"
+                lines.append(
+                    f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}"
+                    + (f"，仅模型" if mo else "，模型+CLIP")
+                    + (f"，文件 {model}" if model else "，⚠未配置文件名")
+                    + match_tag
+                    + "）"
+                    + (f"\n    预设：{', '.join(preset_names)}" if preset_names else "")
+                )
+            await self._send(event, "\n".join(lines))
+            event.stop_event()
             return
-        loras = self._loras_of(wf)
-        if not loras:
-            await self._send(event, f"工作流「{wf.get('name')}」未配置任何 LoRA。")
+        # 默认：列出全局 LoRA 库
+        lib = self._lora_library()
+        if not lib:
+            await self._send(event, "当前未配置任何 LoRA，可在插件配置页的 LoRA 库中添加。")
+            event.stop_event()
             return
-        wf_bm = (wf.get("base_model") or "").strip()
-        lines = [f"工作流「{wf.get('name')}」的 LoRA 列表："]
-        if wf_bm:
-            lines[0] += f"（底模：{wf_bm}）"
-        for l in loras:
-            state = "启用" if l.get("enabled") else "禁用"
-            model = l.get("model_name") or ""
-            mo = l.get("model_only", True)
-            presets = l.get("presets") or []
-            preset_names = [ (p.get("name") or "").strip() for p in presets if (p.get("name") or "").strip() ]
-            lora_bm = (l.get("base_model") or "").strip()
-            match_tag = ""
-            if wf_bm and lora_bm and lora_bm != wf_bm:
-                match_tag = f"，⚠底模不匹配（LoRA={lora_bm}）"
-            elif lora_bm:
-                match_tag = f"，底模 {lora_bm}"
-            lines.append(
-                f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}"
-                + (f"，仅模型" if mo else "，模型+CLIP")
-                + (f"，文件 {model}" if model else "，⚠未配置文件名")
-                + match_tag
-                + "）"
-                + (f"\n    预设：{', '.join(preset_names)}" if preset_names else "")
-            )
+        lines = [f"已配置的 LoRA（共 {len(lib)} 个）："]
+        for l in lib:
+            name = (l.get("name") or "").strip()
+            if not name:
+                continue
+            alias_str = ", ".join(str(a) for a in (l.get("aliases") or []))
+            cat = (l.get("category") or "").strip()
+            bm = (l.get("base_model") or "").strip()
+            model = (l.get("model_name") or "").strip()
+            tag = []
+            if cat:
+                tag.append(f"分类 {cat}")
+            if bm:
+                tag.append(f"底模 {bm}")
+            if model:
+                tag.append(f"文件 {model}")
+            line = f"- {name}"
+            if alias_str:
+                line += f"（别名：{alias_str}）"
+            if tag:
+                line += " [" + "，".join(tag) + "]"
+            lines.append(line)
         await self._send(event, "\n".join(lines))
         event.stop_event()
 
