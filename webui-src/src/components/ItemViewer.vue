@@ -3,8 +3,8 @@
     <div v-if="show" class="iviewer">
       <button class="iv-close" @click="onClose" aria-label="关闭">✕</button>
       <div class="iv-body">
-        <!-- 左侧：封面大图 -->
-        <div class="iv-imgs" @click.self="onClose">
+        <!-- 左侧：封面大图（点击左侧任意区域（含图片周边）关闭） -->
+        <div class="iv-imgs" @click="onClose">
           <figure class="iv-fig">
             <div class="iv-imgwrap">
               <img v-if="src" :src="src" alt="" />
@@ -13,8 +13,8 @@
             <figcaption class="iv-cap">{{ title }}</figcaption>
           </figure>
         </div>
-        <!-- 右侧：字段信息 -->
-        <aside class="iv-info">
+        <!-- 右侧：字段信息（点击不关闭） -->
+        <aside class="iv-info" @click.stop>
           <div class="iv-title">{{ title }}</div>
           <div class="iv-rows">
             <div v-for="f in fields" :key="f.key" class="iv-row">
@@ -104,6 +104,7 @@ function onClose() {
   padding: 28px;
   min-width: 0;
   min-height: 0;
+  cursor: pointer;        /* 提示左侧可点击关闭 */
 }
 .iv-fig {
   margin: 0;
@@ -130,13 +131,10 @@ function onClose() {
   flex: 1 1 auto;          /* 撑满剩余高度 */
   width: 100%;
   min-height: 0;
-  background: #0c0d11;
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  border-radius: 10px;
-  overflow: hidden;
 }
 .iv-imgwrap img {
   width: 100%;            /* 铺满容器宽度 */
