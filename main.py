@@ -2933,81 +2933,77 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("loralist", alias={"绘图lora", "绘图LoRA", "lora列表"})
     async def cmd_loralist(self, event: AstrMessageEvent):
-        """列出已配置的 LoRA。
+        """列出可用的 LoRA 名称（简洁）。
 
-        默认列出全局 LoRA 库（含名称、别名、分类、底模、文件）。可用 --wf 名称 指定查看
-        某工作流实际配置/启用的 LoRA。
+        用法：/绘图lora [角色|风格]
+          无参数   列出全部 LoRA 名称
+          角色     只列「角色」分类
+          风格     只列「风格」分类
+        仅返回名称，便于快速选择；需要更全信息可在 WebUI 配置页查看。
         """
         args = self._strip_command(event.message_str, "loralist", ("绘图lora", "绘图LoRA", "lora列表"))
-        m = re.search(r"--wf\s+(\S+)", args or "")
-        if m:
-            # 指定工作流：列出该工作流实际配置的 LoRA 及其启用状态
-            wf_name = m.group(1)
-            try:
-                wf = self._resolve_workflow(wf_name)
-            except ValueError as e:
-                await self._send(event, str(e))
-                return
-            loras = self._loras_of(wf)
-            if not loras:
-                await self._send(event, f"工作流「{wf.get('name')}」未配置任何 LoRA。")
-                return
-            wf_bm = (wf.get("base_model") or "").strip()
-            lines = [f"工作流「{wf.get('name')}」的 LoRA 列表："]
-            if wf_bm:
-                lines[0] += f"（底模：{wf_bm}）"
-            for l in loras:
-                state = "启用" if l.get("enabled") else "禁用"
-                model = l.get("model_name") or ""
-                mo = l.get("model_only", True)
-                presets = l.get("presets") or []
-                preset_names = [ (p.get("name") or "").strip() for p in presets if (p.get("name") or "").strip() ]
-                lora_bm = (l.get("base_model") or "").strip()
-                match_tag = ""
-                if wf_bm and lora_bm and lora_bm != wf_bm:
-                    match_tag = f"，⚠底模不匹配（LoRA={lora_bm}）"
-                elif lora_bm:
-                    match_tag = f"，底模 {lora_bm}"
-                lines.append(
-                    f"- {l.get('name')}（{state}，权重 {l.get('weight', 1.0)}"
-                    + (f"，仅模型" if mo else "，模型+CLIP")
-                    + (f"，文件 {model}" if model else "，⚠未配置文件名")
-                    + match_tag
-                    + "）"
-                    + (f"\n    预设：{', '.join(preset_names)}" if preset_names else "")
-                )
-            await self._send(event, "\n".join(lines))
-            event.stop_event()
-            return
-        # 默认：列出全局 LoRA 库
+        cat = ""
+        for kw in ("角色", "风格"):
+            if kw in (args or ""):
+                cat = kw
+                break
         lib = self._lora_library()
         if not lib:
             await self._send(event, "当前未配置任何 LoRA，可在插件配置页的 LoRA 库中添加。")
             event.stop_event()
             return
-        lines = [f"已配置的 LoRA（共 {len(lib)} 个）："]
+        hits = []
         for l in lib:
             name = (l.get("name") or "").strip()
             if not name:
                 continue
-            alias_str = ", ".join(str(a) for a in (l.get("aliases") or []))
-            cat = (l.get("category") or "").strip()
-            bm = (l.get("base_model") or "").strip()
-            model = (l.get("model_name") or "").strip()
-            tag = []
-            if cat:
-                tag.append(f"分类 {cat}")
-            if bm:
-                tag.append(f"底模 {bm}")
-            if model:
-                tag.append(f"文件 {model}")
-            line = f"- {name}"
-            if alias_str:
-                line += f"（别名：{alias_str}）"
-            if tag:
-                line += " [" + "，".join(tag) + "]"
-            lines.append(line)
-        await self._send(event, "\n".join(lines))
+            if cat and (l.get("category") or "").strip() != cat:
+                continue
+            hits.append(name)
+        if not hits:
+            await self._send(event, f"没有「{cat}」分类的 LoRA。" if cat else "没有可用的 LoRA。")
+            event.stop_event()
+            return
+        title = f"{cat} LoRA（共 {len(hits)} 个）：" if cat else f"可用 LoRA（共 {len(hits)} 个）："
+        await self._send(event, title + "\n" + "\n".join(f"- {n}" for n in hits))
+        event.stop_event()
+
+    @filter.command("绘图工作流lora", alias={"工作流lora", "wf_lora", "wf-lora"})
+    async def cmd_workflow_loras(self, event: AstrMessageEvent):
+        """列出指定工作流可使用的 LoRA（按底模匹配）。
+
+        用法：/绘图工作流lora 动漫
+        """
+        args = self._strip_command(event.message_str, "绘图工作流lora", ("工作流lora", "wf_lora", "wf-lora"))
+        wf_name = (args or "").strip()
+        if not wf_name:
+            await self._send(event, "用法：/绘图工作流lora 工作流名，如 /绘图工作流lora 动漫")
+            event.stop_event()
+            return
+        try:
+            wf = self._resolve_workflow(wf_name)
+        except ValueError as e:
+            await self._send(event, str(e))
+            event.stop_event()
+            return
+        lib = self._lora_library()
+        hits = []
+        for l in lib:
+            name = (l.get("name") or "").strip()
+            if not name:
+                continue
+            if self._lora_matches_wf(l, wf):
+                hits.append(name)
+        if not hits:
+            await self._send(event, f"工作流「{wf.get('name')}」当前没有可用的 LoRA（可先去 WebUI 配置添加）。")
+            event.stop_event()
+            return
+        wf_bm = (wf.get("base_model") or "").strip()
+        title = f"工作流「{wf.get('name')}」可用的 LoRA（共 {len(hits)} 个）"
+        if wf_bm:
+            title += f"，底模 {wf_bm}"
+        title += "："
+        await self._send(event, title + "\n" + "\n".join(f"- {n}" for n in hits))
         event.stop_event()
 
     # ------------------------------------------------------------------ #
@@ -3509,7 +3505,8 @@ class ComfyUIDrawPlugin(Star):
             "· /画 提示词   用默认或指定工作流画（如 /画 真人 一个女孩）\n"
             "· /绘图 /绘画 /生图 /画图 /作画 /画画 提示词   用默认工作流画\n"
             "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
-            "· /绘图lora   查看可用 LoRA（英文 /loralist 亦可）\n"
+            "· /绘图lora [角色|风格]   查看可用 LoRA（英文 /loralist 亦可）\n"
+            "· /绘图工作流lora 工作流名   查看某工作流可用的 LoRA，如 /绘图工作流lora 动漫\n"
             "· /绘图工作流   查看 / 设置默认工作流（英文 /workflows 亦可）\n"
             "· /绘图队列   查看排队状态（英文 /queuestatus 亦可）\n"
             "· /绘图统计 [今天|昨天|周|月|全部]   出图统计\n"
