@@ -278,4 +278,10 @@ body {
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgba(255, 143, 179, 0.35); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+/* 让 Naive UI 的 dialog/弹窗始终显示在最上层（高于大图查看器的 z-index:9999），
+   避免大图内点「检测」等弹窗被大图覆盖。 */
+.n-dialog-container,
+.n-dialog-mask {
+  z-index: 10001 !important;
+}
 </style>

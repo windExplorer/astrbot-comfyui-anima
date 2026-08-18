@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.13
+
+- **NSFW 依赖安装提示改回 Naive UI dialog 并提升层级**：上一版改用 `window.alert`，但 WebUI 运行在 iframe 沙箱中（未开 `allow-modals`），`alert()` 被浏览器直接忽略、无法弹出。现改回 Naive UI `dialog.warning`，并在 App.vue 全局把 dialog 容器的 z-index 提升到 10001（高于大图查看器的 9999），确保弹窗既正常显示、又不被大图查看器遮挡。
+
 ## v4.4.12
 
 - **NSFW 检测不可用时返回真实错误原因**：此前检测器不可用一律返回硬编码「请先安装 onnxruntime + opennsfw-onnx」，掩盖了真实原因（可能是依赖缺失，也可能是模型初始化失败/模型文件异常）。现检测器记录 `last_error`，`gallery/check_nsfw`、`gallery/scan_nsfw` 返回「NSFW 检测不可用：<真实原因>」，便于定位问题（如模型加载失败的具体异常）。
