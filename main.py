@@ -4220,7 +4220,7 @@ class ComfyUIDrawPlugin(Star):
         什么时候调用：
         - 用户说了任何画图意图（画/生成/来张图/画个/出张图/拍照/再来一张/换个姿势重画等），一律调用。
         - 用户在催"你咋不画/图呢/怎么没看到图"同理，立即调用。
-        - 用户提到"用某个 LoRA/某个风格"，把可用的名称/别名填进 loras 参数（用户给了名字直接用；没给具体名但要求某类效果时，可先调 comfyui_loras 查列表再选）。请勿只让用户"给你确切名字"而不动手——能查到就自己查。
+        - 用户提到"用某个 LoRA/某种风格/某种画风/某个角色人物"，**务必先调 comfyui_loras 查询**是否有匹配的 LoRA（用户给了名字/别名，或要求某类效果时都先查），再把可用的名称/别名填进 loras 参数；用户给了确切名字也可先用 keyword 查一下确认名称与底模。不要因为用户没报出具体 LoRA 名就直接跳过 LoRA、留空 loras——只要用户的要求对应某风格/画风/角色，就应主动查并选一个匹配的 LoRA。请勿只让用户"给你确切名字"而不动手——能查到就自己查。
         
         什么时候不要调用：
         - 用户明确说不要/取消/别发/不需要图。
@@ -4251,7 +4251,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
-            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。用户提到某个 LoRA（用名称或别名）就填进来；用户明确了想要的强弱/浓度时给权重，没给则省略用默认。不确定有哪些可先调 comfyui_loras 查。用户没提 or 不需要时留空。
+            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
@@ -5038,16 +5038,19 @@ class ComfyUIDrawPlugin(Star):
         event: AstrMessageEvent,
         base_model: str = "",
         keyword: str = "",
+        category: str = "",
     ):
-        """查询已配置的 LoRA 库，包括每个 LoRA 的名称、别名、底模、描述与触发词。
+        """查询已配置的 LoRA 库，包括每个 LoRA 的名称、别名、分类、底模、描述与触发词。
 
-        触发时机：在调用 comfyui_draw / comfyui_img2img 并需要指定 LoRA 之前，
-        可先调用本工具获取真实 LoRA 列表，再从中选择正确的名称传入 loras 参数。
-        不要凭记忆猜测 LoRA 名称，也不要编造不存在的 LoRA。
+        触发时机：当用户提到要用某种风格/画风/人物/角色来画，或指定了某个效果时，
+        **务必先调用本工具**查询是否有匹配的 LoRA（可结合 keyword 或 category 缩小范围），
+        再在 comfyui_draw / comfyui_img2img 的 loras 参数里填入正确名称；不要凭记忆猜测
+        LoRA 名称，也不要编造不存在的 LoRA，更不要在用户要求某风格时直接跳过 LoRA 查找。
 
         Args:
             base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
-            keyword(string): 可选。按名称/别名模糊匹配查找某个 LoRA。
+            keyword(string): 可选。按名称/别名/描述/触发词模糊匹配查找某个 LoRA。
+            category(string): 可选。按分类过滤（角色 / 风格）。当用户提到"某某角色/人物"或"某某风格/画风"时，可传入 角色 或 风格 缩小范围。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
@@ -5057,6 +5060,7 @@ class ComfyUIDrawPlugin(Star):
             return "当前未配置任何 LoRA。可在插件配置页的 LoRA 库中添加。"
         wf_bm = (base_model or "").strip().lower()
         kw = (keyword or "").strip().lower()
+        cat = (category or "").strip()
         rows = []
         for l in lib:
             name = (l.get("name") or "").strip()
@@ -5065,6 +5069,8 @@ class ComfyUIDrawPlugin(Star):
             lora_bm = (l.get("base_model") or "").strip().lower()
             if wf_bm and lora_bm and lora_bm != wf_bm:
                 continue  # 底模不匹配的 LoRA 不列出
+            if cat and (l.get("category") or "").strip() != cat:
+                continue  # 分类不匹配的 LoRA 不列出
             aliases = l.get("aliases") or []
             desc = (l.get("description") or "").strip()
             tw = (l.get("trigger_words") or "").strip()
@@ -5074,6 +5080,8 @@ class ComfyUIDrawPlugin(Star):
                     continue
             alias_str = ", ".join(str(a) for a in aliases) if aliases else name
             lines = [f"- {name}（别名：{alias_str}）"]
+            if (l.get("category") or "").strip():
+                lines[0] += f" [分类 {l.get('category').strip()}]"
             if lora_bm:
                 lines[0] += f" [底模 {lora_bm}]"
             if desc:
@@ -5087,8 +5095,12 @@ class ComfyUIDrawPlugin(Star):
         if not rows:
             if kw:
                 return f"没有找到匹配「{keyword}」的 LoRA。可先调用本工具（不带 keyword）查看全部 LoRA。"
+            if cat:
+                return f"分类「{category}」下没有可用的 LoRA。"
             return "没有可用的 LoRA。"
         head = "已配置的 LoRA 列表："
+        if cat:
+            head += f"（分类 {category}）"
         if wf_bm:
             head += f"（底模 {base_model}）"
         return head + "\n" + "\n".join(rows)
@@ -5214,7 +5226,7 @@ class ComfyUIDrawPlugin(Star):
                 直接给出变换意图文本，不要留空，不要包裹自然语言或 markdown。
             negative_prompt(string): 负向提示词，可选，不填则留空。
             img2img_workflow(string): 图生图工作流名称。★用户明确要求特定画风/风格/类型时，必须先调用 comfyui_workflows 查询真实列表，再从中选确切名称传入；禁止凭记忆或猜测工作流名，否则找不到工作流。用户完全没指定画风时才可留空（插件用图生图默认工作流）。
-            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强；用户明确强弱时给权重，没给则省略用默认）。留空则使用配置中默认启用的 LoRA。指定 LoRA 前必须先调用 comfyui_loras 查询真实列表（可按底模过滤），再从中选确切名称传入；禁止凭记忆或猜测名称。
+            loras(array[string]): 需要启用的 LoRA 名称列表，例如 ["catgirl", "rain"]。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强；用户明确强弱时给权重，没给则省略用默认）。★重要：当用户要求某种风格/画风/角色时，即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小）查匹配的 LoRA 再填入。指定 LoRA 前必须先调用 comfyui_loras 查询真实列表（可按底模/分类过滤），再从中选确切名称传入；禁止凭记忆或猜测名称。只有确认无匹配 LoRA 或用户明确不要时才留空（留空使用配置中默认启用的 LoRA）。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。

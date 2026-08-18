@@ -59,6 +59,13 @@
             "default": "",
             "options": ["", "anima", "z-image-turbo", "krea2", "illustrious"]
           },
+          "category": {
+            "type": "string",
+            "description": "分类",
+            "hint": "对该 LoRA 分类，便于 WebUI 筛选和让 LLM 更快定位。可选：角色 / 风格；留空 = 未分类（通用）。",
+            "default": "",
+            "options": ["", "角色", "风格"]
+          },
           "model_name": {
             "type": "string",
             "description": "模型文件名",

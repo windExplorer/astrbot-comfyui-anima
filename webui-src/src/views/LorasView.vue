@@ -22,6 +22,15 @@
         <n-radio-button value="__none__">通用 ({{ countByModel("__none__") }})</n-radio-button>
       </n-radio-group>
     </div>
+    <div class="filter-bar">
+      <span class="filter-label">分类：</span>
+      <n-radio-group v-model:value="filterCategory" size="small">
+        <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
+        <n-radio-button value="角色">角色 ({{ countByCategory("角色") }})</n-radio-button>
+        <n-radio-button value="风格">风格 ({{ countByCategory("风格") }})</n-radio-button>
+        <n-radio-button value="__none__">未分类 ({{ countByCategory("__none__") }})</n-radio-button>
+      </n-radio-group>
+    </div>
     <div class="lora-scroll">
     <n-spin :show="loading">
       <n-empty v-if="!loading && !loras.length" description="尚未配置任何 LoRA，点「新增 LoRA」添加。" style="padding:60px" />
@@ -37,6 +46,7 @@
             <div class="card-alias">别名：{{ aliasFirst(loras[idx].keywords) }}</div>
             <div class="card-meta">
               <n-tag size="tiny" :bordered="false">{{ loras[idx].base_model?.trim() || "通用" }}</n-tag>
+              <n-tag v-if="loras[idx].category" size="tiny" type="info" :bordered="false">{{ loras[idx].category }}</n-tag>
               <a v-if="loras[idx].civitai_url" :href="loras[idx].civitai_url" target="_blank" rel="noopener noreferrer" class="civ-link">C站 ↗</a>
             </div>
             <div class="card-actions">
@@ -56,6 +66,7 @@
     <n-modal v-model:show="detailShow" preset="card" title="LoRA 详情" style="width:520px" :bordered="false">
       <div v-if="detailItem" class="detail">
         <div class="detail-row"><b>名称：</b>{{ detailItem.name }}</div>
+        <div class="detail-row"><b>分类：</b>{{ detailItem.category || "未分类" }}</div>
         <div class="detail-row"><b>底模：</b>{{ detailItem.base_model?.trim() || "通用" }}</div>
         <div class="detail-row"><b>别名：</b>{{ detailItem.keywords || "—" }}</div>
         <div class="detail-row"><b>模型文件：</b>{{ detailItem.model_name || "—" }}</div>
@@ -75,12 +86,17 @@
       <n-form label-placement="top" class="edit-form">
         <div class="form-grid">
           <n-form-item label="名称（引用键）"><n-input v-model:value="editForm.name" placeholder="如 安魂曲" /></n-form-item>
-          <n-form-item label="底模">
-            <n-select v-model:value="editForm.base_model" :options="baseModelOptions" />
+          <n-form-item label="分类">
+            <n-select v-model:value="editForm.category" :options="categoryOptions" />
           </n-form-item>
         </div>
         <div class="form-grid">
+          <n-form-item label="底模">
+            <n-select v-model:value="editForm.base_model" :options="baseModelOptions" />
+          </n-form-item>
           <n-form-item label="模型文件名"><n-input v-model:value="editForm.model_name" placeholder="xxx.safetensors" /></n-form-item>
+        </div>
+        <div class="form-grid">
           <n-form-item label="默认权重"><n-input-number v-model:value="editForm.weight" style="width:100%" /></n-form-item>
         </div>
         <n-form-item label="别名（每行一个，供 LLM 区分）"><n-input v-model:value="editForm.keywords" type="textarea" :rows="3" /></n-form-item>
@@ -122,20 +138,31 @@ const saving = ref(false);
 const loras = ref<any[]>([]);
 
 const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
+const categoryOptions = ["", "角色", "风格"].map((o) => ({ label: o || "（未分类）", value: o }));
 
 // 底模分类筛选：all=全部；__none__=通用（base_model 为空）；其余=对应底模
 const filterModel = ref("all");
+// 分类筛选：all=全部；__none__=未分类；其余=对应分类
+const filterCategory = ref("all");
 
-// 筛选后命中的 LoRA 在 loras 全量数组中的下标（操作按钮沿用全量 idx）
+// 筛选后命中的 LoRA 在 loras 全量数组中的下标（操作按钮沿用全量 idx）；底模 + 分类双重过滤
 const filteredIndexes = computed<number[]>(() => {
   const m = filterModel.value;
+  const c = filterCategory.value;
   return loras.value
     .map((l, i) => ({ l, i }))
     .filter(({ l }) => {
+      // 底模匹配
       const bm = (l.base_model || "").trim();
-      if (m === "all") return true;
-      if (m === "__none__") return bm === "";
-      return bm === m;
+      let okModel = true;
+      if (m === "__none__") okModel = bm === "";
+      else if (m !== "all") okModel = bm === m;
+      if (!okModel) return false;
+      // 分类匹配
+      const cat = (l.category || "").trim();
+      if (c === "__none__") return cat === "";
+      if (c === "all") return true;
+      return cat === c;
     })
     .map(({ i }) => i);
 });
@@ -159,6 +186,13 @@ function countByModel(m: string): number {
   if (m === "all") return loras.value.length;
   if (m === "__none__") return loras.value.filter((l) => !((l.base_model || "").trim())).length;
   return loras.value.filter((l) => ((l.base_model || "").trim()) === m).length;
+}
+
+// 各分类的数量（用于筛选栏计数）
+function countByCategory(c: string): number {
+  if (c === "all") return loras.value.length;
+  if (c === "__none__") return loras.value.filter((l) => !((l.category || "").trim())).length;
+  return loras.value.filter((l) => ((l.category || "").trim()) === c).length;
 }
 
 async function load() {
@@ -196,6 +230,7 @@ function openImage(fname: string, name: string) {
   previewSrc.value = ""; // 重置后组件显示"封面加载中…"
   detailFields.value = [
     { key: "名称", value: realName },
+    { key: "分类", value: l.category?.trim() || "未分类" },
     { key: "别名", value: parseAliases(l.keywords || "").join(" / ") || "—" },
     { key: "底模", value: l.base_model?.trim() || "通用" },
     { key: "模型", value: l.model_name?.trim() || "—" },
@@ -237,6 +272,7 @@ function openForm(idx: number, prefill?: any) {
   Object.keys(editForm).forEach((k) => delete editForm[k]);
   Object.assign(editForm, JSON.parse(JSON.stringify({
     name: l.name || "",
+    category: l.category || "",
     base_model: l.base_model || "",
     model_name: l.model_name || "",
     weight: l.weight ?? 1,
