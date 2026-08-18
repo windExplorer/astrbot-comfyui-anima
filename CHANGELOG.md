@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.9
+
+- **NSFW 依赖安装提示改为引导 AstrBot 内置安装入口**：把弹窗文案从「执行 pip 命令」改为「在 AstrBot 日志页右上角的『安装 pip 库』入口依次填入 `onnxruntime`、`opennsfw-onnx` 并安装」，更贴合实际使用方式。
+
 ## v4.4.8
 
 - **NSFW 检测不可用时前端弹窗提示安装命令**：单图「检测/重新检测」与「一键检测」在 NSFW 检测器不可用（未安装 `onnxruntime` + `opennsfw-onnx`）时，会弹出明确提示框，给出安装命令 `pip install onnxruntime opennsfw-onnx`，替代原来仅有的一行错误 toast。

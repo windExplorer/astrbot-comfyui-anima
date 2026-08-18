@@ -212,7 +212,7 @@ function isNsfwUnavailable(e: any): boolean {
 function showNsfwInstallDialog() {
   dialog.warning({
     title: "NSFW 检测不可用",
-    content: "未安装 NSFW 检测所需依赖。请在你的 AstrBot 环境中执行以下命令后重启插件：\n\npip install onnxruntime opennsfw-onnx",
+    content: "NSFW 检测需要两个依赖库。请在 AstrBot 日志页右上角的「安装 pip 库」入口依次填入以下库名并安装，完成后重启插件：\n\n· onnxruntime\n· opennsfw-onnx",
     positiveText: "知道了",
     closable: true,
   });
