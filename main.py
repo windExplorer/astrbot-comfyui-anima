@@ -3616,12 +3616,15 @@ class ComfyUIDrawPlugin(Star):
         used = len(ts_list)
         allowed = max(0, dmax - used)
         if allowed <= 0:
-            return 0, "已连续出图多张。请直接简短收尾即可，不要继续调用画图工具；等待用户下一条明确指示再画。"
-        # 本次按 allowed 记入时间戳
-        for _ in range(allowed):
+            return 0, "本次出图张数已达到单次请求上限，画图已完成。请用一句话简短收尾（如「发你了」），【绝对不要】再次调用任何画图工具、也不要用相同参数重试；只有当用户下一条新消息明确要求再画时才继续。"
+        # 本次实际出图张数 = min(count, allowed)，只按「实际出的张数」记入时间戳，
+        # 而不是按 allowed（剩余配额）记。否则单次只出 1 张也会把配额全占满，
+        # 导致后续想画第二张时预算被误判为用尽（表现为「说发了但第二张出不来」）。
+        actual = min(count, allowed)
+        for _ in range(actual):
             ts_list.append(_now)
         bucket[sid] = ts_list
-        return min(count, allowed), ""
+        return actual, ""
 
     def _can_operate_image(self, event, row: dict, owner: str = "") -> tuple[bool, str]:
         """图库「修改类操作」（打标签/删除/清空/改可见性等）的归属校验。
@@ -4281,6 +4284,26 @@ class ComfyUIDrawPlugin(Star):
                 return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
         except Exception:
             pass
+
+        # 同参去重：同一会话在短时间窗口内，用「相同 prompt + 相同 seed」重复调用，
+        # 判定为模型死循环/无脑重试，直接拒绝（防「画了一张又用同样参数再画一张」）。
+        # 模型画多张时应改变 seed，否则就是重复生成同一张图。伴侣/主动来源不受限。
+        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            try:
+                _now2 = time.time()
+                _sid_key2 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+                _fp = f"{str(prompt or '').strip()}|{int(seed or 0)}"
+                _fp_map = getattr(plugin, "_llm_draw_fp", None)
+                if not isinstance(_fp_map, dict):
+                    _fp_map = {}
+                    plugin._llm_draw_fp = _fp_map
+                _prev_fp, _prev_fp_t = _fp_map.get(_sid_key2, (None, 0.0))
+                _fp_map[_sid_key2] = (_fp, _now2)
+                if _prev_fp == _fp and (_now2 - _prev_fp_t) < 30.0:
+                    logger.info(f"[llm_draw] 会话 {_sid_key2} 相同 prompt+seed 重复调用，判定为死循环，拦截")
+                    return "你已经用同样的参数画过了，图片已发送。本次请求到此结束，【绝对不要】再用相同 prompt+seed 重复调用画图工具；等待用户下一条新消息的明确指示。"
+            except Exception:
+                pass
 
         # 会话级出图预算：限制「同一次用户请求」内模型连续画图的最大张数（防无脑连发）。
         # count 多张（用户明确要 N 张 / 模型识别「来几张」填 3）也在预算内受限（非管理员）；
@@ -5251,6 +5274,24 @@ class ComfyUIDrawPlugin(Star):
                 return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
         except Exception:
             pass
+
+        # 同参去重：同 llm_draw，相同 prompt+seed 短时间重复调用判定为死循环，直接拒绝
+        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            try:
+                _now3 = time.time()
+                _sid_key3 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+                _fp2 = f"{str(prompt or '').strip()}|{int(seed or 0)}"
+                _fp_map2 = getattr(plugin, "_llm_img2img_fp", None)
+                if not isinstance(_fp_map2, dict):
+                    _fp_map2 = {}
+                    plugin._llm_img2img_fp = _fp_map2
+                _prev_fp2, _prev_fp_t2 = _fp_map2.get(_sid_key3, (None, 0.0))
+                _fp_map2[_sid_key3] = (_fp2, _now3)
+                if _prev_fp2 == _fp2 and (_now3 - _prev_fp_t2) < 30.0:
+                    logger.info(f"[llm_img2img] 会话 {_sid_key3} 相同 prompt+seed 重复调用，判定为死循环，拦截")
+                    return "你已经用同样的参数画过了，图片已发送。本次请求到此结束，【绝对不要】再用相同 prompt+seed 重复调用画图工具；等待用户下一条新消息的明确指示。"
+            except Exception:
+                pass
 
         # 会话级出图预算：同 llm_draw，限制「同一次用户请求」内连续画图最大张数（防无脑连发）
         # 同 llm_draw：模型没传 count（=0/空）时固定出 1 张（用户没提数量）；填了具体数则按具体数。
