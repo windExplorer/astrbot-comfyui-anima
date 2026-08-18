@@ -67,11 +67,12 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, useMessage } from "naive-ui";
+import { NButton, useDialog, useMessage } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
 const message = useMessage();
+const dialog = useDialog();
 
 interface ViewerImage {
   sha?: string;
@@ -248,8 +249,24 @@ function onCheckNsfw() {
       it.nsfw_checked = true;
       message.success(res?.msg || "检测完成");
     })
-    .catch((e: any) => message.error(e.message || "检测失败"))
+    .catch((e: any) => {
+      if (isNsfwUnavailable(e)) showNsfwInstallDialog();
+      else message.error(e.message || "检测失败");
+    })
     .finally(() => { checking.value = false; });
+}
+
+function isNsfwUnavailable(e: any): boolean {
+  const m = String(e?.message || "");
+  return /NSFW 检测不可用|onnxruntime|opennsfw/.test(m);
+}
+function showNsfwInstallDialog() {
+  dialog.warning({
+    title: "NSFW 检测不可用",
+    content: "未安装 NSFW 检测所需依赖。请在你的 AstrBot 环境中执行以下命令后重启插件：\n\npip install onnxruntime opennsfw-onnx",
+    positiveText: "知道了",
+    closable: true,
+  });
 }
 
 function copySha() {

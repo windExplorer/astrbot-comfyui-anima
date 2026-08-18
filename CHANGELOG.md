@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.8
+
+- **NSFW 检测不可用时前端弹窗提示安装命令**：单图「检测/重新检测」与「一键检测」在 NSFW 检测器不可用（未安装 `onnxruntime` + `opennsfw-onnx`）时，会弹出明确提示框，给出安装命令 `pip install onnxruntime opennsfw-onnx`，替代原来仅有的一行错误 toast。
+- 注：单图检测首次点击可能同时发出多个「不同路由风格」的探测请求（`/gallery/check_nsfw`、`/astrbot_plugin_comfyui_anima/gallery/check_nsfw` 等），这是前端 bridge 为兼容不同 AstrBot 版本的路由自动探测机制，属一次性开销，成功后会自动缓存路由风格，后续请求只发一个。
+
 ## v4.4.7
 
 - **修复 `gallery/check_nsfw` 400（单图检测）**：`check_nsfw` 查询用精确匹配 `sha256=?`，前端传的 sha 可能是内容寻址前缀（sha256[:16]），导致查不到而返回 400「未找到该图」。现改为前缀 `LIKE` 匹配并取第一条；`set_nsfw_blur` / `clear_nsfw_blur` 同步改为「先解析完整 sha 再更新」，避免前缀 UPDATE 命中多条。

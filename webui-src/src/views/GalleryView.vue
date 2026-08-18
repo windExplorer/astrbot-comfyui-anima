@@ -200,7 +200,22 @@ const scanState = ref<{ running: boolean; total: number; done: number; nsfw: num
 function startScan() {
   apiGet("gallery/scan_nsfw", { only: 1 })
     .then((res: any) => { scanState.value = { ...scanState.value, ...res }; })
-    .catch((e: any) => message.error(e.message || "启动检测失败"));
+    .catch((e: any) => {
+      if (isNsfwUnavailable(e)) showNsfwInstallDialog();
+      else message.error(e.message || "启动检测失败");
+    });
+}
+function isNsfwUnavailable(e: any): boolean {
+  const m = String(e?.message || "");
+  return /NSFW 检测不可用|onnxruntime|opennsfw/.test(m);
+}
+function showNsfwInstallDialog() {
+  dialog.warning({
+    title: "NSFW 检测不可用",
+    content: "未安装 NSFW 检测所需依赖。请在你的 AstrBot 环境中执行以下命令后重启插件：\n\npip install onnxruntime opennsfw-onnx",
+    positiveText: "知道了",
+    closable: true,
+  });
 }
 function refreshScanProgress() {
   apiGet("gallery/scan_nsfw_progress")
