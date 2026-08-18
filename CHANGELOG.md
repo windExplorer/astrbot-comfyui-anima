@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.1
+
+- **大图查看器支持单张 NSFW 检测**：WebUI 图库大图详情的信息面板新增「检测 / 重新检测」按钮（未检测过显示「检测」，已检测显示「重新检测」），点击即对该张图做一次 open_nsfw 检测并写回 `nsfw` / `nsfw_score` / `nsfw_checked`，随后立即刷新显示判定与置信度。未检测的旧图也能单独测出分数。
+- **新增后端接口** `gallery/check_nsfw`（GET ?sha=xxx）用于单图检测；`image_store` 新增 `check_nsfw(sha)` 方法。
+
 ## v4.4.0
 
 - **图库新增 NSFW 检测**（基于本地 open_nsfw 模型，离线、保护隐私）：

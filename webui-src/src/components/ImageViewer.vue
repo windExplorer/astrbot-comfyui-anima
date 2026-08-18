@@ -36,7 +36,13 @@
             </div>
             <div class="iv-row"><span class="k">SHA</span><span class="v">{{ shortSha }}</span></div>
             <div class="iv-row"><span class="k">类型</span><span class="v">{{ typeText }}</span></div>
-            <div v-if="item.nsfw != null" class="iv-row"><span class="k">NSFW</span><span class="v">{{ item.nsfw ? "是" : "否" }}<template v-if="item.nsfw_score != null && item.nsfw_score > 0">（{{ (item.nsfw_score * 100).toFixed(1) }}%）</template></span></div>
+            <div v-if="item.nsfw != null" class="iv-row"><span class="k">NSFW</span><span class="v">
+              {{ item.nsfw ? "是" : "否" }}<template v-if="item.nsfw_score != null && item.nsfw_score > 0">（{{ (item.nsfw_score * 100).toFixed(1) }}%）</template>
+              <button class="iv-check" :disabled="checking" @click="onCheckNsfw">{{ item.nsfw_checked ? "重新检测" : "检测" }}</button>
+            </span></div>
+            <div v-if="item.nsfw == null" class="iv-row"><span class="k">NSFW</span><span class="v">未检测
+              <button class="iv-check" :disabled="checking" @click="onCheckNsfw">{{ checking ? "检测中…" : "检测" }}</button>
+            </span></div>
             <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
             <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
@@ -227,6 +233,24 @@ function onToggleBlur(it: any) {
   }).catch((e: any) => message.error(e.message || "设置失败"));
 }
 
+// ---- 单图 NSFW 检测 ----
+const checking = ref(false);
+function onCheckNsfw() {
+  const it = item.value;
+  const sha = it?.sha || it?.sha256;
+  if (!sha || checking.value) return;
+  checking.value = true;
+  apiGet("gallery/check_nsfw", { sha })
+    .then((res: any) => {
+      it.nsfw = !!res?.nsfw;
+      it.nsfw_score = res?.nsfw_score ?? null;
+      it.nsfw_checked = true;
+      message.success(res?.msg || "检测完成");
+    })
+    .catch((e: any) => message.error(e.message || "检测失败"))
+    .finally(() => { checking.value = false; });
+}
+
 function onClose() {
   emit("update:show", false);
 }
@@ -400,6 +424,19 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-blur:hover { background: rgba(255, 107, 107, 0.3); }
 .iv-blur.on { background: #ff6b6b; color: #fff; border-color: #ff6b6b; }
+.iv-check {
+  margin-left: 8px;
+  padding: 1px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid #8a8a8a;
+  background: transparent;
+  color: inherit;
+  transition: all 0.15s;
+}
+.iv-check:hover { background: rgba(128, 128, 128, 0.15); }
+.iv-check:disabled { opacity: 0.5; cursor: not-allowed; }
 .iv-row {
   display: flex;
   gap: 8px;

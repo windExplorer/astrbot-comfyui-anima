@@ -258,6 +258,47 @@ class ImageStore:
             logger.warning(f"[图库] NSFW 扫描失败: {e}")
             return {"scanned": 0, "nsfw": 0, "total_unchecked": 0}
 
+    def check_nsfw(self, sha256: str) -> dict:
+        """对单张图做一次 NSFW 检测，并把结果写回数据库。
+
+        返回 ``{"ok": bool, "nsfw": bool, "nsfw_score": float|None, "available": bool, "msg": str}``。
+        - ``available=False``：模型/依赖不可用或文件缺失，未写入（保持原状态）。
+        - ``available=True``：检测完成并写入 nsfw/nsfw_score/nsfw_checked。
+        """
+        if not sha256:
+            return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "缺少 sha"}
+        if not self.enabled() or not _HAS_SQLITE:
+            return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "图库未启用"}
+        if not self._nsfw_enabled():
+            return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "NSFW 检测已禁用"}
+        from nsfw_detector import get_detector
+        det = get_detector(self._nsfw_threshold())
+        if not det.available():
+            return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False,
+                    "msg": "NSFW 检测不可用（请先安装 onnxruntime + opennsfw-onnx）"}
+        conn = self._conn_get()
+        try:
+            row = conn.execute(
+                "SELECT sha256, ext, month, source FROM images WHERE sha256=? LIMIT 1", (sha256,)
+            ).fetchone()
+            if not row:
+                return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "未找到该图"}
+            p = self._path_of_row(row)
+            if not p.exists():
+                return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "图片文件不存在"}
+            is_nsfw, score, avail = det.detect(str(p))
+            if not avail:
+                return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": "检测失败"}
+            conn.execute(
+                "UPDATE images SET nsfw=?, nsfw_score=?, nsfw_checked=1 WHERE sha256=?",
+                (1 if is_nsfw else 0, score, sha256),
+            )
+            conn.commit()
+            return {"ok": True, "nsfw": is_nsfw, "nsfw_score": score, "available": True, "msg": "检测完成"}
+        except Exception as e:
+            logger.warning(f"[图库] 单图 NSFW 检测失败: {e}")
+            return {"ok": False, "nsfw": False, "nsfw_score": None, "available": False, "msg": f"检测失败: {e}"}
+
     # ------------------------------------------------------------------ #
     # 内部：落盘 + 拼路径
     # ------------------------------------------------------------------ #

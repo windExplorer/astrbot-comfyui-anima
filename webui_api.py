@@ -1037,6 +1037,26 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"扫描失败: {e}")
 
+    async def gallery_check_nsfw(self):
+        """对单张图做 NSFW 检测。GET ?sha=xxx，返回检测结果并写回库。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            sha = (request.query.get("sha") or "").strip()
+            if not sha:
+                return error_response("缺少 sha")
+            res = g.check_nsfw(sha)
+            if res.get("available") is False:
+                return error_response(res.get("msg") or "检测不可用")
+            return json_response({
+                "nsfw": res.get("nsfw", False),
+                "nsfw_score": res.get("nsfw_score"),
+                "msg": res.get("msg", "检测完成"),
+            })
+        except Exception as e:
+            return error_response(f"检测失败: {e}")
+
     async def gallery_delete(self):
         g = self._gallery()
         if g is None:
@@ -1259,6 +1279,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
         (f"{prefix}/gallery/set_blur", api.gallery_set_blur, ["POST"], "图库单图NSFW模糊"),
         (f"{prefix}/gallery/scan_nsfw", api.gallery_scan_nsfw, ["GET"], "图库NSFW扫描"),
+        (f"{prefix}/gallery/check_nsfw", api.gallery_check_nsfw, ["GET"], "图库单图NSFW检测"),
         (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除(移入回收站)"),
         (f"{prefix}/gallery/trash", api.gallery_trash, ["GET"], "图库回收站"),
         (f"{prefix}/gallery/restore", api.gallery_restore, ["POST"], "图库恢复"),
