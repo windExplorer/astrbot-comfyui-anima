@@ -29,7 +29,7 @@
           <template v-if="item">
             <div class="iv-actions">
               <button v-if="!isTrash" class="iv-star" :class="{ on: item.starred }" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</button>
-              <button v-if="isNsfw && !isTrash" class="iv-blur" :class="{ on: item.nsfw_blur === 1 || item.nsfw_blur == null }" @click="onToggleBlur(item)">{{ blurBtnLabel }}</button>
+              <button v-if="isNsfw && !isTrash" class="iv-blur" :class="{ on: mainBlurred }" @click="onToggleBlur">{{ blurBtnLabel }}</button>
               <n-button v-if="!isTrash" size="small" type="error" ghost @click="onDelete(item)">删除</n-button>
               <n-button v-if="isTrash" size="small" type="success" @click="onRestore(item)">恢复</n-button>
               <n-button v-if="isTrash" size="small" type="error" ghost @click="onPurge(item)">彻底删除</n-button>
@@ -68,7 +68,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NButton, useDialog, useMessage } from "naive-ui";
-import { apiGet, apiPost } from "@/api/bridge";
+import { apiGet } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
 const message = useMessage();
@@ -213,26 +213,16 @@ watch(
   { immediate: true }
 );
 const blurBtnLabel = computed(() => {
-  const it = item.value;
-  // 当前是否处于模糊状态（=1 或 null 跟随全局默认模糊）
-  const blurred = it && it.nsfw ? (it.nsfw_blur === 0 ? false : true) : false;
-  return blurred ? "取消模糊" : "设为模糊";
+  // 反映当前临时模糊状态
+  return mainBlurred.value ? "取消模糊" : "设为模糊";
 });
 function revealMain() {
   // 临时查看：仅取消本次查看的模糊，不写库（关闭再开后恢复）
   mainBlurred.value = false;
 }
-function onToggleBlur(it: any) {
-  const sha = it.sha || it.sha256;
-  if (!sha) return;
-  const blurred = it.nsfw_blur === 0 ? false : true;
-  // 当前模糊→设为清晰(0)；当前清晰→设为模糊(1)
-  const on = blurred ? 0 : 1;
-  apiPost("gallery/set_blur", { sha, on }).then(() => {
-    it.nsfw_blur = on;
-    mainBlurred.value = !blurred;
-    message.success(on === 0 ? "已取消该图模糊" : "已设为该图模糊");
-  }).catch((e: any) => message.error(e.message || "设置失败"));
+function onToggleBlur() {
+  // 纯前端临时切换模糊/清晰，便于查看；不请求接口、不改数据库，关闭大图后恢复默认
+  mainBlurred.value = !mainBlurred.value;
 }
 
 // ---- 单图 NSFW 检测 ----
