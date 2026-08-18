@@ -34,7 +34,9 @@
               <n-button v-if="isTrash" size="small" type="success" @click="onRestore(item)">恢复</n-button>
               <n-button v-if="isTrash" size="small" type="error" ghost @click="onPurge(item)">彻底删除</n-button>
             </div>
-            <div class="iv-row"><span class="k">SHA</span><span class="v">{{ shortSha }}</span></div>
+            <div class="iv-row iv-row-sha"><span class="k">SHA</span><span class="v">
+              <code class="iv-sha" :title="fullSha ? '点击复制' : ''" @click="copySha">{{ fullSha || "—" }}</code>
+            </span></div>
             <div class="iv-row"><span class="k">类型</span><span class="v">{{ typeText }}</span></div>
             <div v-if="item.nsfw != null" class="iv-row"><span class="k">NSFW</span><span class="v">
               {{ item.nsfw ? "是" : "否" }}<template v-if="item.nsfw_score != null && item.nsfw_score > 0">（{{ (item.nsfw_score * 100).toFixed(1) }}%）</template>
@@ -128,9 +130,8 @@ const isPair = computed(() => {
   return Boolean(rs && mainSrc.value && refSrc.value);
 });
 
-const shortSha = computed(() => {
-  const s = item.value?.sha256 || props.sha || "";
-  return s ? s.slice(0, 20) + "…" : "";
+const fullSha = computed(() => {
+  return item.value?.sha256 || props.sha || "";
 });
 
 const typeText = computed(() => {
@@ -249,6 +250,17 @@ function onCheckNsfw() {
     })
     .catch((e: any) => message.error(e.message || "检测失败"))
     .finally(() => { checking.value = false; });
+}
+
+function copySha() {
+  const s = fullSha.value;
+  if (!s) return;
+  try {
+    navigator.clipboard?.writeText(s);
+    message.success("SHA 已复制");
+  } catch {
+    message.error("复制失败");
+  }
 }
 
 function onClose() {
@@ -437,6 +449,20 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-check:hover { background: rgba(128, 128, 128, 0.15); }
 .iv-check:disabled { opacity: 0.5; cursor: not-allowed; }
+.iv-row-sha .v { display: flex; align-items: flex-start; min-width: 0; }
+.iv-sha {
+  font-family: var(--n-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  color: #d3d3d3;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.12);
+  transition: background 0.15s;
+}
+.iv-sha:hover { background: rgba(128, 128, 128, 0.22); }
 .iv-row {
   display: flex;
   gap: 8px;

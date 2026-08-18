@@ -97,6 +97,7 @@
             <div class="gal-item-overlay">
               <span v-if="img.starred" class="gal-star">★</span>
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
+              <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ img.user_name }}</span>
             </div>
           </div>
         </div>
@@ -412,6 +413,22 @@ onMounted(() => {
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 .gal-nsfw-mask .gal-nsfw-tip { font-size: 12px; font-weight: 600; background: rgba(0,0,0,0.45); padding: 2px 10px; border-radius: 20px; }
+.gal-user {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 1px 8px;
+  border-radius: 12px;
+  backdrop-filter: blur(3px);
+}
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
 /* 图片网格滚动区：占满剩余空间，内部滚动，分页器固定底部 */
