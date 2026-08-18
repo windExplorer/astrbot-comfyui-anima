@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.3.8
+
+- **修复 Token 统计接口报 `name 'conn' is not defined`**：v4.3.7 为支持「今天/昨天」自然日区间改造 `token_store` 时，`list_detail` 误删了 `conn = self._conn_get()` 定义但仍用 `conn.execute`，导致打开 Token 用量页报错。已改为直接 `self._conn_get().execute`。经临时脚本验证，`query_summary` / `list_scenes` / `list_users` / `list_models` / `list_detail` / `count_detail` / `list_daily` / `list_hourly` 在昨天区间下均正常。
+
 ## v4.3.7
 
 - **WebUI 统计页加「昨天」选项**：生图统计（`StatsView`）与 Token 用量（`TokenView`）的时间范围都新增「昨天」，可查看昨天的生图排行 / token 用量（后端 `stats/ranking`、`token/summary` 支持 `yesterday` 参数，按自然日「昨天 0 点到今天 0 点」精确统计）。

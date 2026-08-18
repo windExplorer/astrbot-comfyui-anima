@@ -413,7 +413,7 @@ class TokenStore:
         if limit is not None:
             base_sql += " LIMIT ? OFFSET ?"
             params += [int(max(limit, 1)), int(max(offset, 0))]
-        rows = conn.execute(base_sql, params).fetchall()
+        rows = self._conn_get().execute(base_sql, tuple(params)).fetchall()
         return [
             {
                 "user_id": r["user_id"],
