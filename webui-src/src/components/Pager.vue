@@ -78,4 +78,18 @@ function jump() {
   align-items: center;
   gap: 6px;
 }
+/* 移动端：分页器精简，避免一行放不下。隐藏每页数量选择器与跳页，
+   仅保留页码（n-pagination 自身会折叠页码显示省略号）；整体居中并允许横向滚动兜底 */
+@media (max-width: 768px) {
+  .pager {
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .pager :deep(.n-pagination-sizer) { display: none !important; }
+  .pager-jump { display: none !important; }
+  .pager :deep(.n-pagination) { overflow-x: auto; }
+}
 </style>

@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.26
+
+- **前端 WebUI 移动端适配（第二轮修复）**，针对实测发现的四个问题：
+  1. **下拉/选择项文本过长不换行**：在全局样式（App.vue 非 scoped `<style>`）中给 Naive `n-base-select-option__content` 与已选文本 `n-base-selection__input` 加 `white-space:normal; word-break:break-word; overflow-wrap:anywhere`，长选项在移动端自动换行不再溢出/截断。
+  2. **分页器移动端放不下**：`Pager.vue` 新增 `@media (max-width:768px)`——隐藏「每页数量选择器」与「跳页」控件，仅保留页码（n-pagination 自身会折叠为省略号），整体居中并允许横向滚动兜底；`.pager` 加 `justify-content:center; width:100%`。
+  3. **图库页面看不到图片**：根因为上一版把 `.app-content` 改为 `overflow:auto` 破坏了 `height:100%` 高度链，导致图库/表格的 `flex:1` 内部滚动区塌缩。修复为移动端 `.app-content` 仍 `overflow:hidden` 由各视图内部自管滚动；同时给 `.gal-item` 加 `min-height:200px` 兜底、`.gal-grid` 加 `align-items:start` 防止 grid `stretch` 拉伸破坏 `aspect-ratio`、`.gal-scroll` 加 `min-height:320px` 兜底，保证封面在短屏也可见。
+  4. **表格高度太低（短屏手机看不到内容）**：图库/限额/日志三处表格容器原本仅靠 `flex:1 + min-height:0`，在移动端被上方标题/工具栏堆叠挤占而压扁。现给 `.gal-scroll`/`.table-wrap`/`.table-scroll` 在移动端分别加 `min-height:320/280/300px` 兜底，保证至少可见数行且内部滚动。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.25
 
 - **前端 WebUI 移动端适配（响应式）**：未改组件结构，纯 CSS 媒体查询（断点 `max-width: 768px`），不依赖 AstrBot 外层 iframe 是否带 viewport（已确认 `index.html` 含 `<meta name="viewport">`）。

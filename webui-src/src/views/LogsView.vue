@@ -334,5 +334,7 @@ onMounted(() => {
   .toolbar :deep(.n-input) { width: 100% !important; flex: 1 1 100%; }
   .toolbar :deep(.n-select) { width: 100% !important; flex: 1 1 100%; }
   .tab-bar :deep(.n-button) { flex: 1 1 auto; }
+  /* 短屏手机：上方 tabs/工具栏堆叠会挤占空间，给表格兜底最小高度，保证可见且内部滚动 */
+  .table-scroll { min-height: 300px; }
 }
 </style>

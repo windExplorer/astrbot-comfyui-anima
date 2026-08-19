@@ -303,7 +303,7 @@ function onMenuSelect(key: string) {
   .header-right :deep(.n-button) { font-size: 12px; }
   .app-content {
     padding: 10px 10px;
-    overflow: auto;
+    overflow: hidden; /* 移动端仍交由各视图内部 flex + overflow:auto 管理滚动，避免破坏 height:100% 链导致表格/图库高度塌缩 */
   }
 }
 </style>
@@ -342,5 +342,20 @@ body {
 .n-dialog-container,
 .n-dialog-mask {
   z-index: 10001 !important;
+}
+
+/* 下拉/选择项文本过长时在移动端换行（默认 nowrap 会导致选项溢出或截断） */
+.n-base-select-option__content,
+.n-base-select-menu__option-wrapper .n-base-select-option__content {
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  line-height: 1.4 !important;
+}
+/* 选择框内已选文本同样允许换行 */
+.n-base-selection__input {
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
 }
 </style>

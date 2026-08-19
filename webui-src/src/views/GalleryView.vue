@@ -687,6 +687,7 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 .gal-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  align-items: start; /* 防止 grid 默认 stretch 拉伸 item 导致 aspect-ratio 失效、封面高度异常 */
   gap: 12px;
 }
 .gal-item {
@@ -695,6 +696,7 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
   overflow: hidden;
   cursor: pointer;
   aspect-ratio: 3 / 4;
+  min-height: 200px; /* 兜底：即便父级高度链异常也能保证封面可见 */
   background: var(--bg-body);
   border: 1px solid var(--border-color);
   box-shadow: 0 2px 8px rgba(255, 143, 179, 0.08);
@@ -749,5 +751,7 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
   .toolbar { flex-wrap: wrap; }
   .toolbar :deep(.n-input),
   .toolbar :deep(.n-select) { width: 100% !important; flex: 1 1 100%; }
+  /* 短屏手机：上方统计/工具栏堆叠会挤占空间，给网格滚动区兜底最小高度，保证封面可见 */
+  .gal-scroll { min-height: 320px; }
 }
 </style>

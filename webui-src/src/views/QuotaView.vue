@@ -211,5 +211,8 @@ onMounted(load);
   .panel { padding: 12px; }
   /* 限额输入框固定 140px 在窄屏改为全宽 */
   .panel :deep(.n-input-number) { width: 100% !important; }
+  /* 短屏手机：上方全局配置堆叠会挤占空间，给表格兜底最小高度，保证可见且内部滚动 */
+  .panel-table { min-height: 340px; }
+  .table-wrap { min-height: 280px; }
 }
 </style>
