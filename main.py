@@ -4683,32 +4683,6 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
-        # 死循环去重：同一会话在窗口(300s)内，用「相同 seed」出现 ≥2 次调用，判定为 LLM 死循环。
-        # 关键：LLM 死循环时常会微调 prompt（改几个字）但复用相同 seed 重画同一张，
-        # 纯 prompt 比较会失效。故只要 seed 相同且窗口内重复即拦。seed 为空时回退 prompt 比较。
-        # 伴侣/主动来源不受限。
-        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            try:
-                _now2 = time.time()
-                _sid_key2 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-                _seed_val = int(seed) if seed is not None and str(seed).strip() != "" else None
-                _fp = _seed_val if _seed_val is not None else f"prompt|{str(prompt or '').strip()}"
-                _fp_map = getattr(plugin, "_llm_draw_fp", None)
-                if not isinstance(_fp_map, dict):
-                    _fp_map = {}
-                    plugin._llm_draw_fp = _fp_map
-                # 记录该会话最近出现过的指纹时间（按出现先后）
-                _seen = _fp_map.get(_sid_key2, {})
-                _seen = {k: t for k, t in _seen.items() if _now2 - t < 300.0}  # 清理 5 分钟外
-                _last_t = _seen.get(_fp)
-                _is_repeat = _last_t is not None  # 5 分钟内同 seed 出现过 → 第 2 次，拦截
-                _seen[_fp] = _now2
-                _fp_map[_sid_key2] = _seen
-                if _is_repeat:
-                    logger.info(f"[llm_draw] 会话 {_sid_key2} 相同 seed={_fp} 5 分钟内重复调用，判定为死循环，拦截")
-                    return "你已经用同样的参数（相同 seed）画过了，图片已发送。本次请求到此结束，【绝对不要】再复用相同 seed 调用画图工具；若确需重画，请改用一个新 seed，否则等待用户下一条新消息的明确指示。"
-            except Exception:
-                pass
 
         # 会话级出图预算：限制「同一次用户请求」内模型连续画图的最大张数（防无脑连发）。
         # count 多张（用户明确要 N 张 / 模型识别「来几张」填 3）也在预算内受限（非管理员）；
