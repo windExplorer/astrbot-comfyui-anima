@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.44
+
+- **修复独立 WebUI 口令登录页仍不出现（独立模式判定不可靠）**：
+  - 现象：接口已正确返回 401「未授权」，但前端始终不跳转到口令登录页。
+  - 根因：前端 `isStandaloneMode()` 依赖「无 AstrBot 桥接」的间接判断，在部分环境（如页面加载时序/跨源访问 parent 异常）下返回 false，导致 `App.vue` 走 `authState='authed'`，**根本没触发认证探测**。
+  - 修复：
+    - `standalone_webui.py`：`_handle_index` 在返回 `index.html` 时注入 `<script>window.__ANIMA_STANDALONE__=true;</script>` 标记（仅独立服务会注入，AstrBot 内嵌页不会）。
+    - 前端 `bridge.ts`：`isStandaloneMode()` **优先检查 `window.__ANIMA_STANDALONE__`**，存在即 100% 判定为独立模式 → 触发认证探测 → 401 时显示口令登录页。兜底逻辑保留。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.43
 
 - **修复 WebUI 配置页嵌套对象显示为 `[object Object]`**：

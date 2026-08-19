@@ -250,9 +250,12 @@ function standaloneToken(): string {
 }
 
 export function isStandaloneMode(): boolean {
-  // 独立服务页面从它自己的源加载，通常 window !== window.parent（iframe 内嵌时
-  // parent 有 AstrBotPluginPage）。这里：无可用桥接即视为独立模式，走 HTTP。
+  // 优先：独立服务会在 index.html 注入 window.__ANIMA_STANDALONE__，100% 可靠
   const w = window as any;
+  try {
+    if (w.__ANIMA_STANDALONE__ === true) return true;
+  } catch (e) { /* ignore */ }
+  // 兜底：无 AstrBot 桥接即视为独立模式（独立服务从自身源加载）
   try {
     if (w.AstrBotPluginPage) return false;
     if (w.parent && w.parent !== w && w.parent.AstrBotPluginPage) return false;

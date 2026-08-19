@@ -189,6 +189,10 @@ class StandaloneWebUI:
         if not idx.exists():
             return _err("未找到前端页面（请先构建 pages/anima-console-vue）", status=404)
         text = idx.read_text(encoding="utf-8")
+        # 注入独立模式标记：前端据此 100% 判定当前页面来自独立服务（区别于 AstrBot 内嵌页）
+        marker = "<script>window.__ANIMA_STANDALONE__=true;</script>"
+        if "__ANIMA_STANDALONE__" not in text:
+            text = text.replace("<head>", "<head>\n    " + marker, 1)
         # index.html 不缓存：确保每次拿到最新引用的 hash 资源，避免升级后浏览器用旧 JS
         return web.Response(text=text, content_type="text/html", charset="utf-8",
                             headers={"Cache-Control": "no-cache"})
