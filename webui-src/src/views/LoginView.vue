@@ -20,11 +20,12 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import { NInput, NButton } from "naive-ui";
-import { submitToken } from "@/composables/auth";
+import { submitToken, authState } from "@/composables/auth";
 
 const router = useRouter();
+const route = useRoute();
 const authInput = ref("");
 const authLoading = ref(false);
 const authError = ref("");
@@ -37,8 +38,12 @@ async function onSubmit() {
   try {
     const res = await submitToken(token);
     if (res.ok) {
-      // 成功：重载页面，让所有请求带上新 token 并重新走认证探测
-      window.location.reload();
+      // 标记已认证（令牌已存 localStorage，后续请求自动携带）
+      authState.value = "authed";
+      // 跳转到来源页或控制台首页，而非停留在登录页
+      const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "";
+      const target = redirect && redirect.startsWith("/") ? redirect : "/config";
+      router.replace(target);
     } else {
       authError.value = res.error || "验证失败";
       authInput.value = "";

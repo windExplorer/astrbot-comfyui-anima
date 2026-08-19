@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.49
+
+- **修复登录成功后不跳转（停留在口令页）**：
+  - 根因：`LoginView` 登录成功用 `window.location.reload()`，reload 后 URL 仍是 `#/login`，路由守卫对 `login` 放行 → 一直停在口令页。
+  - 修复：登录成功改为 `authState='authed'` + `router.replace(来源页或 /config)`，无需 reload 直接进入控制台；口令已存 localStorage，后续请求自动携带。来源页由守卫跳转时携带的 `?redirect=` 提供。
+  - 至此独立 WebUI 完整认证链路闭环：访问任意页 → 守卫探测(ping 401) → 跳 `/#/login`(全屏无侧边栏) → 输口令 → 跳回控制台。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2855 模块，0 错误）。
+
 ## v4.4.48
 
 - **修复独立 WebUI 不跳转登录页 + 登录页仍显示侧边栏**：
