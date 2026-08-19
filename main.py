@@ -3948,6 +3948,76 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, "这张图文件丢失了，可能已被 LRU 清理。")
             return False
 
+    @filter.command("nsfw检测", alias={"nsfw", "nsfw检测图片", "涩涩检测", "NSFW"})
+    async def cmd_nsfw(self, event: AstrMessageEvent):
+        """检测图片是否 NSFW。引用/附带图片后输入 /nsfw检测，返回每张图的置信度与判断。
+
+        置信度说明：score 是模型对「色情内容」的置信度 P(nsfw)（0~1），并非绝对真值；
+        判定是否 NSFW 取决于阈值（默认 0.5），score >= 阈值 即标记为 NSFW。泳装/紧身/露肤
+        等场景常因与训练样本特征相似而被模型给出较高置信度，可能被误判为 NSFW。
+        可用 /nsfw阈值 查看或修改判定阈值。
+        """
+        # 支持查看阈值：/nsfw阈值 或 /nsfw检测 阈值
+        args = (self._strip_command(event.message_str, "nsfw检测") or "").strip().lower()
+        if args.startswith("阈值"):
+            try:
+                t = float((self._cfg("gallery", {}).get("nsfw") or {}).get("threshold", 0.5))
+            except (TypeError, ValueError):
+                t = 0.5
+            await self._send(
+                event,
+                f"🎯 当前 NSFW 判定阈值：{t:.2f}\n"
+                "说明：图片 P(nsfw) 置信度 ≥ 阈值即判为 NSFW。泳装/紧身/露肤等易被误判，"
+                "可适当调高阈值（如 0.7）来降低误报（在插件配置 gallery.nsfw.threshold 中修改）。",
+            )
+            event.stop_event()
+            return
+
+        images = await self._extract_images(event)
+        if not images:
+            await self._send(
+                event,
+                "📊 NSFW 检测\n用法：引用或附带一张图片后发送 /nsfw检测\n"
+                "也可发送 /nsfw检测 阈值 查看当前判定阈值。",
+            )
+            event.stop_event()
+            return
+
+        try:
+            threshold = float((self._cfg("gallery", {}).get("nsfw") or {}).get("threshold", 0.5))
+        except (TypeError, ValueError):
+            threshold = 0.5
+        try:
+            from .nsfw_detector import get_detector
+        except ImportError:
+            from nsfw_detector import get_detector
+        det = get_detector(threshold)
+
+        lines = []
+        for i, p in enumerate(images, 1):
+            if not p or not os.path.exists(p):
+                lines.append(f"{i}. 图片文件不存在")
+                continue
+            try:
+                is_nsfw, score, available = det.detect(p)
+            except Exception as e:  # pragma: no cover
+                logger.warning(f"[NSFW] 指令检测失败: {e}")
+                is_nsfw, score, available = False, 0.0, False
+            if not available:
+                lines.append(
+                    f"{i}. ❓ 检测不可用（缺少依赖 onnxruntime / opennsfw-onnx，"
+                    "请在 AstrBot 安装这两个 pip 库后重试）"
+                )
+                continue
+            verdict = "🔞 NSFW" if is_nsfw else "✅ 安全"
+            pct = score * 100
+            lines.append(f"{i}. {verdict}（置信度 {pct:.1f}% / 阈值 {threshold:.2f}）")
+        await self._send(
+            event,
+            f"📊 NSFW 检测结果（{len(images)} 张，阈值 {threshold:.2f}）：\n" + "\n".join(lines),
+        )
+        event.stop_event()
+
     @filter.command("gallery", alias={"图库"})
     async def cmd_gallery(self, event: AstrMessageEvent):
         """图片画廊与语义标签召回。支持 /gallery 与 /图库 两种入口，子命令见提示。"""
