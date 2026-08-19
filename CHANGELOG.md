@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.24
+
+- **图库封面右上角新增收藏 / 删除图标**：
+  - 收藏（★）：点击直接切换收藏/取消收藏，复用 `gallery/star`；已收藏时星标高亮且常显（便于辨认）。
+  - 删除（🗑）：点击弹出 `n-popconfirm` 二次确认「确定删除这张图片吗？将移入回收站。」，确认后移入回收站（沿用 `gallery/delete`，不重复弹整页 `dialog`）。
+  - 两个图标 hover 整卡时浮现；点击均 `@click.stop` 避免误触发大图查看。删除逻辑从 `onDelete` 拆出核心 `deleteImage`，查看器内的整页确认弹窗仍走 `onDelete`。
+
 ## v4.4.23
 
 - **修复插件页在 sandbox iframe 下因 localStorage 抛 SecurityError 而整页崩溃**（这才是「接口已返回数据但封面不渲染」的真相，而非之前的响应式推测）：AstrBot 插件页运行在缺少 `allow-same-origin` 的 sandbox iframe 中，直接访问 `localStorage` 会抛 `SecurityError`，导致 JS bundle 在初始化阶段中断、后续所有逻辑（含缩略图渲染）都不执行。

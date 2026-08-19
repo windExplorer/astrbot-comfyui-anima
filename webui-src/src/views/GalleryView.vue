@@ -115,6 +115,26 @@
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
             </div>
             <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ cutName(img.user_name) }}</span>
+            <!-- 右上角操作：收藏 / 删除 -->
+            <div class="gal-actions">
+              <button
+                class="gal-act gal-star-btn"
+                :class="{ on: img.starred }"
+                :title="img.starred ? '取消收藏' : '收藏'"
+                @click.stop="onStar(img)"
+              >★</button>
+              <n-popconfirm
+                :show-icon="false"
+                positive-text="删除"
+                negative-text="取消"
+                @positive-click="deleteImage(img)"
+              >
+                <template #trigger>
+                  <button class="gal-act gal-del-btn" title="删除" @click.stop.prevent>🗑</button>
+                </template>
+                确定删除这张图片吗？将移入回收站。
+              </n-popconfirm>
+            </div>
             <!-- 封面未加载/加载失败时，hover 显示重载按钮 -->
             <button
               v-if="!thumbCache[img.sha || img.sha256]"
@@ -418,6 +438,20 @@ function onStar(img: any) {
   }).catch((e: any) => message.error(e.message || "操作失败"));
 }
 
+// 真正执行删除（移入回收站）。卡片右上角的 popconfirm 已做二次确认，直接调用此函数。
+async function deleteImage(img: any) {
+  const sha = img.sha || img.sha256;
+  try {
+    await apiPost("gallery/delete", { sha });
+    message.success("已移入回收站");
+    if (viewerShow.value) viewerShow.value = false;
+    doSearch(page.value);
+    loadStats();
+  } catch (e: any) {
+    message.error(e.message || "删除失败");
+  }
+}
+
 function onDelete(img: any) {
   const sha = img.sha || img.sha256;
   dialog.warning({
@@ -425,17 +459,7 @@ function onDelete(img: any) {
     content: "确定要删除这张图片吗？将移入回收站，可在回收站内彻底删除。",
     positiveText: "删除",
     negativeText: "取消",
-    onPositiveClick: async () => {
-      try {
-        await apiPost("gallery/delete", { sha });
-        message.success("已移入回收站");
-        viewerShow.value = false;
-        doSearch(page.value);
-        loadStats();
-      } catch (e: any) {
-        message.error(e.message || "删除失败");
-      }
-    },
+    onPositiveClick: () => deleteImage(img),
   });
 }
 
@@ -574,6 +598,53 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
   padding: 1px 8px;
   border-radius: 12px;
   backdrop-filter: blur(3px);
+}
+/* 右上角操作区：收藏 / 删除 图标，hover 整卡时浮现 */
+.gal-actions {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 5;
+  display: flex;
+  gap: 5px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.gal-item:hover .gal-actions {
+  opacity: 1;
+}
+.gal-act {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
+  transition: background 0.12s, transform 0.12s;
+}
+.gal-act:hover {
+  transform: scale(1.08);
+}
+.gal-star-btn.on {
+  color: #ffd357;
+  background: rgba(255, 211, 87, 0.22);
+}
+.gal-del-btn:hover {
+  background: rgba(255, 99, 107, 0.9);
+}
+/* 收藏状态：即便不 hover 也让星标常显，方便辨认 */
+.gal-star-btn.on {
+  opacity: 1;
+}
+.gal-actions:has(.gal-star-btn.on) {
+  opacity: 1;
 }
 /* 封面未加载时的重载按钮：居中浮于图片上，hover 整卡时显示 */
 .gal-reload {
