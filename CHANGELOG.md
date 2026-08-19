@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.4
+
+- **修复独立 WebUI 图库部分接口 Not Found**：
+  - 独立服务 `standalone_webui.py` 的 `/api/gallery/*` 缺少 `check_nsfw`、`set_nsfw`、`set_blur` 三个接口（此前仅内嵌页有），导致独立环境报 `Not Found: /gallery/check_nsfw` / `/gallery/set_nsfw`。
+  - 补齐：`/gallery/check_nsfw`（单图检测，GET）、`/gallery/set_nsfw`（人工标记/取消 NSFW，POST）、`/gallery/set_blur`（单图模糊覆盖，POST），返回结构与内嵌页一致，并写入操作日志。
+  - 至此独立服务 `/api/gallery/*` 与内嵌页接口全集对齐。
+
 ## v4.5.3
 
 - **新增图库一键全量重新检测（调整 NSFW 阈值后刷新旧图标记）**：

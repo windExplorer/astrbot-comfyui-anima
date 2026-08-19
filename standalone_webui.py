@@ -487,6 +487,44 @@ class StandaloneWebUI:
             g.add_tags(sha, tag_list)
             self._oplog_add("gallery_tags", f"图库打标签：{','.join(tag_list)}", ref_sha=sha)
             return _ok({"msg": "标签已添加"})
+        if path == "/gallery/check_nsfw":
+            sha = self._q(request, "sha", "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            res = g.check_nsfw(sha)
+            if res.get("available") is False:
+                return _err(res.get("msg") or "检测不可用")
+            return _ok({"nsfw": res.get("nsfw", False),
+                        "nsfw_score": res.get("nsfw_score"),
+                        "msg": res.get("msg", "检测完成")})
+        if path == "/gallery/set_nsfw":
+            body = await request.json() if request.body_exists else {}
+            sha = (body.get("sha") or "") if isinstance(body, dict) else ""
+            on = (body.get("on") if isinstance(body, dict) else None)
+            if not sha:
+                return _err("缺少 sha")
+            if on is None:
+                return _err("缺少 on(0/1)")
+            ok = g.set_nsfw(sha, 1 if on else 0)
+            msg = "已标记为 NSFW" if on else "已取消 NSFW"
+            self._oplog_add("gallery_set_nsfw", msg, ref_sha=sha,
+                            extra={"on": 1 if on else 0})
+            return _ok({"msg": msg if ok else "未找到该图"})
+        if path == "/gallery/set_blur":
+            body = await request.json() if request.body_exists else {}
+            sha = (body.get("sha") or "") if isinstance(body, dict) else ""
+            on = (body.get("on") if isinstance(body, dict) else None)
+            if not sha:
+                return _err("缺少 sha")
+            if on is None:
+                ok = g.clear_nsfw_blur(sha)
+                msg = "已恢复跟随全局模糊"
+            else:
+                ok = g.set_nsfw_blur(sha, 1 if on else 0)
+                msg = "已设置模糊" if on else "已取消模糊"
+            self._oplog_add("gallery_set_blur", msg, ref_sha=sha,
+                            extra={"on": on})
+            return _ok({"msg": msg if ok else "未找到该图"})
         if path == "/gallery/trash":
             rows = g.search(trash=True, limit=200, offset=0)
             for r in rows:
