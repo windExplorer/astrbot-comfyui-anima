@@ -3590,6 +3590,7 @@ class ComfyUIDrawPlugin(Star):
             "· /绘图排行 [今天|昨天|周|月|全部]   绘图排行前五\n"
             "· /绘图状态   服务器状态与生图限额\n"
             "· /图库 列表|搜索|收藏…   图库管理\n"
+            "· /涩图检测（引用图片）   检测图片是否为涩涩内容\n"
             "· 想查看详细参数，回复「画画帮助」即可"
         )
         await self._send(event, text)
@@ -3985,11 +3986,17 @@ class ComfyUIDrawPlugin(Star):
         if not images:
             await self._send(
                 event,
-                "📊 NSFW 检测\n用法：引用或附带一张图片后发送 /nsfw检测\n"
-                "也可发送 /nsfw检测 阈值 查看当前判定阈值。",
+                "📊 涩图检测\n用法：引用或附带一张图片后发送 /涩图检测\n"
+                "也可发送 /涩图检测 阈值 查看当前判定阈值。",
             )
             event.stop_event()
             return
+
+        # 立即返回"检测中"提示
+        try:
+            await self._send(event, "⏳ 检测中，请稍候…")
+        except Exception:
+            pass
 
         try:
             threshold = float((self._cfg("gallery", {}).get("nsfw") or {}).get("threshold", 0.5))
@@ -4001,10 +4008,12 @@ class ComfyUIDrawPlugin(Star):
             from nsfw_detector import get_detector
         det = get_detector(threshold)
 
-        lines = []
-        for i, p in enumerate(images, 1):
+        # 收集检测结果（过滤无效/不可用）
+        results = []
+        unavailable = False
+        for p in images:
             if not p or not os.path.exists(p):
-                lines.append(f"{i}. 图片文件不存在")
+                results.append(None)
                 continue
             try:
                 is_nsfw, score, available = det.detect(p)
@@ -4012,18 +4021,42 @@ class ComfyUIDrawPlugin(Star):
                 logger.warning(f"[NSFW] 指令检测失败: {e}")
                 is_nsfw, score, available = False, 0.0, False
             if not available:
-                lines.append(
-                    f"{i}. ❓ 检测不可用（缺少依赖 onnxruntime / opennsfw-onnx，"
-                    "请在 AstrBot 安装这两个 pip 库后重试）"
-                )
+                unavailable = True
+                results.append(None)
                 continue
-            verdict = "🔞 NSFW" if is_nsfw else "✅ 安全"
-            pct = score * 100
-            lines.append(f"{i}. {verdict}（置信度 {pct:.1f}% / 阈值 {threshold:.2f}）")
-        await self._send(
-            event,
-            f"📊 NSFW 检测结果（{len(images)} 张，阈值 {threshold:.2f}）：\n" + "\n".join(lines),
-        )
+            results.append({"nsfw": is_nsfw, "score": score})
+
+        if unavailable:
+            await self._send(
+                event,
+                "❓ 检测不可用（缺少依赖 onnxruntime / opennsfw-onnx，请在 AstrBot 安装这两个 pip 库后重试）",
+            )
+            event.stop_event()
+            return
+
+        valid = [r for r in results if r is not None]
+        if not valid:
+            await self._send(event, "❓ 没有可检测的有效图片。")
+            event.stop_event()
+            return
+
+        # 通俗话术：把 P(nsfw) 描述成「涩涩内容的可能性」
+        def _desc(r: dict) -> str:
+            pct = r["score"] * 100
+            if r["nsfw"]:
+                return f"🔞 涩涩内容（可能性约 {pct:.0f}%）"
+            # 安全：可能性越低越"安全"
+            if pct >= 20:
+                return f"⚠️ 有点擦边（涩涩内容可能性约 {pct:.0f}%）"
+            return f"✅ 安全（涩涩内容可能性很低）"
+
+        if len(valid) == 1:
+            # 单张图：直接返回简单结论，不用列表，不展示阈值
+            await self._send(event, _desc(valid[0]))
+        else:
+            # 多张图：列表形式
+            lines = [f"{i}. {_desc(r)}" for i, r in enumerate(valid, 1)]
+            await self._send(event, "📊 涩图检测结果：\n" + "\n".join(lines))
         event.stop_event()
 
     @filter.command("gallery", alias={"图库"})
