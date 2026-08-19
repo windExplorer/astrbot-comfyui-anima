@@ -3,7 +3,34 @@
     <n-message-provider>
       <n-dialog-provider>
         <n-loading-bar-provider>
-          <div class="app-shell">
+          <!-- 独立模式未认证：只显示登录页，不渲染控制台 -->
+          <div v-if="authState === 'unauthed'" class="auth-login-page">
+            <div class="auth-login-card">
+              <div class="auth-login-logo">✦</div>
+              <div class="auth-login-title">萌绘控制台</div>
+              <div class="auth-login-sub">该控制台已设置访问口令，请输入口令进入</div>
+              <n-input
+                v-model:value="authInput"
+                type="password"
+                size="large"
+                placeholder="请输入访问口令"
+                show-password-on="click"
+                @keyup.enter="submitAuth"
+              />
+              <n-button type="primary" size="large" block :loading="authLoading" @click="submitAuth">确认进入</n-button>
+              <div v-if="authError" class="auth-login-error">{{ authError }}</div>
+            </div>
+          </div>
+          <!-- 探测中：简单加载占位，避免闪烁控制台 -->
+          <div v-else-if="authState === 'checking'" class="auth-login-page">
+            <div class="auth-login-card">
+              <div class="auth-login-logo">✦</div>
+              <div class="auth-login-title">萌绘控制台</div>
+              <div class="auth-login-sub">正在加载…</div>
+            </div>
+          </div>
+          <!-- 已认证 / 非独立模式：渲染控制台 -->
+          <div v-else-if="authState === 'authed'" class="app-shell">
             <div class="app-sider" :class="{ collapsed: siderCollapsed }">
               <div class="brand">
                 <div class="brand-logo">✦</div>
@@ -48,37 +75,11 @@
         </n-loading-bar-provider>
       </n-dialog-provider>
     </n-message-provider>
-
-    <!-- 独立服务访问口令弹窗：standalone 模式需要 token 校验时弹出 -->
-    <n-modal
-      v-model:show="authVisible"
-      :mask-closable="false"
-      :close-on-esc="false"
-      :show-close="false"
-      preset="card"
-      style="width: 360px; max-width: 92vw"
-      :title="'访问控制台'"
-    >
-      <div class="auth-panel">
-        <p class="auth-tip">该控制台设置了访问口令，请输入后进入：</p>
-        <n-input
-          v-model:value="authInput"
-          type="password"
-          size="large"
-          placeholder="请输入访问口令"
-          show-password-on="click"
-          @keyup.enter="submitAuth"
-        />
-        <div class="auth-actions">
-          <n-button type="primary" size="large" block :loading="authLoading" @click="submitAuth">确认进入</n-button>
-        </div>
-      </div>
-    </n-modal>
   </n-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref } from "vue";
+import { computed, h, onMounted, ref } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
 import {
   darkTheme,
@@ -96,13 +97,12 @@ import {
   NSwitch,
   NButton,
   NIcon,
-  NModal,
   NInput,
   type MenuOption,
   type GlobalThemeOverrides,
 } from "naive-ui";
 import { useTheme, initThemeBridge } from "@/composables/useTheme";
-import { standaloneAuthState, setStandaloneToken, isStandaloneMode, apiGet } from "@/api/bridge";
+import { setStandaloneToken, isStandaloneMode, apiGet } from "@/api/bridge";
 
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
 // 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
@@ -112,31 +112,33 @@ const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
 
-// 独立服务访问口令弹窗状态
-const authVisible = ref(false);
+// 独立服务认证状态机：'checking' 探测中 | 'unauthed' 未认证(显示登录页) | 'authed' 已认证
+type AuthState = "checking" | "unauthed" | "authed";
+const authState = ref<AuthState>("authed");
 const authInput = ref("");
 const authLoading = ref(false);
-let authUnsub: (() => void) | null = null;
+const authError = ref("");
 
 async function submitAuth() {
   const token = (authInput.value || "").trim();
   if (!token) return;
   authLoading.value = true;
+  authError.value = "";
   try {
     setStandaloneToken(token);
     // 用 ping 验证口令是否正确
-    await apiGet("ping", {}, { timeout: 5000 });
-    authVisible.value = false;
+    await apiGet("ping", {}, { timeout: 8000 });
     authInput.value = "";
-    // 校验成功后重载页面，让所有请求带上新 token
+    // 校验成功后重载页面，让所有请求带上新 token 并重新走认证探测
     window.location.reload();
   } catch (e: any) {
     if (e && e.authRequired) {
-      // token 仍不对，继续停留弹窗
+      // 口令仍不对，停留在登录页并提示
+      authError.value = "口令不正确，请重新输入";
       authInput.value = "";
     } else {
-      authVisible.value = false;
-      window.location.reload();
+      // 非鉴权错误（如超时）：也停留登录页
+      authError.value = "验证失败：" + ((e && e.message) || "无法连接服务");
     }
   } finally {
     authLoading.value = false;
@@ -146,24 +148,30 @@ async function submitAuth() {
 // 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext
 onMounted(() => {
   initThemeBridge();
-  // 独立服务模式：探测是否需要认证，订阅认证状态触发弹窗
+  // 独立服务模式：探测认证状态。未认证（需要 token）→ 只显示登录页；
+  // 已认证 / 后端无需 token → 直接渲染控制台。
   if (isStandaloneMode()) {
-    authUnsub = standaloneAuthState.on((needed) => {
-      authVisible.value = needed;
-    });
-    // 主动探测一次：后端无 token 配置则 ping 成功，不弹窗；有 token 则 401 弹窗
-    apiGet("ping", {}, { timeout: 5000 }).catch((e) => {
-      if (!(e && e.authRequired)) standaloneAuthState.set(false);
-    });
+    authState.value = "checking";
+    checkStandaloneAuth();
+  } else {
+    authState.value = "authed";
   }
 });
 
-onUnmounted(() => {
-  if (authUnsub) {
-    authUnsub();
-    authUnsub = null;
+async function checkStandaloneAuth() {
+  try {
+    await apiGet("ping", {}, { timeout: 8000 });
+    // ping 成功 = 已认证（已带 token）或后端无需 token → 渲染控制台
+    authState.value = "authed";
+  } catch (e: any) {
+    if (e && e.authRequired) {
+      authState.value = "unauthed"; // 需要口令 → 显示登录页
+    } else {
+      // 非鉴权错误（如后端未就绪/超时）：也进入登录页，让用户可尝试
+      authState.value = "unauthed";
+    }
   }
-});
+}
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -394,18 +402,55 @@ function onMenuSelect(key: string) {
   --border-color: #ffe3ec;
   --accent: #ff8fb3;
 }
-/* 独立服务访问口令弹窗 */
-.auth-panel {
-  padding: 4px 0 0;
+/* 独立服务登录页（未认证时整页显示） */
+.auth-login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(135deg, #fff0f6 0%, #ffe9f2 50%, #ffe0eb 100%);
 }
-.auth-tip {
-  margin: 0 0 12px;
+.auth-login-card {
+  width: 380px;
+  max-width: 92vw;
+  background: var(--bg-panel, #fff);
+  border-radius: 16px;
+  padding: 40px 32px 32px;
+  box-shadow: 0 8px 30px rgba(255, 143, 179, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+.auth-login-logo {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #ff8fb3, #ff6b9d);
+  color: #fff;
+  font-size: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.35);
+}
+.auth-login-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-main, #3a2a33);
+}
+.auth-login-sub {
   font-size: 13px;
-  color: var(--text-sub);
+  color: var(--text-sub, #9a7a88);
   line-height: 1.5;
+  margin-bottom: 6px;
 }
-.auth-actions {
-  margin-top: 16px;
+.auth-login-error {
+  font-size: 13px;
+  color: #e74c3c;
+  margin-top: 4px;
 }
 /* 兼容两种深色触发：AstrBot 维护的 [data-theme=dark] 与本地手动切换的 html.dark */
 html[data-theme="dark"],
@@ -416,6 +461,10 @@ html.dark {
   --text-sub: #b3909f;
   --border-color: #3a2a33;
   --accent: #ff9dc4;
+}
+html[data-theme="dark"] .auth-login-page,
+html.dark .auth-login-page {
+  background: linear-gradient(135deg, #241b21 0%, #1f171c 50%, #1a1418 100%);
 }
 body {
   margin: 0;
