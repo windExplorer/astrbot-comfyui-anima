@@ -3,8 +3,12 @@
     <n-message-provider>
       <n-dialog-provider>
         <n-loading-bar-provider>
-          <!-- 渲染控制台；登录页由路由 /login 提供，认证由路由守卫拦截 -->
-          <div class="app-shell">
+          <!-- 登录页：仅渲染路由内容（不含侧边栏/顶栏），避免登录页看到控制台内容 -->
+          <div v-if="route.name === 'login'" class="app-login-outlet">
+            <router-view />
+          </div>
+          <!-- 控制台布局 -->
+          <div v-else class="app-shell">
             <div class="app-sider" :class="{ collapsed: siderCollapsed }">
               <div class="brand">
                 <div class="brand-logo">✦</div>

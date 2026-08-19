@@ -182,6 +182,11 @@ class StandaloneWebUI:
         return None
 
     async def _handle_ping(self, request: web.Request) -> web.Response:
+        # 关键：ping 也做 token 鉴权。前端守卫用它探测认证状态——若 ping 不鉴权，
+        # 守卫会误判「已认证」而放行控制台，导致未认证仍进入控制台（其他 API 才 401）。
+        denied = self._authed(request)
+        if denied is not None:
+            return denied
         return _ok({"pong": True, "ts": time.time()})
 
     async def _handle_index(self, request: web.Request) -> web.Response:
