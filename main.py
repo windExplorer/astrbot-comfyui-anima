@@ -4045,7 +4045,7 @@ class ComfyUIDrawPlugin(Star):
             event.stop_event()
             return
 
-        # 通俗话术：把 P(nsfw) 描述成「涩涩内容的可能性」
+        # 通俗话术：把 P(nsfw) 描述成「涩涩内容的可能性」，每张图都带百分比
         def _desc(r: dict) -> str:
             pct = r["score"] * 100
             if r["nsfw"]:
@@ -4053,7 +4053,7 @@ class ComfyUIDrawPlugin(Star):
             # 安全：可能性越低越"安全"
             if pct >= 20:
                 return f"⚠️ 有点擦边（涩涩内容可能性约 {pct:.0f}%）"
-            return f"✅ 安全（涩涩内容可能性很低）"
+            return f"✅ 安全（涩涩内容可能性很低，约 {pct:.0f}%）"
 
         if len(valid) == 1:
             # 单张图：直接返回简单结论，不用列表，不展示阈值
