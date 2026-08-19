@@ -4985,10 +4985,14 @@ class ComfyUIDrawPlugin(Star):
         #   image_path 后自己发图，本函数不重复发图；
         # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，主动 event.send
         #   图片，再 return 简短文本告知模型已处理。
+        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+
         img_paths: list[str] = []
-        img_nodes = []
-        # count 张：循环出图（每次用不同 seed 避免重复），collect 所有图片。
+        # count 张：循环出图（每次用不同 seed 避免重复）。
         # 注意：_do_draw 每次调用会完整等待一次出图，count 次串行；这是「来 N 张」的预期成本。
+        # 原生 / AI 对话调用改为「画一张发一张」：每张图出来立即 event.send，
+        # 用户先收到第 1 张、再第 2 张、再第 3 张，而不是等全部画完一次性连发。
+        # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
         _draw_n = max(1, int(count or 1))
         for _i in range(_draw_n):
             _seed_i = ((seed or 0) + _i) if _draw_n > 1 else seed
@@ -5010,25 +5014,22 @@ class ComfyUIDrawPlugin(Star):
                 notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
                 source=source,
             ):
-                if node is not None:
-                    img_nodes.append(node)
                 if p:
                     img_paths.append(p)
+                # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
+                # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
+                # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
+                if node is not None and not is_companion:
+                    try:
+                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                    except Exception as _e:
+                        logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
 
-        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：LLM 工具的 return 值只会作为工具结果文本回传给
-            # 模型，框架并不会自动把 MessageChain 渲染成图片发给用户。因此这里必须
-            # 主动 event.send 把图真正发出去，再 return 一句简短文本让模型知道已处理。
-            for _nd in img_nodes:
-                try:
-                    await event.send(_nd if isinstance(_nd, MessageChain) else MessageChain([_nd]))
-                except Exception as _e:
-                    logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
-            # 图片已由插件主动 event.send 发到聊天里。
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。
             # 【关键】必须 return None：AstrBot tool_loop_agent_runner 在工具返回 None 时
             # 置状态为 DONE 并立即结束 Agent Loop（~L1199）。若返回文本，AstrBot 会喂回 LLM，
             # LLM 可能继续调画图工具 → "画完→再调→再画"死循环（同 seed、prompt 略改，停不下来）。
@@ -5806,9 +5807,12 @@ class ComfyUIDrawPlugin(Star):
         positive, parsed_neg = plugin._split_external_prompt(prompt)
         negative = parsed_neg or (negative_prompt or "")
 
+        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+
         img_paths: list[str] = []
-        img_nodes = []
-        # count 张：循环出图（每次用不同 seed 避免重复），collect 所有图片
+        # count 张：循环出图（每次用不同 seed 避免重复）。
+        # 原生 / AI 对话调用改为「画一张发一张」：每张图出来立即 event.send，
+        # 用户逐张收到，而不是等全部画完一次性连发。伴侣插件仍收集全部路径后返回 JSON。
         _draw_n2 = max(1, int(count or 1))
         for _j in range(_draw_n2):
             _seed_j = ((seed or 0) + _j) if _draw_n2 > 1 else seed
@@ -5827,24 +5831,22 @@ class ComfyUIDrawPlugin(Star):
                 denoise=denoise if denoise >= 0 else None,
                 source=source,
             ):
-                if node is not None:
-                    img_nodes.append(node)
                 if p:
                     img_paths.append(p)
+                # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
+                # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
+                # 自动渲染图片，必须主动 event.send 把图发到聊天里。
+                if node is not None and not is_companion:
+                    try:
+                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                    except Exception as _e:
+                        logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
 
-        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：LLM 工具的 return 值只会作为工具结果文本回传给模型，
-            # 框架不会自动渲染图片，必须主动 event.send 把图发到聊天里。
-            for _nd in img_nodes:
-                try:
-                    await event.send(_nd if isinstance(_nd, MessageChain) else MessageChain([_nd]))
-                except Exception as _e:
-                    logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
-            # 图片已由插件主动 event.send 发到聊天里。
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。
             # 【关键】必须 return None，让 AstrBot tool_loop_agent_runner 置 DONE 并立即结束
             # Agent Loop（同 comfyui_draw，防止"画完→再调→再画"死循环）。
             return None
