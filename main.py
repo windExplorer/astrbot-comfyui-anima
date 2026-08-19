@@ -4008,23 +4008,28 @@ class ComfyUIDrawPlugin(Star):
             from nsfw_detector import get_detector
         det = get_detector(threshold)
 
-        # 收集检测结果（过滤无效/不可用）
-        results = []
-        unavailable = False
-        for p in images:
+        # 收集检测结果（过滤无效/不可用）。
+        # 关键：det.detect 是同步 onnxruntime 推理（CPU 密集），直接跑在事件循环会
+        # 阻塞其他事件（含画图）。用 asyncio.to_thread 丢到线程池，避免阻塞画图。
+        import asyncio as _asyncio
+
+        async def _detect_one(p):
             if not p or not os.path.exists(p):
-                results.append(None)
-                continue
+                return None, False
             try:
-                is_nsfw, score, available = det.detect(p)
+                is_nsfw, score, available = await _asyncio.to_thread(det.detect, p)
             except Exception as e:  # pragma: no cover
                 logger.warning(f"[NSFW] 指令检测失败: {e}")
                 is_nsfw, score, available = False, 0.0, False
-            if not available:
+            return ({"nsfw": is_nsfw, "score": score}, not available)
+
+        results = []
+        unavailable = False
+        for r, unavail in await _asyncio.gather(*[_detect_one(p) for p in images]):
+            if unavail:
                 unavailable = True
-                results.append(None)
-                continue
-            results.append({"nsfw": is_nsfw, "score": score})
+            if r is not None:
+                results.append(r)
 
         if unavailable:
             await self._send(
