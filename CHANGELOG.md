@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.41
+
+- **WebUI 添加站点图标 favicon**：
+  - 新增 `favicon.ico`（仓库根目录），复制到 `webui-src/public/`，Vite 构建时复制到产物 `pages/anima-console-vue/favicon.ico`。
+  - `index.html` 的 `<head>` 添加 `<link rel="icon" href="/favicon.ico" />`，浏览器标签页/收藏夹显示该图标。
+  - 独立 WebUI 与 AstrBot 内嵌页均生效（静态服务会正常返回 `/favicon.ico`，不再走 204 兜底）。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成（2851 模块，0 错误），含 `favicon.ico`。
+
 ## v4.4.40
 
 - **修复独立 WebUI 登录页不出现（浏览器缓存旧前端）**：
