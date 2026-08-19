@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.30
+
+- **修复 WebUI 日志页长期为空**：
+  - 背景：`/logs` 接口（读内存 `LOG_BUFFER` + 落盘 `data_dir/webui.log`）在出图后仍返回空，怀疑插件业务日志未进入 `logging.root` 的 handler 链。
+  - 加固：`_install_webui_log_handler` 不再只把 handler 挂到 `logging.root`，而是**同时挂到 root 与本插件使用的 AstrBot logger**（`from astrbot.api import logger`），并强制 `propagate=True`，避免 AstrBot 自定义 logger 的传播链被关闭时业务日志丢失。内存环形缓冲 + `webui.log` 落盘两个 handler 一并双挂。
+  - 若升级后日志页仍空，请确认：AstrBot 实际加载的插件副本是否为最新（非工作区代码未同步）；并检查插件数据目录下 `webui.log` 是否生成。
+
 ## v4.4.29
 
 - **新增业务操作日志（解释「限额计数 > 图库/出图记录条数」对账问题）**：

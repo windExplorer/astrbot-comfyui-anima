@@ -524,11 +524,9 @@ class ComfyUIDrawPlugin(Star):
         h.setLevel(logging.DEBUG)
         fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S")
         h.setFormatter(fmt)
-        # 挂到 root logger，捕获插件及依赖（ComfyUI client 等）全部日志
-        logging.root.addHandler(h)
-        self._webui_log_handler = h
 
         # 同时落盘，方便排查（文件保留最近 1MB 滚动）
+        fh = None
         try:
             from logging.handlers import RotatingFileHandler
 
@@ -537,10 +535,35 @@ class ComfyUIDrawPlugin(Star):
             )
             fh.setLevel(logging.DEBUG)
             fh.setFormatter(fmt)
-            logging.root.addHandler(fh)
-            self._webui_file_handler = fh
         except Exception:
-            self._webui_file_handler = None
+            fh = None
+
+        # 把 handler 同时挂到 root 与本插件的 logger 链：
+        # 仅挂 root 时，若 AstrBot 的 logger 对象不自定义/或 propagate 被关闭，
+        # 业务日志不会传播到 root handler，导致日志页/落盘为空。这里双保险。
+        targets = [logging.root]
+        try:
+            from astrbot.api import logger as _astr_logger
+            if _astr_logger is not None:
+                targets.append(_astr_logger)
+        except Exception:
+            pass
+        for t in targets:
+            try:
+                t.addHandler(h)
+                if fh is not None:
+                    t.addHandler(fh)
+                if hasattr(t, "setLevel"):
+                    t.setLevel(logging.DEBUG)
+            except Exception:
+                pass
+        try:
+            if _astr_logger is not None:
+                _astr_logger.propagate = True
+        except Exception:
+            pass
+        self._webui_log_handler = h
+        self._webui_file_handler = fh
 
     async def initialize(self) -> None:
         # 给 LLM 工具的 JSON schema 补 `required`。
