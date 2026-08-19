@@ -492,6 +492,12 @@ class ComfyUIDrawPlugin(Star):
                 from oplog_store import OpLogStore
             self.oplog = OpLogStore(self.data_dir)
             logger.info(f"[init] 操作日志已就绪: {self.oplog.db_path}")
+            # 启动自检：写入一条初始化事件，用于确认 oplog 链路是否真正打通
+            try:
+                self.oplog.add("oplog_init", "插件启动，操作日志系统就绪",
+                               detail=f"db={self.oplog.db_path}")
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"[init] 操作日志初始化失败（可忽略，溯源日志不可用）: {e}")
 
