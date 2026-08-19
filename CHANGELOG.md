@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.7
+
+- **修复 NSFW 阈值调整后不生效（仍用旧阈值判定）**：
+  - 根因：`ImageStore` 构造时把 `gallery` 配置当作**快照**缓存（`self.cfg`），图库 NSFW 检测/重扫用 `self.cfg` 的旧阈值，改配置后**需重启插件才生效**。用户将阈值调为 0.8 后重扫，P(nsfw)=0.7 的图仍被判 NSFW（实际用的是旧阈值 0.5，0.7>=0.5=true）。
+  - 修复：
+    - `ImageStore` 新增可选 `cfg_provider` 回调，`_nsfw_cfg()` 优先实时读取最新配置，未提供时回退快照。
+    - `main.py` 构造 `ImageStore` 时传入 `cfg_provider=lambda: self.config.get("gallery", {})`。
+    - `/涩图检测` 指令改用与图库一致的实时阈值来源（`gallery._nsfw_threshold()`）。
+  - 效果：调整 `gallery.nsfw.threshold` 保存后**即时生效**（无需重启），图库重扫与涩图检测用同一实时阈值。
+
 ## v4.5.6
 
 - **涩图检测结果恢复显示置信度百分比**：

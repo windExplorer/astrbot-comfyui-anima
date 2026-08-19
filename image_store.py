@@ -88,7 +88,8 @@ def _ext_of(path: str) -> str:
 class ImageStore:
     """图库存储与检索。线程不安全但本插件为单线程事件循环，足够。"""
 
-    def __init__(self, data_dir: Path, cfg: dict | None = None) -> None:
+    def __init__(self, data_dir: Path, cfg: dict | None = None,
+                 cfg_provider=None) -> None:
         self.data_dir = Path(data_dir)
         self.gallery_dir = self.data_dir / "gallery"
         self.refs_dir = self.data_dir / "refs"
@@ -96,6 +97,9 @@ class ImageStore:
         self.refs_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "gallery.db"
         self.cfg = cfg or {}
+        # 可选实时配置提供器：返回最新的 gallery 配置 dict（避免改动后需重启才生效）。
+        # 提供后 _nsfw_cfg 等实时读取配置；未提供则用构造时的 cfg 快照。
+        self._cfg_provider = cfg_provider if callable(cfg_provider) else None
         self._conn = None
         # 后台 NSFW 扫描任务状态（线程内更新，读取加锁）
         self._scan_lock = threading.Lock()
@@ -225,7 +229,14 @@ class ImageStore:
     # NSFW 检测
     # ------------------------------------------------------------------ #
     def _nsfw_cfg(self) -> dict:
-        g = self.cfg.get("nsfw") or {}
+        # 优先实时读取配置（若提供 provider），避免改动阈值后需重启才生效
+        cfg = self.cfg
+        if self._cfg_provider is not None:
+            try:
+                cfg = self._cfg_provider() or {}
+            except Exception:
+                cfg = self.cfg
+        g = cfg.get("nsfw") or {}
         return g if isinstance(g, dict) else {}
 
     def _nsfw_enabled(self) -> bool:

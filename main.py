@@ -466,7 +466,12 @@ class ComfyUIDrawPlugin(Star):
             except ImportError:
                 from image_store import ImageStore
 
-            self.gallery = ImageStore(self.data_dir, self.config.get("gallery", {}))
+            # cfg_provider：实时返回 gallery 配置，使 NSFW 阈值等改动无需重启即生效
+            self.gallery = ImageStore(
+                self.data_dir,
+                self.config.get("gallery", {}),
+                cfg_provider=lambda: self.config.get("gallery", {}),
+            )
             logger.info(
                 f"[init] 图库已就绪: {self.data_dir} "
                 f"(gallery={self.gallery.gallery_dir}, refs={self.gallery.refs_dir}, "
@@ -3998,10 +4003,13 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
+        # 阈值与图库检测共用同一实时来源（改动后无需重启即生效）
+        threshold = 0.5
         try:
-            threshold = float((self._cfg("gallery", {}).get("nsfw") or {}).get("threshold", 0.5))
-        except (TypeError, ValueError):
-            threshold = 0.5
+            if getattr(self, "gallery", None) is not None:
+                threshold = self.gallery._nsfw_threshold()
+        except Exception:
+            pass
         try:
             from .nsfw_detector import get_detector
         except ImportError:
