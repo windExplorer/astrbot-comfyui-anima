@@ -85,6 +85,14 @@ class StandaloneWebUI:
             return 8848
 
     @property
+    def host(self) -> str:
+        """监听地址。默认 127.0.0.1（仅本机）；改 0.0.0.0 允许局域网访问。"""
+        h = str(self._cfg("host", "") or "").strip().lower()
+        if not h:
+            return "127.0.0.1"
+        return h
+
+    @property
     def token(self) -> str:
         return str(self._cfg("token", "") or "").strip()
 
@@ -116,13 +124,20 @@ class StandaloneWebUI:
         try:
             self._runner = web.AppRunner(app)
             await self._runner.setup()
-            self._site = web.TCPSite(self._runner, "0.0.0.0", self.port)
+            self._site = web.TCPSite(self._runner, self.host, self.port)
             await self._site.start()
             from astrbot.api import logger as _log
-            _log.info(
-                f"[独立WebUI] 已启动 http://127.0.0.1:{self.port} "
-                f"(token鉴权={'开启' if self.token else '关闭'})"
-            )
+            if self.host in ("0.0.0.0", "::"):
+                _log.info(
+                    f"[独立WebUI] 已启动（监听 {self.host}）http://服务器IP:{self.port} "
+                    f"(token鉴权={'开启' if self.token else '关闭'}"
+                    f"{'，注意：未设 token 时局域网任何设备均可访问' if not self.token else ''})"
+                )
+            else:
+                _log.info(
+                    f"[独立WebUI] 已启动 http://127.0.0.1:{self.port} "
+                    f"(token鉴权={'开启' if self.token else '关闭'})"
+                )
         except Exception as e:
             from astrbot.api import logger as _log
             _log.warning(f"[独立WebUI] 启动失败: {e}")
