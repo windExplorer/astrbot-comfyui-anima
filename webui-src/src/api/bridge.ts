@@ -214,7 +214,7 @@ export async function apiRaw(path: string, options?: { method?: string; body?: a
 }
 
 /** GET 请求，endpoint 形如 "config"、"gallery/search"（不带插件名、不带 /page）。 */
-export function apiGet(endpoint: string, params?: Record<string, any>): Promise<any> {
+export function apiGet(endpoint: string, params?: Record<string, any>, options?: { timeout?: number }): Promise<any> {
   let path = endpoint;
   if (params && Object.keys(params).length) {
     const qs = new URLSearchParams();
@@ -228,7 +228,9 @@ export function apiGet(endpoint: string, params?: Record<string, any>): Promise<
     const q = qs.toString();
     if (q) path = endpoint + "?" + q;
   }
-  return apiRaw(path, { method: "GET" });
+  const opts: { method: string; timeout?: number } = { method: "GET" };
+  if (options && options.timeout) opts.timeout = options.timeout;
+  return apiRaw(path, opts);
 }
 
 /** POST 请求，body 直接作为 JSON 负载发送。 */
@@ -237,8 +239,8 @@ export function apiPost(endpoint: string, body?: Record<string, any>): Promise<a
 }
 
 /** 缩略图/大图拉取封装：图库列表只返回 sha，前端按需取 data URL。 */
-export async function fetchThumb(sha: string, size = 300): Promise<string> {
-  const d = await apiGet("gallery/thumb", { sha, size });
+export async function fetchThumb(sha: string, size = 300, timeout = 15000): Promise<string> {
+  const d = await apiGet("gallery/thumb", { sha, size }, { timeout });
   return (d && (d.url || d.data_url)) || "";
 }
 

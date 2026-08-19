@@ -105,7 +105,7 @@
         <div class="gal-grid">
           <n-empty v-if="!searching && !images.length" :description="activeTab === 'trash' ? '回收站为空' : '请输入关键词搜索或直接浏览图库'" style="padding:60px" />
           <div v-for="img in images" :key="img.sha || img.sha256" class="gal-item" @click="openDetail(img)">
-            <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" :class="{ 'nsfw-blur': isNsfwBlurred(img) }" />
+            <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" :class="{ 'nsfw-blur': isNsfwBlurred(img) }" @error="onThumbError(img)" />
             <div v-if="isNsfwBlurred(img)" class="gal-nsfw-mask">
               <span>🔞</span>
               <span class="gal-nsfw-tip">点击查看</span>
@@ -322,6 +322,12 @@ async function reloadThumb(img: any) {
   }
 }
 
+// 封面 <img> 解码失败（如 data URL 损坏/超大）时的兜底：标记失败并显示重载按钮
+function onThumbError(img: any) {
+  const sha = img.sha || img.sha256;
+  if (sha) thumbFailed[sha] = true;
+}
+
 async function doSearch(p: number) {
   searching.value = true;
   page.value = p;
@@ -338,6 +344,13 @@ async function doSearch(p: number) {
     });
     images.value = (data && Array.isArray(data.images)) ? data.images : [];
     total.value = data && data.total != null ? Number(data.total) : 0;
+    // 预填充 thumbCache 的所有 key 为 undefined，确保 Vue 在首屏就对这些 key 建立
+    // 响应式依赖；否则“动态新增 key”在 v-for + 异步赋值场景下可能不触发重渲染，
+    // 表现为“接口已拿到 base64，但封面不渲染”。
+    images.value.forEach((img) => {
+      const s = img.sha || img.sha256;
+      if (s && !(s in thumbCache)) thumbCache[s] = undefined as any;
+    });
     // 预取缩略图：限并发避免一次性压垮后端导致批量超时（部分图因此“一直不加载”），
     // 失败的记录进 thumbFailed，网格中显示“重载封面”按钮可单独重试。
     prefetchThumbs(images.value);
