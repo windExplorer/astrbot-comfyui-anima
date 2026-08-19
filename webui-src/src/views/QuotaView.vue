@@ -202,4 +202,14 @@ onMounted(load);
 /* 表格区：占满剩余空间，flex-height 使表格内部滚动 */
 .table-wrap { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .table-wrap :deep(.n-data-table) { flex: 1 1 auto; min-height: 0; }
+
+@media (max-width: 768px) {
+  .quota-view { padding: 0; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .panel { padding: 12px; }
+  /* 限额输入框固定 140px 在窄屏改为全宽 */
+  .panel :deep(.n-input-number) { width: 100% !important; }
+}
 </style>

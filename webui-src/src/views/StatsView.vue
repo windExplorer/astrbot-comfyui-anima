@@ -147,4 +147,12 @@ onMounted(load);
 .chart-wrap { margin-top: 12px; }
 .count { color: var(--text-sub); font-size: 12px; }
 .empty { color: var(--text-sub); text-align: center; padding: 30px; }
+
+@media (max-width: 768px) {
+  .stats-view { padding: 0; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .panel { padding: 12px; }
+}
 </style>

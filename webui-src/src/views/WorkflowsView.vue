@@ -52,7 +52,7 @@
     <CoverPicker v-model:show="coverPickShow" :covers="coverPickCovers" :title="coverPickTitle" @pick="onCoverPick" />
 
     <!-- 编辑弹窗 -->
-    <n-modal v-model:show="editShow" preset="card" :title="editTitle" style="width:720px" :bordered="false">
+    <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="wf-modal" :bordered="false">
       <n-form label-placement="top" :label-width="0" class="edit-form">
         <div class="form-grid">
           <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
@@ -382,4 +382,15 @@ onMounted(load);
 .edit-form { max-height: 65vh; overflow: auto; padding-right: 4px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-hint { color: var(--text-sub); font-size: 12px; margin-left: 8px; }
+.wf-modal { width: 720px; max-width: 92vw; }
+
+@media (max-width: 768px) {
+  .workflows-view { padding: 0; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .card-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+  .wf-modal { width: 92vw; }
+}
 </style>

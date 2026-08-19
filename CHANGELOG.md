@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.25
+
+- **前端 WebUI 移动端适配（响应式）**：未改组件结构，纯 CSS 媒体查询（断点 `max-width: 768px`），不依赖 AstrBot 外层 iframe 是否带 viewport（已确认 `index.html` 含 `<meta name="viewport">`）。
+  - 整体布局：≤768px 时 `.app-shell` 由横向改为纵向，左侧 200px 侧边栏改为**顶部横向导航条**（菜单可横向滚动、隐藏品牌副标题、隐藏折叠按钮），主区全宽并改用 `100dvh` 规避移动端地址栏高度抖动。
+  - 各视图 `view-head`（标题 + 按钮）改为竖向堆叠、按钮换行；工具栏固定宽度控件（搜索框 280/220/200/320px、分页 140px、类型选择 110/120px 等）在窄屏改为全宽换行，避免溢出。
+  - 表单类：ConfigField 的 int/number 框（140px）与滑块并排改为纵向堆叠；ConfigSection / WorkflowsView / LorasView 的 `form-grid` 由两列退化为单列。
+  - 图库：网格在窄屏退化为单列（并兜底 `minmax(140px,1fr)`）；**移动端无 hover，收藏/删除/重载图标改为常显**，否则手机无法操作。
+  - 弹窗：LorasView（520/680px）、WorkflowsView（720px）的内联固定宽度改为 class + `max-width:92vw`，移动端限宽 92vw 防溢出；ImageViewer 详情弹窗图片 `max-width:92vw`、图生图并排改纵向堆叠、信息面板转底部。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.24
 
 - **图库封面右上角新增收藏 / 删除图标**：

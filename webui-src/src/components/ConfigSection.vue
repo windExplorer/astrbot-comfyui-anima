@@ -147,4 +147,8 @@ function updateItem(idx: number, fk: string, v: any) {
 .tmpl-item-head { display: flex; justify-content: space-between; align-items: center; width: 100%; }
 .tmpl-item-name { font-weight: 600; }
 .tmpl-item-body { padding: 8px 0; }
+@media (max-width: 768px) {
+  .tmpl-toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+  .tmpl-item-head { flex-wrap: wrap; gap: 6px; }
+}
 </style>

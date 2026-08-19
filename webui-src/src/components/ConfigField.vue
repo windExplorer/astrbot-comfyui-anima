@@ -101,4 +101,8 @@ function toNumber(v: any): number | null {
 .field-desc { color: var(--text-sub); font-size: 12px; }
 .num-row { display: flex; gap: 12px; align-items: center; }
 .bool-row { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 768px) {
+  .num-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .num-row :deep(.n-input-number) { width: 100% !important; }
+}
 </style>

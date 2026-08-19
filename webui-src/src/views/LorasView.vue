@@ -63,7 +63,7 @@
     </div>
 
     <!-- 详情弹窗 -->
-    <n-modal v-model:show="detailShow" preset="card" title="LoRA 详情" style="width:520px" :bordered="false">
+    <n-modal v-model:show="detailShow" preset="card" title="LoRA 详情" class="lora-modal narrow" :bordered="false">
       <div v-if="detailItem" class="detail">
         <div class="detail-row"><b>名称：</b>{{ detailItem.name }}</div>
         <div class="detail-row"><b>分类：</b>{{ detailItem.category || "未分类" }}</div>
@@ -82,7 +82,7 @@
     <CoverPicker v-model:show="coverPickShow" :covers="coverPickCovers" :title="coverPickTitle" @pick="onCoverPick" />
 
     <!-- 编辑弹窗 -->
-    <n-modal v-model:show="editShow" preset="card" :title="editTitle" style="width:680px" :bordered="false">
+    <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="lora-modal" :bordered="false">
       <n-form label-placement="top" class="edit-form">
         <div class="form-grid">
           <n-form-item label="名称（引用键）"><n-input v-model:value="editForm.name" placeholder="如 安魂曲" /></n-form-item>
@@ -455,4 +455,20 @@ onMounted(load);
 .detail { display: flex; flex-direction: column; gap: 10px; }
 .detail-row { font-size: 13px; }
 .detail-row pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-family: inherit; color: var(--text-sub); }
+
+/* 弹窗宽度：桌面固定，移动端限宽 92vw 防溢出 */
+.lora-modal { width: 680px; max-width: 92vw; }
+.lora-modal.narrow { width: 520px; }
+
+@media (max-width: 768px) {
+  .loras-view { padding: 0; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .filter-bar { flex-direction: column; align-items: stretch; }
+  .lora-scroll { padding-right: 0; }
+  .card-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+  .lora-modal, .lora-modal.narrow { width: 92vw; }
+}
 </style>

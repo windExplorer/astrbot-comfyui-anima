@@ -277,4 +277,13 @@ onMounted(load);
 .count { color: var(--text-sub); font-size: 12px; }
 .chart-wrap { margin-top: 8px; }
 .empty { color: var(--text-sub); text-align: center; padding: 30px; }
+
+@media (max-width: 768px) {
+  .token-view { padding: 0; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .scope-toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
+  .token-cards { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+}
 </style>

@@ -140,8 +140,9 @@ function onMenuSelect(key: string) {
 /* 纯 flex 布局外壳：100vh 撑满，滚动完全由各页面内部管理 */
 .app-shell {
   display: flex;
-  width: 100vw;
+  width: 100%;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   background: var(--bg-body);
 }
@@ -158,6 +159,8 @@ function onMenuSelect(key: string) {
 .app-sider.collapsed {
   width: 48px;
 }
+/* 移动端：侧边栏改为顶部横向导航条，主区全宽（见底部 @media） */
+.app-sider .sider-trigger { display: flex; }
 .brand {
   display: flex;
   align-items: center;
@@ -246,6 +249,62 @@ function onMenuSelect(key: string) {
 }
 .app-content > * {
   height: 100%;
+}
+
+/* ===================== 移动端适配（≤768px 时侧边栏转顶部横向导航） ===================== */
+@media (max-width: 768px) {
+  .app-shell {
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh; /* 动态视口高度，规避移动端地址栏高度抖动 */
+  }
+  .app-sider {
+    width: 100% !important;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+    padding: 0 8px;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .app-sider.collapsed { width: 100% !important; }
+  .brand {
+    flex: 0 0 auto;
+    padding: 10px 8px 10px 4px;
+  }
+  .brand-logo { width: 28px; height: 28px; font-size: 16px; }
+  .brand-text { display: none; } /* 移动端只留 logo，节省横向空间 */
+  .app-sider :deep(.n-menu) {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    min-height: 0;
+  }
+  /* Naive Menu 在横向模式下需要覆盖默认竖向内边距/宽度 */
+  .app-sider :deep(.n-menu-item) { flex: 0 0 auto; }
+  .app-sider :deep(.n-submenu) { flex: 0 0 auto; }
+  .sider-trigger {
+    display: none !important; /* 移动端横向导航不需要折叠按钮 */
+  }
+  .app-header {
+    padding: 0 12px;
+    height: 46px;
+  }
+  .header-title { font-size: 14px; }
+  .header-right { gap: 8px; }
+  .header-right :deep(.n-button) { font-size: 12px; }
+  .app-content {
+    padding: 10px 10px;
+    overflow: auto;
+  }
 }
 </style>
 

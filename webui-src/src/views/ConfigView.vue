@@ -227,4 +227,15 @@ onMounted(load);
   font-family: ui-monospace, Consolas, monospace;
 }
 .empty { color: var(--text-sub); padding: 40px; text-align: center; }
+
+@media (max-width: 768px) {
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .cfg-scroll { padding-right: 0; }
+  .panel { padding: 12px; margin-top: 12px; }
+  .tran-debug-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .tran-debug-row :deep(.n-input),
+  .tran-debug-row :deep(.n-select) { width: 100% !important; }
+}
 </style>

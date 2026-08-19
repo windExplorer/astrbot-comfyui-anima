@@ -514,6 +514,10 @@ function onPurge(it: any) { emit("purge", it); }
 @media (max-width: 760px) {
   .iv-body { flex-direction: column; }
   .iv-info { width: 100%; flex: 0 0 auto; height: auto; max-height: 40vh; overflow: auto; border-left: none; border-top: 1px solid rgba(255,255,255,0.08); }
-  .iv-imgwrap img { max-width: 92vw; }
+  .iv-imgwrap img { max-width: 92vw; max-height: calc(40vh - 40px); }
+  .iv-imgs { padding: 16px 10px; gap: 12px; flex-direction: column; }
+  /* 图生图并排改为纵向堆叠，避免窄屏挤压 */
+  .iv-imgs[data-pair="1"] .iv-fig { flex: 0 0 auto; min-width: 0; max-width: 100%; }
+  .iv-imgs[data-pair="1"] .iv-imgwrap img { max-height: calc(40vh - 40px); }
 }
 </style>

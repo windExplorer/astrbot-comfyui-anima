@@ -729,4 +729,25 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 .gal-type.t-img2img { background: linear-gradient(135deg, #ff9ecb, #ff7ea8); }
 .gal-type.t-ref { background: linear-gradient(135deg, #a8d8ff, #7eb6ff); }
 .gal-type.t-user { background: linear-gradient(135deg, #ffd98a, #ffb347); }
+
+/* ===================== 移动端适配 ===================== */
+@media (max-width: 768px) {
+  .gallery-view { padding: 10px; }
+  /* view-head 标题与操作按钮堆叠，避免并排溢出 */
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  /* 网格退化为单列（minmax(230px,1fr) 在窄屏本就会单列，这里再兜底更稳） */
+  .gal-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  /* 移动端无 hover：收藏/删除/重载图标必须常显，否则无法操作 */
+  .gal-actions { opacity: 1 !important; }
+  .gal-reload { opacity: 1 !important; }
+  .gal-act { width: 30px; height: 30px; font-size: 15px; }
+  .gal-stats { gap: 8px; }
+  .stat-card { padding: 8px 10px; }
+  /* 工具栏固定宽度控件在窄屏改为全宽换行 */
+  .toolbar { flex-wrap: wrap; }
+  .toolbar :deep(.n-input),
+  .toolbar :deep(.n-select) { width: 100% !important; flex: 1 1 100%; }
+}
 </style>

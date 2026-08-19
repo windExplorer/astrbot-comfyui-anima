@@ -323,4 +323,16 @@ onMounted(() => {
 .log-line.err pre { color: #ff453a; }
 .log-line.warn pre { color: #ff9f0a; }
 .empty { color: var(--text-sub); text-align: center; padding: 30px; }
+
+@media (max-width: 768px) {
+  .logs-view { padding: 0; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-actions { flex-wrap: wrap; }
+  .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  /* 工具栏固定宽度 input 在窄屏改为全宽换行；内联 width 用 !important 覆盖 */
+  .toolbar { flex-wrap: wrap; }
+  .toolbar :deep(.n-input) { width: 100% !important; flex: 1 1 100%; }
+  .toolbar :deep(.n-select) { width: 100% !important; flex: 1 1 100%; }
+  .tab-bar :deep(.n-button) { flex: 1 1 auto; }
+}
 </style>
