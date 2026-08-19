@@ -148,6 +148,15 @@ async function submitAuth() {
 // 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext
 onMounted(() => {
   initThemeBridge();
+  // 手动强制登录页：URL 带 ?login=1 时无条件显示口令页（用于调试/验证）
+  let forceLogin = false;
+  try {
+    forceLogin = new URLSearchParams(window.location.search).get("login") === "1";
+  } catch (e) { /* ignore */ }
+  if (forceLogin) {
+    authState.value = "unauthed";
+    return;
+  }
   // 独立服务模式：探测认证状态。未认证（需要 token）→ 只显示登录页；
   // 已认证 / 后端无需 token → 直接渲染控制台。
   if (isStandaloneMode()) {
