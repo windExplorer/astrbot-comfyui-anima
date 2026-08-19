@@ -5,6 +5,7 @@ import json
 import random
 import re
 import time
+import tempfile
 import traceback
 import uuid
 import asyncio
@@ -382,6 +383,51 @@ async def _image_to_local_path(item) -> str | None:
             f"path={getattr(comp, 'path', None)!r}"
         )
     return p
+
+
+async def _gif_to_first_frame(path: str) -> str | None:
+    """把 GIF（动图）的第一帧提取为静态图，避免图生图时 ComfyUI 把多帧全部展开。
+
+    - 非 GIF 直接返回原路径（None 表示入参无效）。
+    - GIF：用 Pillow 取第一帧保存为 webp（无损、体积小），返回新文件路径；
+      失败则降级返回原 GIF 路径（让 ComfyUI 自行决定，避免直接报错阻断出图）。
+    生成的静态帧存于 temp 目录，24h 清理（与原中转文件同生命周期）。
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as _f:
+            _head = _f.read(6)
+        if _head not in (b"GIF87a", b"GIF89a"):
+            return path  # 非 GIF，原样返回
+    except OSError:
+        return path
+
+    if _PILImage is None:
+        logger.warning("[取图] 环境无 Pillow，无法提取 GIF 首帧，将直接上传原 GIF")
+        return path
+
+    # 优先落到插件 temp/ 目录（已有 24h 清理），无实例时回退系统临时目录
+    out_dir = None
+    try:
+        if _PLUGIN_INSTANCE is not None and getattr(_PLUGIN_INSTANCE, "temp_dir", None) is not None:
+            out_dir = Path(_PLUGIN_INSTANCE.temp_dir)
+    except Exception:
+        out_dir = None
+    if out_dir is None:
+        out_dir = Path(tempfile.gettempdir())
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0] or "gif"
+        out_path = out_dir / f"{stem}_frame0.webp"
+        with _PILImage.open(path) as _gif:
+            _first = _gif.convert("RGBA")
+            _first.save(out_path, "WEBP")
+        logger.info(f"[取图] GIF 首帧已提取为静态图: {path} -> {out_path}")
+        return str(out_path)
+    except Exception as e:
+        logger.warning(f"[取图] GIF 首帧提取失败（降级上传原 GIF）: {e}")
+        return path
 
 
 @register(
@@ -2092,6 +2138,15 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, "没找到对应的画图流程（当前图生图工作流不支持）。")
                 return
             try:
+                # GIF 图生图只取第一帧转静态图，避免 ComfyUI 把动图多帧全部展开
+                # 导致「连续发送很多张图片」。后续上传/注入/归档都用首帧静态图。
+                _init_images = []
+                for _raw in init_images:
+                    if _raw and _raw.lower().endswith(".gif"):
+                        _raw = await _gif_to_first_frame(_raw)
+                    _init_images.append(_raw)
+                init_images = _init_images
+
                 for img_path in init_images:
                     info = await client.upload_image(img_path)
                     # ComfyUI 标准 LoadImage 节点在 /prompt API 下，image 输入期望「字符串文件名」
