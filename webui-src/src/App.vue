@@ -3,34 +3,8 @@
     <n-message-provider>
       <n-dialog-provider>
         <n-loading-bar-provider>
-          <!-- 独立模式未认证：只显示登录页，不渲染控制台 -->
-          <div v-if="authState === 'unauthed'" class="auth-login-page">
-            <div class="auth-login-card">
-              <div class="auth-login-logo">✦</div>
-              <div class="auth-login-title">萌绘控制台</div>
-              <div class="auth-login-sub">该控制台已设置访问口令，请输入口令进入</div>
-              <n-input
-                v-model:value="authInput"
-                type="password"
-                size="large"
-                placeholder="请输入访问口令"
-                show-password-on="click"
-                @keyup.enter="submitAuth"
-              />
-              <n-button type="primary" size="large" block :loading="authLoading" @click="submitAuth">确认进入</n-button>
-              <div v-if="authError" class="auth-login-error">{{ authError }}</div>
-            </div>
-          </div>
-          <!-- 探测中：简单加载占位，避免闪烁控制台 -->
-          <div v-else-if="authState === 'checking'" class="auth-login-page">
-            <div class="auth-login-card">
-              <div class="auth-login-logo">✦</div>
-              <div class="auth-login-title">萌绘控制台</div>
-              <div class="auth-login-sub">正在加载…</div>
-            </div>
-          </div>
-          <!-- 已认证 / 非独立模式：渲染控制台 -->
-          <div v-else-if="authState === 'authed'" class="app-shell">
+          <!-- 渲染控制台；登录页由路由 /login 提供，认证由路由守卫拦截 -->
+          <div class="app-shell">
             <div class="app-sider" :class="{ collapsed: siderCollapsed }">
               <div class="brand">
                 <div class="brand-logo">✦</div>
@@ -97,12 +71,10 @@ import {
   NSwitch,
   NButton,
   NIcon,
-  NInput,
   type MenuOption,
   type GlobalThemeOverrides,
 } from "naive-ui";
 import { useTheme, initThemeBridge } from "@/composables/useTheme";
-import { setStandaloneToken, isStandaloneMode, apiGet } from "@/api/bridge";
 
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
 // 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
@@ -112,75 +84,11 @@ const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
 
-// 独立服务认证状态机：'checking' 探测中 | 'unauthed' 未认证(显示登录页) | 'authed' 已认证
-type AuthState = "checking" | "unauthed" | "authed";
-const authState = ref<AuthState>("authed");
-const authInput = ref("");
-const authLoading = ref(false);
-const authError = ref("");
-
-async function submitAuth() {
-  const token = (authInput.value || "").trim();
-  if (!token) return;
-  authLoading.value = true;
-  authError.value = "";
-  try {
-    setStandaloneToken(token);
-    // 用 ping 验证口令是否正确
-    await apiGet("ping", {}, { timeout: 8000 });
-    authInput.value = "";
-    // 校验成功后重载页面，让所有请求带上新 token 并重新走认证探测
-    window.location.reload();
-  } catch (e: any) {
-    if (e && e.authRequired) {
-      // 口令仍不对，停留在登录页并提示
-      authError.value = "口令不正确，请重新输入";
-      authInput.value = "";
-    } else {
-      // 非鉴权错误（如超时）：也停留登录页
-      authError.value = "验证失败：" + ((e && e.message) || "无法连接服务");
-    }
-  } finally {
-    authLoading.value = false;
-  }
-}
-
-// 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext
+// 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext。
+// 独立模式认证已迁移到路由守卫（router/index.ts）与 LoginView，App 只负责控制台布局。
 onMounted(() => {
   initThemeBridge();
-  // 手动强制登录页：URL 带 ?login=1 时无条件显示口令页（用于调试/验证）
-  let forceLogin = false;
-  try {
-    forceLogin = new URLSearchParams(window.location.search).get("login") === "1";
-  } catch (e) { /* ignore */ }
-  if (forceLogin) {
-    authState.value = "unauthed";
-    return;
-  }
-  // 独立服务模式：探测认证状态。未认证（需要 token）→ 只显示登录页；
-  // 已认证 / 后端无需 token → 直接渲染控制台。
-  if (isStandaloneMode()) {
-    authState.value = "checking";
-    checkStandaloneAuth();
-  } else {
-    authState.value = "authed";
-  }
 });
-
-async function checkStandaloneAuth() {
-  try {
-    await apiGet("ping", {}, { timeout: 8000 });
-    // ping 成功 = 已认证（已带 token）或后端无需 token → 渲染控制台
-    authState.value = "authed";
-  } catch (e: any) {
-    if (e && e.authRequired) {
-      authState.value = "unauthed"; // 需要口令 → 显示登录页
-    } else {
-      // 非鉴权错误（如后端未就绪/超时）：也进入登录页，让用户可尝试
-      authState.value = "unauthed";
-    }
-  }
-}
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {

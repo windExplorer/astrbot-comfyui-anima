@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.47
+
+- **独立 WebUI 改为真正的 `/login` 口令登录页路由**（替代依赖自动探测的方案）：
+  - 背景：此前登录页由 `App.vue` 依据 `authState` 在根路径渲染，自动跳转不可靠（部分环境未识别为独立模式），且无独立 URL 可手动访问。
+  - 新增 `LoginView.vue`：口令登录页独立组件（居中卡片 + 口令输入 + 确认，支持深色/移动端）。
+  - `router/index.ts` 新增 `/login` 路由（`/#/login`），并加**认证守卫**：独立模式下未认证的路由一律强制跳转 `/#/login`；登录页放行；内嵌页（AstrBot）不做独立口令校验直接放行。
+  - 新增 `composables/auth.ts`：全局 `authState`（checking/unauthed/authed）+ `checkStandaloneAuth()` + `submitToken()`，供路由守卫与登录页共用。
+  - `App.vue` 移除内联登录页与认证逻辑，只负责控制台布局。
+  - 独立服务认证链：访问任意页面 → 守卫探测 → 401 则跳转 `/#/login` → 输口令成功 → reload 进入控制台。也可手动访问 `http://IP:端口/#/login` 验证登录页。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2855 模块，0 错误）。
+
 ## v4.4.46
 
 - **独立 WebUI 支持 `?login=1` 强制口令登录页（调试/验证用）**：

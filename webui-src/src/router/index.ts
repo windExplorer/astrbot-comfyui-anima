@@ -7,6 +7,9 @@ import LorasView from "@/views/LorasView.vue";
 import GalleryView from "@/views/GalleryView.vue";
 import QuotaView from "@/views/QuotaView.vue";
 import TokenView from "@/views/TokenView.vue";
+import LoginView from "@/views/LoginView.vue";
+import { authState, checkStandaloneAuth } from "@/composables/auth";
+import { isStandaloneMode } from "@/api/bridge";
 
 // AstrBot 插件页面以静态文件提供，必须用 hash 路由（history 路由刷新会 404）。
 // 全部使用静态 import（而非懒加载 import()）：确保构建产物为单文件、无跨 chunk 动态
@@ -15,6 +18,7 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: "/", redirect: "/config" },
+    { path: "/login", name: "login", component: LoginView, meta: { title: "访问口令", public: true } },
     { path: "/config", name: "config", component: ConfigView, meta: { title: "配置" } },
     { path: "/logs", name: "logs", component: LogsView, meta: { title: "日志" } },
     { path: "/stats", name: "stats", component: StatsView, meta: { title: "统计" } },
@@ -25,6 +29,28 @@ const router = createRouter({
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },
     { path: "/:pathMatch(.*)*", redirect: "/config" },
   ],
+});
+
+// 独立服务认证守卫：登录页放行；独立模式下未认证的路由强制跳转 /login。
+// 内嵌页（AstrBot）无 token 概念，直接放行。
+router.beforeEach(async (to) => {
+  if (!isStandaloneMode()) {
+    // 内嵌页：不做独立口令校验
+    return true;
+  }
+  // /login 永远放行
+  if (to.name === "login") {
+    return true;
+  }
+  // 若尚未探测（初始 authed 占位），先探测一次
+  if (authState.value !== "authed") {
+    await checkStandaloneAuth();
+  }
+  if (authState.value === "unauthed") {
+    // 未认证 → 强制到登录页
+    return { name: "login", query: { redirect: to.fullPath } };
+  }
+  return true;
 });
 
 export default router;
