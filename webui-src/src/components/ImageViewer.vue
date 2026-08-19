@@ -41,9 +41,12 @@
             <div v-if="item.nsfw != null" class="iv-row"><span class="k">NSFW</span><span class="v">
               {{ item.nsfw ? "是" : "否" }}<template v-if="item.nsfw_score != null && item.nsfw_score > 0">（{{ (item.nsfw_score * 100).toFixed(1) }}%）</template>
               <button class="iv-check" :disabled="checking" @click="onCheckNsfw">{{ item.nsfw_checked ? "重新检测" : "检测" }}</button>
+              <button v-if="!item.nsfw" class="iv-check" :disabled="settingNsfw" @click="onSetNsfw(true)">标记为 NSFW</button>
+              <button v-else class="iv-check" :disabled="settingNsfw" @click="onSetNsfw(false)">取消 NSFW</button>
             </span></div>
             <div v-if="item.nsfw == null" class="iv-row"><span class="k">NSFW</span><span class="v">未检测
               <button class="iv-check" :disabled="checking" @click="onCheckNsfw">{{ checking ? "检测中…" : "检测" }}</button>
+              <button class="iv-check" :disabled="settingNsfw" @click="onSetNsfw(true)">标记为 NSFW</button>
             </span></div>
             <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
             <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
@@ -68,7 +71,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NButton, useDialog, useMessage } from "naive-ui";
-import { apiGet } from "@/api/bridge";
+import { apiGet, apiPost } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
 const message = useMessage();
@@ -249,6 +252,28 @@ function onCheckNsfw() {
       else message.error(e.message || "检测失败");
     })
     .finally(() => { checking.value = false; });
+}
+
+// 人工标记/取消 NSFW（误判纠正，绕过自动检测模型）
+const settingNsfw = ref(false);
+function onSetNsfw(on: boolean) {
+  const it = item.value;
+  const sha = it?.sha || it?.sha256;
+  if (!sha || settingNsfw.value) return;
+  settingNsfw.value = true;
+  apiPost("gallery/set_nsfw", { sha, on: on ? 1 : 0 })
+    .then((res: any) => {
+      it.nsfw = !!on;
+      it.nsfw_checked = true;
+      message.success(res?.msg || (on ? "已标记为 NSFW" : "已取消 NSFW"));
+      // 通知图库列表等页面本地同步该图的 NSFW 状态（无需重新请求接口）
+      const fullSha = it?.sha256 || sha;
+      window.dispatchEvent(new CustomEvent("anima:nsfw-updated", {
+        detail: { sha: fullSha, nsfw: !!on, nsfw_score: null },
+      }));
+    })
+    .catch((e: any) => { message.error(e.message || "操作失败"); })
+    .finally(() => { settingNsfw.value = false; });
 }
 
 function isNsfwUnavailable(e: any): boolean {

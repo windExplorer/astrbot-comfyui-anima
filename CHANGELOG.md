@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.20
+
+- **新增人工标记/取消 NSFW（误判纠正）**：自动 NSFW 检测存在误判，现支持在大图查看器中手动纠正。
+  - 后端 `image_store.set_nsfw(sha256, on)` 直接写入 `nsfw` 字段并置 `nsfw_checked=1`（人工已确认，不会被一键扫描覆盖回去）。
+  - 新增接口 `POST /gallery/set_nsfw {sha, on(0/1)}`。
+  - 前端大图查看器（ImageViewer）在 NSFW 行新增「标记为 NSFW」/「取消 NSFW」按钮：未标记/未检测图显示「标记为 NSFW」，已标记图显示「取消 NSFW」；操作成功后会同步更新画廊网格的 NSFW 状态，无需刷新。
+
 ## v4.4.19
 
 - **分页每页数量缓存到 localStorage，刷新页面后保持不变**：图库（GalleryView）、出图记录（LogsView）、配额明细（TokenView）三个页面的每页数量，切换后写入 `localStorage`（key 分别 `anima_gallery_page_size` / `anima_logs_page_size` / `anima_token_page_size`），页面刷新或重开仍保留上次选择，不再每次重置为默认值。

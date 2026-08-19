@@ -1021,6 +1021,26 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"操作失败: {e}")
 
+    async def gallery_set_nsfw(self):
+        """人工直接标记/取消单图 NSFW（误判纠正），绕过自动检测模型。
+        POST {sha, on(0/1)}：on=1 标记为 NSFW，on=0 取消 NSFW。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            sha = payload.get("sha", "")
+            on = payload.get("on")
+            if not sha:
+                return error_response("缺少 sha")
+            if on is None:
+                return error_response("缺少 on(0/1)")
+            ok = g.set_nsfw(sha, 1 if on else 0)
+            msg = "已标记为 NSFW" if on else "已取消 NSFW"
+            return json_response({"msg": msg if ok else "未找到该图"})
+        except Exception as e:
+            return error_response(f"操作失败: {e}")
+
     async def gallery_scan_nsfw(self):
         """后台启动一键 NSFW 扫描（默认只扫未检测的图）。GET ?only=1/0。"""
         g = self._gallery()
@@ -1286,6 +1306,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
         (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
         (f"{prefix}/gallery/set_blur", api.gallery_set_blur, ["POST"], "图库单图NSFW模糊"),
+        (f"{prefix}/gallery/set_nsfw", api.gallery_set_nsfw, ["POST"], "图库单图人工标记/取消NSFW"),
         (f"{prefix}/gallery/scan_nsfw", api.gallery_scan_nsfw, ["GET"], "图库NSFW一键扫描"),
         (f"{prefix}/gallery/scan_nsfw_progress", api.gallery_scan_nsfw_progress, ["GET"], "图库NSFW扫描进度"),
         (f"{prefix}/gallery/check_nsfw", api.gallery_check_nsfw, ["GET"], "图库单图NSFW检测"),

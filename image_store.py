@@ -1262,6 +1262,35 @@ class ImageStore:
             logger.warning(f"[图库] 清除 NSFW 模糊失败: {e}")
             return False
 
+    def set_nsfw(self, sha256: str, on: int = 1) -> bool:
+        """人工直接标记/取消单图的 NSFW（误判纠正），绕过自动检测模型。
+
+        - ``on=1``：标记为 NSFW；``on=0``：取消 NSFW。
+        - 同时 ``nsfw_checked=1``：表示人工已确认，避免后续一键扫描把人工标记覆盖回去
+          （扫描的 where 默认只扫 ``nsfw_checked=0``，已人工确认的图不会被重扫）。
+        - 不修改 ``nsfw_score``（人工标记无检测分数）。
+        返回是否成功（False = 未找到该图）。
+        """
+        if not sha256:
+            return False
+        conn = self._conn_get()
+        try:
+            row = conn.execute(
+                "SELECT sha256 FROM images WHERE sha256 LIKE ? ORDER BY sha256 LIMIT 1",
+                (f"{sha256.strip()}%",),
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute(
+                "UPDATE images SET nsfw=?, nsfw_checked=1 WHERE sha256=?",
+                (1 if on else 0, row["sha256"]),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 人工标记 NSFW 失败: {e}")
+            return False
+
     def delete(self, sha256: str) -> bool:
         """软删除：移入回收站（标记 deleted=1），不真删文件/记录。
 
