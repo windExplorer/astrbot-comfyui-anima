@@ -3948,7 +3948,15 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, "这张图文件丢失了，可能已被 LRU 清理。")
             return False
 
-    @filter.command("nsfw检测", alias={"nsfw", "nsfw检测图片", "涩涩检测", "NSFW"})
+    @filter.command(
+        "nsfw检测",
+        alias={
+            "nsfw", "nsfw检测图片", "NSFW",
+            "涩涩检测", "涩图检测",
+            "色图检测", "色色检测",
+            "瑟瑟检测", "瑟图检测",
+        },
+    )
     async def cmd_nsfw(self, event: AstrMessageEvent):
         """检测图片是否 NSFW。引用/附带图片后输入 /nsfw检测，返回每张图的置信度与判断。
 
