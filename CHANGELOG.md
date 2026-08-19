@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.27
+
+- **前端 WebUI 弹窗修复（LoRA 编辑/删除）**：
+  1. **编辑/删除确认弹窗点击后不关闭**：根因为 `apiPost` 失败路径未兜底关闭——`saveEdit` 的 `editShow.value=false` 写在 `try` 内 `apiPost` 之后，保存接口一抛错（走 `catch`）就不关；`removeLora` 的 `onPositiveClick` 为 async，`apiPost` 一旦 reject，Naive `useDialog` 在回调 rejected 时不自动关闭弹窗（但 `splice` 已同步执行，故表现为「已经删了但弹窗还在」）。修复：`saveEdit` 将 `editShow.value=false` 移入 `finally`，无论成功失败都关闭（失败已有错误提示）；`removeLora` 改为乐观更新（确认即同步移除前端项并立即 resolve 关闭弹窗，保存改为后台 `.then/.catch`，失败则重新 `load()` 还原列表）。
+  2. **编辑弹窗占满屏幕**：`n-modal` 经 teleport 渲染到 `<body>`，其 `class="lora-modal"`/`class="wf-modal"` 宽度样式定义在**组件 scoped `<style>`** 内，scoped 属性选择器无法命中 teleport 元素，导致 `width:680px; max-width:92vw` 完全失效、弹窗占满全屏。修复：将 `.lora-modal`/`.wf-modal` 宽度定义从 LorasView/WorkflowsView 的 scoped 样式迁移到 `App.vue` 的**全局非 scoped `<style>`**，桌面固定宽度、移动端限宽 `92vw`。（`CoverPicker` 本就用内联 `min(680px,92vw)`，不受影响。）
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.26
 
 - **前端 WebUI 移动端适配（第二轮修复）**，针对实测发现的四个问题：

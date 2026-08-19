@@ -358,4 +358,15 @@ body {
   word-break: break-word !important;
   overflow-wrap: anywhere !important;
 }
+
+/* 弹窗宽度：n-modal 经 teleport 渲染到 <body>，组件 scoped 样式无法命中，
+   因此统一放在全局样式里控制。桌面固定宽度，移动端限宽 92vw 防占满屏幕。 */
+.lora-modal { width: 680px; max-width: 92vw; }
+.lora-modal.narrow { width: 520px; }
+.wf-modal { width: 720px; max-width: 92vw; }
+@media (max-width: 768px) {
+  .lora-modal,
+  .lora-modal.narrow,
+  .wf-modal { width: 92vw; }
+}
 </style>

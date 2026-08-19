@@ -382,7 +382,6 @@ onMounted(load);
 .edit-form { max-height: 65vh; overflow: auto; padding-right: 4px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-hint { color: var(--text-sub); font-size: 12px; margin-left: 8px; }
-.wf-modal { width: 720px; max-width: 92vw; }
 
 @media (max-width: 768px) {
   .workflows-view { padding: 0; }
@@ -391,6 +390,5 @@ onMounted(load);
   .view-actions :deep(.n-button) { flex: 1 1 auto; }
   .card-grid { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
-  .wf-modal { width: 92vw; }
 }
 </style>

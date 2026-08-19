@@ -305,11 +305,11 @@ async function saveEdit() {
     }
     await apiPost("config", { config: { loras: loras.value } });
     message.success("LoRA 已保存");
-    editShow.value = false;
   } catch (e: any) {
     message.error(e.message || "保存失败");
   } finally {
     saving.value = false;
+    editShow.value = false; // 无论成功失败都关闭弹窗（失败已有错误提示）
   }
 }
 
@@ -320,14 +320,16 @@ function removeLora(idx: number) {
     content: `确定要删除 LoRA「${l.name || ""}」吗？此操作不可恢复！`,
     positiveText: "删除",
     negativeText: "取消",
-    onPositiveClick: async () => {
+    onPositiveClick: () => {
+      // 先同步从前端列表移除（乐观更新），再后台保存；
+      // onPositiveClick 立即 resolve，确保确认弹窗必定关闭，保存结果以 message 反馈。
       loras.value.splice(idx, 1);
-      try {
-        await apiPost("config", { config: { loras: loras.value } });
-        message.success("LoRA 已删除");
-      } catch (e: any) {
-        message.error(e.message || "删除失败");
-      }
+      apiPost("config", { config: { loras: loras.value } })
+        .then(() => message.success("LoRA 已删除"))
+        .catch((e: any) => {
+          message.error(e && e.message ? e.message : "删除失败");
+          load(); // 保存失败则重新拉取，还原列表
+        });
     },
   });
 }
@@ -456,10 +458,6 @@ onMounted(load);
 .detail-row { font-size: 13px; }
 .detail-row pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-family: inherit; color: var(--text-sub); }
 
-/* 弹窗宽度：桌面固定，移动端限宽 92vw 防溢出 */
-.lora-modal { width: 680px; max-width: 92vw; }
-.lora-modal.narrow { width: 520px; }
-
 @media (max-width: 768px) {
   .loras-view { padding: 0; }
   .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -469,6 +467,5 @@ onMounted(load);
   .lora-scroll { padding-right: 0; }
   .card-grid { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
-  .lora-modal, .lora-modal.narrow { width: 92vw; }
 }
 </style>
