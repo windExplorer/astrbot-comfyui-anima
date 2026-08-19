@@ -483,6 +483,18 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"[init] 生图限额初始化失败（功能不可用）: {e}", exc_info=True)
 
+        # 独立业务操作日志（oplog）：与 AstrBot logging 解耦，关键事件直接落盘
+        self.oplog = None
+        try:
+            try:
+                from .oplog_store import OpLogStore
+            except ImportError:
+                from oplog_store import OpLogStore
+            self.oplog = OpLogStore(self.data_dir)
+            logger.info(f"[init] 操作日志已就绪: {self.oplog.db_path}")
+        except Exception as e:
+            logger.warning(f"[init] 操作日志初始化失败（可忽略，溯源日志不可用）: {e}")
+
         # LLM token 用量统计：独立 SQLite 记录插件自发起的辅助 LLM 调用
         # （翻译/改写/参数提取）的 token 消耗。主对话画图那一次发生在 AstrBot
         # 核心层，插件统计不到，不计入。
@@ -2558,6 +2570,9 @@ class ComfyUIDrawPlugin(Star):
                                 session_id=(getattr(event, "session_id", "") or ""),
                                 trigger_msg=(getattr(event, "message_str", "") or ""),
                                 status=0,
+                                on_dedup=lambda _sha, _uc: self._oplog_dedup(
+                                    _sha, _uc, user_id, user_name, event
+                                ),
                             )
                             # archive_image 会把文件从 temp/ 移动到 gallery/，必须用
                             # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。
@@ -2613,6 +2628,23 @@ class ComfyUIDrawPlugin(Star):
                             f"[出图] 成功 user={_uid} seed={seeds_used[0] if seeds_used else '?'} "
                             f"sha256={_sha[:16] if _sha else '?'} 已发图"
                         )
+                        if self.oplog is not None:
+                            self.oplog.add(
+                                "draw_success",
+                                f"生图成功（{wf.get('name') or '未知工作流'}）",
+                                user_id=_uid,
+                                user_name=user_name,
+                                session_id=sid,
+                                ref_sha=(_sha or "")[:16],
+                                detail=f"seed={seeds_used[0] if seeds_used else '?'} "
+                                       f"w={w} h={h} 耗时={time.time() - _draw_start:.1f}s",
+                                extra={
+                                    "seed": seeds_used[0] if seeds_used else None,
+                                    "w": w, "h": h,
+                                    "workflow": wf.get("name") or "",
+                                    "sha16": (_sha or "")[:16],
+                                },
+                            )
                     except Exception:
                         pass
 
@@ -3697,6 +3729,25 @@ class ComfyUIDrawPlugin(Star):
             return False, "你当前小时内的生图次数已用完，请稍后再试。"
         return True, ""
 
+    def _oplog_dedup(self, sha: str, use_count, user_id: str, user_name: str, event) -> None:
+        """图库去重命中回调：写入独立操作日志，解释「图库/出图记录仅 1 条但限额计数增加」。
+        """
+        try:
+            if self.oplog is None:
+                return
+            self.oplog.add(
+                "gallery_dedup",
+                f"图库去重命中：use_count 已达 {use_count}（本次未新增记录）",
+                user_id=user_id,
+                user_name=user_name,
+                session_id=(getattr(event, "session_id", "") or "") if event is not None else "",
+                ref_sha=sha,
+                detail="产出图片与图库已有记录内容相同（sha256 一致），图库/出图记录不新增行；但限额仍按每次成功出图 +1。",
+                extra={"use_count": use_count, "sha16": (sha or "")[:16]},
+            )
+        except Exception:
+            pass
+
     def _record_draw_used(self, event) -> None:
         """生图成功后记录一次配额用量（总次数 + 当前小时次数 + 当天次数）。
 
@@ -3711,13 +3762,23 @@ class ComfyUIDrawPlugin(Star):
         user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
         self.quota.record_used(user_id, user_name)
-        # 业务日志：限额扣减（注意：与图库去重无关，每次成功出图都 +1）
+        # 独立操作日志：限额扣减（注意：与图库去重无关，每次成功出图都 +1）
         try:
             _q = self.quota.peek(user_id)
             logger.info(
                 f"[限额] 扣减 user={user_id} 成功：total={_q.total_used} "
                 f"hour={_q.hour_used} day={_q.day_used}（每次成功出图 +1，与图库是否去重无关）"
             )
+            if self.oplog is not None:
+                self.oplog.add(
+                    "quota_inc",
+                    f"限额扣减：total={_q.total_used} hour={_q.hour_used} day={_q.day_used}",
+                    user_id=user_id,
+                    user_name=user_name,
+                    session_id=(getattr(event, "session_id", "") or "") if event is not None else "",
+                    detail="每次成功出图 +1，与图库是否去重无关（对账时以此为准）",
+                    extra={"total_used": _q.total_used, "hour_used": _q.hour_used, "day_used": _q.day_used},
+                )
         except Exception:
             pass
 

@@ -154,6 +154,13 @@ class WebUIApi:
                 cfg.save_config()
             except Exception as e:
                 return error_response(f"保存配置失败（已写入内存）: {e}")
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("config_save", "控制台保存配置",
+                            detail="顶层键: " + ", ".join(list(new_cfg.keys())[:20]))
+            except Exception:
+                pass
             return json_response({"msg": "配置已保存"})
         except Exception as e:
             return error_response(f"保存配置失败: {e}")
@@ -228,6 +235,33 @@ class WebUIApi:
             return json_response({"records": rows, "total": total, "page": page, "size": size})
         except Exception as e:
             return error_response(f"读取出图记录失败: {e}")
+
+    async def get_oplog(self):
+        """WebUI 独立操作日志：返回结构化业务事件（生图/去重/限额/图库操作等），可筛选。"""
+        try:
+            oplog = getattr(self.plugin, "oplog", None)
+            if oplog is None:
+                return json_response({"records": [], "total": 0})
+            try:
+                page = request.query.get("page", 1, type=int)
+            except Exception:
+                page = 1
+            try:
+                size = request.query.get("size", 40, type=int)
+            except Exception:
+                size = 40
+            if page < 1:
+                page = 1
+            if size < 1 or size > 200:
+                size = 40
+            event = (request.query.get("event", "") or "").strip()
+            kw = (request.query.get("keyword", "") or "").strip()
+            user = (request.query.get("user", "") or "").strip()
+            rows = oplog.query(event=event, keyword=kw, user=user, limit=size, offset=(page - 1) * size)
+            total = oplog.count(event=event, keyword=kw, user=user)
+            return json_response({"records": rows, "total": total, "page": page, "size": size})
+        except Exception as e:
+            return error_response(f"读取操作日志失败: {e}")
 
     async def get_logs(self):
         try:
@@ -397,8 +431,20 @@ class WebUIApi:
             user_id = (body.get("user_id") or "").strip()
             if not user_id:
                 n = q.reset_all()
+                try:
+                    _op = getattr(self.plugin, "oplog", None)
+                    if _op is not None:
+                        _op.add("quota_reset", f"重置全部用户限额（{n} 人）", detail="清零 total/hour/day")
+                except Exception:
+                    pass
                 return json_response({"ok": True, "reset_all": True, "count": n})
             ok = q.reset_user(user_id)
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("quota_reset", f"重置用户限额：{user_id}", user_id=user_id, detail="清零 total/hour/day")
+            except Exception:
+                pass
             return json_response({"ok": ok, "reset_user": user_id})
         except Exception as e:
             return error_response(f"重置生图次数失败: {e}")
@@ -996,6 +1042,13 @@ class WebUIApi:
             if not sha:
                 return error_response("缺少 sha")
             ok = g.star(sha, on=on)
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_star", f"图库{'收藏' if on else '取消收藏'}",
+                            ref_sha=sha, extra={"on": bool(on)})
+            except Exception:
+                pass
             return json_response({"msg": "已更新收藏" if ok else "未找到该图"})
         except Exception as e:
             return error_response(f"操作失败: {e}")
@@ -1097,6 +1150,12 @@ class WebUIApi:
             ok = g.delete(sha)
             if not ok:
                 return error_response("未找到该图（收藏图不可删除）")
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_delete", "图库删除（移入回收站）", ref_sha=sha)
+            except Exception:
+                pass
             return json_response({"msg": "已移入回收站"})
         except Exception as e:
             return error_response(f"删除失败: {e}")
@@ -1133,6 +1192,12 @@ class WebUIApi:
             if not sha:
                 return error_response("缺少 sha")
             ok = g.restore(sha)
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_restore", "图库恢复（从回收站）", ref_sha=sha)
+            except Exception:
+                pass
             return json_response({"msg": "已恢复" if ok else "恢复失败"})
         except Exception as e:
             return error_response(f"恢复失败: {e}")
@@ -1147,6 +1212,12 @@ class WebUIApi:
             if not sha:
                 return error_response("缺少 sha")
             ok = g.purge(sha)
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_purge", "图库彻底删除", ref_sha=sha)
+            except Exception:
+                pass
             return json_response({"msg": "已彻底删除" if ok else "未找到该图"})
         except Exception as e:
             return error_response(f"彻底删除失败: {e}")
@@ -1162,6 +1233,13 @@ class WebUIApi:
             if not sha or not tags:
                 return error_response("缺少 sha 或 tags")
             g.add_tags(sha, tags if isinstance(tags, list) else [tags])
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_tags", f"图库打标签：{','.join(tags if isinstance(tags, list) else [tags])}",
+                            ref_sha=sha, extra={"tags": tags if isinstance(tags, list) else [tags]})
+            except Exception:
+                pass
             return json_response({"msg": "标签已添加"})
         except Exception as e:
             return error_response(f"打标签失败: {e}")
@@ -1300,6 +1378,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/config", api.save_config, ["POST"], "保存控制台配置"),
         (f"{prefix}/logs", api.get_logs, ["GET"], "读取控制台日志"),
         (f"{prefix}/records", api.get_records, ["GET"], "读取出图记录"),
+        (f"{prefix}/oplog", api.get_oplog, ["GET"], "独立操作日志"),
         (f"{prefix}/gallery/stats", api.gallery_stats, ["GET"], "图库统计"),
         (f"{prefix}/gallery/search", api.gallery_search, ["GET"], "图库检索"),
         (f"{prefix}/gallery/thumb", api.gallery_thumb, ["GET"], "图库缩略图"),

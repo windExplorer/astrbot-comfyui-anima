@@ -10,6 +10,7 @@
 
     <div class="tab-bar">
       <button class="tab-btn" :class="{ active: activeTab === 'records' }" @click="activeTab = 'records'">出图记录</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'oplog' }" @click="switchOplog">操作日志</button>
       <button class="tab-btn" :class="{ active: activeTab === 'runlog' }" @click="activeTab = 'runlog'">运行日志</button>
     </div>
 
@@ -41,6 +42,44 @@
         :total="recTotal"
         @update:page="loadRecords"
         @update:page-size="onRecPageSize"
+      />
+    </div>
+
+    <!-- 操作日志 -->
+    <div v-show="activeTab === 'oplog'" class="pane-inner">
+      <div class="toolbar">
+        <n-select
+          v-model:value="opEvent"
+          size="small"
+          style="width:180px"
+          :options="opEventOptions"
+          clearable
+          placeholder="事件类型"
+          @update:value="loadOplog(1)"
+        />
+        <n-input v-model:value="opSearch" size="small" placeholder="搜索用户 / 摘要 / sha…" style="width:280px" clearable @keyup.enter="loadOplog(1)" />
+        <n-button size="small" @click="loadOplog(1)">搜索</n-button>
+        <span class="count">{{ opTotal ? opTotal + " 条" : opRows.length + " 条" }}</span>
+      </div>
+      <div class="table-scroll">
+        <n-data-table
+          :columns="opColumns"
+          :data="opRows"
+          :bordered="false"
+          :loading="opLoading"
+          remote
+          flex-height
+          :scroll-x="900"
+          :row-key="(row: any) => row.id"
+        />
+      </div>
+      <Pager
+        v-if="opTotal > opPageSize"
+        :page="opPage"
+        :page-size="opPageSize"
+        :total="opTotal"
+        @update:page="loadOplog"
+        @update:page-size="onOpPageSize"
       />
     </div>
 
@@ -223,6 +262,89 @@ function onRecPageSize(s: number) {
   loadRecords(1);
 }
 
+// 操作日志（独立 oplog）
+const opRows = ref<any[]>([]);
+const opTotal = ref(0);
+const opLoading = ref(false);
+const opSearch = ref("");
+const opEvent = ref<string | null>(null);
+const opPage = ref(1);
+let opPageSize = Number(lsGet("anima_oplog_page_size") || "") || 20;
+
+const OP_EVENT_LABELS: Record<string, string> = {
+  draw_success: "生图成功",
+  draw_fail: "生图失败",
+  gallery_dedup: "图库去重",
+  gallery_new: "图库新增",
+  quota_inc: "限额扣减",
+  quota_reset: "限额重置",
+  config_save: "配置保存",
+  gallery_delete: "图库删除",
+  gallery_restore: "图库恢复",
+  gallery_purge: "图库彻底删除",
+  gallery_star: "图库收藏",
+  gallery_tags: "图库打标签",
+};
+const opEventOptions = Object.entries(OP_EVENT_LABELS).map(([value, label]) => ({ value, label }));
+
+async function loadOplog(page: number) {
+  opLoading.value = true;
+  try {
+    const data = await apiGet("oplog", {
+      page,
+      size: opPageSize,
+      keyword: opSearch.value.trim(),
+      event: opEvent.value || "",
+    });
+    opRows.value = data && Array.isArray(data.records) ? data.records : [];
+    opTotal.value = data && data.total != null ? Number(data.total) : 0;
+    opPage.value = page;
+  } catch (e: any) {
+    message.error(e.message || "读取操作日志失败");
+  } finally {
+    opLoading.value = false;
+  }
+}
+function onOpPageSize(s: number) {
+  opPageSize = s;
+  lsSet("anima_oplog_page_size", String(s));
+  opPage.value = 1;
+  loadOplog(1);
+}
+function switchOplog() {
+  activeTab.value = "oplog";
+  loadOplog(1);
+}
+function opEventLabel(ev: string): string {
+  return OP_EVENT_LABELS[ev] || ev;
+}
+function opTime(ts: number): string {
+  if (!ts) return "-";
+  return fmtDateTime(ts * 1000);
+}
+function opExtraText(extra: any): string {
+  if (!extra) return "";
+  try { return JSON.stringify(extra); } catch { return ""; }
+}
+const opColumns: DataTableColumns = [
+  { title: "时间", key: "ts", width: 150, render: (row) => opTime(row.ts) },
+  { title: "类型", key: "event", width: 110, render: (row) => {
+    return h(NTag, { type: opTagType(row.event), size: "small" }, { default: () => opEventLabel(row.event) });
+  }},
+  { title: "用户", key: "user_name", width: 100, render: (row) => row.user_name || row.user_id || "-" },
+  { title: "摘要", key: "summary", ellipsis: { tooltip: true } },
+  { title: "详情", key: "detail", width: 220, ellipsis: { tooltip: true }, render: (row) => {
+    const d = row.detail || opExtraText(row.extra);
+    return truncate(d, 40);
+  }},
+];
+function opTagType(ev: string): "success" | "warning" | "error" | "info" {
+  if (ev === "draw_success" || ev === "gallery_new") return "success";
+  if (ev === "quota_inc" || ev === "gallery_dedup") return "warning";
+  if (ev === "draw_fail" || ev === "gallery_purge") return "error";
+  return "info";
+}
+
 // 运行日志
 const logLines = ref<string[]>([]);
 const logLevel = ref("all");
@@ -265,6 +387,7 @@ function filterLogs() { /* computed handles it */ }
 
 function refresh() {
   if (activeTab.value === "records") loadRecords(1);
+  else if (activeTab.value === "oplog") loadOplog(1);
   else loadLogs();
 }
 

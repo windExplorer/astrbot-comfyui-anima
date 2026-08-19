@@ -449,6 +449,7 @@ class ImageStore:
         session_id: str = "",
         trigger_msg: str = "",
         status: int = 0,
+        on_dedup=None,
     ) -> str | None:
         """归档一张图（移动转正，内容寻址去重）。
 
@@ -456,6 +457,8 @@ class ImageStore:
         已存在文件的路径）；归档不可用/失败时返回 None。注意：本方法会把 src_path
         **移动**到永久目录，因此调用方必须用返回值作为后续发送/上报所用的路径，
         不要再使用已被移动的旧 src_path。
+
+        on_dedup: 可选回调，去重命中（未新增行，仅计数+1）时调用 on_dedup(sha, use_count)。
         """
         if not self.enabled():
             return None
@@ -482,6 +485,11 @@ class ImageStore:
                         f"[图库] 去重命中 sha256={sha[:16]} 已存在记录(use_count 原={row['use_count']})，"
                         f"本次不插入新行（图库/出图记录仅显示 1 条，但调用方计数仍 +1）"
                     )
+                    if callable(on_dedup):
+                        try:
+                            on_dedup(sha, row["use_count"])
+                        except Exception:
+                            pass
                     return _existing
             except Exception:
                 pass
@@ -502,6 +510,11 @@ class ImageStore:
                 logger.info(
                     f"[图库] 去重命中 sha256={sha[:16]} use_count 自 {row['use_count']} → {row['use_count'] + 1}（仅计数+1，未新增记录）"
                 )
+                if callable(on_dedup):
+                    try:
+                        on_dedup(sha, row["use_count"] + 1)
+                    except Exception:
+                        pass
                 # 若之前是 ref/user 缺 prompt，本次是 gen 则补全
                 if source == SRC_GEN and not row["prompt"] and prompt:
                     conn.execute(

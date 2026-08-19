@@ -2,6 +2,21 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.31
+
+- **新增独立业务操作日志系统（oplog），与 AstrBot logging 完全解耦，保证关键事件不遗漏**：
+  - 背景：此前日志页为空、且难以溯源「限额计数 2 但图库/出图记录仅 1」这类对账问题——依赖 AstrBot 的 logger 传播链不可靠，且业务事件没有结构化记录。
+  - 新增 `oplog_store.py`：独立 SQLite（`data_dir/oplog.db`），结构化记录 `ts / event / user / session / summary / detail / ref_sha / extra`，事件类型包括：`draw_success`（生图成功）、`draw_fail`（生图失败）、`gallery_dedup`（图库去重命中）、`gallery_new`（图库新增）、`quota_inc`（限额扣减）、`quota_reset`（限额重置）、`config_save`（配置保存）、`gallery_delete/restore/purge/star/tags`（图库操作）。全程 try/except，日志失败绝不影响主流程。
+  - `main.py`：
+    - `__init__` 初始化 `self.oplog = OpLogStore(data_dir)`；
+    - 出图成功 yield 后写 `draw_success`（带 user / seed / sha256 前 16 位 / 尺寸 / 耗时 / 工作流）；
+    - 限额扣减 `_record_draw_used` 写 `quota_inc`（记录 total/hour/day，标注「每次成功出图 +1，与图库去重无关」）；
+    - 新增 `_oplog_dedup` 回调，`archive_image` 去重命中时写 `gallery_dedup`（use_count 变化，解释「图库不新增行但限额照加」）。
+  - `image_store.py`：`archive_image` 新增 `on_dedup` 回调参数，去重命中（含仅计数+1 的两处分支）时通知调用方写 oplog。
+  - `webui_api.py`：新增 `GET /oplog` 接口（分页 + 事件/关键词/用户筛选）；配置保存、限额重置、图库收藏/删除/恢复/彻底删除/打标签等系统操作均写 oplog。
+  - 前端日志页：新增「操作日志」tab，结构化表格展示（时间/类型/用户/摘要/详情），支持按事件类型筛选、搜索、分页。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.30
 
 - **修复 WebUI 日志页长期为空**：
