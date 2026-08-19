@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.36
+
+- **修复打包遗漏：独立 WebUI / 操作日志模块未打进 zip**：
+  - **严重 bug**：`build_zip.ps1` 的 `$includeList` 漏掉了 `standalone_webui.py` 与 `oplog_store.py`，导致 v4.4.33~v4.4.35 打包出的 zip 里**没有这两个文件**。
+  - 后果：用户升级后，`main.py` import 这两个模块失败被吞 → `self.standalone_webui=None`（独立 WebUI 打不开）、`self.oplog=None`（操作日志页空）。这解释了此前「独立服务没启动」「日志页空」等所有"改了没生效"现象，根因都是 zip 缺文件而非代码逻辑。
+  - 修复：`build_zip.ps1` 文件清单补入 `oplog_store.py` 与 `standalone_webui.py`，并核对全部核心模块均已包含。
+  - 强烈建议：升级到 v4.4.36 后，若此前装的是 v4.4.33~35，请**重新安装 v4.4.36 的 zip**，并确认插件目录出现 `standalone_webui.py`、`oplog_store.py`。
+
 ## v4.4.35
 
 - **独立 WebUI 服务默认仅本机监听，支持配置监听地址**：

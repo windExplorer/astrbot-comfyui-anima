@@ -40,6 +40,8 @@ $includeList = @(
     "workflow_builder.py",
     "image_store.py",
     "quota_store.py",
+    "oplog_store.py",
+    "standalone_webui.py",
     "token_store.py",
     "nsfw_detector.py",
     "logo.png",
