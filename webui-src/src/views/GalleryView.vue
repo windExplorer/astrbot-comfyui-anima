@@ -91,6 +91,14 @@
       </n-tooltip>
       <n-tooltip trigger="hover">
         <template #trigger>
+          <n-button size="small" @click="startRescan" :disabled="scanState.running" :loading="scanState.running">
+            {{ scanState.running ? "重扫中…" : "重新检测" }}
+          </n-button>
+        </template>
+        调整 NSFW 阈值后，用新阈值全量重新检测所有图片
+      </n-tooltip>
+      <n-tooltip trigger="hover">
+        <template #trigger>
           <n-button size="small" quaternary @click="refreshScanProgress">↻</n-button>
         </template>
         刷新检测进度
@@ -236,6 +244,30 @@ function startScan() {
       if (isNsfwUnavailable(e)) showNsfwInstallDialog();
       else message.error(e.message || "启动检测失败");
     });
+}
+function startRescan() {
+  // 全量重新检测：调整阈值后用新阈值重扫所有图（only=0）
+  dialog.warning({
+    title: "全量重新检测",
+    content: "将对图库中所有图片重新执行 NSFW 检测（耗时取决于图片数量，后台执行）。确认继续？",
+    positiveText: "开始重扫",
+    negativeText: "取消",
+    onPositiveClick: () => {
+      return new Promise((resolve, reject) => {
+        apiGet("gallery/scan_nsfw", { only: 0 })
+          .then((res: any) => {
+            scanState.value = { ...scanState.value, ...res };
+            message.success("已开始全量重新检测");
+            resolve(true);
+          })
+          .catch((e: any) => {
+            if (isNsfwUnavailable(e)) showNsfwInstallDialog();
+            else message.error(e.message || "启动重扫失败");
+            reject(e);
+          });
+      });
+    },
+  });
 }
 function isNsfwUnavailable(e: any): boolean {
   const m = String(e?.message || "");

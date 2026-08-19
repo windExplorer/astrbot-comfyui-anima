@@ -499,6 +499,14 @@ class StandaloneWebUI:
                 else:
                     r["thumb"] = ""
             return _ok(rows)
+        if path == "/gallery/scan_nsfw":
+            only = self._q(request, "only", "1") != "0"
+            res = g.scan_nsfw_start(only_unchecked=only)
+            if res.get("last_err"):
+                return _err(res["last_err"])
+            return _ok(res)
+        if path == "/gallery/scan_nsfw_progress":
+            return _ok(g.scan_nsfw_progress())
         if path == "/gallery/backup":
             dbp = getattr(g, "db_path", None)
             if not dbp or not Path(dbp).exists():

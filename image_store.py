@@ -348,6 +348,9 @@ class ImageStore:
     def scan_nsfw_progress(self) -> dict:
         """返回当前 NSFW 扫描进度。{running, total, done, nsfw, started_at, finished_at, last_err}"""
         with self._scan_lock:
+            if not hasattr(self, "_scan_state"):
+                return {"running": False, "total": 0, "done": 0, "nsfw": 0,
+                        "started_at": None, "finished_at": None, "last_err": ""}
             return dict(self._scan_state)
 
     def check_nsfw(self, sha256: str) -> dict:

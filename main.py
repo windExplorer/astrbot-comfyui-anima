@@ -4092,6 +4092,7 @@ class ComfyUIDrawPlugin(Star):
             "私有": "private",
             "帮助": "help", "怎么用": "help", "说明": "help",
             "全部": "all", "全库": "all", "所有": "all",
+            "重扫": "rescan", "重新检测": "rescan", "重新扫描": "rescan",
         }
         sub = _sub_zh.get(raw_sub, raw_sub)
         rest = parts[1:]
@@ -4131,10 +4132,56 @@ class ComfyUIDrawPlugin(Star):
                 # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
                 # "· 回收站　查看回收站\n"
                 "· 统计　查看图库统计信息\n"
+                "· 重扫　全量重新检测涩图（调整阈值后刷新所有图片的 NSFW 标记）\n"
                 "· 全部 列表/搜索（管理员）　查看所有用户的图片（带 sid/用户名）\n\n"
                 "多张用法：取图/收藏/取消收藏 都支持一次性多张，序号用逗号或空格隔开。\n"
                 "示例：/图库 列表 2　/图库 取图 1,2,3　/图库 收藏 1 2 5　/图库 取图 1,2,4 7",
             )
+        elif sub == "rescan":
+            # 全量重新检测：调整 NSFW 阈值后，用新阈值重扫所有图片，刷新 NSFW 标记
+            if not bool(getattr(event, "is_admin", lambda: False)()):
+                await self._send(event, "只有管理员可以执行全量重新检测。")
+                event.stop_event()
+                return
+            try:
+                st = self.gallery.scan_nsfw_start(only_unchecked=False)
+            except Exception as e:
+                logger.warning(f"[图库] 重扫启动失败: {e}")
+                st = {"running": False, "last_err": str(e)}
+            if st.get("running"):
+                await self._send(
+                    event,
+                    "🔁 已开始全量重新检测（后台执行）…\n"
+                    "用 /图库 重扫状态 查看进度。",
+                )
+            else:
+                err = st.get("last_err") or "无法启动扫描"
+                await self._send(event, f"❌ 未能启动重扫：{err}")
+            event.stop_event()
+        elif sub in ("rescan_status", "重扫状态"):
+            st = self.gallery.scan_nsfw_progress()
+            if st.get("running"):
+                done = st.get("done", 0)
+                total = st.get("total", 0)
+                nsfw = st.get("nsfw", 0)
+                pct = (done / total * 100) if total else 0
+                await self._send(
+                    event,
+                    f"🔁 正在重扫… {done}/{total}（{pct:.0f}%），已检出涩图 {nsfw} 张",
+                )
+            else:
+                done = st.get("done", 0)
+                nsfw = st.get("nsfw", 0)
+                finished = st.get("finished_at")
+                if st.get("last_err"):
+                    await self._send(event, f"❌ 上次重扫失败：{st['last_err']}")
+                else:
+                    await self._send(
+                        event,
+                        f"✅ 最近一次重扫已完成：共 {done} 张，检出涩图 {nsfw} 张"
+                        + ("（进行中标记已清除）" if finished is None else ""),
+                    )
+            event.stop_event()
         elif sub == "list":
             # 列表分页：每页数量取自 gallery.page_size 配置（默认 5，夹紧到 1~50）
             try:
