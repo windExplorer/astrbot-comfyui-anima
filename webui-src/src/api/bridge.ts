@@ -347,8 +347,21 @@ export function apiPost(endpoint: string, body?: Record<string, any>, options?: 
   return apiRaw(endpoint, opts);
 }
 
-/** 缩略图/大图拉取封装：图库列表只返回 sha，前端按需取 data URL。 */
+/** 独立模式下生成图库图片直链 URL（带 token，<img> 直接加载 + 浏览器缓存）。 */
+export function standaloneImgUrl(sha: string, size?: number): string {
+  const base = "/img/" + encodeURIComponent(sha) + "/thumb";
+  const qs: string[] = [];
+  if (size && size > 0) qs.push("size=" + size);
+  const token = standaloneToken();
+  if (token) qs.push("token=" + encodeURIComponent(token));
+  return base + (qs.length ? "?" + qs.join("&") : "");
+}
+
+/** 缩略图/大图拉取封装：独立模式返回直链 URL（<img> 直接用），内嵌页返回 base64 data URL。 */
 export async function fetchThumb(sha: string, size = 300, timeout = 15000): Promise<string> {
+  if (isStandaloneMode()) {
+    return standaloneImgUrl(sha, size);
+  }
   const d = await apiGet("gallery/thumb", { sha, size }, { timeout });
   return (d && (d.url || d.data_url)) || "";
 }

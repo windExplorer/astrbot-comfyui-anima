@@ -172,6 +172,10 @@ class StandaloneWebUI:
         # 所有业务 API（前缀 /api/*），走统一鉴权 + 分发
         for method in ("GET", "POST"):
             app.router.add_route(method, "/api/{tail:.*}", self._handle_api)
+        # 图库图片直链 /img/{sha}：<img> 直接加载原始图片（带鉴权），避免 base64 内联。
+        # 必须注册在 /{path:.+} 之前，否则会被静态路由吞掉。
+        app.router.add_get("/img/{sha}", self._handle_img)
+        app.router.add_get("/img/{sha}/thumb", self._handle_img)
         # 静态资源：index.html 之外的 js/css/图等
         app.router.add_get("/{path:.+}", self._handle_static)
 
@@ -188,6 +192,51 @@ class StandaloneWebUI:
         if denied is not None:
             return denied
         return _ok({"pong": True, "ts": time.time()})
+
+    async def _handle_img(self, request: web.Request) -> web.Response:
+        """图库图片直链：/img/{sha} 或 /img/{sha}/thumb。
+
+        返回原始图片二进制（支持 ?size= 缩略），<img> 直接加载 + 浏览器缓存，
+        避免 base64 内联的体积/内存开销。带 token 鉴权（?token= 或 Authorization）。
+        """
+        denied = self._authed(request)
+        if denied is not None:
+            return denied
+        sha = request.match_info.get("sha", "") or ""
+        if not sha:
+            return _err("缺少 sha", status=400)
+        g = self.plugin.gallery
+        if g is None:
+            return _err("图库未启用", status=500)
+        p = g.path_of(sha)
+        if not p or not Path(p).exists():
+            return _err("图片不存在", status=404)
+        # 缩略：/img/{sha}/thumb 或 ?size=
+        want_thumb = request.match_info.get("sha") is not None and "/thumb" in request.path
+        try:
+            size = self._qint(request, "size", 300)
+        except Exception:
+            size = 300
+        if want_thumb or size < 200000:
+            try:
+                data_url = await asyncio.to_thread(self._thumb_cached, p, size)
+                if data_url and data_url.startswith("data:"):
+                    # data:image/jpeg;base64,xxx → 解码为字节
+                    header, _, b64 = data_url.partition(",")
+                    cmime = header.replace("data:", "").split(";")[0] or "image/jpeg"
+                    try:
+                        raw = base64.b64decode(b64)
+                    except Exception:
+                        raw = Path(p).read_bytes()
+                        cmime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+                    return web.Response(body=raw, content_type=cmime,
+                                        headers={"Cache-Control": "public, max-age=31536000"})
+            except Exception:
+                pass
+        raw = await asyncio.to_thread(Path(p).read_bytes)
+        ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        return web.Response(body=raw, content_type=ctype,
+                            headers={"Cache-Control": "public, max-age=31536000"})
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         idx = PAGES_DIR / "index.html"

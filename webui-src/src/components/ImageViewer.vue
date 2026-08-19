@@ -71,7 +71,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NButton, useDialog, useMessage } from "naive-ui";
-import { apiGet, apiPost } from "@/api/bridge";
+import { apiGet, apiPost, isStandaloneMode, standaloneImgUrl } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
 const message = useMessage();
@@ -150,7 +150,22 @@ const typeText = computed(() => {
 async function loadMain(sha: string) {
   mainSrc.value = "";
   try {
-    // size 控制后端转 data URL 的最大宽：主图足够清晰且体积可控
+    // 独立模式：用直链 URL（<img> 直接加载 + 浏览器缓存），仅额外取元信息
+    if (isStandaloneMode()) {
+      mainSrc.value = standaloneImgUrl(sha, 1600);
+      try {
+        const data = await apiGet("gallery/image", { sha, meta: 1 });
+        if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };
+      } catch (e) { /* meta 获取失败不阻塞看图 */ }
+      const meta = item.value;
+      item.value = {
+        ...item.value,
+        prompt: meta?.prompt,
+        prompt_raw: meta?.prompt_raw,
+      };
+      return;
+    }
+    // 内嵌页：后端转 data URL
     const data = await apiGet("gallery/image", { sha, meta: 1, size: 1400 });
     if (data && data.data_url) mainSrc.value = data.data_url;
     if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };
@@ -169,7 +184,12 @@ async function loadMain(sha: string) {
 async function loadRef(rs: string) {
   refSrc.value = "";
   try {
-    // 参考图展示尺寸较小，用更小的 size 进一步减小体积
+    // 独立模式：用直链 URL
+    if (isStandaloneMode()) {
+      refSrc.value = standaloneImgUrl(rs, 900);
+      return;
+    }
+    // 内嵌页：参考图展示尺寸较小，用更小的 size 进一步减小体积
     const data = await apiGet("gallery/image", { sha: rs, meta: 1, size: 900 });
     if (data && data.data_url) refSrc.value = data.data_url;
   } catch (e) {

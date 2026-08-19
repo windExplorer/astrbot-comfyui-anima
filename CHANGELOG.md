@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.50
+
+- **独立 WebUI 图库图片改为直链加载（替代 base64），大幅提升加载速度与内存占用**：
+  - 背景：此前图库缩略图/大图均通过 `apiGet("gallery/thumb")` 返回 base64 data URL 内联，体积 +33%、无法走浏览器缓存、图库多图时慢且占内存。用户正是因此弃用 AstrBot 内嵌页（其 base64 更慢）才做独立 WebUI。
+  - 后端：`standalone_webui.py` 新增图库图片直链端点 `GET /img/{sha}` 与 `/img/{sha}/thumb`（支持 `?size=` 缩略、带 token 鉴权、返回原始/缩略图片二进制 + 长缓存头）。`<img>` 直接加载 + 浏览器缓存，避免 base64 内联。
+  - 前端：`bridge.ts` 新增 `standaloneImgUrl(sha, size)`（拼 token 生成直链）；`fetchThumb` 独立模式下直接返回直链 URL（内嵌页仍走 base64）。`ImageViewer.vue` 大图/参考图独立模式改用直链。图库网格、日志缩略图自动受益。
+  - 说明：LoRA 封面仍走 base64（小图、量级小，影响有限）；如需也改直链可再迭代。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2855 模块，0 错误）。
+
 ## v4.4.49
 
 - **修复登录成功后不跳转（停留在口令页）**：
