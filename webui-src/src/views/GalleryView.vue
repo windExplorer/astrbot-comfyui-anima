@@ -115,6 +115,14 @@
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
             </div>
             <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ cutName(img.user_name) }}</span>
+            <!-- 封面未加载/加载失败时，hover 显示重载按钮 -->
+            <button
+              v-if="!thumbCache[img.sha || img.sha256]"
+              class="gal-reload"
+              :title="thumbFailed[img.sha || img.sha256] ? '封面加载失败，点击重新加载' : '点击重新加载封面'"
+              :disabled="reloading[img.sha || img.sha256]"
+              @click.stop="reloadThumb(img)"
+            >{{ reloading[img.sha || img.sha256] ? "…" : "↻ 重载封面" }}</button>
           </div>
         </div>
       </n-spin>
@@ -169,6 +177,9 @@ const page = ref(1);
 let pageSize = Number(localStorage.getItem("anima_gallery_page_size") || "") || 20;
 const stats = ref<any>(null);
 const thumbCache = reactive<Record<string, string>>({});
+// 记录封面加载失败的 sha；reloading 记录正在重载中的 sha（用于按钮状态）
+const thumbFailed = reactive<Record<string, boolean>>({});
+const reloading = reactive<Record<string, boolean>>({});
 
 const placeholder = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 const typeOptions = [
@@ -261,6 +272,56 @@ async function loadStats() {
   }
 }
 
+// 限并发预取缩略图：默认一次最多 4 个在途请求，避免首屏一次性并发 20 张压垮后端
+// 造成批量超时（这是“部分图一直不加载”的主因）。失败的 sha 记进 thumbFailed，
+// 网格中对应项会出现“重载封面”按钮供单独重试。
+async function prefetchThumbs(list: any[]) {
+  const CONCURRENCY = 4;
+  const queue = list
+    .map((img) => img.sha || img.sha256)
+    .filter((sha) => sha && !thumbCache[sha]);
+  let idx = 0;
+  async function worker() {
+    while (idx < queue.length) {
+      const sha = queue[idx++];
+      try {
+        const url = await fetchThumb(sha, 240);
+        if (url) {
+          thumbCache[sha] = url;
+          delete thumbFailed[sha];
+        } else {
+          thumbFailed[sha] = true;
+        }
+      } catch {
+        thumbFailed[sha] = true;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => worker()));
+}
+
+// 单图封面重载：清除失败标记后重新拉取，成功后写入缓存
+async function reloadThumb(img: any) {
+  const sha = img.sha || img.sha256;
+  if (!sha || reloading[sha]) return;
+  reloading[sha] = true;
+  try {
+    const url = await fetchThumb(sha, 240);
+    if (url) {
+      thumbCache[sha] = url;
+      delete thumbFailed[sha];
+    } else {
+      thumbFailed[sha] = true;
+      message.warning("封面仍无法加载，可能是原图已损坏或后端生成失败");
+    }
+  } catch (e: any) {
+    thumbFailed[sha] = true;
+    message.error(e?.message || "封面重载失败");
+  } finally {
+    reloading[sha] = false;
+  }
+}
+
 async function doSearch(p: number) {
   searching.value = true;
   page.value = p;
@@ -277,13 +338,9 @@ async function doSearch(p: number) {
     });
     images.value = (data && Array.isArray(data.images)) ? data.images : [];
     total.value = data && data.total != null ? Number(data.total) : 0;
-    // 并发预取缩略图（小尺寸，提升加载速度）
-    images.value.forEach((img) => {
-      const sha = img.sha || img.sha256;
-      if (sha && !thumbCache[sha]) {
-        fetchThumb(sha, 240).then((url) => { if (url) thumbCache[sha] = url; }).catch(() => {});
-      }
-    });
+    // 预取缩略图：限并发避免一次性压垮后端导致批量超时（部分图因此“一直不加载”），
+    // 失败的记录进 thumbFailed，网格中显示“重载封面”按钮可单独重试。
+    prefetchThumbs(images.value);
   } catch (e: any) {
     message.error(e.message || "检索失败");
   } finally {
@@ -503,6 +560,32 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
   padding: 1px 8px;
   border-radius: 12px;
   backdrop-filter: blur(3px);
+}
+/* 封面未加载时的重载按钮：居中浮于图片上，hover 整卡时显示 */
+.gal-reload {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  border: none;
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 99, 146, 0.92);
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.gal-item:hover .gal-reload {
+  opacity: 1;
+}
+.gal-reload:disabled {
+  background: rgba(150, 150, 150, 0.85);
+  cursor: default;
 }
 .scan-progress {
   font-size: 12px;
