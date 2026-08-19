@@ -805,5 +805,35 @@
         "hint": "列表/收藏列表每页展示的条目数。有效范围 1~50，超出会自动夹紧。"
       }
     }
+  },
+  "webui_standalone": {
+    "type": "object",
+    "description": "独立 WebUI 服务",
+    "hint": "用 aiohttp 启动一个独立端口的 HTTP 服务，直接提供 WebUI 前端与全部 API，与 AstrBot 内嵌页共存，可绕开内嵌页的接口 404/超时问题。浏览器访问 http://服务器IP:端口 即可。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用独立 WebUI 服务",
+        "hint": "开启后插件启动时会额外监听一个端口提供服务；关闭则不启动。修改后需重启插件生效。"
+      },
+      "port": {
+        "type": "int",
+        "default": 8848,
+        "description": "监听端口",
+        "hint": "独立服务的 HTTP 端口。请避免与 AstrBot 主端口/其他服务冲突。默认 8848。",
+        "slider": {
+          "min": 1024,
+          "max": 65535,
+          "step": 1
+        }
+      },
+      "token": {
+        "type": "string",
+        "default": "",
+        "description": "访问口令（留空不鉴权）",
+        "hint": "可选。设置后浏览器访问独立 WebUI 时需输入该口令，所有 API 请求也要带它，避免管理功能暴露在局域网/公网。留空 = 不鉴权（任何能访问该端口的人都能操作，建议局域网内使用）。"
+      }
+    }
   }
 }

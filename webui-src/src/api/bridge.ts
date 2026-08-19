@@ -203,10 +203,78 @@ async function bridgeRequest(br: Bridge, path: string, method: string, body: Rec
   throw new Error(errors[0] || "未找到可用的页面 API 路由");
 }
 
+// ------------------------------------------------------------------ //
+// 独立服务（standalone）模式：当页面从独立 WebUI 服务打开时，没有 AstrBot
+// 桥接（AstrBotPluginPage），此时所有 API 走同源 HTTP /api/<endpoint>，
+// 并自动附带访问口令 token（从 URL ?token= 或 localStorage 读取）。
+// ------------------------------------------------------------------ //
+const STANDALONE_TOKEN_KEY = "anima_standalone_token";
+
+function standaloneToken(): string {
+  try {
+    const q = new URLSearchParams(window.location.search).get("token");
+    if (q) return q;
+    return localStorage.getItem(STANDALONE_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function isStandaloneMode(): boolean {
+  // 独立服务页面从它自己的源加载，通常 window !== window.parent（iframe 内嵌时
+  // parent 有 AstrBotPluginPage）。这里：无可用桥接即视为独立模式，走 HTTP。
+  const w = window as any;
+  try {
+    if (w.AstrBotPluginPage) return false;
+    if (w.parent && w.parent !== w && w.parent.AstrBotPluginPage) return false;
+  } catch (e) {
+    // 跨源访问 parent 时抛错，说明不是内嵌在 AstrBot 内 → 独立模式
+  }
+  return true;
+}
+
+async function standaloneRequest(path: string, method: string, body?: any, timeoutMs?: number): Promise<any> {
+  const clean = path.replace(/^\//, "").replace(/\/+/g, "/");
+  const tmo = (timeoutMs && timeoutMs > 0) ? timeoutMs : 15000;
+  const url = "/api/" + clean;
+  const headers: Record<string, string> = {};
+  const token = standaloneToken();
+  if (token) headers["Authorization"] = "Bearer " + token;
+  if (method === "POST" && body !== undefined) headers["Content-Type"] = "application/json";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), tmo);
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers,
+      signal: ctrl.signal,
+      body: method === "POST" && body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let payload: any = null;
+    try { payload = await resp.json(); } catch { payload = { success: false, error: "响应非 JSON" }; }
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "success")) {
+      if (!payload.success) throw new Error(payload.error || "请求失败");
+      return payload.data;
+    }
+    // 兼容非包结构：直接返回 body
+    if (!resp.ok) throw new Error("HTTP " + resp.status + (payload && payload.error ? ": " + payload.error : ""));
+    return payload;
+  } catch (e: any) {
+    if (e && e.name === "AbortError") throw new Error("请求超时（" + (tmo / 1000) + "s 无响应）");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function apiRaw(path: string, options?: { method?: string; body?: any; timeout?: number }): Promise<any> {
   const opts = options || {};
-  const br = await getPageBridge();
   const method = (opts.method || "GET").toUpperCase();
+  // 独立模式：无 AstrBot 桥接，直接走同源 HTTP API
+  if (isStandaloneMode()) {
+    return standaloneRequest(path, method, opts.body, opts.timeout);
+  }
+  const br = await getPageBridge();
   const payload = await bridgeRequest(br, path, method, opts.body, opts.timeout);
   const norm = normalizeResponse(payload);
   if (!norm.success) throw new Error(norm.error || "请求失败");

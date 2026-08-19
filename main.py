@@ -501,6 +501,17 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"[init] 操作日志初始化失败（可忽略，溯源日志不可用）: {e}")
 
+        # 独立 WebUI 服务（standalone）：aiohttp 独立端口，与 AstrBot 内嵌页共存
+        self.standalone_webui = None
+        try:
+            try:
+                from .standalone_webui import create_standalone_webui
+            except ImportError:
+                from standalone_webui import create_standalone_webui
+            self.standalone_webui = create_standalone_webui(self)
+        except Exception as e:
+            logger.warning(f"[init] 独立 WebUI 初始化失败（可忽略）: {e}")
+
         # LLM token 用量统计：独立 SQLite 记录插件自发起的辅助 LLM 调用
         # （翻译/改写/参数提取）的 token 消耗。主对话画图那一次发生在 AstrBot
         # 核心层，插件统计不到，不计入。
@@ -625,7 +636,20 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"[init] 注册 WebUI 路由失败（控制台不可用）: {e}")
 
+        # 启动独立 WebUI 服务（若配置开启）
+        try:
+            if getattr(self, "standalone_webui", None) is not None:
+                await self.standalone_webui.start()
+        except Exception as e:
+            logger.warning(f"[init] 独立 WebUI 启动失败（可忽略）: {e}")
+
     async def terminate(self) -> None:
+        # 停止独立 WebUI 服务
+        try:
+            if getattr(self, "standalone_webui", None) is not None:
+                await self.standalone_webui.stop()
+        except Exception:
+            pass
         # 移除 WebUI 日志 handler，避免重复安装/内存泄漏
         try:
             import logging

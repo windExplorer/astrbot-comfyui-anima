@@ -2,6 +2,19 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.33
+
+- **新增独立 WebUI 服务（standalone），与 AstrBot 内嵌页共存，绕开内嵌页的接口 404/超时问题**：
+  - 背景：AstrBot 内嵌页依赖 `context.register_web_api` 挂载路由，常因插件未重载/路由未注册出现「接口 404 / 6s 超时」。
+  - 新增 `standalone_webui.py`：用 aiohttp 启动一个**独立端口**的 HTTP 服务，直接提供静态前端（`pages/anima-console-vue/`）+ 全部后端 API（复用存储层 gallery/quota/oplog/token_store），浏览器访问 `http://服务器IP:端口` 即可，不依赖 AstrBot 路由。
+  - `main.py`：`__init__` 初始化 `standalone_webui`；`initialize` 按配置启动、`terminate` 优雅停止（AppRunner 非阻塞，与 AstrBot 事件循环共存）。
+  - 配置（`_conf_schema.json` 新增 `webui_standalone` 块）：`enabled`（是否启动）、`port`（端口，默认 8848）、`token`（访问口令，留空不鉴权）。修改后需重启插件生效。
+  - 鉴权：设置 token 后，页面首次访问需输入口令（前端存 localStorage），所有 `/api/*` 请求需带 `Authorization: Bearer <token>` 或 `?token=`。
+  - API 覆盖：config/schema、logs、records、oplog、gallery（stats/search/thumb/image/star/delete/restore/purge/tags/trash/backup）、quota（users/reset/config）、token（summary/reset）、stats（ranking/trend）。
+  - 前端 `bridge.ts`：新增独立模式检测——无 AstrBot 桥接时（从独立端口打开），`apiGet/apiPost` 自动走同源 `HTTP /api/<endpoint>`（支持超时 AbortController），内嵌页仍走原 AstrBot 桥接，两者共存。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+  - 使用：先在插件配置开启 `webui_standalone.enabled` 并设端口（建议同时设 token），重启插件后浏览器访问 `http://127.0.0.1:端口`（内网用服务器实际 IP）。
+
 ## v4.4.32
 
 - **oplog 诊断加固**：初始化成功后写入 `oplog_init` 自检事件，用于确认独立操作日志链路是否真正打通。若操作日志页仍为空，请检查：AstrBot 加载的插件目录是否完整包含 `oplog_store.py`（v4.4.31 新增文件），以及 AstrBot 启动日志是否出现 `[init] 操作日志已就绪`（出现且操作日志页有 `oplog_init` 记录 = 链路通）或 `[init] 操作日志初始化失败`（初始化异常，多为插件副本缺少 `oplog_store.py`）。
