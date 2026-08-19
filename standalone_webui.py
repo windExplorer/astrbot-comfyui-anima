@@ -27,6 +27,11 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+try:
+    from . import webui_api
+except ImportError:
+    import webui_api
+
 # 静态页目录（相对本文件：pages/anima-console-vue/）
 PAGES_DIR = Path(__file__).resolve().parent / "pages" / "anima-console-vue"
 
@@ -48,6 +53,15 @@ class StandaloneWebUI:
         self._site: web.TCPSite | None = None
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        # 复用 WebUIApi 的 lora_fetch / lora_upload_image / lora_image / translate_test
+        # （这些方法引用 webui_api 模块级 `request`，需用适配器 + 串行锁避免全局竞态）
+        self._api = None
+        try:
+            self._api = webui_api.WebUIApi(plugin)
+        except Exception:
+            self._api = None
+        self._request_lock = asyncio.Lock()
+        self._saved_request = getattr(webui_api, "request", None)
 
     # ------------------------------------------------------------------ #
     # 配置
@@ -271,6 +285,10 @@ class StandaloneWebUI:
         # ---------- token 用量 ----------
         if path.startswith("/token/"):
             return await self._api_token(path, request, tok)
+
+        # ---------- LoRA / 封面 / C 站抓取 ----------
+        if path.startswith("/lora/") or path == "/translate/test":
+            return await self._api_lora_translate(path, request)
 
         # ---------- 统计 ----------
         if path.startswith("/stats/"):
@@ -550,6 +568,97 @@ class StandaloneWebUI:
             hours = max(1, min(hours, 24 * 7))
             return _ok(g.hourly_trend(hours=hours))
         return _err("Not Found: " + path, status=404)
+
+    # ------------------------------------------------------------------ #
+    # LoRA 抓取 / 封面上传 / 封面图 / 翻译调试
+    # ------------------------------------------------------------------ #
+    class _AioReqAdapter:
+        """把 aiohttp.Request 适配成 webui_api 方法预期的 request 对象。
+
+        webui_api 方法内使用：request.query.get(k, d)（同步）、
+        request.json(default)（await）、request.body()（await）、
+        request.headers.get(k)（同步）。
+        """
+
+        def __init__(self, req: web.Request) -> None:
+            self._req = req
+
+        @property
+        def query(self):
+            return self._req.query
+
+        @property
+        def headers(self):
+            return self._req.headers
+
+        async def json(self, default=None):
+            try:
+                if self._req.can_read_body and self._req.body_exists:
+                    return await self._req.json()
+            except Exception:
+                pass
+            return default if default is not None else {}
+
+        async def body(self):
+            return await self._req.read()
+
+    async def _api_lora_translate(self, path: str, request: web.Request) -> web.Response:
+        """独立版 lora_fetch / lora_image / lora_upload_image / translate_test。
+
+        复用 WebUIApi 的原始实现（引用 webui_api 模块级 request），通过
+        aiohttp 适配器 + 串行锁临时替换 request，避免与 AstrBot 内嵌页并发冲突。
+        """
+        if self._api is None:
+            return _err("WebUIApi 不可用")
+        handler = {
+            "/lora/fetch": ("lora_fetch", "POST"),
+            "/lora/image": ("lora_image", "GET"),
+            "/lora/upload_image": ("lora_upload_image", "POST"),
+            "/translate/test": ("translate_test", "POST"),
+        }.get(path)
+        if handler is None:
+            return _err("Not Found: " + path, status=404)
+        method_name, _expected = handler
+        if request.method.upper() != _expected:
+            return _err("Method Not Allowed", status=405)
+
+        adapter = self._AioReqAdapter(request)
+
+        # 本地 json_response / error_response 替代品（返回普通 dict，便于外层归一化）。
+        # webui_api 方法内引用的是模块级 json_response/error_response，临时替换之。
+        def _ok_dict(payload):
+            return {"__ok__": True, "data": payload}
+
+        def _err_dict(msg, status_code=200):
+            return {"__ok__": False, "error": str(msg)}
+
+        async with self._request_lock:
+            had_req = hasattr(webui_api, "request")
+            prev_req = getattr(webui_api, "request", None)
+            had_ok = hasattr(webui_api, "json_response")
+            prev_ok = getattr(webui_api, "json_response", None)
+            had_err = hasattr(webui_api, "error_response")
+            prev_err = getattr(webui_api, "error_response", None)
+            try:
+                webui_api.request = adapter
+                webui_api.json_response = _ok_dict
+                webui_api.error_response = _err_dict
+                method = getattr(self._api, method_name)
+                result = await method()
+            finally:
+                webui_api.request = prev_req if had_req else None
+                webui_api.json_response = prev_ok if had_ok else None
+                webui_api.error_response = prev_err if had_err else None
+        # 归一化 handler 返回的 dict
+        if isinstance(result, dict):
+            if result.get("__ok__") is not None:
+                if result["__ok__"]:
+                    return _ok(result.get("data"))
+                return _err(result.get("error") or "请求失败")
+            return _ok(result)
+        if isinstance(result, web.Response):
+            return result
+        return _ok(result)
 
     # ------------------------------------------------------------------ #
     # 工具

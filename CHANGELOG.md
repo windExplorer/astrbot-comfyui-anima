@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.34
+
+- **独立 WebUI 服务补齐 LoRA / 翻译调试接口**：
+  - 独立版新增 `POST /lora/fetch`（C 站抓取封面+触发词+描述+底模）、`GET /lora/image`（LoRA 封面缩略图）、`POST /lora/upload_image`（封面上传）、`POST /translate/test`（翻译调试）。
+  - 实现方式：复用 `WebUIApi` 的原始实现（`standalone_webui.py` 实例化 `webui_api.WebUIApi`），通过 aiohttp 请求适配器（`_AioReqAdapter`，适配 `request.query/json/body/headers`）+ 串行锁临时替换 `webui_api` 模块级 `request`/`json_response`/`error_response`，调用后还原，避免与 AstrBot 内嵌页并发冲突。
+  - 至此独立服务已覆盖全部 WebUI 功能，可作为完整独立入口使用。
+
 ## v4.4.33
 
 - **新增独立 WebUI 服务（standalone），与 AstrBot 内嵌页共存，绕开内嵌页的接口 404/超时问题**：
