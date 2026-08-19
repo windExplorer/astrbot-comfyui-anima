@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.43
+
+- **修复 WebUI 配置页嵌套对象显示为 `[object Object]`**：
+  - 现象：配置页里 `gallery` 配置块下的嵌套对象（如 `gallery.nsfw`）渲染成 `[object Object]`，导致无法在 WebUI 里配置 `gallery.nsfw.threshold`（NSFW 判定阈值）等子项。
+  - 根因：`ConfigField.vue` 未处理 `type: "object"` 字段，落到通用 `n-input` 分支，把对象 `String()` 成 `[object Object]`。
+  - 修复：`ConfigField.vue` 新增 `object` 类型递归渲染——子字段用虚线分组面板展示，任一层子字段变更时向上拼出完整新对象并 emit，支持任意层级的嵌套对象（如 gallery → nsfw → threshold）。
+  - 效果：WebUI 配置页可正常编辑 `gallery.nsfw.threshold`（判定阈值）等嵌套配置项。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.42
 
 - **新增图片 NSFW 检测指令**：

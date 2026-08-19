@@ -5,8 +5,26 @@
       <span v-if="field?.hint && !field?.obvious_hint" class="field-hint" :title="field.hint">ⓘ</span>
     </label>
 
+    <!-- 嵌套对象：递归渲染子字段（如 gallery.nsfw 里的 threshold） -->
+    <div v-if="field?.type === 'object'" class="obj-block">
+      <div class="obj-block-title">
+        <span>{{ fieldName }}</span>
+        <span v-if="field?.hint" class="obj-block-hint">{{ field.hint }}</span>
+      </div>
+      <div class="obj-block-fields">
+        <ConfigField
+          v-for="(f, fk) in field.items || {}"
+          :key="fk"
+          :field-key="fk"
+          :field="f"
+          :model-value="modelValue && modelValue[fk]"
+          @update:model-value="onSubUpdate(fk, $event)"
+        />
+      </div>
+    </div>
+
     <!-- 布尔 -->
-    <div v-if="field?.type === 'bool'" class="bool-row">
+    <div v-else-if="field?.type === 'bool'" class="bool-row">
       <n-switch :value="!!modelValue" size="small" @update:value="emit('update:modelValue', $event)" />
       <span class="field-hint-text">{{ field.hint }}</span>
     </div>
@@ -90,10 +108,29 @@ function toNumber(v: any): number | null {
   const n = Number(v);
   return isNaN(n) ? null : n;
 }
+
+// object 类型：子字段变化时，拼成新对象向上 emit
+function onSubUpdate(fk: string, v: any) {
+  const cur: Record<string, any> = { ...(props.modelValue && typeof props.modelValue === "object" ? props.modelValue : {}) };
+  cur[fk] = v;
+  emit("update:modelValue", cur);
+}
 </script>
 
 <style scoped>
 .cfg-field { display: flex; flex-direction: column; gap: 4px; }
+.obj-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-body);
+}
+.obj-block-title { font-size: 13px; font-weight: 600; color: var(--text-main); display: flex; flex-direction: column; gap: 2px; }
+.obj-block-hint { font-size: 11px; color: var(--text-sub); font-weight: 400; line-height: 1.4; }
+.obj-block-fields { display: flex; flex-direction: column; gap: 10px; }
 .field-label { display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 500; }
 .field-name { color: var(--text-main); }
 .field-hint { cursor: help; color: var(--accent); }
