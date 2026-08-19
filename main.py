@@ -5029,12 +5029,19 @@ class ComfyUIDrawPlugin(Star):
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。
-            # 【关键】必须 return None：AstrBot tool_loop_agent_runner 在工具返回 None 时
-            # 置状态为 DONE 并立即结束 Agent Loop（~L1199）。若返回文本，AstrBot 会喂回 LLM，
-            # LLM 可能继续调画图工具 → "画完→再调→再画"死循环（同 seed、prompt 略改，停不下来）。
-            # return None 后图片已发、循环终止，AstrBot 会追加"tool 已直接发图"供 LLM 收尾。
-            return None
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。这里返回一句「收尾指令」
+            # 给 LLM，让它对所有图发完后做一句话自然收尾。
+            # 防死循环说明：返回文本会被 AstrBot 喂回 LLM，LLM 理论上可能再次调用画图工具。
+            # 因此文本必须【极其明确地】宣告「本次生图任务已完成、禁止重复生图」；
+            # 且外层已有 4 秒连续调用拦截 + 同参（prompt+seed）去重 + 出图预算兜底。
+            # 注意：不要 return None——None 会让 AstrBot 直接置 DONE 结束循环，LLM 不再说话，
+            # 用户会看到「图发完就哑了」。这里需要 LLM 收尾，故返回文本。
+            return (
+                "本次生图任务已全部完成，所有图片都已生成并发送给用户。"
+                "请用一句话简短、自然地收尾即可（例如「画好啦」）。"
+                "【重要】本次生图任务已完成，绝对不要再次调用任何画图工具，也不要重复生图；"
+                "只有当用户下一条新消息明确要求再画时才继续。"
+            )
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
@@ -5846,8 +5853,13 @@ class ComfyUIDrawPlugin(Star):
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。
-            # 【关键】必须 return None，让 AstrBot tool_loop_agent_runner 置 DONE 并立即结束
-            # Agent Loop（同 comfyui_draw，防止"画完→再调→再画"死循环）。
-            return None
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。这里返回一句「收尾指令」
+            # 给 LLM，让它对所有图发完后做一句话自然收尾（同 comfyui_draw，不 return None，
+            # 否则 Agent Loop 直接结束、LLM 不再说话；靠外层 4 秒拦截 + 同参去重 + 出图预算兜底）。
+            return (
+                "本次生图任务已全部完成，所有图片都已生成并发送给用户。"
+                "请用一句话简短、自然地收尾即可（例如「画好啦」）。"
+                "【重要】本次生图任务已完成，绝对不要再次调用任何画图工具，也不要重复生图；"
+                "只有当用户下一条新消息明确要求再画时才继续。"
+            )
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
