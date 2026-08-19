@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.13
+
+- **角色/作品标签处理顺序：先找角色 LoRA，没有再调 danbooru MCP；用角色 tag 不加外观描写**：
+  - 场景：用户提到具体角色（如「初音未来」）时，模型可能①不查角色 LoRA 直接用标签②或即便有 LoRA 仍叠加外观标签（发色/瞳色/服装）导致与角色原设定冲突画错。
+  - 修复：`comfyui_draw` 工具描述与 `skills/comfyui-draw/SKILL.md` 同步新增「角色/作品的处理顺序」：
+    1. 先调 `comfyui_loras`（category=角色）查匹配角色 LoRA，有则填 `loras` 且不再用 danbooru 重复描述外形；
+    2. 没有匹配角色 LoRA 才调 danbooru MCP 查角色 tag + 作品 tag；
+    3. **角色 tag + 作品 tag 已锁定角色全部设定，禁止再叠加外观标签**（blue_hair/long_hair/white_dress 等），仅当用户额外明确要求改变外观才加；
+    4. 无 LoRA 也无 MCP 时退回模型自带知识；泛化人物不受此约束。
+  - 说明：SKILL.md 补上了此前缺失的「danbooru MCP 优先」提示，与工具描述保持一致。
+
 ## v4.5.12
 
 - **强化 `count` 数量规则的 LLM 工具描述，杜绝「只发一张却被画成 3 张」**：
