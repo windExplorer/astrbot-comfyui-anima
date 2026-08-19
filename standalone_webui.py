@@ -189,7 +189,9 @@ class StandaloneWebUI:
         if not idx.exists():
             return _err("未找到前端页面（请先构建 pages/anima-console-vue）", status=404)
         text = idx.read_text(encoding="utf-8")
-        return web.Response(text=text, content_type="text/html", charset="utf-8")
+        # index.html 不缓存：确保每次拿到最新引用的 hash 资源，避免升级后浏览器用旧 JS
+        return web.Response(text=text, content_type="text/html", charset="utf-8",
+                            headers={"Cache-Control": "no-cache"})
 
     async def _handle_static(self, request: web.Request) -> web.Response:
         path = request.match_info.get("path", "")
