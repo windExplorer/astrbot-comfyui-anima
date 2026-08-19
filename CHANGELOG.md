@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.29
+
+- **新增业务操作日志（解释「限额计数 > 图库/出图记录条数」对账问题）**：
+  - 背景：用户反馈「当前小时只出 1 张图，但限额统计显示 2、图库/出图记录只能找到 1 张」。根因是图库 `archive_image` 按内容寻址（sha256）去重——产出与已有图完全相同的图片时只 `use_count+1`、不插入新记录，而限额 `record_used` 每次成功出图都 +1，两者口径天然不一致。
+  - 新增日志（`data_dir/webui.log` 落盘 + WebUI 日志页可读）：
+    - `image_store.archive_image` 去重命中时打印 `sha256 前 16 位` 与原/新 `use_count`，明确「本次不插入新行」；
+    - `main.py` 出图成功 yield 后打印 `user / seed / sha256 前 16 位`，便于与图库去重日志对照；
+    - `_record_draw_used` 扣减后打印 `total / hour / day` 三项计数（标注「每次成功出图 +1，与图库是否去重无关」）。
+  - `quota_store.QuotaStore` 新增 `peek(user_id)` 只读方法，供日志读取当前计数（不改计数）。
+  - 注：前端日志页此前"空"因无业务日志，现已补全；后端 `_install_webui_log_handler` 在 `initialize` 已挂载 root logger，业务日志会自动进日志页。本次无前端改动，日志页逻辑不变（`apiGet("logs")` 读 `webui.log`）。
+
 ## v4.4.28
 
 - **前端 WebUI：放宽 `lora/fetch`（C 站抓取）前端超时从 6s 到 60s**：

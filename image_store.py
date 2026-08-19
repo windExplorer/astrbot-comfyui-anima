@@ -477,6 +477,11 @@ class ImageStore:
             try:
                 _existing = self.path_of(sha)
                 if _existing:
+                    # 业务日志：去重命中（图库/出图记录不新增行，但调用方可能仍按次数计数）
+                    logger.info(
+                        f"[图库] 去重命中 sha256={sha[:16]} 已存在记录(use_count 原={row['use_count']})，"
+                        f"本次不插入新行（图库/出图记录仅显示 1 条，但调用方计数仍 +1）"
+                    )
                     return _existing
             except Exception:
                 pass
@@ -493,6 +498,9 @@ class ImageStore:
             try:
                 conn.execute(
                     "UPDATE images SET use_count=use_count+1 WHERE sha256=?", (sha,)
+                )
+                logger.info(
+                    f"[图库] 去重命中 sha256={sha[:16]} use_count 自 {row['use_count']} → {row['use_count'] + 1}（仅计数+1，未新增记录）"
                 )
                 # 若之前是 ref/user 缺 prompt，本次是 gen 则补全
                 if source == SRC_GEN and not row["prompt"] and prompt:

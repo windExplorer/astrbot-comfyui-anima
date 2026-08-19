@@ -132,6 +132,18 @@ class QuotaStore:
         except Exception as e:  # pragma: no cover
             logger.warning(f"[限额] 记录计数失败: {e}")
 
+    def peek(self, user_id: str):
+        """只读返回某用户当前用量对象（用于日志核对，不修改计数）。无则返回 None。"""
+        if not user_id:
+            return None
+        conn = self._conn_get()
+        row = conn.execute(
+            "SELECT user_id, user_name, total_used, hour_used, hour_start, day_used, day_start "
+            "FROM quota_usage WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        return row
+
     def get_usage(self, user_id: str) -> dict:
         """返回用户当前用量，含跨小时/跨天自动重置后的计数。"""
         now = time.time()

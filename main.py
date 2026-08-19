@@ -2578,6 +2578,21 @@ class ComfyUIDrawPlugin(Star):
                     # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
                     yield event.image_result(_send_img_path), _send_img_path
 
+                    # 出图成功业务日志：带 content hash，方便与图库去重日志对照
+                    try:
+                        from .image_store import _sha256_of
+                    except ImportError:
+                        from image_store import _sha256_of
+                    try:
+                        _sha = _sha256_of(img_path)
+                        _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
+                        logger.info(
+                            f"[出图] 成功 user={_uid} seed={seeds_used[0] if seeds_used else '?'} "
+                            f"sha256={_sha[:16] if _sha else '?'} 已发图"
+                        )
+                    except Exception:
+                        pass
+
                     # 生图成功：记录配额（总次数 + 当前小时次数）
                     self._record_draw_used(event)
 
@@ -3673,6 +3688,15 @@ class ComfyUIDrawPlugin(Star):
         user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
         self.quota.record_used(user_id, user_name)
+        # 业务日志：限额扣减（注意：与图库去重无关，每次成功出图都 +1）
+        try:
+            _q = self.quota.peek(user_id)
+            logger.info(
+                f"[限额] 扣减 user={user_id} 成功：total={_q.total_used} "
+                f"hour={_q.hour_used} day={_q.day_used}（每次成功出图 +1，与图库是否去重无关）"
+            )
+        except Exception:
+            pass
 
     def _llm_draw_budget(self, event, count: int, source: str = "") -> tuple[int, str]:
         """AI 对话（LLM 工具调用）的会话级出图预算控制，返回 (本次允许张数, 拦截提示)。
