@@ -4683,23 +4683,30 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
-        # 同参去重：同一会话在短时间窗口内，用「相同 prompt + 相同 seed」重复调用，
-        # 判定为模型死循环/无脑重试，直接拒绝（防「画了一张又用同样参数再画一张」）。
-        # 模型画多张时应改变 seed，否则就是重复生成同一张图。伴侣/主动来源不受限。
+        # 死循环去重：同一会话在窗口(300s)内，用「相同 seed」出现 ≥2 次调用，判定为 LLM 死循环。
+        # 关键：LLM 死循环时常会微调 prompt（改几个字）但复用相同 seed 重画同一张，
+        # 纯 prompt 比较会失效。故只要 seed 相同且窗口内重复即拦。seed 为空时回退 prompt 比较。
+        # 伴侣/主动来源不受限。
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             try:
                 _now2 = time.time()
                 _sid_key2 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-                _fp = f"{str(prompt or '').strip()}|{int(seed or 0)}"
+                _seed_val = int(seed) if seed is not None and str(seed).strip() != "" else None
+                _fp = _seed_val if _seed_val is not None else f"prompt|{str(prompt or '').strip()}"
                 _fp_map = getattr(plugin, "_llm_draw_fp", None)
                 if not isinstance(_fp_map, dict):
                     _fp_map = {}
                     plugin._llm_draw_fp = _fp_map
-                _prev_fp, _prev_fp_t = _fp_map.get(_sid_key2, (None, 0.0))
-                _fp_map[_sid_key2] = (_fp, _now2)
-                if _prev_fp == _fp and (_now2 - _prev_fp_t) < 30.0:
-                    logger.info(f"[llm_draw] 会话 {_sid_key2} 相同 prompt+seed 重复调用，判定为死循环，拦截")
-                    return "你已经用同样的参数画过了，图片已发送。本次请求到此结束，【绝对不要】再用相同 prompt+seed 重复调用画图工具；等待用户下一条新消息的明确指示。"
+                # 记录该会话最近出现过的指纹时间（按出现先后）
+                _seen = _fp_map.get(_sid_key2, {})
+                _seen = {k: t for k, t in _seen.items() if _now2 - t < 300.0}  # 清理 5 分钟外
+                _last_t = _seen.get(_fp)
+                _is_repeat = _last_t is not None  # 5 分钟内同 seed 出现过 → 第 2 次，拦截
+                _seen[_fp] = _now2
+                _fp_map[_sid_key2] = _seen
+                if _is_repeat:
+                    logger.info(f"[llm_draw] 会话 {_sid_key2} 相同 seed={_fp} 5 分钟内重复调用，判定为死循环，拦截")
+                    return "你已经用同样的参数（相同 seed）画过了，图片已发送。本次请求到此结束，【绝对不要】再复用相同 seed 调用画图工具；若确需重画，请改用一个新 seed，否则等待用户下一条新消息的明确指示。"
             except Exception:
                 pass
 
@@ -5047,14 +5054,12 @@ class ComfyUIDrawPlugin(Star):
                     await event.send(_nd if isinstance(_nd, MessageChain) else MessageChain([_nd]))
                 except Exception as _e:
                     logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
-            # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
-            # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
-            # 技术元数据复述给用户；只做极简收尾指示，并明确「不要自我驱动再画」。
-            return (
-                f"本次已向用户发送 {len(img_paths)} 张图片。请用一句话简短、自然地收尾即可；"
-                "不要描述文件名/尺寸/耗时等技术细节。注意：除非用户当前这条消息又明确要求改图/加图/再来几张，"
-                "否则不要自己再主动调用画图工具；也不要基于对话历史里较早的负面反馈（如『画得不对』）继续画。"
-            )
+            # 图片已由插件主动 event.send 发到聊天里。
+            # 【关键】必须 return None：AstrBot tool_loop_agent_runner 在工具返回 None 时
+            # 置状态为 DONE 并立即结束 Agent Loop（~L1199）。若返回文本，AstrBot 会喂回 LLM，
+            # LLM 可能继续调画图工具 → "画完→再调→再画"死循环（同 seed、prompt 略改，停不下来）。
+            # return None 后图片已发、循环终止，AstrBot 会追加"tool 已直接发图"供 LLM 收尾。
+            return None
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
@@ -5865,12 +5870,8 @@ class ComfyUIDrawPlugin(Star):
                     await event.send(_nd if isinstance(_nd, MessageChain) else MessageChain([_nd]))
                 except Exception as _e:
                     logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
-            # 图片已由插件主动 event.send 发到聊天里。返回给模型的文本**绝不提及任何
-            # 文件信息（路径/文件名/尺寸/大小/耗时/时间/格式等）**，避免模型把这些
-            # 技术元数据复述给用户；只做极简收尾指示，并明确「不要自我驱动再画」。
-            return (
-                f"本次已向用户发送 {len(img_paths)} 张图片。请用一句话简短、自然地收尾即可；"
-                "不要描述文件名/尺寸/耗时等技术细节。注意：除非用户当前这条消息又明确要求改图/加图/再来几张，"
-                "否则不要自己再主动调用画图工具；也不要基于对话历史里较早的负面反馈（如『画得不对』）继续画。"
-            )
+            # 图片已由插件主动 event.send 发到聊天里。
+            # 【关键】必须 return None，让 AstrBot tool_loop_agent_runner 置 DONE 并立即结束
+            # Agent Loop（同 comfyui_draw，防止"画完→再调→再画"死循环）。
+            return None
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"

@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.8
+
+- **根治 AI 对话画图死循环（LLM 反复自动调画图工具，几分钟连发十几张）**：
+  - 场景：用户说一句「锚点又忘了吗，重来」，LLM agent 反复自动调用 `comfyui_draw`/`comfyui_img2img`，同 seed、prompt 略作微调，无限发图。
+  - 根因：`comfyui_draw`/`comfyui_img2img` 工具发图后**返回一段文本**给 LLM。AstrBot 的 `tool_loop_agent_runner` 会把工具返回值喂回 LLM，LLM 可继续决定调用画图工具 → 「画完→再调→再画」死循环。而若工具返回 `None`，AstrBot 会把状态置 `DONE` 并**立即结束 Agent Loop**（`tool_loop_agent_runner.py` ~L1199），循环被强制终止。
+  - 修复：两个工具发图后改为 `return None`（不再返回文本）。图片已由插件 `event.send` 发出；AstrBot 收到 None 即终止循环，并追加「tool 已直接发图」给 LLM 做一句话收尾。
+  - 附带：死循环去重加固为「同一会话 5 分钟窗口内相同 seed 出现 ≥2 次即拦截」（此前仅精确匹配 prompt+seed，LLM 微调 prompt 即可绕过）。
+  - 说明：LLM 画完图不再能自主连续补画；需要改图/加图时用户须在下一条消息明确要求。
+
 ## v4.5.7
 
 - **修复 NSFW 阈值调整后不生效（仍用旧阈值判定）**：
