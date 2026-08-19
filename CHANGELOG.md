@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.23
+
+- **修复插件页在 sandbox iframe 下因 localStorage 抛 SecurityError 而整页崩溃**（这才是「接口已返回数据但封面不渲染」的真相，而非之前的响应式推测）：AstrBot 插件页运行在缺少 `allow-same-origin` 的 sandbox iframe 中，直接访问 `localStorage` 会抛 `SecurityError`，导致 JS bundle 在初始化阶段中断、后续所有逻辑（含缩略图渲染）都不执行。
+  - 新增 `webui-src/src/api/storage.ts`：`lsGet/lsSet` 安全封装，首次访问探测可用性，失败时降级到内存 Map，**绝不向上抛错**。
+  - 三个视图（GalleryView / LogsView / TokenView）中所有裸 `localStorage` 调用统一替换为 `lsGet/lsSet`，覆盖每页数量缓存、NSFW 模糊开关等。
+  - 注：sandbox 下 localStorage 不可用时会降级为内存存储，刷新页面后“每页数量”等偏好不再持久（仅本次会话有效），但页面不再崩溃。
+
 ## v4.4.22
 
 - **修复图库封面「接口已返回 base64 但不渲染」**：根因是 `thumbCache` 用动态 key（sha）赋值，在 `v-for` + 异步预取的场景下 Vue 不一定对该新增 key 建立响应式依赖，导致 data URL 写进了缓存但 `<img :src>` 不重渲染。

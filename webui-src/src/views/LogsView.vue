@@ -82,6 +82,7 @@ import { computed, h, onMounted, reactive, ref } from "vue";
 import { NButton, NDataTable, NInput, NCheckbox, NSelect, NTag, useMessage, type DataTableColumns } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { fetchThumb } from "@/api/bridge";
+import { lsGet, lsSet } from "@/api/storage";
 import { fmtBytes, fmtDuration, fmtDateTime, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import ImageViewer from "@/components/ImageViewer.vue";
@@ -98,7 +99,7 @@ const recLoading = ref(false);
 const recSearch = ref("");
 const recFailedOnly = ref(false);
 const recPage = ref(1);
-let recPageSize = Number(localStorage.getItem("anima_logs_page_size") || "") || 10;
+let recPageSize = Number(lsGet("anima_logs_page_size") || "") || 10;
 // 用响应式对象缓存缩略图：fetchThumb 完成后更新会触发表格重新渲染，图片才显示。
 const recThumbCache = reactive<Record<string, string>>({});
 
@@ -143,7 +144,7 @@ function thumbFor(row: any): string {
 // NSFW 模糊（与图库封面一致）：NSFW 图 && 全局开关开 && 单图未强制取消
 const nsfwBlurGlobal = ref(true);
 try {
-  const v = localStorage.getItem("anima_gal_nsfw_blur");
+  const v = lsGet("anima_gal_nsfw_blur");
   if (v != null) nsfwBlurGlobal.value = v === "1";
 } catch { /* ignore */ }
 function isNsfwBlurred(img: any): boolean {
@@ -217,7 +218,7 @@ const recColumns: DataTableColumns = [
 
 function onRecPageSize(s: number) {
   recPageSize = s;
-  localStorage.setItem("anima_logs_page_size", String(s));
+  lsSet("anima_logs_page_size", String(s));
   recPage.value = 1;
   loadRecords(1);
 }

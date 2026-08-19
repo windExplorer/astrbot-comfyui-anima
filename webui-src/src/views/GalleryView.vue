@@ -156,6 +156,7 @@
 import { onMounted, onUnmounted, reactive, ref } from "vue";
 import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane, NSwitch, NTooltip } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
+import { lsGet, lsSet } from "@/api/storage";
 import { fmtBytes, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import ImageViewer from "@/components/ImageViewer.vue";
@@ -174,7 +175,7 @@ const images = ref<any[]>([]);
 const total = ref(0);
 const page = ref(1);
 // 每页缩略图数量：与出图记录一致，避免一页展示太多；用 localStorage 缓存，刷新不变
-let pageSize = Number(localStorage.getItem("anima_gallery_page_size") || "") || 20;
+let pageSize = Number(lsGet("anima_gallery_page_size") || "") || 20;
 const stats = ref<any>(null);
 const thumbCache = reactive<Record<string, string>>({});
 // 记录封面加载失败的 sha；reloading 记录正在重载中的 sha（用于按钮状态）
@@ -198,11 +199,11 @@ const nsfwOptions = [
 // 全局 NSFW 模糊开关（localStorage 持久化，默认开启）
 const nsfwBlurGlobal = ref(true);
 try {
-  const v = localStorage.getItem("anima_gal_nsfw_blur");
+  const v = lsGet("anima_gal_nsfw_blur");
   if (v != null) nsfwBlurGlobal.value = v === "1";
 } catch { /* ignore */ }
 function onBlurGlobalChange() {
-  try { localStorage.setItem("anima_gal_nsfw_blur", nsfwBlurGlobal.value ? "1" : "0"); } catch { /* ignore */ }
+  try { lsSet("anima_gal_nsfw_blur", nsfwBlurGlobal.value ? "1" : "0"); } catch { /* ignore */ }
 }
 // ---- NSFW 一键检测 + 进度 ----
 const scanState = ref<{ running: boolean; total: number; done: number; nsfw: number; finished_at: number | null }>({
@@ -368,7 +369,7 @@ function onTabChange() {
 
 function onPageSize(s: number) {
   pageSize = s;
-  localStorage.setItem("anima_gallery_page_size", String(s));
+  lsSet("anima_gallery_page_size", String(s));
   page.value = 1;
   doSearch(1);
 }

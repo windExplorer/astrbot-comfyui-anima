@@ -80,6 +80,7 @@ import { useMessage, useDialog, NButton, NRadioGroup, NRadioButton, NCheckbox, N
 import AreaChart from "@/components/AreaChart.vue";
 import Pager from "@/components/Pager.vue";
 import { apiGet, apiPost } from "@/api/bridge";
+import { lsGet, lsSet } from "@/api/storage";
 import { fmtDateTime } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 
@@ -89,7 +90,7 @@ const loading = ref(false);
 const scope = ref("1");
 const merge = ref(false);
 const page = ref(1);
-const pageSize = ref(Number(localStorage.getItem("anima_token_page_size") || "") || 30);
+const pageSize = ref(Number(lsGet("anima_token_page_size") || "") || 30);
 const detailTotal = ref(0);
 
 const summary = ref<any>(null);
@@ -159,7 +160,7 @@ function onPage(p: number) {
 }
 function onPageSize(s: number) {
   pageSize.value = s;
-  localStorage.setItem("anima_token_page_size", String(s));
+  lsSet("anima_token_page_size", String(s));
   page.value = 1;
   load();
 }
