@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.28
+
+- **前端 WebUI：放宽 `lora/fetch`（C 站抓取）前端超时从 6s 到 60s**：
+  - 根因：`bridge.ts` 的 `apiPost` 默认超时仅 6s（`withTimeout` 兜底文案即此前报出的「`POST lora/fetch` 超时（6s 无响应，可能后端路由未注册或插件未重载）」），而后端 `lora_fetch` 最坏耗时约 10s（C 站 API）+ 6×15s（逐张下载候选封面），C 站稍慢即被前端 6s 先断开。
+  - 修复：`apiPost` 新增第三个可选参数 `{ timeout }` 透传给 `bridgeRequest`；`LorasView.vue` 与 `WorkflowsView.vue` 的 `lora/fetch` 调用均传入 `{ timeout: 60000 }`，对应 `message.loading` 时长同步放宽到 60s。其他接口维持默认 6s 不变。
+  - 注：此改动仅解决「路由存在但 C 站慢 → 前端先超时」一类问题；若仍报「未找到该路由」（404），属后端路由未注册，需确认 AstrBot 实际加载的插件副本是否为最新（非工作区代码未同步）。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.27
 
 - **前端 WebUI 弹窗修复（LoRA 编辑/删除）**：

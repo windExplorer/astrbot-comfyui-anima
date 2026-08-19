@@ -299,7 +299,7 @@ function fetchCover(idx: number) {
   if (!w) return;
   if (!w.civitai_url) { message.warning("请先填写 C 站链接"); return; }
   message.loading("正在抓取封面…", { duration: 10000 });
-  apiPost("lora/fetch", { url: w.civitai_url }).then((d) => {
+  apiPost("lora/fetch", { url: w.civitai_url }, { timeout: 60000 }).then((d) => {
     const covers = (Array.isArray(d.images) && d.images.length) ? d.images : (d.image ? [d.image] : []);
     if (!covers.length) throw new Error("未抓取到封面图");
     if (covers.length > 1) {

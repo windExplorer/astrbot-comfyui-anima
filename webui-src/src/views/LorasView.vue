@@ -358,8 +358,8 @@ function fetchLora(idx: number) {
   const l = loras.value[idx];
   if (!l) return;
   if (!l.civitai_url) { message.warning("请先填写 C 站链接"); return; }
-  message.loading("正在抓取…", { duration: 15000 });
-  apiPost("lora/fetch", { url: l.civitai_url }).then((d) => {
+  message.loading("正在抓取…", { duration: 60000 });
+  apiPost("lora/fetch", { url: l.civitai_url }, { timeout: 60000 }).then((d) => {
     if (!d || !d.fetched) throw new Error("未抓取到数据");
     const updates: Record<string, any> = {};
     if (d.trigger_words) updates.trigger_words = d.trigger_words;

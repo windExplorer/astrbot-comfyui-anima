@@ -233,9 +233,11 @@ export function apiGet(endpoint: string, params?: Record<string, any>, options?:
   return apiRaw(path, opts);
 }
 
-/** POST 请求，body 直接作为 JSON 负载发送。 */
-export function apiPost(endpoint: string, body?: Record<string, any>): Promise<any> {
-  return apiRaw(endpoint, { method: "POST", body: body || {} });
+/** POST 请求，body 直接作为 JSON 负载发送。timeout 可选（毫秒），默认 6000。 */
+export function apiPost(endpoint: string, body?: Record<string, any>, options?: { timeout?: number }): Promise<any> {
+  const opts: { method: string; body?: any; timeout?: number } = { method: "POST", body: body || {} };
+  if (options && options.timeout) opts.timeout = options.timeout;
+  return apiRaw(endpoint, opts);
 }
 
 /** 缩略图/大图拉取封装：图库列表只返回 sha，前端按需取 data URL。 */
