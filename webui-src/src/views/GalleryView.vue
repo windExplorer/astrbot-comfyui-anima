@@ -165,8 +165,8 @@ const starred = ref(false);
 const images = ref<any[]>([]);
 const total = ref(0);
 const page = ref(1);
-// 每页缩略图数量：与出图记录一致，避免一页展示太多
-let pageSize = 20;
+// 每页缩略图数量：与出图记录一致，避免一页展示太多；用 localStorage 缓存，刷新不变
+let pageSize = Number(localStorage.getItem("anima_gallery_page_size") || "") || 20;
 const stats = ref<any>(null);
 const thumbCache = reactive<Record<string, string>>({});
 
@@ -298,6 +298,7 @@ function onTabChange() {
 
 function onPageSize(s: number) {
   pageSize = s;
+  localStorage.setItem("anima_gallery_page_size", String(s));
   page.value = 1;
   doSearch(1);
 }

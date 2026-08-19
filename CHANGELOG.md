@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.19
+
+- **分页每页数量缓存到 localStorage，刷新页面后保持不变**：图库（GalleryView）、出图记录（LogsView）、配额明细（TokenView）三个页面的每页数量，切换后写入 `localStorage`（key 分别 `anima_gallery_page_size` / `anima_logs_page_size` / `anima_token_page_size`），页面刷新或重开仍保留上次选择，不再每次重置为默认值。
+
 ## v4.4.18
 
 - **GIF 图生图只取第一帧，避免连发多张图**：此前传入 GIF 做图生图时，整张动图原样上传给 ComfyUI，其 LoadImage 节点会把多帧展开导致「连续发送很多张图片」。现图生图注入前统一检测 GIF，用 Pillow 提取首帧转存为静态 webp（落 temp/ 目录，随 24h 清理），再上传/注入/归档，确保只取第一帧。非 GIF、或无 Pillow 环境会降级为原样上传。

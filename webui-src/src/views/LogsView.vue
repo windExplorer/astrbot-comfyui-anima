@@ -98,7 +98,7 @@ const recLoading = ref(false);
 const recSearch = ref("");
 const recFailedOnly = ref(false);
 const recPage = ref(1);
-let recPageSize = 10;
+let recPageSize = Number(localStorage.getItem("anima_logs_page_size") || "") || 10;
 // 用响应式对象缓存缩略图：fetchThumb 完成后更新会触发表格重新渲染，图片才显示。
 const recThumbCache = reactive<Record<string, string>>({});
 
@@ -217,6 +217,7 @@ const recColumns: DataTableColumns = [
 
 function onRecPageSize(s: number) {
   recPageSize = s;
+  localStorage.setItem("anima_logs_page_size", String(s));
   recPage.value = 1;
   loadRecords(1);
 }
