@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.37
+
+- **修复独立 WebUI 静态资源 500（JS 加载失败）**：
+  - 现象：独立服务能启动、`index.html` 能打开，但 `/assets/index-*.js` 返回 `500 Internal Server Error`（浏览器 `ERR_ABORTED`）。
+  - 修复：`standalone_webui.py` 的静态文件处理不再用 aiohttp 的 `web.FileResponse`（在部分环境（Windows/容器）下会 500），改为**手动读取文件字节返回**，并显式设置 `content_type`（缺失时回退 `application/octet-stream`）与长缓存头；读取异常时返回明确的 500 JSON 而非静默失败。
+  - 构建产物不变（`pages/anima-console-vue/` 结构正常），仅后端静态服务逻辑调整。
+  - 附带：`favicon.ico` 缺失时返回 204 空响应，消除浏览器控制台 favicon 404 噪音（不影响功能）。
+
 ## v4.4.36
 
 - **修复打包遗漏：独立 WebUI / 操作日志模块未打进 zip**：

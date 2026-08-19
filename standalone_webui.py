@@ -203,9 +203,18 @@ class StandaloneWebUI:
         if not str(fp).startswith(str(PAGES_DIR.resolve())):
             return _err("Forbidden", status=403)
         if not fp.exists() or not fp.is_file():
+            # favicon 缺失时返回空，避免浏览器控制台 404 噪音
+            if clean in ("favicon.ico", "favicon.png"):
+                return web.Response(body=b"", status=204, content_type="image/x-icon")
             return _err("Not Found", status=404)
         ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
-        return web.FileResponse(fp, content_type=ctype)
+        # 手动读字节返回，避免 aiohttp FileResponse 在部分环境（Windows/容器）下 500
+        try:
+            data = await asyncio.to_thread(fp.read_bytes)
+        except Exception as e:
+            return _err(f"读取静态文件失败: {e}", status=500)
+        return web.Response(body=data, content_type=ctype,
+                            headers={"Cache-Control": "public, max-age=31536000"})
 
     # ------------------------------------------------------------------ #
     # API 分发
