@@ -2,6 +2,17 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.4.38
+
+- **独立 WebUI 增加访问口令登录弹窗**：
+  - 现象：独立服务配置了 token 时，页面加载后没有输入口令的地方，仅后台报 401，用户无法进入。
+  - 修复（前端）：
+    - `bridge.ts`：新增 `standaloneAuthState`（可订阅认证状态）、`setStandaloneToken`（存 localStorage）；`standaloneRequest` 收到 401 时触发 `authRequired` 状态。
+    - `App.vue`：独立模式下启动时探测 `/api/ping`；若后端要求 token 则弹出「访问口令」登录框（密码输入 + 确认进入），校验通过后存 token 并重载页面进入；口令错误则继续停留弹窗。
+    - 后端 `_handle_api` 对 `/api/ping` 同样做鉴权（未带 token 返回 401），作为前端探测的依据。
+  - 体验：设置了 token 的独立服务，打开页面先看到口令输入框，输对才能进。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2851 模块，0 错误）。
+
 ## v4.4.37
 
 - **修复独立 WebUI 静态资源 500（JS 加载失败）**：

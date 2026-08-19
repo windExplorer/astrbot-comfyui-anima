@@ -48,11 +48,37 @@
         </n-loading-bar-provider>
       </n-dialog-provider>
     </n-message-provider>
+
+    <!-- 独立服务访问口令弹窗：standalone 模式需要 token 校验时弹出 -->
+    <n-modal
+      v-model:show="authVisible"
+      :mask-closable="false"
+      :close-on-esc="false"
+      :show-close="false"
+      preset="card"
+      style="width: 360px; max-width: 92vw"
+      :title="'访问控制台'"
+    >
+      <div class="auth-panel">
+        <p class="auth-tip">该控制台设置了访问口令，请输入后进入：</p>
+        <n-input
+          v-model:value="authInput"
+          type="password"
+          size="large"
+          placeholder="请输入访问口令"
+          show-password-on="click"
+          @keyup.enter="submitAuth"
+        />
+        <div class="auth-actions">
+          <n-button type="primary" size="large" block :loading="authLoading" @click="submitAuth">确认进入</n-button>
+        </div>
+      </div>
+    </n-modal>
   </n-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
 import {
   darkTheme,
@@ -70,10 +96,13 @@ import {
   NSwitch,
   NButton,
   NIcon,
+  NModal,
+  NInput,
   type MenuOption,
   type GlobalThemeOverrides,
 } from "naive-ui";
 import { useTheme, initThemeBridge } from "@/composables/useTheme";
+import { standaloneAuthState, setStandaloneToken, isStandaloneMode, apiGet } from "@/api/bridge";
 
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
 // 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
@@ -83,9 +112,57 @@ const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
 
+// 独立服务访问口令弹窗状态
+const authVisible = ref(false);
+const authInput = ref("");
+const authLoading = ref(false);
+let authUnsub: (() => void) | null = null;
+
+async function submitAuth() {
+  const token = (authInput.value || "").trim();
+  if (!token) return;
+  authLoading.value = true;
+  try {
+    setStandaloneToken(token);
+    // 用 ping 验证口令是否正确
+    await apiGet("ping", {}, { timeout: 5000 });
+    authVisible.value = false;
+    authInput.value = "";
+    // 校验成功后重载页面，让所有请求带上新 token
+    window.location.reload();
+  } catch (e: any) {
+    if (e && e.authRequired) {
+      // token 仍不对，继续停留弹窗
+      authInput.value = "";
+    } else {
+      authVisible.value = false;
+      window.location.reload();
+    }
+  } finally {
+    authLoading.value = false;
+  }
+}
+
 // 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext
 onMounted(() => {
   initThemeBridge();
+  // 独立服务模式：探测是否需要认证，订阅认证状态触发弹窗
+  if (isStandaloneMode()) {
+    authUnsub = standaloneAuthState.on((needed) => {
+      authVisible.value = needed;
+    });
+    // 主动探测一次：后端无 token 配置则 ping 成功，不弹窗；有 token 则 401 弹窗
+    apiGet("ping", {}, { timeout: 5000 }).catch((e) => {
+      if (!(e && e.authRequired)) standaloneAuthState.set(false);
+    });
+  }
+});
+
+onUnmounted(() => {
+  if (authUnsub) {
+    authUnsub();
+    authUnsub = null;
+  }
 });
 
 const themeOverrides: GlobalThemeOverrides = {
@@ -316,6 +393,19 @@ function onMenuSelect(key: string) {
   --text-sub: #9a7a88;
   --border-color: #ffe3ec;
   --accent: #ff8fb3;
+}
+/* 独立服务访问口令弹窗 */
+.auth-panel {
+  padding: 4px 0 0;
+}
+.auth-tip {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-sub);
+  line-height: 1.5;
+}
+.auth-actions {
+  margin-top: 16px;
 }
 /* 兼容两种深色触发：AstrBot 维护的 [data-theme=dark] 与本地手动切换的 html.dark */
 html[data-theme="dark"],

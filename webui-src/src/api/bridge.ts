@@ -210,6 +210,35 @@ async function bridgeRequest(br: Bridge, path: string, method: string, body: Rec
 // ------------------------------------------------------------------ //
 const STANDALONE_TOKEN_KEY = "anima_standalone_token";
 
+// 认证状态：供 UI（App.vue 的 token 弹窗）订阅。当独立服务需要 token 校验但
+// 未提供/校验失败时，置 authNeeded=true，触发登录弹窗。
+export const standaloneAuthState = {
+  authNeeded: false,
+  listeners: [] as Array<(needed: boolean) => void>,
+  set(needed: boolean) {
+    if (this.authNeeded !== needed) {
+      this.authNeeded = needed;
+      this.listeners.forEach((fn) => fn(needed));
+    }
+  },
+  on(listener: (needed: boolean) => void) {
+    this.listeners.push(listener);
+    listener(this.authNeeded);
+    return () => {
+      this.listeners = this.listeners.filter((fn) => fn !== listener);
+    };
+  },
+};
+
+/** 设置/清除独立服务访问口令（存 localStorage）。 */
+export function setStandaloneToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(STANDALONE_TOKEN_KEY, token);
+    else localStorage.removeItem(STANDALONE_TOKEN_KEY);
+  } catch { /* ignore */ }
+  standaloneAuthState.set(false);
+}
+
 function standaloneToken(): string {
   try {
     const q = new URLSearchParams(window.location.search).get("token");
@@ -220,7 +249,7 @@ function standaloneToken(): string {
   }
 }
 
-function isStandaloneMode(): boolean {
+export function isStandaloneMode(): boolean {
   // 独立服务页面从它自己的源加载，通常 window !== window.parent（iframe 内嵌时
   // parent 有 AstrBotPluginPage）。这里：无可用桥接即视为独立模式，走 HTTP。
   const w = window as any;
@@ -252,6 +281,13 @@ async function standaloneRequest(path: string, method: string, body?: any, timeo
     });
     let payload: any = null;
     try { payload = await resp.json(); } catch { payload = { success: false, error: "响应非 JSON" }; }
+    // 401 未授权：触发 token 登录弹窗
+    if (resp.status === 401) {
+      standaloneAuthState.set(true);
+      const err = new Error(payload && payload.error ? payload.error : "未授权：请填写访问口令");
+      (err as any).authRequired = true;
+      throw err;
+    }
     if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "success")) {
       if (!payload.success) throw new Error(payload.error || "请求失败");
       return payload.data;
