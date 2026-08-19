@@ -34,7 +34,7 @@
                   <span class="header-title">{{ currentTitle }}</span>
                 </div>
                 <div class="header-right">
-                  <n-switch v-model:value="isDark" size="small" @update:value="toggleDark">
+                  <n-switch v-model:value="isDark" size="small">
                     <template #checked-icon>🌙</template>
                     <template #unchecked-icon>☀️</template>
                   </n-switch>
@@ -83,7 +83,7 @@ import { useTheme, initThemeBridge } from "@/composables/useTheme";
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
 // 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
 // 消息提示只能在各 View（provider 的后代）里用。
-const { isDark, toggleDark } = useTheme();
+const { isDark } = useTheme();
 const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);

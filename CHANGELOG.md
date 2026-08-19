@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.1
+
+- **修复右上角主题切换按钮无效**：
+  - 根因：`App.vue` 的主题开关 `n-switch` 同时绑定了 `v-model:value="isDark"` 与 `@update:value="toggleDark"`，二者叠加——`v-model` 更新 `isDark`，`toggleDark` 又翻转一次，主题「切了又切回」，表现为点不了。
+  - 修复：移除 `@update:value="toggleDark"`，仅保留 `v-model:value="isDark"`（`watch(isDark)` 自动同步 `<html>` 主题与 CSS 变量）。
+  - 构建产物 `pages/anima-console-vue/` 已重新生成并通过 `vite build`（2855 模块，0 错误）。
+
 ## v4.5.0
 
 - **版本进位**：按约定（小版本 Z 超 10 进位），自 v4.4.50 后中间版本进位为 v4.5.0，后续从 4.5.x 继续，Z 到 .11 再进位到 4.6.0。
