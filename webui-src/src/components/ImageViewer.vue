@@ -48,7 +48,15 @@
               <button class="iv-check" :disabled="checking" @click="onCheckNsfw">{{ checking ? "检测中…" : "检测" }}</button>
               <button class="iv-check" :disabled="settingNsfw" @click="onSetNsfw(true)">标记为 NSFW</button>
             </span></div>
-            <div v-if="item.tags && item.tags.length" class="iv-row"><span class="k">标签</span><span class="v">{{ item.tags.join("、") }}</span></div>
+            <div v-if="!isTrash" class="iv-row iv-row-tags"><span class="k">标签</span><span class="v iv-tags">
+              <template v-if="item.tags && item.tags.length">
+                <n-tag v-for="t in item.tags" :key="t" size="small" :color="tagColor(t)" closable @close="removeTag(t)" class="iv-tag">{{ t }}</n-tag>
+              </template>
+              <span v-else class="iv-tag-empty">无</span>
+              <span class="iv-tag-add">
+                <n-input v-model:value="newTag" size="small" placeholder="加标签后回车" style="width:140px" @keyup.enter="addTag" />
+              </span>
+            </span></div>
             <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
             <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
@@ -71,7 +79,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, useDialog, useMessage } from "naive-ui";
+import { NButton, NInput, NSpace, NTag, useDialog, useMessage } from "naive-ui";
 import { apiGet, apiPost, isStandaloneMode, standaloneImgUrl } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
 
@@ -223,6 +231,50 @@ function swapPair() {
   const m = mainSrc.value;
   mainSrc.value = refSrc.value;
   refSrc.value = m;
+}
+
+// ---- 标签（展示 + 增删） ----
+const newTag = ref("");
+// 标签固定调色板：同一标签稳定映射到同一颜色，不同标签随机配色。
+// 色板取中深饱和色，配白字保证对比度；返回 NTag 的 color 对象。
+const TAG_COLORS = [
+  "#7c4dff", "#0ea5e9", "#db2777", "#d97706", "#16a34a",
+  "#9333ea", "#c026d3", "#0284c7", "#ea580c", "#059669",
+  "#be123c", "#0d9488", "#4f46e5", "#b91c1c", "#2563eb",
+];
+function _tagHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+function tagColor(s: string) {
+  return { color: TAG_COLORS[_tagHash(s) % TAG_COLORS.length], textColor: "#fff", borderColor: "transparent" };
+}
+async function _applyTags(tags: string[], action: "add" | "del") {
+  const it = item.value;
+  const sha = it?.sha || it?.sha256;
+  if (!sha || !tags.length) return;
+  try {
+    await apiPost("gallery/tags", { sha, tags, action });
+    // 本地同步 tags，并广播给图库列表刷新
+    const cur = Array.isArray(it.tags) ? it.tags : [];
+    it.tags = action === "add"
+      ? Array.from(new Set([...cur, ...tags]))
+      : cur.filter((t: string) => !tags.includes(t));
+    window.dispatchEvent(new CustomEvent("anima:tags-updated", { detail: { sha, tags: it.tags } }));
+    message.success(action === "add" ? "标签已添加" : "标签已删除");
+  } catch (e: any) {
+    message.error(e?.message || (action === "add" ? "添加标签失败" : "删除标签失败"));
+  }
+}
+async function addTag() {
+  const t = newTag.value.trim();
+  if (!t) return;
+  newTag.value = "";
+  await _applyTags([t], "add");
+}
+async function removeTag(t: string) {
+  await _applyTags([t], "del");
 }
 
 // ---- NSFW 模糊 ----
@@ -537,6 +589,11 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-row .k { flex: 0 0 64px; color: rgba(255, 255, 255, 0.5); }
 .iv-row .v { flex: 1; color: #e6e6f0; word-break: break-word; white-space: pre-wrap; }
+.iv-row-tags { align-items: flex-start; }
+.iv-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.iv-tag { cursor: pointer; }
+.iv-tag-empty { color: rgba(255, 255, 255, 0.35); font-size: 12px; }
+.iv-tag-add { display: inline-flex; align-items: center; }
 .iv-prompt { flex: 1 1 auto; min-height: 60px; align-items: stretch; }
 .iv-prompt .v { overflow: auto; max-height: 100%; padding-right: 4px; }
 @media (max-width: 760px) {

@@ -339,7 +339,7 @@ async function prefetchThumbs(list: any[]) {
     while (idx < queue.length) {
       const sha = queue[idx++];
       try {
-        const url = await fetchThumb(sha, 240);
+        const url = await fetchThumb(sha, 480);
         if (url) {
           thumbCache[sha] = url;
           delete thumbFailed[sha];
@@ -360,7 +360,7 @@ async function reloadThumb(img: any) {
   if (!sha || reloading[sha]) return;
   reloading[sha] = true;
   try {
-    const url = await fetchThumb(sha, 240);
+    const url = await fetchThumb(sha, 480);
     if (url) {
       thumbCache[sha] = url;
       delete thumbFailed[sha];

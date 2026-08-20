@@ -1890,45 +1890,42 @@ class ComfyUIDrawPlugin(Star):
         其他值（默认 text）直接发送文字。
         """
         if str(self._cfg("gallery", {}).get("display_mode", "text")).strip().lower() == "render":
-            # AstrBot 的 t2i 模板把文本当 Markdown 渲染，单个 \n 会被当作软换行吃掉，
-            # 导致图库「列表/收藏列表」多行挤成一行。这里把 \n 换成 <br>\n（模板用
-            # {{ text | safe }} 直接注入，不转义，<br> 会被 marked 正确渲染为换行）。
-            render_text = text.replace("\n", "<br>\n")
-            # 1) 优先：AstrBot text_to_image 官方渲染服务（模板漂亮、清晰）
-            try:
-                url = await self.text_to_image(render_text)
-                if url:
-                    # AstrBot 的 Image 组件第一个必填参数是 file（不是 url）。
-                    # text_to_image 返回的是本地路径，用 fromFileSystem；http(s) 才用 fromURL。
-                    if url.startswith("http://") or url.startswith("https://"):
-                        img_comp = Image.fromURL(url)
-                    else:
-                        img_comp = Image.fromFileSystem(url)
-                    await event.send(MessageChain([img_comp]))
-                    return
-                self.logger.warning("[图库] AstrBot 渲染服务返回空 URL，改用 Pillow 兜底")
-            except Exception as _e:
-                try:
-                    self.logger.warning(f"[图库] AstrBot 渲染失败，改用 Pillow 兜底: {_e}")
-                except Exception:
-                    pass
-            # 2) 兜底：本插件内置 Pillow 渲染（仅在 AstrBot 服务不可用时）
+            # 1) 优先：本插件内置 Pillow 渲染（2x 超采样 + 大字号，字大清晰、可稳定控制）。
+            #    AstrBot 官方 t2i 模板字号偏小（无法通过 text_to_image 传字号），发出来发虚，
+            #    故改为 Pillow 优先，官方服务仅作兜底。
             render_path = self._render_gallery_text_pillow(text)
             if render_path:
                 try:
                     await event.send(MessageChain([Image.fromFileSystem(render_path)]))
                     return
                 except Exception as _e:
-                    self.logger.warning(f"[图库] Pillow 兜底渲染图发送失败，回退文字: {_e}")
+                    self.logger.warning(f"[图库] Pillow 渲染图发送失败，改用 AstrBot 服务: {_e}")
+            # 2) 兜底：AstrBot text_to_image 官方渲染服务
+            render_text = text.replace("\n", "<br>\n")  # t2i 模板按 Markdown 渲染，\n 需转 <br>
+            try:
+                url = await self.text_to_image(render_text)
+                if url:
+                    if url.startswith("http://") or url.startswith("https://"):
+                        img_comp = Image.fromURL(url)
+                    else:
+                        img_comp = Image.fromFileSystem(url)
+                    await event.send(MessageChain([img_comp]))
+                    return
+                self.logger.warning("[图库] AstrBot 渲染服务返回空 URL，回退文字")
+            except Exception as _e:
+                try:
+                    self.logger.warning(f"[图库] AstrBot 渲染失败，回退文字: {_e}")
+                except Exception:
+                    pass
             # 3) 最终回退：文字
             await self._send(
                 event,
-                text + "\n\n⚠ 渲染成图片失败（AstrBot 文本转图片服务不可用，Pillow 兜底也未成功），已回退文字。请确认 AstrBot「文本转图片」服务已启用并选择了激活模板。",
+                text + "\n\n⚠ 渲染成图片失败（Pillow 兜底与 AstrBot 文本转图片服务均失败），已回退文字。请确认 Pillow 可用且 AstrBot「文本转图片」服务已启用。",
             )
             return
         await self._send(event, text)
 
-    def _render_gallery_text_pillow(self, text: str, font_size: int = 22) -> str | None:
+    def _render_gallery_text_pillow(self, text: str, font_size: int = 32) -> str | None:
         """用 Pillow 把图库展示文字绘制成高清图片（解决 AstrBot 默认 t2i 字小发虚）。
 
         做法：2x 超采样（先在大尺寸画布上用大字号绘制，再缩放回目标尺寸）得到抗锯齿清晰字；
@@ -4190,6 +4187,18 @@ class ComfyUIDrawPlugin(Star):
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if sub in ("help", "帮助"):
+            # 优先发一张固定的「图库使用指南」静态图（随插件打包，零渲染开销）。
+            # 找不到图或发图失败时回退到纯文本帮助，保证可用性。
+            try:
+                _help_img = Path(__file__).resolve().parent / "assets" / "gallery_help.png"
+                if _help_img.is_file():
+                    await event.send(MessageChain([Image.fromFileSystem(str(_help_img))]))
+                    return
+            except Exception as _e:
+                try:
+                    self.logger.warning(f"[图库] 静态帮助图发送失败，回退文字: {_e}")
+                except Exception:
+                    pass
             await self._send(
                 event,
                 "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"

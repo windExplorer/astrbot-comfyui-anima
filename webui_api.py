@@ -1230,17 +1230,27 @@ class WebUIApi:
             payload = await request.json(default={}) or {}
             sha = payload.get("sha", "")
             tags = payload.get("tags", [])
+            action = str(payload.get("action") or "add").strip().lower()
             if not sha or not tags:
                 return error_response("缺少 sha 或 tags")
-            g.add_tags(sha, tags if isinstance(tags, list) else [tags])
+            tag_list = tags if isinstance(tags, list) else [tags]
+            if action == "del":
+                g.remove_tags(sha, tag_list)
+                msg = "标签已删除"
+                ev = "gallery_untag"
+                desc = f"图库删除标签：{','.join(tag_list)}"
+            else:
+                g.add_tags(sha, tag_list)
+                msg = "标签已添加"
+                ev = "gallery_tags"
+                desc = f"图库打标签：{','.join(tag_list)}"
             try:
                 _op = getattr(self.plugin, "oplog", None)
                 if _op is not None:
-                    _op.add("gallery_tags", f"图库打标签：{','.join(tags if isinstance(tags, list) else [tags])}",
-                            ref_sha=sha, extra={"tags": tags if isinstance(tags, list) else [tags]})
+                    _op.add(ev, desc, ref_sha=sha, extra={"tags": tag_list, "action": action})
             except Exception:
                 pass
-            return json_response({"msg": "标签已添加"})
+            return json_response({"msg": msg})
         except Exception as e:
             return error_response(f"打标签失败: {e}")
 
@@ -1313,7 +1323,11 @@ def _thumb_data_url(path, max_w: int = 300) -> str:
                     fmt = "JPEG" if mime == "image/jpeg" else "PNG"
                     if im.mode in ("RGBA", "LA", "P"):
                         im = im.convert("RGBA")
-                    im.save(buf, format=fmt, optimize=True)
+                    if fmt == "JPEG":
+                        # quality 提高以减轻压缩噪声，文字/边缘更清晰
+                        im.save(buf, format=fmt, optimize=True, quality=88)
+                    else:
+                        im.save(buf, format=fmt, optimize=True)
                     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
                     cmime = "image/jpeg" if fmt == "JPEG" else "image/png"
                     return f"data:{cmime};base64,{encoded}"

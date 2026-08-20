@@ -481,9 +481,14 @@ class StandaloneWebUI:
             body = await request.json() if request.body_exists else {}
             sha = (body.get("sha") or "") if isinstance(body, dict) else ""
             tags = body.get("tags", []) if isinstance(body, dict) else []
+            action = str(body.get("action") or "add").strip().lower() if isinstance(body, dict) else "add"
             if not sha or not tags:
                 return _err("缺少 sha 或 tags")
             tag_list = tags if isinstance(tags, list) else [tags]
+            if action == "del":
+                g.remove_tags(sha, tag_list)
+                self._oplog_add("gallery_untag", f"图库删除标签：{','.join(tag_list)}", ref_sha=sha)
+                return _ok({"msg": "标签已删除"})
             g.add_tags(sha, tag_list)
             self._oplog_add("gallery_tags", f"图库打标签：{','.join(tag_list)}", ref_sha=sha)
             return _ok({"msg": "标签已添加"})
