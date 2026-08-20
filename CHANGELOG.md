@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.20
+
+- **修复独立 WebUI 服务下「限额页用户列表/用量不显示」**：
+  - 现象：用 `standalone_webui.py` 起的独立服务打开限额页时，页面能打开，但用户表格为空、用量列全 0/空白，全局限额配置也空白。AstrBot 内嵌页正常。
+  - 根因：前端 `load()` 期望 `/quota/users` 返回 `{ global, users }` 结构（AstrBot 内嵌路由 `quota_users` 正是如此）。但 **standalone 的 `/quota/users` 直接 `return _ok(q.list_users())`，返回的是用户数组本身**，没有 `global` 字段。前端解包 `data.global`（undefined→全局配置空）、`data.users`（undefined→空列表），于是表格空白。
+  - 修复：`standalone_webui.py` 的 `/quota/users` 改为返回 `{ "global": self.plugin._draw_limit_cfg(), "users": q.list_users() }`，与内嵌模式结构一致。前端无需改动（两环境共享同一套解包逻辑）。
+  - 验证：puppeteer 实测 standalone 路径，修复前返回裸数组时确实复现「0 用户」，修复后用户列表与用量正常显示。
+
 ## v4.5.19
 
 - **修复图库大图查看器不受「NSFW 模糊」全局开关控制**：

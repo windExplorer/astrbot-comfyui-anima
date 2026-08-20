@@ -564,7 +564,14 @@ class StandaloneWebUI:
         if q is None:
             return _err("生图限额未启用或初始化失败")
         if path == "/quota/users":
-            return _ok(q.list_users())
+            # 与 AstrBot 内嵌模式(_api_quota_users)保持一致：返回 {global, users}
+            # 否则前端 data.global / data.users 解包失败，限额页用户列表与全局配置空白
+            global_cfg = {}
+            try:
+                global_cfg = self.plugin._draw_limit_cfg() or {}
+            except Exception:
+                global_cfg = {}
+            return _ok({"global": global_cfg, "users": q.list_users()})
         if path == "/quota/reset":
             body = await request.json() if request.body_exists else {}
             user_id = (body.get("user_id") or "").strip() if isinstance(body, dict) else ""
