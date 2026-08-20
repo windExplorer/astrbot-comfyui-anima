@@ -4404,6 +4404,7 @@ class ComfyUIDrawPlugin(Star):
                     lines = [f"{_head}「{kw}」的结果："]
                     for i, r in enumerate(rows, 1):
                         _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
+                        desc = self._gallery_desc(r, 10)
                         tags = (" #" + " #".join(r["tags"])) if r.get("tags") else ""
                         _ts = r.get("created_at") or 0
                         try:

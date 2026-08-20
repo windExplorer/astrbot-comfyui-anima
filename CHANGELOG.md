@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.6.3
+
+- **修复 `/图库 搜索` 指令报错**：`cmd_gallery` 的 search 分支缺少 `desc = self._gallery_desc(r, 10)` 定义，搜索时触发 `cannot access local variable 'desc'`。已补上该定义，与 列表/收藏列表 分支保持一致。
+
 ## v4.6.2
 
 - **图库会话隔离策略调整**：群聊仅展示该群生成的图（本群可见），私聊可跨会话查看所有会话的图。
