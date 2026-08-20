@@ -172,6 +172,7 @@
       :item="viewerItem"
       :ref-sha="viewerRefSha"
       :is-trash="activeTab === 'trash'"
+      :blur-global="nsfwBlurGlobal"
       @star="onStar"
       @delete="onDelete"
       @restore="onRestore"

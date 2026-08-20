@@ -115,6 +115,8 @@ const props = defineProps<{
   refSha?: string;
   /** 是否回收站模式（显示恢复/彻底删除） */
   isTrash?: boolean;
+  /** 全局 NSFW 模糊开关（图库页的「一键模糊」），默认开启。关闭后大图不模糊（单图强制模糊除外） */
+  blurGlobal?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -223,15 +225,19 @@ function swapPair() {
 
 // ---- NSFW 模糊 ----
 const isNsfw = computed(() => Boolean(item.value && item.value.nsfw));
-// 结果图是否应模糊：NSFW 图默认模糊，单图 nsfw_blur=0 强制不模糊，=1 强制模糊
+// 结果图是否应模糊：
+//  - 非 NSFW → 不模糊
+//  - 单图 nsfw_blur=0 强制不模糊（覆盖全局）；=1 强制模糊（覆盖全局）
+//  - nsfw_blur 未设置 → 跟随全局开关 blurGlobal（默认开）：开→模糊，关→不模糊
 const mainBlurred = ref(false);
 watch(
-  () => [item.value?.nsfw, item.value?.nsfw_blur] as const,
+  () => [item.value?.nsfw, item.value?.nsfw_blur, props.blurGlobal] as const,
   () => {
     const it = item.value;
     if (!it || !it.nsfw) { mainBlurred.value = false; return; }
     if (it.nsfw_blur === 0) mainBlurred.value = false;
-    else mainBlurred.value = true;
+    else if (it.nsfw_blur === 1) mainBlurred.value = true;
+    else mainBlurred.value = props.blurGlobal !== false;
   },
   { immediate: true }
 );

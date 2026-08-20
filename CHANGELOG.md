@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.19
+
+- **修复图库大图查看器不受「NSFW 模糊」全局开关控制**：
+  - 现象：在图库页把「NSFW 模糊」开关关掉后，列表缩略图正常变清晰，但点击打开**大图查看器**时 NSFW 图仍然模糊。
+  - 根因：`ImageViewer.vue` 的 `mainBlurred` 只依据 `item.nsfw` 与单图 `nsfw_blur` 字段，**完全没读取图库页的全局模糊开关 `nsfwBlurGlobal`**，因此大图始终按「NSFW 默认模糊」显示，与列表行为不一致。
+  - 修复：给 `ImageViewer` 新增 `blurGlobal` prop（默认 true），`mainBlurred` 计算逻辑对齐列表的 `isNsfwBlurred`——非 NSFW 不模糊；单图 `nsfw_blur=0` 强制不模糊、`=1` 强制模糊（均覆盖全局）；`nsfw_blur` 未设置时**跟随全局开关**（关→不模糊）。`GalleryView` 调用处传入 `:blur-global="nsfwBlurGlobal"`。出图记录页（LogsView）不传该 prop，保持默认模糊，符合日志场景。
+  - 重新构建前端产物 `pages/anima-console-vue/`（0 错误）。
+
 ## v4.5.18
 
 - **修复新版 WebUI 配置页「开关点击无反应（状态不切换），但保存按钮亮」**：
