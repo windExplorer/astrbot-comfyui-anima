@@ -1870,8 +1870,16 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     async def _send(self, event: AstrMessageEvent, text: str) -> None:
         """主动发送一条文本消息（不占用 yield，避免命令 pipeline 在首个
-        yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。"""
-        await event.send(MessageChain([Plain(str(text))]))
+        yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。
+
+        容错：发送失败（如底层 API 暂时不可用、协议端掉线/风控）只记日志，
+        不向上抛异常——否则会中断 _do_draw 等调用方的后续流程（如等待出图、
+        发送图片），导致「提示没发出去，图也没出来」。
+        """
+        try:
+            await event.send(MessageChain([Plain(str(text))]))
+        except Exception as _e:
+            logger.warning(f"[发送] 主动发送文本失败（忽略，不中断主流程）: {_e}")
 
     async def _send_display(self, event: AstrMessageEvent, text: str) -> None:
         """按图库配置的展示方式发送展示内容。
