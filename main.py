@@ -2087,7 +2087,7 @@ class ComfyUIDrawPlugin(Star):
         rows = []
         others = []
         for line in text.split("\n"):
-            m = re.match(r"^(\d+)[\.、]\s+(.+)$", line.strip())
+            m = re.match(r"^(\d+)[\.、]\s*(.+)$", line.strip())
             if m and "|" in m.group(2):
                 cells = [c.strip() for c in m.group(2).split("|")]
                 cells = cells + [""] * (3 - len(cells)) if len(cells) < 3 else cells
@@ -3834,6 +3834,18 @@ class ComfyUIDrawPlugin(Star):
             "· /涩图检测（引用图片）   检测图片是否为涩涩内容\n"
             "· 想查看详细参数，回复「画画帮助」即可"
         )
+        # 优先发静态帮助图（随插件打包，零渲染开销），失败回退文字
+        try:
+            _help_img = Path(__file__).resolve().parent / "assets" / "draw_help.png"
+            if _help_img.is_file():
+                await event.send(MessageChain([Image.fromFileSystem(str(_help_img))]))
+                event.stop_event()
+                return
+        except Exception as _e:
+            try:
+                self.logger.warning(f"[绘图] 静态帮助图发送失败，回退文字: {_e}")
+            except Exception:
+                pass
         await self._send(event, text)
         event.stop_event()
 
@@ -4673,7 +4685,10 @@ class ComfyUIDrawPlugin(Star):
                     for i, r in enumerate(rows, 1):
                         _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
                         star = "★" if r["starred"] else ""
-                        lines.append(f"{_gno}. {star} {r['source']} {self._gallery_desc(r, 40)}")
+                        _src_map = {"gen": "文生图", "img2img": "图生图", "ref": "参考图", "user": "用户图"}
+                        _src = (r.get("source") or "").strip()
+                        _src_cn = _src_map.get(_src, _src or "默认")
+                        lines.append(f"{_gno}. {star}{self._gallery_desc(r, 40)} | {_src_cn} | ")
                     lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
                     await self._send_display(event, "\n".join(lines))
 
