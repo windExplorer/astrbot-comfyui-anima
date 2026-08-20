@@ -58,7 +58,7 @@
 
       <!-- 标量字段 -->
       <template v-else>
-        <ConfigField :field-key="key" :field="schema" :model-value="value" @update:model-value="emitChange(key, $event)" />
+        <ConfigField :field-key="key" :field="schema" :model-value="value" @update:model-value="emitScalar($event)" />
       </template>
     </div>
   </div>
@@ -77,6 +77,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "change"): void;
+  (e: "update-scalar", key: string, value: any): void;
 }>();
 
 const arrValue = computed<any[]>(() => (Array.isArray(props.value) ? props.value : []));
@@ -90,8 +91,12 @@ function displayName(item: any): string {
   return "(未命名)";
 }
 
-function emitChange(k: string, v: any) {
-  (props.value as any)[k] = v;
+// 标量字段（bool/string/number）：props.value 是标量（非对象），不能在其上写属性，
+// 必须把 (key, value) 向上 emit，由父级 ConfigView 更新 config[key]。
+// 否则对布尔 false 等标量执行 props.value[key]=v 会抛
+// "Cannot create property ... on boolean 'false'"（旧版 bug）。
+function emitScalar(v: any) {
+  emit("update-scalar", props.key, v);
   emit("change");
 }
 

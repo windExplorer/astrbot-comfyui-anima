@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.17
+
+- **修复新版 WebUI 配置页「开关点了没反应 + 报错 Cannot create property on boolean」**：
+  - 现象：新版控制台（anima-console-vue，含 AstrBot 内嵌页与独立服务）的配置页，部分开关点击无反应，控制台报 `TypeError: Cannot create property 'undefined' on boolean 'false'`；旧版页面正常。
+  - 根因：`ConfigSection.vue` 的标量字段（bool/string/number）更新时调 `emitChange(key, v)`，直接执行 `props.value[key] = v`。但标量字段的 `props.value` 是布尔/数字/字符串（如 bool 的 `false`），不是对象，对其写属性即抛 `Cannot create property ... on boolean 'false'`。
+  - 修复：标量字段改为 `emitScalar(v)`，将 `(key, value)` 向上 emit（新增 `update-scalar` 事件）；`ConfigView.vue` 监听并写入 reactive 的 `config[key]`（对象可写）。object / template_list 子字段路径本就有对象保护，不受影响。
+  - 重新构建前端产物 `pages/anima-console-vue/`（2855 modules，0 错误）。
+
 ## v4.5.16
 
 - **修复 `_send` 发送失败导致整个出图流程中断**：

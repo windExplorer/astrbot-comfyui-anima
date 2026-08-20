@@ -35,6 +35,7 @@
                 :schema="schema![key]"
                 :value="config[key]"
                 @change="onFieldChange"
+                @update-scalar="onUpdateScalar"
               />
             </div>
           </n-collapse-item>
@@ -128,6 +129,14 @@ async function load() {
 }
 
 function onFieldChange() {
+  dirty.value = true;
+  saveMsg.value = "";
+}
+
+// 标量字段（bool/string/number）更新：由 ConfigSection emit 上来的 (key, value)，
+// 直接写入 reactive config[key]（config 是对象可写；若在标量值上写会报错）。
+function onUpdateScalar(key: string, value: any) {
+  (config as any)[key] = value;
   dirty.value = true;
   saveMsg.value = "";
 }
