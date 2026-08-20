@@ -1091,6 +1091,45 @@ class ComfyUIDrawPlugin(Star):
                 return parts[1].strip() if len(parts) > 1 else ""
         return text
 
+    def _resolve_ratio_size(
+        self, prompt_text: str, width: int | None, height: int | None
+    ) -> tuple[int | None, int | None]:
+        """根据用户文本检测「尺寸比例」，返回 (宽, 高)；未命中或用户已显式指定宽高时返回 (None, None)。
+
+        规则：
+        - 用户已显式给出任意一个宽或高（width 或 height 非空）→ 不触发比例（用户优先）。
+        - 否则在 prompt_text 里找 draw_ratio（template_list 数组）的 keyword 命中项
+          （enabled=true），取第一个命中项返回其 width/height。
+        - 都没有 → (None, None)，由调用方回退工作流默认尺寸。
+        """
+        # 用户显式给过宽或高 → 以用户为准，不触发比例
+        if width or height:
+            return None, None
+        presets = self._cfg("draw_ratio", []) or []
+        if not presets:
+            return None, None
+        text = (prompt_text or "").lower()
+        if not text:
+            return None, None
+        for p in presets:
+            if not isinstance(p, dict):
+                continue
+            if not p.get("enabled", True):
+                continue
+            kws = (p.get("keyword") or "").strip()
+            if not kws:
+                continue
+            kw_list = [k.strip().lower() for k in kws.split(",") if k.strip()]
+            if any(k and k in text for k in kw_list):
+                pw = p.get("width")
+                ph = p.get("height")
+                if pw and ph:
+                    try:
+                        return int(pw), int(ph)
+                    except (TypeError, ValueError):
+                        return None, None
+        return None, None
+
     def _danbooru_cfg(self) -> dict:
         return self._cfg("danbooru", {}) or {}
 
@@ -2124,6 +2163,9 @@ class ComfyUIDrawPlugin(Star):
         notify_pending: bool = True,
         source: str = "",
     ):
+        # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
+        # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
+        _ratio_src = positive or ""
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
         # 出图计时起点（用于生成完成后的耗时报告）
@@ -2300,8 +2342,12 @@ class ComfyUIDrawPlugin(Star):
             )
 
         # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入
-        w = width or int(wf.get("default_width", 512) or 512)
-        h = height or int(wf.get("default_height", 512) or 512)
+        # 尺寸比例（全局 draw_ratio）：用户未显式指定宽高（width/height 均为空）时，
+        # 若用户原始提示词里命中某个比例关键词（竖版/横版/9:16 等），则用该比例的配置尺寸，
+        # 优先于工作流默认尺寸；用户显式给了宽高则始终以用户为准。
+        _ratio_w, _ratio_h = self._resolve_ratio_size(_ratio_src, width, height)
+        w = _ratio_w if _ratio_w is not None else (width or int(wf.get("default_width", 512) or 512))
+        h = _ratio_h if _ratio_h is not None else (height or int(wf.get("default_height", 512) or 512))
         if init_images:
             res_node = None
         else:

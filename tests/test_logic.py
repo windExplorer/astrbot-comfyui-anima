@@ -8,6 +8,7 @@
 import asyncio
 import os
 import sys
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -275,6 +276,38 @@ async def test_translate_api():
     print("   OK")
 
 
+def test_ratio_size():
+    print("== 5. 尺寸比例 draw_ratio 解析（mock 配置）==")
+    from main import ComfyUIDrawPlugin
+
+    RATIOS = [
+        {"name": "方形", "keyword": "方形,1:1,square", "width": 1024, "height": 1024, "enabled": True},
+        {"name": "竖版", "keyword": "竖版,竖屏,9:16,portrait", "width": 576, "height": 1024, "enabled": True},
+        {"name": "横版", "keyword": "横版,16:9,wide", "width": 1024, "height": 576, "enabled": True},
+        {"name": "禁用", "keyword": "禁用比", "width": 1, "height": 1, "enabled": False},
+    ]
+    stub = SimpleNamespace(_cfg=lambda k, d=None: {"draw_ratio": RATIOS}.get(k, d))
+    rs = lambda t, w, h: ComfyUIDrawPlugin._resolve_ratio_size(stub, t, w, h)
+
+    # 命中竖版
+    assert rs("一张竖版的图", None, None) == (576, 1024), rs("竖版", None, None)
+    # 命中 9:16
+    assert rs("9:16 壁纸", None, None) == (576, 1024)
+    # 命中横版（列表顺序：方形未命中 → 竖版未命中 → 横版命中）
+    assert rs("横版宽屏", None, None) == (1024, 576)
+    # 用户显式给了宽 → 不触发比例
+    assert rs("竖版", 768, None) == (None, None)
+    assert rs("竖版", None, 1024) == (None, None)
+    assert rs("竖版", 768, 1024) == (None, None)
+    # 禁用的比例不命中
+    assert rs("禁用比测试", None, None) == (None, None)
+    # 无匹配词
+    assert rs("一只猫", None, None) == (None, None)
+    # 空文本
+    assert rs("", None, None) == (None, None)
+    print("   OK")
+
+
 if __name__ == "__main__":
     test_workflow_logic()
     test_true_disable_relink()
@@ -284,4 +317,5 @@ if __name__ == "__main__":
     asyncio.run(test_integration())
     asyncio.run(test_danbooru())
     asyncio.run(test_translate_api())
+    test_ratio_size()
     print("\n全部测试通过 ✅")

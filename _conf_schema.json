@@ -625,6 +625,114 @@
       }
     }
   },
+  "draw_ratio": {
+    "type": "template_list",
+    "description": "尺寸比例预设（全局，所有工作流通用）",
+    "hint": "当用户说「竖版 / 横版 / 方形 / 9:16 / 16:9」等比例词，且没有明确指定宽高时，按命中预设的尺寸出图（优先于工作流默认尺寸，但低于用户显式给出的 --w/--h 或 LLM 的 width/height）。点击“添加”可自定义比例；修改某个预设的 keyword/width/height 即可调整。",
+    "templates": {
+      "default": {
+        "name": "尺寸比例",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "比例名称",
+            "hint": "仅作展示用（如「竖版 3:4」），不参与触发匹配。",
+            "default": ""
+          },
+          "keyword": {
+            "type": "string",
+            "description": "触发关键词（逗号分隔）",
+            "hint": "当用户文本（提示词 / 指令参数）中出现这些词之一时触发本比例。支持英文与比例写法，如：竖版,竖图,竖屏,3:4,3比4,portrait。多个关键词用英文逗号分隔。",
+            "default": ""
+          },
+          "width": {
+            "type": "int",
+            "description": "宽度（像素）",
+            "hint": "触发时使用的宽度。建议用工作流底模支持的尺寸（如 512/768/1024 的整数倍）。",
+            "default": 1024
+          },
+          "height": {
+            "type": "int",
+            "description": "高度（像素）",
+            "hint": "触发时使用的高度。建议用工作流底模支持的尺寸。",
+            "default": 1024
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用该比例预设",
+            "hint": "关闭则该预设不参与触发匹配。",
+            "default": true
+          }
+        }
+      }
+    },
+    "default": [
+      {
+        "name": "方形 1:1",
+        "keyword": "方形,正方形,1:1,1比1,square",
+        "width": 1024,
+        "height": 1024,
+        "enabled": true
+      },
+      {
+        "name": "竖版 3:4",
+        "keyword": "竖版,竖图,竖屏,3:4,3比4,portrait",
+        "width": 768,
+        "height": 1024,
+        "enabled": true
+      },
+      {
+        "name": "竖版 2:3",
+        "keyword": "2:3,2比3",
+        "width": 683,
+        "height": 1024,
+        "enabled": true
+      },
+      {
+        "name": "竖版 9:16",
+        "keyword": "9:16,9比16,手机壁纸,vertical",
+        "width": 576,
+        "height": 1024,
+        "enabled": true
+      },
+      {
+        "name": "横版 4:3",
+        "keyword": "横版,横图,横屏,4:3,4比3,landscape",
+        "width": 1024,
+        "height": 768,
+        "enabled": true
+      },
+      {
+        "name": "横版 3:2",
+        "keyword": "3:2,3比2",
+        "width": 1024,
+        "height": 683,
+        "enabled": true
+      },
+      {
+        "name": "横版 16:9",
+        "keyword": "16:9,16比9,宽屏,wide",
+        "width": 1024,
+        "height": 576,
+        "enabled": true
+      },
+      {
+        "name": "长图 1:2",
+        "keyword": "长图,竖长图,1:2,1比2",
+        "width": 512,
+        "height": 1024,
+        "enabled": true
+      },
+      {
+        "name": "超宽 21:9",
+        "keyword": "21:9,21比9,超宽",
+        "width": 1024,
+        "height": 439,
+        "enabled": true
+      }
+    ]
+  },
   "allow_draw_users": {
     "type": "text",
     "description": "发图白名单（允许绘图/发图的用户）",
