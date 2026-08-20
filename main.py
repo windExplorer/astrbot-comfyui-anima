@@ -2079,9 +2079,13 @@ class ComfyUIDrawPlugin(Star):
         await self._send(event, text)
 
     def _gallery_text_to_table(self, text: str) -> str:
-        """把图库列表/搜索/收藏文本中的「序号. 描述 | 类型 | 时间」行转成 Markdown 表格，
+        """把图库列表/搜索/收藏文本中的「序号. 描述 | 类型 | 时间 [| 用户]」行转成 Markdown 表格，
         供 html_render 的 marked 渲染成 HTML <table>；非表格行（标题/翻页/提示）保持原样。
-        无匹配表格行时原样返回 text，不影响其他渲染内容。"""
+        无匹配表格行时原样返回 text，不影响其他渲染内容。
+
+        列结构固定为 5 列（序号/描述/类型/时间/用户）：普通行只有 3 个数据列（描述|类型|时间），
+        用户列为空；管理员视图会追加「| 👤 用户名」作为第 4 个数据列。解析时固定取最后
+        3 列作为「类型/时间/用户」，其前所有列合并为描述，避免任何位置多出的「|」导致列错位。"""
         import re
 
         rows = []
@@ -2090,19 +2094,21 @@ class ComfyUIDrawPlugin(Star):
             m = re.match(r"^(\d+)[\.、]\s*(.+)$", line.strip())
             if m and "|" in m.group(2):
                 cells = [c.strip() for c in m.group(2).split("|")]
-                # 超过 3 列（描述里意外带了「|」，如标签/管理员信息）时，
-                # 把多余列并入描述，确保「描述 | 类型 | 时间」三列不错位。
-                if len(cells) > 3:
-                    cells = [" ".join(cells[:-2]).strip(), cells[-2].strip(), cells[-1].strip()]
+                if len(cells) >= 4:
+                    # 4+ 列（管理员带了用户列）：最后1列=用户，倒数2=时间，倒数3=类型，前面合并为描述。
+                    desc = " ".join(cells[:-3]).strip()
+                    typ, tm, user = cells[-3], cells[-2], cells[-1]
                 else:
+                    # 3 列（普通）：描述 | 类型 | 时间，用户为空。
                     cells = cells + [""] * (3 - len(cells)) if len(cells) < 3 else cells
-                rows.append((m.group(1), cells[0], cells[1], cells[2]))
+                    desc, typ, tm, user = cells[0], cells[1], cells[2], ""
+                rows.append((m.group(1), desc, typ, tm, user))
             else:
                 others.append(line)
         if not rows:
             return text
-        header = "| 序号 | 描述 | 类型 | 时间 |\n|---|---|---|---|"
-        body = [f"| {no} | {desc} | {typ} | {tm} |" for no, desc, typ, tm in rows]
+        header = "| 序号 | 描述 | 类型 | 时间 | 用户 |\n|---|---|---|---|---|"
+        body = [f"| {no} | {desc} | {typ} | {tm} | {user} |" for no, desc, typ, tm, user in rows]
         table = "\n".join([header] + body)
         if not others:
             return table
