@@ -859,8 +859,8 @@
       "cross_session": {
         "type": "bool",
         "default": false,
-        "description": "跨会话检索",
-        "hint": "开启后所有会话的图都可被检索；关闭时 /gallery 与 comfyui_gallery 仅能检索「当前会话」范围内生成的图。"
+        "description": "跨会话检索（已弃用）",
+        "hint": "自 v4.3.0 起图库默认即按会话隔离（私聊只看私聊、群聊只看该群），本开关不再生效。跨会话查看所有会话的图请用指令「/图库 全部 列表」（管理员）。"
       },
       "nsfw": {
         "type": "object",

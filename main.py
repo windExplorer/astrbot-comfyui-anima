@@ -1890,9 +1890,13 @@ class ComfyUIDrawPlugin(Star):
         其他值（默认 text）直接发送文字。
         """
         if str(self._cfg("gallery", {}).get("display_mode", "text")).strip().lower() == "render":
+            # AstrBot 的 t2i 模板把文本当 Markdown 渲染，单个 \n 会被当作软换行吃掉，
+            # 导致图库「列表/收藏列表」多行挤成一行。这里把 \n 换成 <br>\n（模板用
+            # {{ text | safe }} 直接注入，不转义，<br> 会被 marked 正确渲染为换行）。
+            render_text = text.replace("\n", "<br>\n")
             # 1) 优先：AstrBot text_to_image 官方渲染服务（模板漂亮、清晰）
             try:
-                url = await self.text_to_image(text)
+                url = await self.text_to_image(render_text)
                 if url:
                     # AstrBot 的 Image 组件第一个必填参数是 file（不是 url）。
                     # text_to_image 返回的是本地路径，用 fromFileSystem；http(s) 才用 fromURL。
@@ -3994,7 +3998,7 @@ class ComfyUIDrawPlugin(Star):
                     return False
         path = self.gallery.path_of(sha)
         if not path:
-            await self._send(event, f"没找到这张图（sha={sha[:16]}），可能已被清理或从未入库。")
+            await self._send(event, "没找到这张图，可能已被清理或从未入库。")
             return False
         try:
             # 必须包成 MessageChain 再 send：AstrBot 新版 event.send 期望消息链，
@@ -4177,8 +4181,10 @@ class ComfyUIDrawPlugin(Star):
             else:
                 sub = "list"
 
-        # 跨会话范围（关闭 cross_session 时仅当前会话）
-        session_scope = None if self._cfg("gallery", {}).get("cross_session") else (event.session_id or "")
+        # 会话范围：默认仅当前会话（私聊=该私聊，群聊=该群），互不串看。
+        # 仅当使用「全部」子命令（管理员）时才放宽到所有会话。
+        # 注：原 cross_session 配置开关已弃用——按需求图库默认按会话隔离。
+        session_scope = None if all_view else (event.session_id or "")
         # 用户隔离标识：始终按当前用户过滤，避免群聊里不同用户互相看到对方的图。
         # owner 为空（如事件拿不到发送者）时不隔离，仅作兜底。
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
@@ -4187,20 +4193,23 @@ class ComfyUIDrawPlugin(Star):
             await self._send(
                 event,
                 "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"
+                "· 默认仅展示【当前会话】的图（私聊只看私聊，群聊只看该群）\n"
                 "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
                 "· 搜索 <关键词>　按画面描述检索\n"
                 "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
                 "· 找标签 <标签>　按标签取图\n"
-                "· 取图 <序号/sha>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
-                "· 收藏 <序号/sha> / 取消收藏 <序号/sha>　收藏或取消收藏（可多张）\n"
-                "· 收藏列表 [页码]　查看自己收藏的图（★）\n"
-                "· 公开 <序号/sha> / 私有 <序号/sha>　设置图片可见性（公开后他人可检索）\n"
+                "· 取图 <序号>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
+                "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张）\n"
+                "· 收藏列表 [页码]　查看自己收藏的图（★，同样默认仅当前会话）\n"
+                "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后他人可检索）\n"
                 "· 保存 [标签...]　收藏当前这张图\n"
                 # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
                 # "· 回收站　查看回收站\n"
-                "· 统计　查看图库统计信息\n"
-                "· 重扫　全量重新检测涩图（调整阈值后刷新所有图片的 NSFW 标记）\n"
-                "· 全部 列表/搜索（管理员）　查看所有用户的图片（带 sid/用户名）\n\n"
+                # 以下为管理员专属功能，不在普通用户帮助里展示（见 README）：
+                # "· 统计　查看图库统计信息\n"
+                # "· 重扫　全量重新检测涩图（调整阈值后刷新所有图片的 NSFW 标记）\n"
+                # "· 全部 列表/搜索/收藏列表（管理员）　跨会话查看所有用户的图\n"
+                # "· 重扫状态　查看全量重扫进度\n"
                 "多张用法：取图/收藏/取消收藏 都支持一次性多张，序号用逗号或空格隔开。\n"
                 "示例：/图库 列表 2　/图库 取图 1,2,3　/图库 收藏 1 2 5　/图库 取图 1,2,4 7",
             )
@@ -4313,13 +4322,14 @@ class ComfyUIDrawPlugin(Star):
                 except ValueError:
                     pass
             eff_owner = "" if all_view else owner
-            # 收藏是用户级资产，跨会话可见，不因 session 过滤而丢图（否则「收藏两张只显示一张」）。
-            total = self.gallery.count_search(starred_only=True, owner=eff_owner)
+            # 收藏默认也按会话隔离（私聊收藏只在该私聊可见，群聊同理）；
+            # 仅「全部」子命令（管理员）才跨会话查看所有收藏。
+            total = self.gallery.count_search(starred_only=True, owner=eff_owner, session=session_scope)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
             rows = self.gallery.search(
                 starred_only=True, limit=page_size, offset=(page - 1) * page_size,
-                owner=eff_owner,
+                owner=eff_owner, session=session_scope,
             )
             if not rows:
                 await self._send(event, "你还没收藏任何图。收藏后可用 /图库 收藏列表 查看。")
@@ -4434,7 +4444,7 @@ class ComfyUIDrawPlugin(Star):
                     await self._send(event, "没找到这张图（先发图、或指定 /图库 打标签 <编号> <标签>）")
                 else:
                     self.gallery.add_tags(sha, tags)
-                    await self._send(event, f"已给 [{sha[:16]}] 打标签：{'、'.join(tags)}")
+                    await self._send(event, f"已打标签：{'、'.join(tags)}")
 
         elif sub in ("findbytag", "bytag"):
             tag = " ".join(rest).strip()
@@ -4574,7 +4584,7 @@ class ComfyUIDrawPlugin(Star):
                 sha = self.gallery.archive_user_image(p, tags=tags, user_id=owner, user_name=uname, session_id=(getattr(event, "session_id", "") or ""))
                 if sha:
                     extra = (" 标签：" + "、".join(tags)) if tags else ""
-                    await self._send(event, f"已收藏这张图 [{sha[:16]}]{extra}")
+                    await self._send(event, f"已收藏这张图{extra}")
                 else:
                     await self._send(event, "收藏失败（图库可能未启用）。")
 
@@ -4605,7 +4615,7 @@ class ComfyUIDrawPlugin(Star):
                     return
                 if sha:
                     if self.gallery.set_visibility(sha, is_pub):
-                        await self._send(event, f"已把 [{sha[:16]}] 设为{'公开' if is_pub else '私有'}。{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}")
+                        await self._send(event, f"已设为{'公开' if is_pub else '私有'}。{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}")
                     else:
                         await self._send(event, "设置可见性失败。")
         else:
@@ -5335,8 +5345,9 @@ class ComfyUIDrawPlugin(Star):
         if plugin.gallery is None:
             return "图库未启用或初始化失败，无法检索/收藏图片。"
         g = plugin.gallery
-        cross = bool(plugin._cfg("gallery", {}).get("cross_session"))
-        session = None if cross else (getattr(event, "session_id", "") or "")
+        # 默认仅当前会话：LLM 召回/发送图时也只针对「当前会话」生成的图，
+        # 与 /图库 指令默认按会话隔离保持一致（不再受 cross_session 配置影响）。
+        session = getattr(event, "session_id", "") or ""
         # 用户隔离：始终按当前用户过滤，避免把别人的图发给当前用户。
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
@@ -5395,7 +5406,7 @@ class ComfyUIDrawPlugin(Star):
             if not sha:
                 return "收藏失败（图库可能未启用）。"
             extra = (" 标签：" + "、".join(tags)) if tags else ""
-            return f"已收藏这张图 [{sha[:16]}]{extra}。以后说「把{'/'.join(tags) if tags else '这张'}发我」即可召回。"
+            return f"已收藏这张图{extra}。以后说「把{'/'.join(tags) if tags else '这张'}发我」即可召回。"
 
         elif mode == "send":
             arg = (keyword or "").strip()
@@ -5475,12 +5486,12 @@ class ComfyUIDrawPlugin(Star):
                 if not tags:
                     return "tag 模式需要 tag 参数（多个标签用空格分隔）。"
                 g.add_tags(sha, tags)
-                return f"已给 [{sha[:16]}] 打标签：{'、'.join(tags)}。"
+                return f"已打标签：{'、'.join(tags)}。"
             # public / private
             is_pub = mode == "public"
             if g.set_visibility(sha, is_pub):
                 return (
-                    f"已把 [{sha[:16]}] 设为{'公开' if is_pub else '私有'}。"
+                    f"已设为{'公开' if is_pub else '私有'}。"
                     f"{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}"
                 )
             return "设置可见性失败。"

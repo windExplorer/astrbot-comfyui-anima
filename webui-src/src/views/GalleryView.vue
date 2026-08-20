@@ -311,7 +311,7 @@ function typeKey(img: any): string {
 }
 function typeLabel(img: any): string {
   const k = typeKey(img);
-  return { gen: "文生图", img2img: "图生图", ref: "参考图", user: "收藏" }[k] || "图片";
+  return { gen: "文生图", img2img: "图生图", ref: "参考图", user: "用户图" }[k] || "图片";
 }
 // 出图人昵称最多显示 8 个字（超出省略号，完整名在 title 悬浮提示）
 function cutName(name: string): string {

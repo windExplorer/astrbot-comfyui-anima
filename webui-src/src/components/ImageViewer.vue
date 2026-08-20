@@ -48,6 +48,7 @@
               <button class="iv-check" :disabled="checking" @click="onCheckNsfw">{{ checking ? "检测中…" : "检测" }}</button>
               <button class="iv-check" :disabled="settingNsfw" @click="onSetNsfw(true)">标记为 NSFW</button>
             </span></div>
+            <div v-if="item.tags && item.tags.length" class="iv-row"><span class="k">标签</span><span class="v">{{ item.tags.join("、") }}</span></div>
             <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
             <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
@@ -103,6 +104,7 @@ interface ViewerImage {
   nsfw_score?: number;
   nsfw_blur?: number | null;
   nsfw_checked?: boolean;
+  tags?: string[];
 }
 
 const props = defineProps<{
@@ -145,7 +147,7 @@ const typeText = computed(() => {
   if (!it) return "图片";
   if (it.is_img2img) return "图生图";
   if (it.source === "ref") return "参考图";
-  if (it.source === "user") return "用户收藏";
+  if (it.source === "user") return "用户图";
   return "文生图";
 });
 
