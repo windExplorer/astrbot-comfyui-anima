@@ -2079,13 +2079,13 @@ class ComfyUIDrawPlugin(Star):
         await self._send(event, text)
 
     def _gallery_text_to_table(self, text: str) -> str:
-        """把图库列表/搜索/收藏文本中的「序号. 描述 | 类型 | 时间 [| 用户]」行转成 Markdown 表格，
+        """把图库列表/搜索/收藏文本中的「序号. 描述 | 工作流 | 时间 [| 用户]」行转成 Markdown 表格，
         供 html_render 的 marked 渲染成 HTML <table>；非表格行（标题/翻页/提示）保持原样。
         无匹配表格行时原样返回 text，不影响其他渲染内容。
 
-        列结构固定为 5 列（序号/描述/类型/时间/用户）：普通行只有 3 个数据列（描述|类型|时间），
+        列结构固定为 5 列（序号/描述/工作流/时间/用户）：普通行只有 3 个数据列（描述|工作流|时间），
         用户列为空；管理员视图会追加「| 👤 用户名」作为第 4 个数据列。解析时固定取最后
-        3 列作为「类型/时间/用户」，其前所有列合并为描述，避免任何位置多出的「|」导致列错位。"""
+        3 列作为「工作流/时间/用户」，其前所有列合并为描述，避免任何位置多出的「|」导致列错位。"""
         import re
 
         rows = []
@@ -2107,7 +2107,7 @@ class ComfyUIDrawPlugin(Star):
                 others.append(line)
         if not rows:
             return text
-        header = "| 序号 | 描述 | 类型 | 时间 | 用户 |\n|---|---|---|---|---|"
+        header = "| 序号 | 描述 | 工作流 | 时间 | 用户 |\n|---|---|---|---|---|"
         body = [f"| {no} | {desc} | {typ} | {tm} | {user} |" for no, desc, typ, tm, user in rows]
         table = "\n".join([header] + body)
         if not others:
