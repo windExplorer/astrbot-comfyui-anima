@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.6.2
+
+- **图库会话隔离策略调整**：群聊仅展示该群生成的图（本群可见），私聊可跨会话查看所有会话的图。
+  - 新增 `_is_private_event(event)` 辅助判断（优先 `get_group_id()`，兜底看 `session_id`）。
+  - `cmd_gallery` 的 `session_scope`：私聊 → 跨会话（`None`），群聊 → 本群（`event.session_id`）。
+  - `comfyui_gallery` LLM 工具召回/发送逻辑同步；管理员「全部」子命令仍强制跨会话。
+  - 帮助文字与 `assets/gallery_help.png` 帮助图文案同步更新（"群聊仅本群，私聊看所有"）。
+
 ## v4.6.1
 
 - **WebUI 大图查看器新增「标签」展示与编辑**：

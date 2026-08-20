@@ -3914,6 +3914,27 @@ class ComfyUIDrawPlugin(Star):
         bucket[sid] = ts_list
         return actual, ""
 
+    @staticmethod
+    def _is_private_event(event) -> bool:
+        """判断当前事件是否为私聊。
+
+        优先用 AstrBot 标准的 get_group_id()：群聊返回群号，私聊返回 None/空。
+        兜底看 session_id 是否含 group 标记（aiocqhttp 私聊 session_id 形如 private:xxx）。
+        """
+        if event is None:
+            return True
+        try:
+            get_g = getattr(event, "get_group_id", None)
+            if callable(get_g):
+                gid = get_g()
+                if gid:
+                    return False
+                return True
+        except Exception:
+            pass
+        sid = getattr(event, "session_id", "") or ""
+        return "group" not in sid.lower()
+
     def _can_operate_image(self, event, row: dict, owner: str = "") -> tuple[bool, str]:
         """图库「修改类操作」（打标签/删除/清空/改可见性等）的归属校验。
 
@@ -4178,10 +4199,13 @@ class ComfyUIDrawPlugin(Star):
             else:
                 sub = "list"
 
-        # 会话范围：默认仅当前会话（私聊=该私聊，群聊=该群），互不串看。
-        # 仅当使用「全部」子命令（管理员）时才放宽到所有会话。
-        # 注：原 cross_session 配置开关已弃用——按需求图库默认按会话隔离。
-        session_scope = None if all_view else (event.session_id or "")
+        # 会话范围：群聊仅本群可见（私聊/群聊互不串看）；私聊可跨会话查看所有。
+        # 仅当使用「全部」子命令（管理员）时强制放宽到所有会话。
+        # 注：原 cross_session 配置开关已弃用。
+        if all_view:
+            session_scope = None
+        else:
+            session_scope = None if self._is_private_event(event) else (event.session_id or "")
         # 用户隔离标识：始终按当前用户过滤，避免群聊里不同用户互相看到对方的图。
         # owner 为空（如事件拿不到发送者）时不隔离，仅作兜底。
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
@@ -4202,14 +4226,14 @@ class ComfyUIDrawPlugin(Star):
             await self._send(
                 event,
                 "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"
-                "· 默认仅展示【当前会话】的图（私聊只看私聊，群聊只看该群）\n"
+                "· 群聊仅展示本群做的图；私聊可查看全部会话的图\n"
                 "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
                 "· 搜索 <关键词>　按画面描述检索\n"
                 "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
                 "· 找标签 <标签>　按标签取图\n"
                 "· 取图 <序号>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
                 "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张）\n"
-                "· 收藏列表 [页码]　查看自己收藏的图（★，同样默认仅当前会话）\n"
+                "· 收藏列表 [页码]　查看自己收藏的图（★，群聊仅本群，私聊看所有）\n"
                 "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后他人可检索）\n"
                 "· 保存 [标签...]　收藏当前这张图\n"
                 # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
@@ -4331,8 +4355,7 @@ class ComfyUIDrawPlugin(Star):
                 except ValueError:
                     pass
             eff_owner = "" if all_view else owner
-            # 收藏默认也按会话隔离（私聊收藏只在该私聊可见，群聊同理）；
-            # 仅「全部」子命令（管理员）才跨会话查看所有收藏。
+            # 收藏也遵循会话范围：群聊仅本群，私聊跨会话；「全部」子命令（管理员）强制跨会话。
             total = self.gallery.count_search(starred_only=True, owner=eff_owner, session=session_scope)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
@@ -5354,10 +5377,9 @@ class ComfyUIDrawPlugin(Star):
         if plugin.gallery is None:
             return "图库未启用或初始化失败，无法检索/收藏图片。"
         g = plugin.gallery
-        # 默认仅当前会话：LLM 召回/发送图时也只针对「当前会话」生成的图，
-        # 与 /图库 指令默认按会话隔离保持一致（不再受 cross_session 配置影响）。
-        session = getattr(event, "session_id", "") or ""
+        # 会话范围：群聊仅本群可见；私聊可跨会话召回/发送（与 /图库 指令一致）。
         # 用户隔离：始终按当前用户过滤，避免把别人的图发给当前用户。
+        session = None if plugin._is_private_event(event) else (getattr(event, "session_id", "") or "")
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if mode == "recall":
