@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.6.4
+
+- **`/图库 列表` 渲染走 AstrBot 官方文本转图片服务，但用自定义大字号模板 + 高清晰度**：
+  - 用 `self.html_render` 传自定义 HTML 模板（`assets/gallery_t2i.html`），`quality` 提到 90（官方默认仅 40），解决官方默认渲染字小发虚的问题。
+  - 模板固定 960px 宽、正文 30px、行高 1.8、加粗；头部为自定义在线头像 + "小叽"标题 + 角色口吻个性签名（通用模板，不含插件专属内容）。
+  - 列表/搜索/收藏文本中 `N. 描述 | 类型 | 时间` 行自动转成 Markdown 表格（`_gallery_text_to_table`），渲染为 HTML `<table>`（粉渐变表头、条纹行）。
+  - 兜底顺序：自定义模板渲染 → 官方默认模板（`text_to_image`）→ Pillow → 文字。
+
+- **恢复 `assets/gallery_help.png` 帮助图为 v4.6.1 版本**（解决 v4.6.2 重做时丢失背景的问题）。
+
 ## v4.6.3
 
 - **修复 `/图库 搜索` 指令报错**：`cmd_gallery` 的 search 分支缺少 `desc = self._gallery_desc(r, 10)` 定义，搜索时触发 `cannot access local variable 'desc'`。已补上该定义，与 列表/收藏列表 分支保持一致。

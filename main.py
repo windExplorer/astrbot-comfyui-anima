@@ -23,6 +23,135 @@ except ImportError:  # pragma: no cover - 兼容旧版本
     CardImage = None
 from astrbot.api.star import Context, Star, register
 
+# 图库列表 render 模式使用的自定义 HTML 模板（走 AstrBot 官方文本转图片服务）。
+# 基于用户当前 AStrBot 的 t2i 模板（"小叽"卡片风）改造，仅把字号放大、行高加大，
+# 并配合 html_render 的 quality=90，解决默认 quality=40 + 字小导致的发虚问题。
+_GALLERY_T2I_TMPL = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小叽</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css"/>
+<style>
+html, body {
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 24px;
+  background: linear-gradient(135deg,#ffeef8,#e6f7ff);
+  font-family: "Microsoft YaHei","PingFang SC",sans-serif;
+  font-size: 16px;
+  color: #333;
+}
+
+.card {
+  height: auto;
+  max-width: 100%;
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(255,150,200,.15);
+  padding: 26px 32px 20px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg,#ff9edc,#8ec5fc);
+  font-size: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.name {
+  font-size: 26px;
+  font-weight: 700;
+  color: #ff70c0;
+}
+
+.content {
+  line-height: 2.0;
+  font-size: 30px;
+  color: #333;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.footer {
+  text-align: right;
+  font-size: 18px;
+  color: #ccc;
+  margin-top: 18px;
+}
+
+pre {
+  background: #1e1e2e;
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+code {
+  background: #fff0f8;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 26px;
+  color: #d63384;
+}
+
+blockquote {
+  margin: 10px 0;
+  padding: 10px 14px;
+  background: #fff6fb;
+  border-left: 4px solid #ff9edc;
+  border-radius: 8px;
+  color: #666;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="head">
+    <div class="avatar">🐦</div>
+    <div class="name">小叽</div>
+  </div>
+
+  <div class="content">
+    <article id="content"></article>
+  </div>
+
+  <div class="footer">小叽</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"></script>
+<textarea id="markdown-source" hidden>{{ text | safe }}</textarea>
+<script>
+const c = document.getElementById("content");
+c.innerHTML = marked.parse(document.getElementById("markdown-source").value);
+renderMathInElement(c, {
+  delimiters: [
+    { left: "$$", right: "$$", display: true },
+    { left: "$", right: "$", display: false }
+  ]
+});
+</script>
+</body>
+</html>
+"""
+
 try:
     from PIL import Image as _PILImage
 except ImportError:  # pragma: no cover - 环境无 Pillow 时降级（不读像素尺寸）
@@ -1890,18 +2019,34 @@ class ComfyUIDrawPlugin(Star):
         其他值（默认 text）直接发送文字。
         """
         if str(self._cfg("gallery", {}).get("display_mode", "text")).strip().lower() == "render":
-            # 1) 优先：本插件内置 Pillow 渲染（2x 超采样 + 大字号，字大清晰、可稳定控制）。
-            #    AstrBot 官方 t2i 模板字号偏小（无法通过 text_to_image 传字号），发出来发虚，
-            #    故改为 Pillow 优先，官方服务仅作兜底。
-            render_path = self._render_gallery_text_pillow(text)
-            if render_path:
-                try:
-                    await event.send(MessageChain([Image.fromFileSystem(render_path)]))
+            # 1) 优先：走 AstrBot 官方文本转图片服务，但用本插件自定义模板（大字号）+ 高清晰度渲染。
+            #    AstrBot 官方 text_to_image 的默认 quality 只有 40，且字号由默认模板固定，
+            #    导致渲染出的字小且发虚。这里用 html_render 传自定义模板文件（font-size 大）
+            #    并把 quality 提到 90，字大又清晰，同时仍是官方渲染服务。
+            try:
+                _tmpl_path = Path(__file__).resolve().parent / "assets" / "gallery_t2i.html"
+                _tmpl = _tmpl_path.read_text(encoding="utf-8") if _tmpl_path.is_file() else self._GALLERY_T2I_TMPL
+                url = await self.html_render(
+                    _tmpl,
+                    {"text": self._gallery_text_to_table(text)},
+                    return_url=True,
+                    options={"full_page": True, "type": "jpeg", "quality": 90},
+                )
+                if url:
+                    if url.startswith("http://") or url.startswith("https://"):
+                        img_comp = Image.fromURL(url)
+                    else:
+                        img_comp = Image.fromFileSystem(url)
+                    await event.send(MessageChain([img_comp]))
                     return
-                except Exception as _e:
-                    self.logger.warning(f"[图库] Pillow 渲染图发送失败，改用 AstrBot 服务: {_e}")
-            # 2) 兜底：AstrBot text_to_image 官方渲染服务
-            render_text = text.replace("\n", "<br>\n")  # t2i 模板按 Markdown 渲染，\n 需转 <br>
+                self.logger.warning("[图库] 官方渲染服务返回空 URL，改用默认模板")
+            except Exception as _e:
+                try:
+                    self.logger.warning(f"[图库] 官方自定义模板渲染失败，改用默认模板: {_e}")
+                except Exception:
+                    pass
+            # 2) 兜底：AstrBot 官方默认模板（text_to_image）
+            render_text = text.replace("\n", "<br>\n")  # 默认模板按 Markdown 渲染，\n 需转 <br>
             try:
                 url = await self.text_to_image(render_text)
                 if url:
@@ -1911,19 +2056,52 @@ class ComfyUIDrawPlugin(Star):
                         img_comp = Image.fromFileSystem(url)
                     await event.send(MessageChain([img_comp]))
                     return
-                self.logger.warning("[图库] AstrBot 渲染服务返回空 URL，回退文字")
+                self.logger.warning("[图库] 默认模板渲染返回空 URL，改用 Pillow 兜底")
             except Exception as _e:
                 try:
-                    self.logger.warning(f"[图库] AstrBot 渲染失败，回退文字: {_e}")
+                    self.logger.warning(f"[图库] 默认模板渲染失败，改用 Pillow 兜底: {_e}")
                 except Exception:
                     pass
-            # 3) 最终回退：文字
+            # 3) 兜底：本插件内置 Pillow 渲染
+            render_path = self._render_gallery_text_pillow(text)
+            if render_path:
+                try:
+                    await event.send(MessageChain([Image.fromFileSystem(render_path)]))
+                    return
+                except Exception as _e:
+                    self.logger.warning(f"[图库] Pillow 兜底渲染图发送失败，回退文字: {_e}")
+            # 4) 最终回退：文字
             await self._send(
                 event,
-                text + "\n\n⚠ 渲染成图片失败（Pillow 兜底与 AstrBot 文本转图片服务均失败），已回退文字。请确认 Pillow 可用且 AstrBot「文本转图片」服务已启用。",
+                text + "\n\n⚠ 渲染成图片失败（AstrBot 文本转图片服务与 Pillow 兜底均失败），已回退文字。请确认 AstrBot「文本转图片」服务已启用并选择了激活模板。",
             )
             return
         await self._send(event, text)
+
+    def _gallery_text_to_table(self, text: str) -> str:
+        """把图库列表/搜索/收藏文本中的「序号. 描述 | 类型 | 时间」行转成 Markdown 表格，
+        供 html_render 的 marked 渲染成 HTML <table>；非表格行（标题/翻页/提示）保持原样。
+        无匹配表格行时原样返回 text，不影响其他渲染内容。"""
+        import re
+
+        rows = []
+        others = []
+        for line in text.split("\n"):
+            m = re.match(r"^(\d+)[\.、]\s+(.+)$", line.strip())
+            if m and "|" in m.group(2):
+                cells = [c.strip() for c in m.group(2).split("|")]
+                cells = cells + [""] * (3 - len(cells)) if len(cells) < 3 else cells
+                rows.append((m.group(1), cells[0], cells[1], cells[2]))
+            else:
+                others.append(line)
+        if not rows:
+            return text
+        header = "| 序号 | 描述 | 类型 | 时间 |\n|---|---|---|---|"
+        body = [f"| {no} | {desc} | {typ} | tm |" for no, desc, typ, tm in rows]
+        table = "\n".join([header] + body)
+        if not others:
+            return table
+        return "\n\n".join(others) + "\n\n" + table
 
     def _render_gallery_text_pillow(self, text: str, font_size: int = 32) -> str | None:
         """用 Pillow 把图库展示文字绘制成高清图片（解决 AstrBot 默认 t2i 字小发虚）。
@@ -1937,6 +2115,11 @@ class ComfyUIDrawPlugin(Star):
         try:
             from PIL import ImageDraw, ImageFont
 
+            scale = 2  # 超采样倍数
+            # 超采样画布上应使用 font_size*scale 的字号，这样缩回 1x 后才是 font_size。
+            # 之前直接用 font_size 在 2x 画布上画，缩回后字号减半（极小字），已修正。
+            draw_font_size = font_size * scale
+
             # 找一款能显示中文的字体（按常见路径尝试，缺失则用默认位图字体，中文可能方块）
             font = None
             for _cand in (
@@ -1947,7 +2130,7 @@ class ComfyUIDrawPlugin(Star):
                 "/System/Library/Fonts/PingFang.ttc",  # macOS
             ):
                 try:
-                    font = ImageFont.truetype(_cand, font_size)
+                    font = ImageFont.truetype(_cand, draw_font_size)
                     break
                 except Exception:
                     continue
@@ -1956,8 +2139,6 @@ class ComfyUIDrawPlugin(Star):
                     font = ImageFont.load_default()
                 except Exception:
                     return None
-
-            scale = 2  # 超采样倍数
             pad = 28 * scale
             line_h = int(font_size * 1.6 * scale)
             max_w = 760 * scale  # 内容区最大宽度（2x）

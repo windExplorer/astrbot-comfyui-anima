@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小叽</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css"/>
+<style>
+* { box-sizing: border-box; }
+
+html, body {
+  width: 960px;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 28px 36px;
+  background: linear-gradient(135deg,#ffeef8,#e6f7ff);
+  font-family: "Microsoft YaHei","PingFang SC",sans-serif;
+  font-size: 16px;
+  color: #333;
+}
+
+.card {
+  height: auto;
+  max-width: 100%;
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(255,150,200,.15);
+  padding: 26px 32px 20px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.avatar {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: linear-gradient(135deg,#ff9edc,#8ec5fc);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 100px;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
+}
+
+.avatar .emoji {
+  font-size: 28px;
+  display: none;
+}
+
+.id {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.name {
+  font-size: 30px;
+  font-weight: 700;
+  color: #ff70c0;
+  line-height: 1.3;
+}
+
+.sub {
+  font-size: 18px;
+  color: #b390a2;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.content {
+  line-height: 1.8;
+  font-size: 30px;
+  font-weight: 600;
+  color: #333;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 4px;
+  font-size: 28px;
+  font-weight: 500;
+}
+
+.content table th {
+  background: linear-gradient(135deg,#ff9edc,#ffb3d1);
+  color: #fff;
+  font-weight: 700;
+  padding: 10px 14px;
+  text-align: left;
+  border: 1px solid #ffd3e4;
+}
+
+.content table td {
+  padding: 10px 14px;
+  border: 1px solid #ffe3ec;
+  color: #333;
+  vertical-align: top;
+}
+
+.content table tr:nth-child(even) td {
+  background: #fff6fb;
+}
+
+.content table tr:nth-child(odd) td {
+  background: #ffffff;
+}
+
+.footer {
+  text-align: right;
+  font-size: 18px;
+  color: #ccc;
+  margin-top: 18px;
+}
+
+pre {
+  background: #1e1e2e;
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+code {
+  background: #fff0f8;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 26px;
+  color: #d63384;
+}
+
+blockquote {
+  margin: 10px 0;
+  padding: 10px 14px;
+  background: #fff6fb;
+  border-left: 4px solid #ff9edc;
+  border-radius: 8px;
+  color: #666;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="head">
+    <!-- 头像：在线图片链接（t2i 服务为无头浏览器截图，只能访问 http(s) 在线资源，
+         无法加载本地文件路径）。加载失败时回退显示 emoji。 -->
+    <div class="avatar"><img src="http://192.168.10.200:18092/i/da0a2d37-fcf2-4ae0-8e0a-ad7fbf5bce69.jpg" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" /><span class="emoji">🐦</span></div>
+    <div class="id">
+      <div class="name">小叽</div>
+      <div class="sub">诶嘿～这里是猫耳娘小叽喵，很高兴见到你，要一直开开心心哦～</div>
+    </div>
+  </div>
+
+  <div class="content">
+    <article id="content"></article>
+  </div>
+
+  <div class="footer">小叽</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"></script>
+<textarea id="markdown-source" hidden>{{ text | safe }}</textarea>
+<script>
+const c = document.getElementById("content");
+c.innerHTML = marked.parse(document.getElementById("markdown-source").value);
+renderMathInElement(c, {
+  delimiters: [
+    { left: "$$", right: "$$", display: true },
+    { left: "$", right: "$", display: false }
+  ]
+});
+</script>
+</body>
+</html>
