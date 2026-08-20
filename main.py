@@ -2090,7 +2090,12 @@ class ComfyUIDrawPlugin(Star):
             m = re.match(r"^(\d+)[\.、]\s*(.+)$", line.strip())
             if m and "|" in m.group(2):
                 cells = [c.strip() for c in m.group(2).split("|")]
-                cells = cells + [""] * (3 - len(cells)) if len(cells) < 3 else cells
+                # 超过 3 列（描述里意外带了「|」，如标签/管理员信息）时，
+                # 把多余列并入描述，确保「描述 | 类型 | 时间」三列不错位。
+                if len(cells) > 3:
+                    cells = [" ".join(cells[:-2]).strip(), cells[-2].strip(), cells[-1].strip()]
+                else:
+                    cells = cells + [""] * (3 - len(cells)) if len(cells) < 3 else cells
                 rows.append((m.group(1), cells[0], cells[1], cells[2]))
             else:
                 others.append(line)
@@ -4341,6 +4346,50 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, "📊 涩图检测结果：\n" + "\n".join(lines))
         event.stop_event()
 
+    async def _send_gallery_help(self, event: AstrMessageEvent) -> None:
+        """发送图库使用指南（优先静态图，失败回退纯文本）。"""
+        # 优先发一张固定的「图库使用指南」静态图（随插件打包，零渲染开销）。
+        # 找不到图或发图失败时回退到纯文本帮助，保证可用性。
+        try:
+            _help_img = Path(__file__).resolve().parent / "assets" / "gallery_help.png"
+            if _help_img.is_file():
+                await event.send(MessageChain([Image.fromFileSystem(str(_help_img))]))
+                return
+        except Exception as _e:
+            try:
+                self.logger.warning(f"[图库] 静态帮助图发送失败，回退文字: {_e}")
+            except Exception:
+                pass
+        await self._send(
+            event,
+            "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"
+            "· 群聊仅展示本群做的图；私聊可查看全部会话的图\n"
+            "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
+            "· 搜索 <关键词>　按画面描述检索\n"
+            "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
+            "· 找标签 <标签>　按标签取图\n"
+            "· 取图 <序号>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
+            "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张）\n"
+            "· 收藏列表 [页码]　查看自己收藏的图（★，群聊仅本群，私聊看所有）\n"
+            "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后他人可检索）\n"
+            "· 保存 [标签...]　收藏当前这张图\n"
+            # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
+            # "· 回收站　查看回收站\n"
+            # 以下为管理员专属功能，不在普通用户帮助里展示（见 README）：
+            # "· 统计　查看图库统计信息\n"
+            # "· 重扫　全量重新检测涩图（调整阈值后刷新所有图片的 NSFW 标记）\n"
+            # "· 全部 列表/搜索/收藏列表（管理员）　跨会话查看所有用户的图\n"
+            # "· 重扫状态　查看全量重扫进度\n"
+            "多张用法：取图/收藏/取消收藏 都支持一次性多张，序号用逗号或空格隔开。\n"
+            "示例：/图库 列表 2　/图库 取图 1,2,3　/图库 收藏 1 2 5　/图库 取图 1,2,4 7",
+        )
+
+    @filter.command("图库帮助", alias={"galleryhelp"})
+    async def cmd_gallery_help(self, event: AstrMessageEvent):
+        """图库帮助快捷入口（/图库帮助 或 /galleryhelp）。"""
+        await self._send_gallery_help(event)
+        event.stop_event()
+
     @filter.command("gallery", alias={"图库"})
     async def cmd_gallery(self, event: AstrMessageEvent):
         """图片画廊与语义标签召回。支持 /gallery 与 /图库 两种入口，子命令见提示。"""
@@ -4404,41 +4453,8 @@ class ComfyUIDrawPlugin(Star):
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if sub in ("help", "帮助"):
-            # 优先发一张固定的「图库使用指南」静态图（随插件打包，零渲染开销）。
-            # 找不到图或发图失败时回退到纯文本帮助，保证可用性。
-            try:
-                _help_img = Path(__file__).resolve().parent / "assets" / "gallery_help.png"
-                if _help_img.is_file():
-                    await event.send(MessageChain([Image.fromFileSystem(str(_help_img))]))
-                    return
-            except Exception as _e:
-                try:
-                    self.logger.warning(f"[图库] 静态帮助图发送失败，回退文字: {_e}")
-                except Exception:
-                    pass
-            await self._send(
-                event,
-                "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"
-                "· 群聊仅展示本群做的图；私聊可查看全部会话的图\n"
-                "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
-                "· 搜索 <关键词>　按画面描述检索\n"
-                "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
-                "· 找标签 <标签>　按标签取图\n"
-                "· 取图 <序号>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
-                "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张）\n"
-                "· 收藏列表 [页码]　查看自己收藏的图（★，群聊仅本群，私聊看所有）\n"
-                "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后他人可检索）\n"
-                "· 保存 [标签...]　收藏当前这张图\n"
-                # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
-                # "· 回收站　查看回收站\n"
-                # 以下为管理员专属功能，不在普通用户帮助里展示（见 README）：
-                # "· 统计　查看图库统计信息\n"
-                # "· 重扫　全量重新检测涩图（调整阈值后刷新所有图片的 NSFW 标记）\n"
-                # "· 全部 列表/搜索/收藏列表（管理员）　跨会话查看所有用户的图\n"
-                # "· 重扫状态　查看全量重扫进度\n"
-                "多张用法：取图/收藏/取消收藏 都支持一次性多张，序号用逗号或空格隔开。\n"
-                "示例：/图库 列表 2　/图库 取图 1,2,3　/图库 收藏 1 2 5　/图库 取图 1,2,4 7",
-            )
+            await self._send_gallery_help(event)
+            return
         elif sub == "rescan":
             # 全量重新检测：调整 NSFW 阈值后，用新阈值重扫所有图片，刷新 NSFW 标记
             if not bool(getattr(event, "is_admin", lambda: False)()):
@@ -4608,7 +4624,10 @@ class ComfyUIDrawPlugin(Star):
                         _sid = (r.get("session_id") or "").strip()
                         _uid = (r.get("user_id") or "").strip()
                         _uname = (r.get("user_name") or "").strip()
-                        tag_line = f" | {tags.strip()}" if tags.strip() else ""
+                        # 标签并入描述列（用空格分隔，不带「|」），保持「序号. 描述 | 工作流 | 时间」三列结构；
+                        # 若标签也用「|」分隔会导致多一列，表格解析取前 3 列时列错位
+                        # （类型=标签、时间=工作流，正是此前用户反馈的错乱）。
+                        tag_line = f" {tags.strip()}" if tags.strip() else ""
                         line = f"{_gno}.{desc}{tag_line} | {_wf} | {_tm}"
                         if is_admin and (_sid or all_view):
                             line += f" | 👤 {_uname or _uid or '匿名'}"
