@@ -2097,7 +2097,7 @@ class ComfyUIDrawPlugin(Star):
         if not rows:
             return text
         header = "| 序号 | 描述 | 类型 | 时间 |\n|---|---|---|---|"
-        body = [f"| {no} | {desc} | {typ} | tm |" for no, desc, typ, tm in rows]
+        body = [f"| {no} | {desc} | {typ} | {tm} |" for no, desc, typ, tm in rows]
         table = "\n".join([header] + body)
         if not others:
             return table
