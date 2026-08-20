@@ -32,6 +32,7 @@
               <ConfigSection
                 v-for="key in grp.keys.filter((k: string) => schema && schema[k])"
                 :key="key"
+                :field-key="key"
                 :schema="schema![key]"
                 :value="config[key]"
                 @change="onFieldChange"

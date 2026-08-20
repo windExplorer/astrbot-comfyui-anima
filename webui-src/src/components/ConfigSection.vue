@@ -21,7 +21,7 @@
 
       <!-- template_list：服务器 / LoRA / 工作流等可增删列表 -->
       <template v-else-if="schema?.type === 'template_list'">
-        <div class="tmpl-list" :data-list="key">
+        <div class="tmpl-list" :data-list="fieldKey">
           <div class="tmpl-toolbar">
             <span class="tmpl-hint">{{ schema.hint }}</span>
             <n-button size="small" type="primary" ghost @click="addItem">＋ 添加</n-button>
@@ -58,7 +58,7 @@
 
       <!-- 标量字段 -->
       <template v-else>
-        <ConfigField :field-key="key" :field="schema" :model-value="value" @update:model-value="emitScalar($event)" />
+        <ConfigField :field-key="fieldKey" :field="schema" :model-value="value" @update:model-value="emitScalar($event)" />
       </template>
     </div>
   </div>
@@ -72,7 +72,7 @@ import ConfigField from "@/components/ConfigField.vue";
 const props = defineProps<{
   schema: any;
   value: any;
-  key: string;
+  fieldKey: string;
 }>();
 
 const emit = defineEmits<{
@@ -83,7 +83,7 @@ const emit = defineEmits<{
 const arrValue = computed<any[]>(() => (Array.isArray(props.value) ? props.value : []));
 
 // 标题：优先 label，其次 description，最后回退英文字段名
-const sectionTitle = computed(() => props.schema?.label || props.schema?.description || props.key);
+const sectionTitle = computed(() => props.schema?.label || props.schema?.description || props.fieldKey);
 
 function displayName(item: any): string {
   const disp = props.schema?.templates?.default?.display_item;
@@ -96,7 +96,7 @@ function displayName(item: any): string {
 // 否则对布尔 false 等标量执行 props.value[key]=v 会抛
 // "Cannot create property ... on boolean 'false'"（旧版 bug）。
 function emitScalar(v: any) {
-  emit("update-scalar", props.key, v);
+  emit("update-scalar", props.fieldKey, v);
   emit("change");
 }
 

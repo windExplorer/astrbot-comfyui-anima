@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.5.18
+
+- **修复新版 WebUI 配置页「开关点击无反应（状态不切换），但保存按钮亮」**：
+  - 现象：上一版（v4.5.17）修复了报错，但顶层标量 bool 配置项（如 `enable_llm_tools` 等 6 个）点了开关**状态不切换**，只是「保存配置」按钮亮起；object 内的 bool（如 `gallery.enabled`）正常。
+  - 根因：`ConfigView.vue` 用 `:key="key"` 给 `ConfigSection` 传字段名，但 Vue 的 `:key` 是**特殊内置属性，不进入 props**。`ConfigSection` 的 `defineProps` 里定义了 `key`，实际 `props.key` 永远 `undefined`。`emitScalar` 用 `props.key`（undefined）向上 emit → `config[undefined]=v`，真正要更新的配置项没被改到，所以开关视觉状态不跟随。
+  - 修复：新增普通 prop `fieldKey` 取代 `key`（`ConfigView.vue` 传 `:field-key="key"`，`ConfigSection.vue` 内部 `sectionTitle` / `emitScalar` / 模板全部改用 `fieldKey`），去掉调试 `console.log`。object 内 bool 走 `updateNested(fk)`（fk 是 v-for 变量有值）本就正常，无需改动。
+  - 验证：puppeteer 实测 23 个开关全部 `changed=true`（含之前不切换的 6 个顶层标量 bool）。
+  - 重新构建前端产物 `pages/anima-console-vue/`（0 错误）。
+
 ## v4.5.17
 
 - **修复新版 WebUI 配置页「开关点了没反应 + 报错 Cannot create property on boolean」**：
