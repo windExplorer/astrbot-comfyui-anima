@@ -4371,7 +4371,7 @@ class ComfyUIDrawPlugin(Star):
             "📚 图库指令说明（用 /图库 或 /gallery 均可）：\n"
             "· 群聊仅展示本群做的图；私聊可查看全部会话的图\n"
             "· 列表 [页码]　查看图库（每页 5 条，显示总数/总页数）\n"
-            "· 搜索 <关键词>　按画面描述检索\n"
+            "· 搜索 <关键词> [页码]　按画面描述检索（每页 5 条，如 /图库 搜索 猫娘 2）\n"
             "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
             "· 找标签 <标签>　按标签取图\n"
             "· 取图 <序号>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
@@ -4605,41 +4605,66 @@ class ComfyUIDrawPlugin(Star):
                 await self._send_display(event, "\n".join(lines))
 
         elif sub == "search":
-            kw = " ".join(rest).strip()
-            if not kw:
-                await self._send(event, "用法：/图库 搜索 <关键词>")
+            # 分页：每页数量与列表一致（gallery.page_size，默认 5）。最后一参为纯数字时视为页码，
+            # 其余参数拼成关键词；例如「/图库 搜索 猫娘 2」搜索「猫娘」并展示第 2 页。
+            if not rest:
+                await self._send(event, "用法：/图库 搜索 <关键词> [页码]")
             else:
-                eff_owner = "" if all_view else owner
-                rows = self.gallery.search(keyword=kw, limit=20, session=session_scope, owner=eff_owner)
-                if not rows:
-                    await self._send(event, f"没找到含「{kw}」的图。")
+                page = 1
+                kw_parts = list(rest)
+                if rest[-1].isdigit():
+                    page = max(1, int(rest[-1]))
+                    kw_parts = rest[:-1]
+                kw = " ".join(kw_parts).strip()
+                if not kw:
+                    await self._send(event, "用法：/图库 搜索 <关键词> [页码]")
                 else:
-                    is_admin = bool(getattr(event, "is_admin", lambda: False)())
-                    _head = "全库检索" if all_view else "检索"
-                    lines = [f"{_head}「{kw}」的结果："]
-                    for i, r in enumerate(rows, 1):
-                        _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
-                        desc = self._gallery_desc(r, 10)
-                        tags = (" #" + " #".join(r["tags"])) if r.get("tags") else ""
-                        _ts = r.get("created_at") or 0
-                        try:
-                            _tm = time.strftime("%m-%d %H:%M", time.localtime(float(_ts)))
-                        except Exception:
-                            _tm = "-"
-                        _wf = (r.get("workflow") or "").strip() or "默认"
-                        _sid = (r.get("session_id") or "").strip()
-                        _uid = (r.get("user_id") or "").strip()
-                        _uname = (r.get("user_name") or "").strip()
-                        # 标签并入描述列（用空格分隔，不带「|」），保持「序号. 描述 | 工作流 | 时间」三列结构；
-                        # 若标签也用「|」分隔会导致多一列，表格解析取前 3 列时列错位
-                        # （类型=标签、时间=工作流，正是此前用户反馈的错乱）。
-                        tag_line = f" {tags.strip()}" if tags.strip() else ""
-                        line = f"{_gno}.{desc}{tag_line} | {_wf} | {_tm}"
-                        if is_admin and (_sid or all_view):
-                            line += f" | 👤 {_uname or _uid or '匿名'}"
-                        lines.append(line)
-                    lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
-                    await self._send_display(event, "\n".join(lines))
+                    try:
+                        page_size = max(1, min(50, int(self._cfg("gallery", {}).get("page_size", 5))))
+                    except (TypeError, ValueError):
+                        page_size = 5
+                    eff_owner = "" if all_view else owner
+                    total = self.gallery.count_search(keyword=kw, session=session_scope, owner=eff_owner)
+                    if not total:
+                        await self._send(event, f"没找到含「{kw}」的图。")
+                    else:
+                        total_pages = max(1, (total + page_size - 1) // page_size)
+                        page = min(page, total_pages)
+                        rows = self.gallery.search(
+                            keyword=kw, limit=page_size, offset=(page - 1) * page_size,
+                            session=session_scope, owner=eff_owner,
+                        )
+                        if not rows:
+                            await self._send(event, f"没找到含「{kw}」的图。")
+                            return
+                        is_admin = bool(getattr(event, "is_admin", lambda: False)())
+                        _head = "全库检索" if all_view else "检索"
+                        lines = [f"{_head}「{kw}」（第 {page}/{total_pages} 页，共 {total} 张）："]
+                        for i, r in enumerate(rows, 1):
+                            _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
+                            desc = self._gallery_desc(r, 10)
+                            tags = (" #" + " #".join(r["tags"])) if r.get("tags") else ""
+                            _ts = r.get("created_at") or 0
+                            try:
+                                _tm = time.strftime("%m-%d %H:%M", time.localtime(float(_ts)))
+                            except Exception:
+                                _tm = "-"
+                            _wf = (r.get("workflow") or "").strip() or "默认"
+                            _sid = (r.get("session_id") or "").strip()
+                            _uid = (r.get("user_id") or "").strip()
+                            _uname = (r.get("user_name") or "").strip()
+                            # 标签并入描述列（用空格分隔，不带「|」），保持「序号. 描述 | 工作流 | 时间」三列结构；
+                            # 若标签也用「|」分隔会导致多一列，表格解析取前 3 列时列错位
+                            # （类型=标签、时间=工作流，正是此前用户反馈的错乱）。
+                            tag_line = f" {tags.strip()}" if tags.strip() else ""
+                            line = f"{_gno}.{desc}{tag_line} | {_wf} | {_tm}"
+                            if is_admin and (_sid or all_view):
+                                line += f" | 👤 {_uname or _uid or '匿名'}"
+                            lines.append(line)
+                        if total_pages > 1:
+                            lines.append(f"\n翻页：/图库 搜索 {kw} <页码>（共 {total_pages} 页）")
+                        lines.append("发图用：/图库 取图 <序号>（上方「N.」左侧的数字）")
+                        await self._send_display(event, "\n".join(lines))
 
         elif sub == "tag":
             # /gallery tag [图标识] <标签...>
