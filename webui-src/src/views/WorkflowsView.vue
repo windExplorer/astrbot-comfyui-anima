@@ -97,7 +97,12 @@
         </div>
         <div class="form-grid">
           <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
-          <n-form-item label="默认 denoise"><n-input-number v-model:value="editForm.default_denoise" :min="-1" :step="0.05" style="width:100%" /></n-form-item>
+          <n-form-item label="默认 denoise">
+            <n-space vertical :size="4" style="width:100%">
+              <n-input-number v-model:value="editForm.default_denoise" :min="-1" :max="1" :step="0.05" :precision="2" :disabled="editForm.denoise_off" style="width:100%" />
+              <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
+            </n-space>
+          </n-form-item>
         </div>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="默认 LoRA（每行 名称|权重|启用）"><n-input v-model:value="editForm.loras_text" type="textarea" :rows="3" /></n-form-item>
@@ -114,7 +119,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin } from "naive-ui";
+import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
@@ -222,7 +227,8 @@ function openForm(idx: number, prefill?: any) {
     image_node: w.image_node || "",
     lora_anchor: w.lora_anchor || "",
     lora_clip: w.lora_clip || "",
-    default_denoise: w.default_denoise ?? -1,
+    default_denoise: (w.default_denoise ?? -1),
+    denoise_off: (w.default_denoise ?? -1) <= -1,
     workflow_json: w.workflow_json || "",
     loras_text: w.loras_text || "",
   })));
@@ -246,6 +252,9 @@ async function saveEdit() {
   try {
     const tplKey = (workflows.value[editIndex.value] && workflows.value[editIndex.value].__template_key) || "default";
     const v = { ...editForm, __template_key: tplKey };
+    // denoise 开关：勾选不注入时强制 -1（低于 min 的语义值，后端识别为「不注入」）
+    if (v.denoise_off) v.default_denoise = -1;
+    delete v.denoise_off;
     if (editIndex.value < 0 || editIndex.value >= workflows.value.length) {
       workflows.value.unshift(v);
     } else {
