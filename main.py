@@ -5650,12 +5650,16 @@ class ComfyUIDrawPlugin(Star):
             if len(rows) == 1:
                 ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
                 return ("已发送该图。" if ok else "找到图但发送失败。")
-            # 多张：列出让用户选（按确认口径）。编号为图库唯一编号，可直接用于 send 定位。
-            lines = [f"带「{tag.strip()}」的图有 {len(rows)} 张，回复编号即可发对应那张："]
-            for i, r in enumerate(rows, 1):
-                _gno = r.get("gidx", i)  # 图库唯一编号，send 传它即可定位到同一张
-                star = "★" if r["starred"] else ""
-                lines.append(f"{_gno}. {star} {plugin._gallery_desc(r, 40)}")
+            # 多张：只发「最相关/最常用」的一张（rows[0]），避免一次性刷屏。
+            # 同时告知总数并引导用户：加关键词缩小范围，或回复编号选其他张。
+            ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
+            if not ok:
+                return f"带「{tag.strip()}」的图有 {len(rows)} 张，但发送失败。"
+            _gno0 = rows[0].get("gidx", 1)
+            lines = [
+                f"带「{tag.strip()}」的图有 {len(rows)} 张，先发最相关的一张（编号 {_gno0}）。",
+                "若不是你要的那张，可：① 加关键词再搜（如「初音未来 烟花」）缩小范围；② 回复其他编号直接发对应那张。",
+            ]
             return "\n".join(lines)
 
         elif mode == "search":
@@ -5679,11 +5683,16 @@ class ComfyUIDrawPlugin(Star):
             if len(rows) == 1:
                 ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
                 return ("已发送该图。" if ok else "找到图但发送失败。")
-            lines = [f"检索「{keyword.strip()}」的结果："]
-            for i, r in enumerate(rows, 1):
-                _gno = r.get("gidx", i)  # 图库唯一编号，send 传它即可定位到同一张
-                lines.append(f"{_gno}. {plugin._gallery_desc(r, 40)}")
-            lines.append("回复编号即可发对应那张。")
+            # 多张：只发「最新」的一张（rows[0] 按 created_at DESC），避免一次性刷屏。
+            # 引导用户加关键词缩小范围，或回复编号选其他张。
+            ok = await plugin._gallery_send_image(event, rows[0]["sha256"], owner=owner)
+            if not ok:
+                return f"没找到含「{keyword.strip()}」的图可发送。"
+            _gno0 = rows[0].get("gidx", 1)
+            lines = [
+                f"检索「{keyword.strip()}」的结果有 {len(rows)} 张，先发最新的一张（编号 {_gno0}）。",
+                "若不是你要的那张，可：① 加关键词再搜（如「初音未来 烟花」）缩小范围；② 回复其他编号直接发对应那张。",
+            ]
             return "\n".join(lines)
 
         elif mode == "save":
