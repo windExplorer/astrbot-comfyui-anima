@@ -19,6 +19,19 @@ if (-not (Test-Path (Join-Path $src "package.json"))) {
 
 Push-Location $src
 try {
+    # 从 metadata.yaml 提取 version，注入前端版本常量（单一版本来源）。
+    $metaPath = Join-Path $root "metadata.yaml"
+    $pluginVersion = "dev"
+    if (Test-Path $metaPath) {
+        $metaRaw = Get-Content -Raw -Encoding UTF8 $metaPath
+        if ($metaRaw -match '(?m)^\s*version:\s*"?([^"\r\n]+?)"?\s*$') {
+            $pluginVersion = $Matches[1].Trim()
+        }
+    }
+    $versionTs = "export const PLUGIN_VERSION = `"$pluginVersion`";`n"
+    Set-Content -Path (Join-Path $src "src/version.ts") -Value $versionTs -Encoding UTF8
+    Write-Host "==> 注入插件版本号：$pluginVersion" -ForegroundColor Green
+
     if (-not (Test-Path (Join-Path $src "node_modules"))) {
         Write-Host "==> 首次构建，安装依赖（npm install）..." -ForegroundColor Yellow
         npm install

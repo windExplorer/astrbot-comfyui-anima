@@ -232,6 +232,8 @@ tests/_tmp_*.py
 # 源码进 git，但 node_modules / 构建缓存 / 本地环境不入库。
 # 注意：pages/anima-console-vue/（构建产物）必须进 git（zip 打包依赖它），勿忽略。
 webui-src/node_modules/
+# 构建时由 build_webui.ps1 从 metadata.yaml 注入生成，勿入库
+webui-src/src/version.ts
 webui-src/dist/
 webui-src/.vite/
 *.local
