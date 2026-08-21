@@ -5634,9 +5634,11 @@ class ComfyUIDrawPlugin(Star):
         if plugin.gallery is None:
             return "图库未启用或初始化失败，无法检索/收藏图片。"
         g = plugin.gallery
-        # 会话范围：群聊仅本群可见；私聊可跨会话召回/发送（与 /图库 指令一致）。
+        # 会话范围：comfyui_gallery 是「个人语义图库助手」，按用户(owner)隔离即可，
+        # 始终跨会话召回/发送——支持「在 A 群存的图，在 B 群说『把初音未来那张发我』」的跨群取图。
+        # （与 /图库 指令的「仅本群」视图区分：指令场景保留 session 限制，LLM 语义召回放开。）
         # 用户隔离：始终按当前用户过滤，避免把别人的图发给当前用户。
-        session = None if plugin._is_private_event(event) else (getattr(event, "session_id", "") or "")
+        session = None
         owner = getattr(event, "get_sender_id", lambda: "")() or ""
 
         if mode == "recall":
