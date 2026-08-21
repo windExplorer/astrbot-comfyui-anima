@@ -24,7 +24,7 @@ try {
     $pluginVersion = "dev"
     if (Test-Path $metaPath) {
         $metaRaw = Get-Content -Raw -Encoding UTF8 $metaPath
-        if ($metaRaw -match '(?m)^\s*version:\s*"?([^"\r\n]+?)"?\s*$') {
+        if ($metaRaw -match '(?m)^\s*version:\s*"?([^"#\r\n]+?)"?\s*(?:#.*)?$') {
             $pluginVersion = $Matches[1].Trim()
         }
     }
