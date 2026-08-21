@@ -4218,6 +4218,16 @@ class ComfyUIDrawPlugin(Star):
                 if not row.get("is_public") and row.get("user_id"):
                     await self._send(event, "这张图是私有的，不属于当前用户，无法发送。")
                     return False
+            # NSFW 护栏：打上了 NSFW 标签的图片禁止发到群聊（私聊可发）。
+            # 跨群取图（如「把初音未来那张发我」）同样受此约束，避免涩图外泄到群。
+            if row.get("nsfw") and not self._is_private_event(event):
+                _score = row.get("nsfw_score")
+                _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
+                await self._send(
+                    event,
+                    f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。",
+                )
+                return False
         path = self.gallery.path_of(sha)
         if not path:
             await self._send(event, "没找到这张图，可能已被清理或从未入库。")
