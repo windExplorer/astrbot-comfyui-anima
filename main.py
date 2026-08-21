@@ -2594,7 +2594,22 @@ class ComfyUIDrawPlugin(Star):
                     merged[nm] = None
             active_map = merged or None
         else:
-            active_map = lora_map
+            # 用户显式指定了 LoRA（指令 --名称 / LLM 工具的 loras 参数）时，
+            # 默认行为：在「工作流自带且已启用」的 LoRA 基础上【叠加】用户请求的 LoRA，
+            # 而非整体替换。工作流预设的 LoRA 是其风格配方的一部分，不应被一票否决。
+            # （用户请求的权重若与自带项同名，则覆盖自带权重；其余自带项保留。）
+            active_map = {}
+            for lora in loras_cfg:
+                nm = (lora.get("name") or "").strip()
+                if not nm:
+                    continue
+                if lora.get("enabled"):
+                    active_map.setdefault(nm, None)
+            for nm, w in lora_map.items():
+                nm = (nm or "").strip()
+                if not nm:
+                    continue
+                active_map[nm] = w
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
 
         # 补全：--名称 临时请求的 LoRA，若工作流未预引用（loras_config 里没有该项），
