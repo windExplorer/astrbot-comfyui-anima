@@ -42,7 +42,12 @@
                     <template #icon><n-icon><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg></n-icon></template>
                     刷新数据
                   </n-button>
-                  <n-tag size="small" round :bordered="false" type="info" title="插件版本号">{{ PLUGIN_VERSION }}</n-tag>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-tag size="small" round :bordered="false" type="info">{{ PLUGIN_VERSION }}</n-tag>
+                    </template>
+                    插件版本号
+                  </n-tooltip>
                 </div>
               </div>
 
@@ -65,6 +70,7 @@ import {
   zhCN,
   dateZhCN,
   NConfigProvider,
+  NTooltip,
   NMessageProvider,
   NDialogProvider,
   NLoadingBarProvider,
