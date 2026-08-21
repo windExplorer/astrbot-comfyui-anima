@@ -93,7 +93,11 @@
         </div>
         <div class="form-grid">
           <n-form-item label="参考图节点"><n-input v-model:value="editForm.image_node" placeholder="图生图 LoadImage（可选）" /></n-form-item>
-          <n-form-item label="LoRA 主模锚点"><n-input v-model:value="editForm.lora_anchor" placeholder="底模节点键名，留空自动探测" /></n-form-item>
+          <n-form-item label="主模节点（lora_anchor）"><n-input v-model:value="editForm.lora_anchor" placeholder="CheckpointLoader/UNETLoader 键名，留空自动探测" /></n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
+          <n-form-item label="默认 denoise"><n-input-number v-model:value="editForm.default_denoise" :min="-1" :step="0.05" style="width:100%" /></n-form-item>
         </div>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="默认 LoRA（每行 名称|权重|启用）"><n-input v-model:value="editForm.loras_text" type="textarea" :rows="3" /></n-form-item>
@@ -217,6 +221,8 @@ function openForm(idx: number, prefill?: any) {
     default_height: w.default_height ?? 512,
     image_node: w.image_node || "",
     lora_anchor: w.lora_anchor || "",
+    lora_clip: w.lora_clip || "",
+    default_denoise: w.default_denoise ?? -1,
     workflow_json: w.workflow_json || "",
     loras_text: w.loras_text || "",
   })));
