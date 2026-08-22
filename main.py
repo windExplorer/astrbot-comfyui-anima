@@ -2745,6 +2745,29 @@ class ComfyUIDrawPlugin(Star):
             if workflow_builder.set_denoise(prompt, denoise):
                 logger.info(f"本次 denoise: {denoise}")
 
+        # 注入放大模型（替换工作流里【已存在】的放大模型节点模型名）
+        # - 不填 upscale_node_id / upscale_model_name → 沿用工作流默认放大模型
+        # - 两者都填 → 把该节点原本的模型名替换为指定的（仅替换，不注入新节点）
+        _up_node = (wf.get("upscale_node_id") or "").strip()
+        _up_model = (wf.get("upscale_model_name") or "").strip()
+        if _up_node and _up_model:
+            _old = workflow_builder.set_upscale_model(prompt, _up_node, _up_model)
+            if _old is not None:
+                logger.info(
+                    f"【放大模型】 已替换节点 {_up_node} 的放大模型: "
+                    f"{_old} → {_up_model}"
+                )
+            else:
+                logger.warning(
+                    f"【放大模型】 配置节点 {_up_node} 不存在，或其 inputs 里没有"
+                    f"可替换的模型名字段（model_name）。请检查工作流节点 ID 是否正确。"
+                )
+        elif _up_node or _up_model:
+            logger.warning(
+                "【放大模型】 配置不完整：需同时填写「放大模型节点」和「放大模型名称」"
+                "才会生效，当前仅填了其中一项，已忽略。"
+            )
+
         # 绘图摘要：不再打印完整 workflow JSON，仅展示关键信息，减少日志噪声。
         # LoRA 权重以 active_map（命令 --名称:权重 优先，None 表示沿用工作流默认）为准。
         _lora_weight = {}

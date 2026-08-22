@@ -70,6 +70,35 @@ def set_number_node(
     return True
 
 
+def set_upscale_model(prompt: dict, node_id, model_name: str) -> str | None:
+    """把放大模型加载节点（如 UpscaleModelLoader）里原本的模型名替换为指定值。
+
+    返回被替换掉的旧模型名（用于日志）；节点不存在或找不到可替换的模型名字段时返回 None。
+    仅替换工作流里【已存在】的放大模型节点，不注入新节点。
+    """
+    if not model_name or not str(model_name).strip():
+        return None
+    node = _get_node(prompt, node_id)
+    if node is None:
+        return None
+    inputs = node.setdefault("inputs", {})
+    # 放大模型 Load 节点（UpscaleModelLoader）的字段名固定为 model_name；
+    # 若节点 inputs 里没有 model_name，则兜底取第一个字符串类型的字段（兼容非标准放大节点）。
+    old = None
+    if "model_name" in inputs:
+        old = inputs.get("model_name")
+        inputs["model_name"] = str(model_name).strip()
+    else:
+        for k, v in inputs.items():
+            if isinstance(v, str) and v.strip():
+                old = v
+                inputs[k] = str(model_name).strip()
+                break
+    if old is None:
+        return None
+    return old
+
+
 def find_node_by_class(prompt: dict, class_type: str):
     """返回工作流中第一个匹配 class_type 的节点 ID（找不到返回 None）。"""
     for nid, node in prompt.items():

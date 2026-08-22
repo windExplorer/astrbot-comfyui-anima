@@ -96,6 +96,10 @@
           <n-form-item label="主模节点（lora_anchor）"><n-input v-model:value="editForm.lora_anchor" placeholder="CheckpointLoader/UNETLoader 键名，留空自动探测" /></n-form-item>
         </div>
         <div class="form-grid">
+          <n-form-item label="放大模型节点"><n-input v-model:value="editForm.upscale_node_id" placeholder="放大模型加载节点键名（如 14）" /></n-form-item>
+          <n-form-item label="放大模型名称"><n-input v-model:value="editForm.upscale_model_name" placeholder="替换成的放大模型文件名（如 4x-UltraSharp.pth）" /></n-form-item>
+        </div>
+        <div class="form-grid">
           <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
           <n-form-item label="默认 denoise">
             <n-space vertical :size="4" style="width:100%">
@@ -227,6 +231,8 @@ function openForm(idx: number, prefill?: any) {
     image_node: w.image_node || "",
     lora_anchor: w.lora_anchor || "",
     lora_clip: w.lora_clip || "",
+    upscale_node_id: w.upscale_node_id || "",
+    upscale_model_name: w.upscale_model_name || "",
     default_denoise: (w.default_denoise ?? -1),
     denoise_off: (w.default_denoise ?? -1) <= -1,
     workflow_json: w.workflow_json || "",

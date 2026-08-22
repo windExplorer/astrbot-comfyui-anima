@@ -2417,6 +2417,8 @@
       + fieldHtml("参考图节点", inputHtml("image_node", w.image_node, "图生图 LoadImage 节点（可选）"))
       + fieldHtml("输出节点", inputHtml("output_node", w.output_node, "出图节点（可选）"))
       + fieldHtml("LoRA 主模锚点", inputHtml("lora_anchor", w.lora_anchor, "底模节点键名，留空自动探测"))
+      + fieldHtml("放大模型节点", inputHtml("upscale_node_id", w.upscale_node_id, "放大模型加载节点的键名（如 14）；留空则用工作流默认放大模型"))
+      + fieldHtml("放大模型名称", inputHtml("upscale_model_name", w.upscale_model_name, "要替换成的放大模型文件名（如 4x-UltraSharp.pth）；与节点键名同时填写才生效"))
       + fieldHtml("工作流 JSON（可直接粘贴）", textareaHtml("workflow_json", w.workflow_json, 3))
       + fieldHtml("默认 LoRA（每行 名称|权重|启用|底模）", textareaHtml("loras_text", w.loras_text, 3));
     openEditDialog("WORKFLOW", (isNew ? "新增" : "编辑") + " 工作流", body, function () {
