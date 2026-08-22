@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.6
+
+- **为全部 SQLite 存储开启 WAL 模式**（gallery.db / quota.db / oplog.db / token.db）：`PRAGMA journal_mode=WAL` + `PRAGMA synchronous=NORMAL`。降低写入锁等待与 fsync 开销，读写在出图/统计/日志等并发场景下更流畅，缓解卡顿。开启失败自动降级不影响使用。
+
 ## v4.7.5
 
 - **修复：LoRA 触发词未自动追加到正向提示词**。此前启用 LoRA 只注入了模型节点却未把该 LoRA 的 `trigger_words` 写入 positive，导致出图效果偏离预期。现于启用 LoRA 后，自动将各启用 LoRA 配置的触发词（去重、仅追加缺失词）追加到正向提示词并重写节点。

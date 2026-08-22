@@ -50,6 +50,12 @@ class QuotaStore:
         if self._conn is None:
             self._conn = sqlite3.connect(str(self.db_path))
             self._conn.row_factory = sqlite3.Row
+            # 开启 WAL：显著降低写入锁等待与 fsync 开销，读写并发更流畅
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+            except Exception as e:  # pragma: no cover
+                logger.warning(f"[限额] 开启 WAL 失败（不影响使用）: {e}")
         return self._conn
 
     def _init_db(self) -> None:
