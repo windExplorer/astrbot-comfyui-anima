@@ -3134,12 +3134,10 @@ class ComfyUIDrawPlugin(Star):
                                 "w": _real_w if _real_w else None, "h": _real_h if _real_h else None,
                                 "workflow": wf.get("name") or "",
                                 "sha16": (_sha or "")[:16],
-                            },
-                        )
-                        except Exception:
-                            pass
+                                },
+                                )
 
-                    # 生图成功：记录配额（总次数 + 当前小时次数）
+                                # 生图成功：记录配额（总次数 + 当前小时次数）
                     self._record_draw_used(event)
 
                     # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
