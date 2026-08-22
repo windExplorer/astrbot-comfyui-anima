@@ -901,13 +901,15 @@ class ImageStore:
         session=None,
         user_filter: str = "",
         nsfw: str = "",
+        tag: str = "",
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
         owner: 用户隔离标识，与 search 保持一致。
         session: 会话ID；非空时额外按 session_id 过滤（用于「仅当前会话」视图，
         cross_session=false 场景）。注意：这只是检索范围，不改变权限——
         owner（user_id 归属）与 is_public 过滤始终保留。
-        nsfw: ""=不过滤；"0"=仅常规；"1"=仅NSFW。"""
+        nsfw: ""=不过滤；"0"=仅常规；"1"=仅NSFW。
+        tag: 按标签精确筛选，与 search 保持一致。"""
         if not self.enabled() or not _HAS_SQLITE:
             return 0
         conn = self._conn_get()
@@ -935,6 +937,9 @@ class ImageStore:
                 " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
             )
             args += [kw, kw, kw, kw]
+        if tag and tag.strip():
+            sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
+            args.append(tag.strip())
         if type:
             sql += " AND source=?"
             args.append(type)
@@ -968,6 +973,7 @@ class ImageStore:
         owner: str = "",
         user_filter: str = "",
         nsfw: str = "",
+        tag: str = "",
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
@@ -976,6 +982,7 @@ class ImageStore:
         session: 会话ID；非空时额外按 session_id 过滤（用于「仅当前会话」视图，
         cross_session=false 场景）。这是检索范围缩小，不改变 owner 权限语义。
         nsfw: ""=不过滤；"0"=仅常规（nsfw=0）；"1"=仅NSFW（nsfw=1）。
+        tag: 按标签精确筛选。非空时仅返回带该标签的图片（精确匹配 image_tags.tag）。
         """
         if not self.enabled() or not _HAS_SQLITE:
             return []
@@ -1007,6 +1014,9 @@ class ImageStore:
                 " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
             )
             args += [kw, kw, kw, kw]
+        if tag and tag.strip():
+            sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
+            args.append(tag.strip())
         if type:
             # type=img2img 按「图生图」过滤（is_img2img=1），因为图生图成品图的
             # source 仍是 gen，不能用 source 匹配；其余 gen/ref/user 按 source 过滤。

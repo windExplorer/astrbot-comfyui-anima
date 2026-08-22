@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.7
+
+- **图库支持按标签精确筛选**：工具栏新增「按标签筛选」输入框，精确匹配图片标签，配合关键词/类型/收藏/NSFW 等组合检索；后端 search/count_search 增加 `tag` 参数并透传。
+- **优化图片查看器标签样式**：标签增加悬停浮起与阴影过渡、关闭按钮高亮（红色 hover）、添加输入框圆角与聚焦描边，间距与排版更精致。
+
 ## v4.7.6
 
 - **为全部 SQLite 存储开启 WAL 模式**（gallery.db / quota.db / oplog.db / token.db）：`PRAGMA journal_mode=WAL` + `PRAGMA synchronous=NORMAL`。降低写入锁等待与 fsync 开销，读写在出图/统计/日志等并发场景下更流畅，缓解卡顿。开启失败自动降级不影响使用。

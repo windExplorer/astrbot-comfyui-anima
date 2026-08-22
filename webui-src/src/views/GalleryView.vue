@@ -55,6 +55,7 @@
         <n-tab-pane name="trash" tab="回收站" />
       </n-tabs>
       <n-input v-model:value="search" size="small" placeholder="搜索关键词、prompt…" style="width:220px" clearable @keyup.enter="doSearch(1)" />
+      <n-input v-model:value="tagFilter" size="small" placeholder="按标签筛选（精确匹配）…" style="width:180px" clearable @keyup.enter="doSearch(1)" />
       <n-input v-model:value="userSearch" size="small" placeholder="筛选用户昵称 / QQ…" style="width:200px" clearable @keyup.enter="doSearch(1)" />
       <n-select
         v-model:value="type"
@@ -198,6 +199,7 @@ const searching = ref(false);
 const activeTab = ref("normal");
 const search = ref("");
 const userSearch = ref("");
+const tagFilter = ref("");
 const type = ref("");
 const starred = ref(false);
 const images = ref<any[]>([]);
@@ -389,6 +391,7 @@ async function doSearch(p: number) {
     const data = await apiGet("gallery/search", {
       keyword: search.value.trim(),
       user: userSearch.value.trim(),
+      tag: tagFilter.value.trim(),
       type: type.value || undefined,
       starred: starred.value ? 1 : 0,
       trash: activeTab.value === "trash" ? 1 : 0,

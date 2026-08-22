@@ -928,6 +928,7 @@ class WebUIApi:
             starred = request.query.get("starred", "0") == "1"
             trash = request.query.get("trash", "0") == "1"
             nsfw = str(request.query.get("nsfw", "") or "").strip() or ""
+            tag = str(request.query.get("tag", "") or "").strip() or ""
             try:
                 page = request.query.get("page", 1, type=int)
             except Exception:
@@ -944,9 +945,9 @@ class WebUIApi:
                 size = 200
             offset = (page - 1) * size
             rows = g.search(keyword=kw, type=stype, starred_only=starred,
-                            trash=trash, limit=size, offset=offset, user_filter=user_filter, nsfw=nsfw)
+                            trash=trash, limit=size, offset=offset, user_filter=user_filter, nsfw=nsfw, tag=tag)
             total = g.count_search(keyword=kw, type=stype,
-                                   starred_only=starred, trash=trash, user_filter=user_filter, nsfw=nsfw)
+                                   starred_only=starred, trash=trash, user_filter=user_filter, nsfw=nsfw, tag=tag)
             # 列表只返回元数据（含 sha256），不内联任何缩略图 base64——避免一次几十张
             # 图导致响应体爆炸/超时。缩略图由前端经 bridge 调用 gallery_thumb 按需、
             # 懒加载、带 LRU 缓存地拉取单张 data URL（参考 astrbot_plugin_stealer 图库）。
