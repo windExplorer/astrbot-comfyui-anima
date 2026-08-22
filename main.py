@@ -1,4 +1,4 @@
-"""AstrBot ComfyUI 绘图插件（支持多服务器、多工作流、LoRA 管理、Anima 标签翻译）。"""
+﻿"""AstrBot ComfyUI 绘图插件（支持多服务器、多工作流、LoRA 管理、Anima 标签翻译）。"""
 
 import os
 import json
@@ -371,7 +371,7 @@ async def _extract_quoted_images(event: "AstrMessageEvent", reply_component=None
             res = await res
         return list(res or [])
     except Exception as e:
-        logger.debug(f"[取图] 引用消息API回退异常（忽略）: {e}")
+        logger.debug(f"【取图】 引用消息API回退异常（忽略）: {e}")
         return []
 
 
@@ -413,19 +413,19 @@ async def _download_url_to_temp(url: str) -> str | None:
             async with sess.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status != 200:
                     logger.warning(
-                        f"[取图] 引用图兜底下载失败: HTTP {resp.status} {url[:80]}"
+                        f"【取图】 引用图兜底下载失败: HTTP {resp.status} {url[:80]}"
                     )
                     return None
                 data = await resp.read()
         if not data or len(data) < 64:
-            logger.warning(f"[取图] 引用图兜底下载内容异常（空/过小）: {url[:80]}")
+            logger.warning(f"【取图】 引用图兜底下载内容异常（空/过小）: {url[:80]}")
             return None
         with open(out, "wb") as f:
             f.write(data)
-        logger.info(f"[取图] 引用图兜底下载成功: {url[:80]}... -> {out}")
+        logger.info(f"【取图】 引用图兜底下载成功: {url[:80]}... -> {out}")
         return out
     except Exception as e:
-        logger.warning(f"[取图] 引用图兜底下载异常（忽略）: {e} | {url[:80]}")
+        logger.warning(f"【取图】 引用图兜底下载异常（忽略）: {e} | {url[:80]}")
         return None
 
 
@@ -446,13 +446,13 @@ async def _image_to_local_path(item) -> str | None:
         else:
             comp = item
     except Exception as e:
-        logger.debug(f"[取图] 构造图片组件失败: {e}")
+        logger.debug(f"【取图】 构造图片组件失败: {e}")
         return None
     p = None
     try:
         p = await comp.convert_to_file_path()
     except Exception as e:
-        logger.debug(f"[取图] convert_to_file_path 失败: {e}")
+        logger.debug(f"【取图】 convert_to_file_path 失败: {e}")
     # 兜底：convert_to_file_path 失败时，若原始是 http(s) URL（如引用消息里的带签名图
     # 床地址），尝试自带 UA/Referer 下载到本地 temp，避免"引用消息图片读不到"。
     if not p:
@@ -462,7 +462,7 @@ async def _image_to_local_path(item) -> str | None:
         elif getattr(comp, "url", None):
             raw_url = comp.url
         if raw_url:
-            logger.debug(f"[取图] convert_to_file_path 失败，尝试 URL 兜底下载: {raw_url[:80]}")
+            logger.debug(f"【取图】 convert_to_file_path 失败，尝试 URL 兜底下载: {raw_url[:80]}")
             p = await _download_url_to_temp(raw_url)
     if not p and getattr(comp, "path", None):
         p = comp.path
@@ -473,7 +473,7 @@ async def _image_to_local_path(item) -> str | None:
     # 校验解析出的路径真实存在，避免把平台给的「裸文件名」当成本地路径上传导致失败
     if p and not os.path.exists(p):
         logger.warning(
-            f"[取图] 解析出的路径不存在（可能是平台文件名而非本地路径）: {p!r}"
+            f"【取图】 解析出的路径不存在（可能是平台文件名而非本地路径）: {p!r}"
         )
         p = None
     # 进一步校验文件有效（非空、常见图片扩展名或魔数）。
@@ -500,13 +500,13 @@ async def _image_to_local_path(item) -> str | None:
         )
         if sz == 0 or (not ok_ext and not magic):
             logger.warning(
-                f"[取图] 解析出的文件无效（size={sz}, ext_ok={ok_ext}, magic_ok={magic}），"
+                f"【取图】 解析出的文件无效（size={sz}, ext_ok={ok_ext}, magic_ok={magic}），"
                 f"视为下载/解析失败: {p!r}"
             )
             p = None
     if not p:
         logger.warning(
-            f"[取图] 无法解析为本地路径: "
+            f"【取图】 无法解析为本地路径: "
             f"url={getattr(comp, 'url', None)!r} "
             f"file={getattr(comp, 'file', None)!r} "
             f"path={getattr(comp, 'path', None)!r}"
@@ -533,7 +533,7 @@ async def _gif_to_first_frame(path: str) -> str | None:
         return path
 
     if _PILImage is None:
-        logger.warning("[取图] 环境无 Pillow，无法提取 GIF 首帧，将直接上传原 GIF")
+        logger.warning("【取图】 环境无 Pillow，无法提取 GIF 首帧，将直接上传原 GIF")
         return path
 
     # 优先落到插件 temp/ 目录（已有 24h 清理），无实例时回退系统临时目录
@@ -552,10 +552,10 @@ async def _gif_to_first_frame(path: str) -> str | None:
         with _PILImage.open(path) as _gif:
             _first = _gif.convert("RGBA")
             _first.save(out_path, "WEBP")
-        logger.info(f"[取图] GIF 首帧已提取为静态图: {path} -> {out_path}")
+        logger.info(f"【取图】 GIF 首帧已提取为静态图: {path} -> {out_path}")
         return str(out_path)
     except Exception as e:
-        logger.warning(f"[取图] GIF 首帧提取失败（降级上传原 GIF）: {e}")
+        logger.warning(f"【取图】 GIF 首帧提取失败（降级上传原 GIF）: {e}")
         return path
 
 
@@ -602,20 +602,20 @@ class ComfyUIDrawPlugin(Star):
                 cfg_provider=lambda: self.config.get("gallery", {}),
             )
             logger.info(
-                f"[init] 图库已就绪: {self.data_dir} "
+                f"【初始化】 图库已就绪: {self.data_dir} "
                 f"(gallery={self.gallery.gallery_dir}, refs={self.gallery.refs_dir}, "
                 f"db={self.gallery.db_path})"
             )
         except Exception as e:
-            logger.warning(f"[init] 图库初始化失败（功能不可用）: {e}", exc_info=True)
+            logger.warning(f"【初始化】 图库初始化失败（功能不可用）: {e}", exc_info=True)
 
         # 生图次数限制（配额）：独立 SQLite 维护每个用户的总/小时生图计数与单独配置
         self.quota = None
         try:
             self.quota = quota_store.QuotaStore(self.data_dir)
-            logger.info(f"[init] 生图限额已就绪: {self.quota.db_path}")
+            logger.info(f"【初始化】 生图限额已就绪: {self.quota.db_path}")
         except Exception as e:
-            logger.warning(f"[init] 生图限额初始化失败（功能不可用）: {e}", exc_info=True)
+            logger.warning(f"【初始化】 生图限额初始化失败（功能不可用）: {e}", exc_info=True)
 
         # 独立业务操作日志（oplog）：与 AstrBot logging 解耦，关键事件直接落盘
         self.oplog = None
@@ -625,7 +625,7 @@ class ComfyUIDrawPlugin(Star):
             except ImportError:
                 from oplog_store import OpLogStore
             self.oplog = OpLogStore(self.data_dir)
-            logger.info(f"[init] 操作日志已就绪: {self.oplog.db_path}")
+            logger.info(f"【初始化】 操作日志已就绪: {self.oplog.db_path}")
             # 启动自检：写入一条初始化事件，用于确认 oplog 链路是否真正打通
             try:
                 self.oplog.add("oplog_init", "插件启动，操作日志系统就绪",
@@ -633,7 +633,7 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 pass
         except Exception as e:
-            logger.warning(f"[init] 操作日志初始化失败（可忽略，溯源日志不可用）: {e}")
+            logger.warning(f"【初始化】 操作日志初始化失败（可忽略，溯源日志不可用）: {e}")
 
         # 独立 WebUI 服务（standalone）：aiohttp 独立端口，与 AstrBot 内嵌页共存
         self.standalone_webui = None
@@ -644,7 +644,7 @@ class ComfyUIDrawPlugin(Star):
                 from standalone_webui import create_standalone_webui
             self.standalone_webui = create_standalone_webui(self)
         except Exception as e:
-            logger.warning(f"[init] 独立 WebUI 初始化失败（可忽略）: {e}")
+            logger.warning(f"【初始化】 独立 WebUI 初始化失败（可忽略）: {e}")
 
         # LLM token 用量统计：独立 SQLite 记录插件自发起的辅助 LLM 调用
         # （翻译/改写/参数提取）的 token 消耗。主对话画图那一次发生在 AstrBot
@@ -652,9 +652,9 @@ class ComfyUIDrawPlugin(Star):
         self.token_store = None
         try:
             self.token_store = token_store.TokenStore(self.data_dir)
-            logger.info(f"[init] LLM token 统计已就绪: {self.token_store.db_path}")
+            logger.info(f"【初始化】 LLM token 统计已就绪: {self.token_store.db_path}")
         except Exception as e:
-            logger.warning(f"[init] LLM token 统计初始化失败（功能不可用）: {e}", exc_info=True)
+            logger.warning(f"【初始化】 LLM token 统计初始化失败（功能不可用）: {e}", exc_info=True)
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
@@ -666,7 +666,7 @@ class ComfyUIDrawPlugin(Star):
             self._webui_log_buffer = LOG_BUFFER
             self._install_webui_log_handler()
         except Exception as e:
-            logger.warning(f"[init] WebUI 日志缓冲初始化失败（可忽略）: {e}")
+            logger.warning(f"【初始化】 WebUI 日志缓冲初始化失败（可忽略）: {e}")
 
     def _install_webui_log_handler(self) -> None:
         """安装一个 logging handler，把日志副本写入内存环形缓冲 + data_dir/webui.log。"""
@@ -753,11 +753,11 @@ class ComfyUIDrawPlugin(Star):
                         tool.parameters = params
                         patched.append(tool.name)
             if patched:
-                logger.info(f"[init] 已为工具补充 required: {patched}")
+                logger.info(f"【初始化】 已为工具补充 required: {patched}")
             else:
-                logger.warning("[init] 未找到本插件工具，补充 required 跳过（工具可能尚未注册）")
+                logger.warning("【初始化】 未找到本插件工具，补充 required 跳过（工具可能尚未注册）")
         except Exception as e:  # 框架内部结构变动时不致命
-            logger.warning(f"[init] 补充工具 required 失败（可忽略）: {e}")
+            logger.warning(f"【初始化】 补充工具 required 失败（可忽略）: {e}")
 
         # 注册 WebUI 控制台路由（/api/<插件名>/page/...）
         try:
@@ -768,14 +768,14 @@ class ComfyUIDrawPlugin(Star):
 
             register_web_api(self)
         except Exception as e:
-            logger.warning(f"[init] 注册 WebUI 路由失败（控制台不可用）: {e}")
+            logger.warning(f"【初始化】 注册 WebUI 路由失败（控制台不可用）: {e}")
 
         # 启动独立 WebUI 服务（若配置开启）
         try:
             if getattr(self, "standalone_webui", None) is not None:
                 await self.standalone_webui.start()
         except Exception as e:
-            logger.warning(f"[init] 独立 WebUI 启动失败（可忽略）: {e}")
+            logger.warning(f"【初始化】 独立 WebUI 启动失败（可忽略）: {e}")
 
     async def terminate(self) -> None:
         # 停止独立 WebUI 服务
@@ -833,7 +833,7 @@ class ComfyUIDrawPlugin(Star):
                 user_id, scene, model or "", in_other, in_cached, out, user_name=user_name
             )
         except Exception as e:
-            logger.warning(f"[token] 记录 LLM 用量失败: {e}")
+            logger.warning(f"【统计·token】 记录 LLM 用量失败: {e}")
 
     async def _llm_extract_args(self, user_text: str, param_spec: str) -> dict | None:
         """当默认模型不支持 Function Calling 导致工具参数空洞时，用「指定模型」(llm_model)
@@ -850,11 +850,12 @@ class ComfyUIDrawPlugin(Star):
             "只输出 JSON 对象："
         )
         try:
+            logger.info(f"【绘图·LLM④】trace=(extract_args) 阶段=提取工具参数 使用指定模型({model})进入LLM")
             llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
             self._record_llm_token("extract_args", model, llm_resp)
             text = getattr(llm_resp, "completion_text", "") or ""
         except Exception as e:
-            logger.warning(f"[llm_model] 指定模型({model}) 参数提取失败，退回默认逻辑: {e}")
+            logger.warning(f"【工具·llm_model】 指定模型({model}) 参数提取失败，退回默认逻辑: {e}")
             return None
         text = text.strip()
         # 容忍 ```json ... ``` 包裹
@@ -910,7 +911,7 @@ class ComfyUIDrawPlugin(Star):
             try:
                 self.gallery.enforce_lru()
             except Exception as _e:
-                logger.debug(f"[图库] LRU 清理异常（忽略）: {_e}")
+                logger.debug(f"【图库】 LRU 清理异常（忽略）: {_e}")
 
     def _servers(self) -> list[dict]:
         return self._cfg("comfyui_servers", []) or []
@@ -1021,7 +1022,7 @@ class ComfyUIDrawPlugin(Star):
         for lora_name, preset_name in presets.items():
             l = lib.get((lora_name or "").strip())
             if not l:
-                logger.warning(f"[LoRA] 预设引用：库里找不到 LoRA「{lora_name}」，跳过预设")
+                logger.warning(f"【LoRA】 预设引用：库里找不到 LoRA「{lora_name}」，跳过预设")
                 continue
             found = None
             for p in self._parse_presets(l.get("presets")):
@@ -1030,14 +1031,14 @@ class ComfyUIDrawPlugin(Star):
                     break
             if not found:
                 logger.warning(
-                    f"[LoRA] 预设引用：LoRA「{lora_name}」下找不到预设「{preset_name}」，跳过"
+                    f"【LoRA】 预设引用：LoRA「{lora_name}」下找不到预设「{preset_name}」，跳过"
                 )
                 continue
             pr = (found.get("prompt") or "").strip()
             if pr:
                 pos_parts.append(pr)
             logger.info(
-                f"[LoRA] 应用预设：{lora_name}-{preset_name}"
+                f"【LoRA】 应用预设：{lora_name}-{preset_name}"
                 f"（追加正向={pr!r}）"
             )
         positive = ", ".join(p for p in pos_parts if p and p.strip()) if pos_parts else (positive or "")
@@ -1538,7 +1539,7 @@ class ComfyUIDrawPlugin(Star):
         if not self._has_chinese(positive):
             return positive
         mode = self._resolve_translator_mode(wf)
-        logger.info(f"[翻译] Anima 工作流，翻译模式={mode}，仅翻译中文片段")
+        logger.info(f"【翻译】 Anima 工作流，翻译模式={mode}，仅翻译中文片段")
         segments = self._split_prompt_segments(positive)
         out_segments = []
         changed = False
@@ -1551,7 +1552,7 @@ class ComfyUIDrawPlugin(Star):
                         changed = True
                         continue
                 except Exception as e:
-                    logger.warning(f"[翻译] 片段「{seg}」翻译失败，保留原文: {e}")
+                    logger.warning(f"【翻译】 片段「{seg}」翻译失败，保留原文: {e}")
             out_segments.append(seg)
         # 片段列表已含逗号/空格分隔符，直接拼接即可保持原格式
         result = "".join(out_segments)
@@ -1677,7 +1678,7 @@ class ComfyUIDrawPlugin(Star):
                     alias = item.strip()
                     if alias and alias.lower() == needle:
                         logger.info(
-                            f"[绘图] 工作流别名命中：{alias!r} → {wf_name or '(未命名)'}"
+                            f"【绘图·解析】 工作流别名命中：{alias!r} → {wf_name or '(未命名)'}"
                         )
                         return wf_name or name
         return name
@@ -1722,7 +1723,7 @@ class ComfyUIDrawPlugin(Star):
                 ) or self._cfg("default_workflow_real", "")
                 if _cand:
                     name = _cand
-                    logger.info(f"[绘图] 提示词含「真人/写实」语义，选用真人工流={name}")
+                    logger.info(f"【绘图·解析】 提示词含「真人/写实」语义，选用真人工流={name}")
             elif _sem == "anime":
                 _cand = (
                     self._cfg("default_img2img_workflow", "")
@@ -1731,11 +1732,11 @@ class ComfyUIDrawPlugin(Star):
                 ) or self._cfg("default_workflow", "")
                 if _cand:
                     name = _cand
-                    logger.info(f"[绘图] 提示词含「动漫/二次元」语义，选用动漫工作流={name}")
+                    logger.info(f"【绘图·解析】 提示词含「动漫/二次元」语义，选用动漫工作流={name}")
             if not name:
                 name = self._pick_default_workflow_name(is_img2img)
                 logger.info(
-                    f"[绘图] 未指定工作流，按风格优先级={self._cfg('default_style_priority', 'anime')} "
+                    f"【绘图·解析】 未指定工作流，按风格优先级={self._cfg('default_style_priority', 'anime')} "
                     f"{'图生图' if is_img2img else '文生图'}选定默认工作流={name or '（均无配置，回退第一个）'}"
                 )
         if name:
@@ -1777,16 +1778,16 @@ class ComfyUIDrawPlugin(Star):
                         or (w.get("workflow_name") or "").strip().lower() == fallback.strip().lower()
                     ):
                         logger.warning(
-                            f"[绘图] 找不到工作流「{name}」（可用：{avail}），"
+                            f"【绘图·解析】 找不到工作流「{name}」（可用：{avail}），"
                             f"容错回退到默认工作流「{w.get('name') or fallback}」"
                         )
                         return w
                 logger.warning(
-                    f"[绘图] 找不到工作流「{name}」，且默认工作流「{fallback}」也未匹配，回退第一个"
+                    f"【绘图·解析】 找不到工作流「{name}」，且默认工作流「{fallback}」也未匹配，回退第一个"
                 )
                 return workflows[0]
             logger.warning(
-                f"[绘图] 找不到工作流「{name}」且未配置默认工作流，回退第一个（可用：{avail}）"
+                f"【绘图·解析】 找不到工作流「{name}」且未配置默认工作流，回退第一个（可用：{avail}）"
             )
             return workflows[0]
         return workflows[0]
@@ -1817,7 +1818,7 @@ class ComfyUIDrawPlugin(Star):
         """
         comps = list(event.get_messages())
         logger.info(
-            f"[取图] 开始：消息组件共 {len(comps)} 个 -> "
+            f"【取图】 开始：消息组件共 {len(comps)} 个 -> "
             + ", ".join(str(getattr(c, "type", type(c).__name__)) for c in comps)
         )
 
@@ -1844,7 +1845,7 @@ class ComfyUIDrawPlugin(Star):
                 has_reply = True
                 chain = getattr(comp, "chain", None) or []
                 logger.info(
-                    f"[取图] 发现引用消息 Reply(id={getattr(comp, 'id', None)})，"
+                    f"【取图】 发现引用消息 Reply(id={getattr(comp, 'id', None)})，"
                     f"链内组件 {len(chain)} 个"
                 )
                 for sub in chain:
@@ -1863,11 +1864,11 @@ class ComfyUIDrawPlugin(Star):
             if p and p not in seen:
                 seen.add(p)
                 paths.append(p)
-                logger.info(f"[取图] 成功 [{src}] -> {p}")
+                logger.info(f"【取图】 成功 [{src}] -> {p}")
             elif p:
-                logger.info(f"[取图] 跳过重复 [{src}] -> {p}")
+                logger.info(f"【取图】 跳过重复 [{src}] -> {p}")
             else:
-                logger.warning(f"[取图] 失败 [{src}] 无法解析为本地路径")
+                logger.warning(f"【取图】 失败 [{src}] 无法解析为本地路径")
 
         # 兜底：消息里带了引用(Reply)、但平台未回填引用内容/引用图解析失败时，
         # 回退到「本会话用户最近发过的图」。用户引用的通常正是他自己刚发的图，
@@ -1884,12 +1885,12 @@ class ComfyUIDrawPlugin(Star):
                 if paths:
                     break
             if paths:
-                logger.info(f"[取图] 引用图解析失败，兜底最近用户发的图: {paths}")
+                logger.info(f"【取图】 引用图解析失败，兜底最近用户发的图: {paths}")
 
         if paths:
-            logger.info(f"[取图] 完成：共取得 {len(paths)} 张图片")
+            logger.info(f"【取图】 完成：共取得 {len(paths)} 张图片")
         else:
-            logger.info("[取图] 消息/引用/卡片内均未取到图片（本方法不兜底历史生成图）")
+            logger.info("【取图】 消息/引用/卡片内均未取到图片（本方法不兜底历史生成图）")
         return paths
 
     @staticmethod
@@ -1936,11 +1937,11 @@ class ComfyUIDrawPlugin(Star):
             # 超长内容按 400 字符分段，避免单行日志被截断/过长
             for i in range(0, max(1, len(body)), 400):
                 seg = body[i:i + 400]
-                lines.append(f"[拆prompt][DBG] {tag}段{i // 400}: {seg}")
+                lines.append(f"【拆prompt】[DBG] {tag}段{i // 400}: {seg}")
             return lines
 
         logger.debug(
-            f"[拆prompt][DBG] 输入长度={len(text)} "
+            f"【拆prompt】[DBG] 输入长度={len(text)} "
             f"含Negative标记={bool(re.search(r'negative\\s*prompt\\s*[:：]', text, re.IGNORECASE))} "
             f"含Avoid/DoNot软信号={bool(re.search(r'(avoid\\b|do not\\b|respect[^.]*?exclusions\\b)', text, re.IGNORECASE))}"
         )
@@ -1960,7 +1961,7 @@ class ComfyUIDrawPlugin(Star):
             # 正向内仍残留负面软信号，这里再切一次，保证正向干净。
             positive = _cut_inline_negative(positive)
             positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
-            logger.debug("[拆prompt][DBG] === 走分支1(有Negative标记) 过滤后正向提示词 ===")
+            logger.debug("【拆prompt】[DBG] === 走分支1(有Negative标记) 过滤后正向提示词 ===")
             for ln in _dbg_block("过滤后", positive):
                 logger.debug(ln)
             # 负面直接删除（不保留，回退到调用方自行提供的 negative_prompt）
@@ -1970,7 +1971,7 @@ class ComfyUIDrawPlugin(Star):
         #    未命中软信号则原样返回（不误伤常规 /draw 与 AI 对话的自然语言描述）。
         positive = _cut_inline_negative(text)
         positive = ComfyUIDrawPlugin._clean_prompt_markers(positive)
-        logger.debug("[拆prompt][DBG] === 走分支2(无Negative标记) 过滤后正向提示词 ===")
+        logger.debug("【拆prompt】[DBG] === 走分支2(无Negative标记) 过滤后正向提示词 ===")
         for ln in _dbg_block("过滤后", positive):
             logger.debug(ln)
         return positive, ""
@@ -2008,7 +2009,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             await event.send(MessageChain([Plain(str(text))]))
         except Exception as _e:
-            logger.warning(f"[发送] 主动发送文本失败（忽略，不中断主流程）: {_e}")
+            logger.warning(f"【发送】 主动发送文本失败（忽略，不中断主流程）: {_e}")
 
     async def _send_display(self, event: AstrMessageEvent, text: str) -> None:
         """按图库配置的展示方式发送展示内容。
@@ -2039,10 +2040,10 @@ class ComfyUIDrawPlugin(Star):
                         img_comp = Image.fromFileSystem(url)
                     await event.send(MessageChain([img_comp]))
                     return
-                self.logger.warning("[图库] 官方渲染服务返回空 URL，改用默认模板")
+                self.logger.warning("【图库】 官方渲染服务返回空 URL，改用默认模板")
             except Exception as _e:
                 try:
-                    self.logger.warning(f"[图库] 官方自定义模板渲染失败，改用默认模板: {_e}")
+                    self.logger.warning(f"【图库】 官方自定义模板渲染失败，改用默认模板: {_e}")
                 except Exception:
                     pass
             # 2) 兜底：AstrBot 官方默认模板（text_to_image）
@@ -2056,10 +2057,10 @@ class ComfyUIDrawPlugin(Star):
                         img_comp = Image.fromFileSystem(url)
                     await event.send(MessageChain([img_comp]))
                     return
-                self.logger.warning("[图库] 默认模板渲染返回空 URL，改用 Pillow 兜底")
+                self.logger.warning("【图库】 默认模板渲染返回空 URL，改用 Pillow 兜底")
             except Exception as _e:
                 try:
-                    self.logger.warning(f"[图库] 默认模板渲染失败，改用 Pillow 兜底: {_e}")
+                    self.logger.warning(f"【图库】 默认模板渲染失败，改用 Pillow 兜底: {_e}")
                 except Exception:
                     pass
             # 3) 兜底：本插件内置 Pillow 渲染
@@ -2069,7 +2070,7 @@ class ComfyUIDrawPlugin(Star):
                     await event.send(MessageChain([Image.fromFileSystem(render_path)]))
                     return
                 except Exception as _e:
-                    self.logger.warning(f"[图库] Pillow 兜底渲染图发送失败，回退文字: {_e}")
+                    self.logger.warning(f"【图库】 Pillow 兜底渲染图发送失败，回退文字: {_e}")
             # 4) 最终回退：文字
             await self._send(
                 event,
@@ -2218,7 +2219,7 @@ class ComfyUIDrawPlugin(Star):
             return out_path
         except Exception as _e:
             try:
-                self.logger.warning(f"[图库] Pillow 渲染失败: {_e}")
+                self.logger.warning(f"【图库】 Pillow 渲染失败: {_e}")
             except Exception:
                 pass
             return None
@@ -2260,7 +2261,7 @@ class ComfyUIDrawPlugin(Star):
             )
         except Exception as e:
             logger.warning(
-                f"[图库] 写入失败记录出错（忽略）: {e} | "
+                f"【图库】 写入失败记录出错（忽略）: {e} | "
                 f"wf={type(wf).__name__} event={type(event).__name__}",
                 exc_info=True,
             )
@@ -2311,7 +2312,7 @@ class ComfyUIDrawPlugin(Star):
         """
         tag = f"[{scene}]" if scene else ""
         logger.error(
-            f"[绘图失败]{tag} {type(exc).__name__}: {exc}", exc_info=True
+            f"【绘图·失败】{tag} {type(exc).__name__}: {exc}", exc_info=True
         )
         key = category or self._classify_error(exc)
         pool = _ERR_HINTS.get(key, _ERR_HINTS["generic"])
@@ -2380,8 +2381,8 @@ class ComfyUIDrawPlugin(Star):
         if _session_id:
             g_draw_agent_sessions[_session_id] = self._resolve_translate_provider_id() or ""
         logger.info(
-            f"[DRAW-LLM] trace={_trace_id} session={_session_id} 绘图开始 "
-            f"(source={source or '(原生)'}, is_img2img={is_img2img})"
+            f"【绘图·开始】trace={_trace_id} session={_session_id} "
+            f"来源={source or '(原生)'} 图生图={is_img2img}"
         )
         # 图生图参考图的 sha256（归档成品图时回填到 ref_sha256 字段）
         ref_sha256 = None
@@ -2392,19 +2393,19 @@ class ComfyUIDrawPlugin(Star):
         # 绘图黑名单：被拉黑的用户/群直接拒绝（覆盖指令、AI 对话、伴侣插件等所有画图方式）。
         _bl_ok, _bl_reason = self._check_blacklist(event)
         if not _bl_ok:
-            logger.info(f"[绘图] 黑名单拦截：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
+            logger.info(f"【绘图·解析】 黑名单拦截：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
             await self._send(event, _bl_reason)
             return
         # 发图白名单：allow_draw_users 非空时，非白名单用户直接拒绝，不进入生图流程。
         # 空名单 = 所有用户都允许（含未识别到 user_id 的情况）。
         if not self._is_draw_allowed(user_id):
-            logger.info(f"[绘图] 用户 {user_id or '(unknown)'} 不在发图白名单，拒绝绘图")
+            logger.info(f"【绘图·解析】 用户 {user_id or '(unknown)'} 不在发图白名单，拒绝绘图")
             await self._send(event, "抱歉，你没有发图权限哦～ 如需使用绘图功能请联系管理员。")
             return
         # 生图次数限制：全局/按用户配额校验（管理员可豁免）
         _ok, _reason = self._check_draw_limit(event)
         if not _ok:
-            logger.info(f"[绘图] 用户 {user_id or '(unknown)'} 触发生图限额，拒绝：{_reason}")
+            logger.info(f"【绘图·解析】 用户 {user_id or '(unknown)'} 触发生图限额，拒绝：{_reason}")
             await self._send(event, _reason)
             return
         if not positive or not positive.strip():
@@ -2416,13 +2417,13 @@ class ComfyUIDrawPlugin(Star):
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
             wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True, positive=positive)
             logger.info(
-                f"[绘图] 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
+                f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
                 f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
             )
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
             # 配置类问题：原因是插件自己给出的可读文案，直接说明
-            logger.warning(f"[绘图失败][配置] {e}")
+            logger.warning(f"【绘图·失败】[配置] {e}")
             await self._send(event, f"绘图配置有误：{e} 请联系管理员调整。")
             return
 
@@ -2510,9 +2511,9 @@ class ComfyUIDrawPlugin(Star):
                         _sha = _sha256_of(_final) if _final else None
                         if _sha and ref_sha256 is None:
                             ref_sha256 = _sha
-                        logger.info(f"[图库] 已归档参考图: {_ri} -> {_final}")
+                        logger.info(f"【图库】 已归档参考图: {_ri} -> {_final}")
                 except Exception as _re:
-                    logger.warning(f"[图库] 参考图归档失败（不影响出图）: {_re}")
+                    logger.warning(f"【图库】 参考图归档失败（不影响出图）: {_re}")
 
         # 第三方插件调用（source 非空，如伴侣插件）：提示词往往是中英混杂的结构化
         # 描述（夹带 [User image request] 等标记），需要 LLM 清理/改写为对应风格。
@@ -2522,21 +2523,21 @@ class ComfyUIDrawPlugin(Star):
         if source:
             try:
                 if wf.get("is_anima"):
-                    logger.info(f"[DRAW-LLM] trace={_trace_id} scene=rewrite_anima 第三方插件调用，准备 LLM 改写为 Anima 提示词")
+                    logger.info(f"【绘图·LLM①】trace={_trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
                     rewritten = await self._rewrite_to_anima_llm(positive)
                     if rewritten and rewritten.strip():
                         positive = rewritten
-                        logger.info(f"[Anima] 第三方插件调用，LLM 改写为 Anima 提示词: {positive}")
+                        logger.info(f"【Anima】 第三方插件调用，LLM 改写为 Anima 提示词: {positive}")
                 else:
-                    logger.info(f"[DRAW-LLM] trace={_trace_id} scene=rewrite_real 第三方插件调用，准备 LLM 清理为写实提示词")
+                    logger.info(f"【绘图·LLM②】trace={_trace_id} 阶段=清理为写实提示词 第三方插件调用进入LLM")
                     rewritten = await self._rewrite_to_real_llm(positive)
                     if rewritten and rewritten.strip():
                         positive = rewritten
-                        logger.info(f"[写实] 第三方插件调用，LLM 清理为写实提示词: {positive}")
+                        logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {positive}")
             except Exception as e:
-                logger.warning(f"[提示词] LLM 改写失败，保留原提示词: {e}")
+                logger.warning(f"【提示词】 LLM 改写失败，保留原提示词: {e}")
         elif wf.get("is_anima") and self._has_chinese(positive):
-            logger.info(f"[DRAW-LLM] trace={_trace_id} scene=translate 原生调用含中文，准备 LLM 翻译提示词")
+            logger.info(f"【绘图·LLM③】trace={_trace_id} 阶段=翻译中文提示词 原生调用含中文进入LLM")
             translated = await self._translate_prompt(wf, positive)
             if translated:
                 positive = translated
@@ -2666,7 +2667,7 @@ class ComfyUIDrawPlugin(Star):
                         }
                     ]
                     logger.info(
-                        f"[LoRA] 从全局 LoRA 库补全临时启用的「{cmd_name}」"
+                        f"【LoRA】 从全局 LoRA 库补全临时启用的「{cmd_name}」"
                         f"（工作流未预引用；文件={lib_l.get('model_name')}）"
                     )
                 else:
@@ -2695,7 +2696,7 @@ class ComfyUIDrawPlugin(Star):
                 positive, negative = self._apply_lora_presets(
                     always_pre, positive, negative
                 )
-                logger.info(f"[LoRA] 已追加常驻预设（名为0）：{list(always_pre.keys())}")
+                logger.info(f"【LoRA】 已追加常驻预设（名为0）：{list(always_pre.keys())}")
                 # positive 已变更，需重写正向提示词节点（上方 565/570 处已写过一次，此处覆盖）
                 workflow_builder.set_text_node(
                     prompt, wf.get("positive_node"), "text", positive
@@ -2719,10 +2720,10 @@ class ComfyUIDrawPlugin(Star):
                 )
                 mn = (cfg or {}).get("model_name") or "" if cfg else ""
                 if mn:
-                    logger.info(f"[LoRA] 启用 {nm} → {mn}")
+                    logger.info(f"【LoRA】 启用 {nm} → {mn}")
                 else:
                     logger.warning(
-                        f"[LoRA] 启用 {nm} → 未配置 model_name，节点沿用工作流默认文件（可能不是该 LoRA）"
+                        f"【LoRA】 启用 {nm} → 未配置 model_name，节点沿用工作流默认文件（可能不是该 LoRA）"
                     )
 
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
@@ -2762,9 +2763,15 @@ class ComfyUIDrawPlugin(Star):
             or "无"
         )
         logger.info(
-            "[绘图摘要] 工作流=%s | 正向提示词=%s | 负向提示词=%s | 启用LoRA(%s)"
+            "【绘图·摘要】\n"
+            "  工作流 : %s\n"
+            "  种子 : %s\n"
+            "  正向提示词 : %s\n"
+            "  负向提示词 : %s\n"
+            "  启用LoRA : %s"
             % (
                 wf.get("name"),
+                (seeds_used[0] if seeds_used else "(随机/未指定)"),
                 positive if positive else "(空)",
                 negative if negative else "(空)",
                 _enabled_lora,
@@ -2782,7 +2789,7 @@ class ComfyUIDrawPlugin(Star):
                 return
 
             if not prompt_id:
-                logger.warning("[绘图失败][提交] ComfyUI 未返回 prompt_id")
+                logger.warning("【绘图·失败】[提交] ComfyUI 未返回 prompt_id")
                 await self._send(event, self._cute("no_task_id"))
                 self._record_failed(
                     event, positive, wf, is_img2img, ref_sha256,
@@ -2803,10 +2810,10 @@ class ComfyUIDrawPlugin(Star):
             pos = result.get("_queue_position")
             if pos is not None:
                 ahead = int(pos)
-                logger.info(f"[队列] 中转站 X-Queue-Position={ahead}（来自响应头）")
+                logger.info(f"【队列】 中转站 X-Queue-Position={ahead}（来自响应头）")
             else:
                 ahead = self._local_queue_ahead(srv_key)
-                logger.info(f"[队列] 无中转站 X-Queue-Position 响应头，回退本地队列 ahead={ahead}")
+                logger.info(f"【队列】 无中转站 X-Queue-Position 响应头，回退本地队列 ahead={ahead}")
             try:
                 self._local_queue_add(srv_key, prompt_id)
                 # 提交后统一发一条提示：有队列（ahead>0）→「前面排着 N 个」；
@@ -2835,7 +2842,7 @@ class ComfyUIDrawPlugin(Star):
                     except Exception:
                         history = None
                 if not history:
-                    logger.warning(f"[绘图失败][超时] 等待 {timeout} 秒仍无结果，prompt_id={prompt_id}")
+                    logger.warning(f"【绘图·失败】[超时] 等待 {timeout} 秒仍无结果，prompt_id={prompt_id}")
                     await self._send(event, self._cute("timeout"))
                     self._record_failed(
                         event, positive, wf, is_img2img, ref_sha256,
@@ -2845,7 +2852,7 @@ class ComfyUIDrawPlugin(Star):
 
                 images = comfyui_client.extract_images(history, wf.get("output_node"))
                 if not images:
-                    logger.warning("[绘图失败][无图] 任务完成但未找到输出图片节点")
+                    logger.warning("【绘图·失败】[无图] 任务完成但未找到输出图片节点")
                     await self._send(event, self._cute("no_image"))
                     self._record_failed(
                         event, positive, wf, is_img2img, ref_sha256,
@@ -2912,7 +2919,7 @@ class ComfyUIDrawPlugin(Star):
                             if _final:
                                 img_path = _final
                         except Exception as _ge:
-                            logger.warning(f"[图库] 归档失败（不影响出图）: {_ge}")
+                            logger.warning(f"【图库】 归档失败（不影响出图）: {_ge}")
 
                     # 产出 (图片节点, 本地路径) 元组：指令只取节点 yield 给用户，
                     # 记下本插件最近生成的图片本地路径（按会话），供图生图兜底使用
@@ -2943,31 +2950,96 @@ class ComfyUIDrawPlugin(Star):
                                 _png_tmp = self.temp_dir / f"{uuid.uuid4().hex}.png"
                                 _im.convert("RGB").save(_png_tmp, "PNG")
                                 _send_img_path = str(_png_tmp)
-                                logger.info(f"[出图] webp 已转 png 发送副本: {_send_img_path}")
+                                logger.info(f"【出图·成功】 webp 已转 png 发送副本: {_send_img_path}")
                         except Exception as _e:
-                            logger.warning(f"[出图] webp 转 png 发送副本失败（用原图发送）: {_e}")
+                            logger.warning(f"【出图·成功】 webp 转 png 发送副本失败（用原图发送）: {_e}")
                     # LLM 工具 llm_draw 额外用本地路径拼 JSON 返回（供伴侣插件解析为图片）。
-                    yield event.image_result(_send_img_path), _send_img_path
+                    # NSFW 护栏（群聊）：生图后发送前对结果图做 NSFW 检测，
+                    # 群聊场景一律拦截（检测不通过或检测不可用均拦截），私聊放行。
+                    _nsfw_blocked = False
+                    if not self._is_private_event(event):
+                        try:
+                            from .nsfw_detector import get_detector
+                        except ImportError:
+                            from nsfw_detector import get_detector
+                        _nsfw_thr = 0.5
+                        try:
+                            if getattr(self, "gallery", None) is not None:
+                                _nsfw_thr = self.gallery._nsfw_threshold()
+                        except Exception:
+                            pass
+                        _det = get_detector(_nsfw_thr)
+                        try:
+                            _is_nsfw, _nsfw_score, _nsfw_avail = (
+                                await asyncio.to_thread(_det.detect, _send_img_path)
+                            )
+                        except Exception as _e:
+                            logger.warning(f"【NSFW】 出图群聊检测异常: {_e}")
+                            _is_nsfw, _nsfw_score, _nsfw_avail = True, 1.0, False
+                        if _is_nsfw:
+                            _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
+                            _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_avail else ""
+                            logger.warning(
+                                f"【NSFW】 群聊出图被拦截{_sc}{_reason} user={user_id} "
+                                f"workflow={wf.get('name') or '(未命名)'} path={_send_img_path}"
+                            )
+                            await self._send(
+                                event,
+                                f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}",
+                            )
+                            # 标记被拦截：不发送、不入图库、不 yield 图片，但继续走
+                            # 后续「绘图结束」日志与操作日志（记录为拦截），多图时跳到下一张。
+                            _nsfw_blocked = True
+                    if not _nsfw_blocked:
+                        yield event.image_result(_send_img_path), _send_img_path
+
+                    # 绘图结束：本次生图主流程走完，打印耗时便于统计（区分是否被 NSFW 拦截）。
+                    logger.info(
+                        f"【绘图·结束】trace={_trace_id} 状态={'拦截' if _nsfw_blocked else '成功'} "
+                        f"耗时={time.time() - _draw_start:.1f}秒 工作流={wf.get('name') or '(未命名)'}"
+                    )
 
                     # 出图成功业务日志：带 content hash，方便与图库去重日志对照
-                    try:
-                        from .image_store import _sha256_of
-                    except ImportError:
-                        from image_store import _sha256_of
-                    try:
-                        _sha = _sha256_of(img_path)
-                        _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
-                        logger.info(
-                            f"[出图] 成功 user={_uid} seed={seeds_used[0] if seeds_used else '?'} "
-                            f"sha256={_sha[:16] if _sha else '?'} 已发图"
-                        )
-                        if self.oplog is not None:
-                            self.oplog.add(
-                                "draw_success",
-                                f"生图成功（{wf.get('name') or '未知工作流'}）",
-                                user_id=_uid,
-                                user_name=user_name,
-                                session_id=sid,
+                    # （被 NSFW 拦截的图不记录成功、不入图库）
+                    if not _nsfw_blocked:
+                        try:
+                            from .image_store import _sha256_of
+                        except ImportError:
+                            from image_store import _sha256_of
+                        try:
+                            _sha = _sha256_of(img_path)
+                            _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
+                            _cost = time.time() - _draw_start
+                            logger.info(
+                                "【出图·成功】\n"
+                                "  user : %s\n"
+                                "  用户昵称 : %s\n"
+                                "  工作流 : %s\n"
+                                "  种子 : %s\n"
+                                "  尺寸 : %sx%s\n"
+                                "  耗时 : %.1f秒\n"
+                                "  时间 : %s\n"
+                                "  文件名 : %s\n"
+                                "  sha256 : %s"
+                                % (
+                                    _uid,
+                                    user_name or "(未知)",
+                                    wf.get("name") or "(未命名)",
+                                    (seeds_used[0] if seeds_used else "?"),
+                                    w, h,
+                                    _cost,
+                                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    (img_path or "").split("/")[-1].split("\\")[-1],
+                                    (_sha[:16] if _sha else "?"),
+                                )
+                            )
+                            if self.oplog is not None:
+                                self.oplog.add(
+                                    "draw_success",
+                                    f"生图成功（{wf.get('name') or '未知工作流'}）",
+                                    user_id=_uid,
+                                    user_name=user_name,
+                                    session_id=sid,
                                 ref_sha=(_sha or "")[:16],
                                 detail=f"seed={seeds_used[0] if seeds_used else '?'} "
                                        f"w={w} h={h} 耗时={time.time() - _draw_start:.1f}s",
@@ -2978,8 +3050,8 @@ class ComfyUIDrawPlugin(Star):
                                     "sha16": (_sha or "")[:16],
                                 },
                             )
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
 
                     # 生图成功：记录配额（总次数 + 当前小时次数）
                     self._record_draw_used(event)
@@ -3012,7 +3084,7 @@ class ComfyUIDrawPlugin(Star):
                                 ),
                             )
                         except Exception as _e:
-                            logger.warning(f"[出图报告] 发送小报告失败（不影响出图）: {_e}")
+                            logger.warning(f"【出图·报告】 发送小报告失败（不影响出图）: {_e}")
             finally:
                 # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
                 self._local_queue_remove(srv_key, prompt_id)
@@ -3068,7 +3140,7 @@ class ComfyUIDrawPlugin(Star):
                         images.append(p)
                 if images:
                     break
-            logger.info(f"[取图] /img2img 启用兜底图片: {images}")
+            logger.info(f"【取图】 /img2img 启用兜底图片: {images}")
         if not images:
             await self._send(
                 event,
@@ -3409,7 +3481,7 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, str(e))
             return
         except Exception as e:
-            logger.error(f"[LoRA 开关] 操作失败: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"【LoRA·开关】 操作失败: {type(e).__name__}: {e}", exc_info=True)
             await self._send(event, "保存 LoRA 设置时出错，请稍后再试或联系管理员。")
             return
         state = "启用" if enabled else "禁用"
@@ -3845,7 +3917,7 @@ class ComfyUIDrawPlugin(Star):
             if wname == default_i2i_real:
                 tags.append("真人图生图默认")
             tag = f"（{'，'.join(tags)}）" if tags else ""
-            anima = " [Anima]" if w.get("is_anima") else ""
+            anima = " 【Anima】" if w.get("is_anima") else ""
             lines.append(f"- {wname}{anima}{tag}")
         await self._send(event, "\n".join(lines))
         event.stop_event()
@@ -3905,7 +3977,7 @@ class ComfyUIDrawPlugin(Star):
                 return
         except Exception as _e:
             try:
-                self.logger.warning(f"[绘图] 静态帮助图发送失败，回退文字: {_e}")
+                self.logger.warning(f"【绘图·解析】 静态帮助图发送失败，回退文字: {_e}")
             except Exception:
                 pass
         await self._send(event, text)
@@ -3940,7 +4012,7 @@ class ComfyUIDrawPlugin(Star):
                     if _p and os.path.exists(_p):
                         return _p
         except Exception as _e:
-            logger.warning(f"[图库] 提取当前消息图片失败: {_e}")
+            logger.warning(f"【图库】 提取当前消息图片失败: {_e}")
         # 2) / 3) 本会话生成 / 收到（ImageStore.resolve_ref 处理）
         return self.gallery.resolve_ref(event, event.session_id or "")
 
@@ -4291,7 +4363,7 @@ class ComfyUIDrawPlugin(Star):
             self.gallery.send(sha)
             return True
         except Exception as _e:
-            logger.warning(f"[图库] 发图失败: {_e}")
+            logger.warning(f"【图库】 发图失败: {_e}")
             await self._send(event, "这张图文件丢失了，可能已被 LRU 清理。")
             return False
 
@@ -4368,7 +4440,7 @@ class ComfyUIDrawPlugin(Star):
             try:
                 is_nsfw, score, available = await _asyncio.to_thread(det.detect, p)
             except Exception as e:  # pragma: no cover
-                logger.warning(f"[NSFW] 指令检测失败: {e}")
+                logger.warning(f"【NSFW】 指令检测失败: {e}")
                 is_nsfw, score, available = False, 0.0, False
             return ({"nsfw": is_nsfw, "score": score}, not available)
 
@@ -4424,7 +4496,7 @@ class ComfyUIDrawPlugin(Star):
                 return
         except Exception as _e:
             try:
-                self.logger.warning(f"[图库] 静态帮助图发送失败，回退文字: {_e}")
+                self.logger.warning(f"【图库】 静态帮助图发送失败，回退文字: {_e}")
             except Exception:
                 pass
         await self._send(
@@ -4531,7 +4603,7 @@ class ComfyUIDrawPlugin(Star):
             try:
                 st = self.gallery.scan_nsfw_start(only_unchecked=False)
             except Exception as e:
-                logger.warning(f"[图库] 重扫启动失败: {e}")
+                logger.warning(f"【图库】 重扫启动失败: {e}")
                 st = {"running": False, "last_err": str(e)}
             if st.get("running"):
                 await self._send(
@@ -5087,7 +5159,7 @@ class ComfyUIDrawPlugin(Star):
             _ts_map[_sid_key] = _now
             _is_companion_call = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
             if not _is_companion_call and _prev and (_now - _prev) < 4.0:
-                logger.info(f"[llm_draw] 会话 {_sid_key} 4 秒内重复调用画图工具，已拦截至一张（防止连发多张）")
+                logger.info(f"【工具·llm_draw】 会话 {_sid_key} 4 秒内重复调用画图工具，已拦截至一张（防止连发多张）")
                 return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
         except Exception:
             pass
@@ -5099,7 +5171,7 @@ class ComfyUIDrawPlugin(Star):
         _count = max(1, int(count or 1))
         _allowed, _budget_hint = plugin._llm_draw_budget(event, _count, source=source)
         if _allowed <= 0:
-            logger.info(f"[llm_draw] 会话出图预算已用尽，拦截本次调用")
+            logger.info(f"【工具·llm_draw】 会话出图预算已用尽，拦截本次调用")
             return _budget_hint
         count = _allowed
 
@@ -5177,15 +5249,15 @@ class ComfyUIDrawPlugin(Star):
         got_explicit_image = False
         if bool(image and image.strip()):
             img_url = image.strip()
-            logger.info(f"[取图] llm_draw image 参数: {img_url}")
+            logger.info(f"【取图】 llm_draw image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
             if p:
                 init_images.append(p)
                 got_explicit_image = True
-                logger.info(f"[取图] image 参数下载成功: {p}")
+                logger.info(f"【取图】 image 参数下载成功: {p}")
             else:
                 logger.warning(
-                    f"[取图] image 参数下载/解析失败，无法作为参考图: {img_url!r}"
+                    f"【取图】 image 参数下载/解析失败，无法作为参考图: {img_url!r}"
                     f" —— 该路径在本机不存在（调用方/伴侣插件传来的可能是另一容器或已清理的 temp 路径）。"
                     f" 若本应走图生图，请让调用方传入当前服务器上真实可用的图片路径或 URL。"
                 )
@@ -5196,7 +5268,7 @@ class ComfyUIDrawPlugin(Star):
         if not got_explicit_image:
             event_images = await plugin._extract_images(event)
             if not event_images and last_ev is not None and last_ev is not event:
-                logger.info("[取图] llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+                logger.info("【取图】 llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
                 event_images = await plugin._extract_images(last_ev)
         # 去重合并（避免 image 参数 URL 和事件里是同一张图）
         seen = set(init_images)
@@ -5245,12 +5317,12 @@ class ComfyUIDrawPlugin(Star):
                         init_images.append(p)
                         break
             if init_images:
-                logger.info(f"[取图] llm_draw 图生图补图兜底（历史/会话/生成图）: {init_images}")
+                logger.info(f"【取图】 llm_draw 图生图补图兜底（历史/会话/生成图）: {init_images}")
             else:
-                logger.info("[取图] llm_draw 已判定图生图但兜底仍未取到参考图，将提示用户重发图")
+                logger.info("【取图】 llm_draw 已判定图生图但兜底仍未取到参考图，将提示用户重发图")
 
         if init_images:
-            logger.info(f"[取图] llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
+            logger.info(f"【取图】 llm_draw 最终取得参考图 {len(init_images)} 张 -> {init_images}")
             # 记录「本会话最近一次图生图的用户原图」记忆，供多轮改图兜底回到最初原图
             # （而非误用 AI 上次生成的结果图）。仅图生图且取到参考图时记录。
             if is_img2img:
@@ -5263,12 +5335,12 @@ class ComfyUIDrawPlugin(Star):
                     g_session_i2i_ref[sid] = bucket[-3:]
         elif is_img2img:
             logger.info(
-                f"[取图] llm_draw 意图为图生图但无参考图可用"
+                f"【取图】 llm_draw 意图为图生图但无参考图可用"
                 f"（用户/调用方指定的图生图工作流={img2img_workflow or workflow or '默认'}），"
                 f"将不下发，提示用户重发图"
             )
         else:
-            logger.info("[取图] llm_draw 文生图模式（未取图，无图生图意图）")
+            logger.info("【取图】 llm_draw 文生图模式（未取图，无图生图意图）")
 
         # ── 决定工作流与模式 ─────────────────────────────────────────
         # 优先级：
@@ -5296,7 +5368,7 @@ class ComfyUIDrawPlugin(Star):
             # 可重发。此时不中断，直接回退对应风格文生图，避免误伤伴侣文生图。
             if weak_img2img:
                 logger.warning(
-                    f"[取图] llm_draw 仅指定 img2img_workflow（={_req_i2i or '默认'}）但无参考图，"
+                    f"【取图】 llm_draw 仅指定 img2img_workflow（={_req_i2i or '默认'}）但无参考图，"
                     f"判定为文生图回退，避免误中断调用方（weak 信号）"
                 )
                 was_img2img = True
@@ -5308,12 +5380,12 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     fallback_wf = _cfg_t2i_real if _prio == "real" else _cfg_t2i_anime
                 logger.info(
-                    f"[取图] llm_draw 弱信号回退文生图：原图生图工作流={_req_i2i or '默认'}, "
+                    f"【取图】 llm_draw 弱信号回退文生图：原图生图工作流={_req_i2i or '默认'}, "
                     f"回退到文生图工作流={fallback_wf or '（均无配置，走默认）'}"
                 )
             elif img2img_fallback == "txt2img":
                 logger.warning(
-                    f"[取图] llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
+                    f"【取图】 llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
                     f"但取不到任何参考图，按配置 img2img_fallback=txt2img 回退为文生图"
                 )
                 was_img2img = True
@@ -5326,12 +5398,12 @@ class ComfyUIDrawPlugin(Star):
                     # 无法判断具体风格：按全局风格优先级选对应的文生图默认工作流
                     fallback_wf = _cfg_t2i_real if _prio == "real" else _cfg_t2i_anime
                 logger.info(
-                    f"[取图] llm_draw 回退文生图：原图生图工作流={_req_i2i or '默认'}, "
+                    f"【取图】 llm_draw 回退文生图：原图生图工作流={_req_i2i or '默认'}, "
                     f"回退到文生图工作流={fallback_wf or '（均无配置，走默认）'}"
                 )
             else:
                 logger.warning(
-                    f"[取图] llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
+                    f"【取图】 llm_draw 已判定为图生图（期望工作流={img2img_workflow or workflow or '默认'}）"
                     f"但取不到任何参考图，终止并提示用户重发图（img2img_fallback=prompt，不降级为文生图）"
                 )
                 return "图生图需要一张参考图，但没能从本次消息/引用/历史里取到图片。请先发送一张图片（或引用一张图）再说明要怎么变换它，例如「把这张图变成夜晚」。"
@@ -5359,13 +5431,13 @@ class ComfyUIDrawPlugin(Star):
             if _req_has_image_cfg or (_req_wf_name and _req_wf_name == _default_i2i):
                 resolved_wf = _req_wf_name
                 logger.info(
-                    f"[llm_draw] 图生图：LLM 指定工作流「{_req_wf_name}」具备图生图能力"
+                    f"【工具·llm_draw】 图生图：LLM 指定工作流「{_req_wf_name}」具备图生图能力"
                     f"（image_node 已配置或命中默认图生图工作流），直接使用"
                 )
             else:
                 resolved_wf = _default_i2i or None
                 logger.info(
-                    f"[llm_draw] 图生图：LLM 指定工作流「{_req_wf_name}」为文生图工作流"
+                    f"【工具·llm_draw】 图生图：LLM 指定工作流「{_req_wf_name}」为文生图工作流"
                     f"（无 image_node 配置），回退到默认图生图工作流「{resolved_wf or '默认'}」"
                 )
         else:
@@ -5375,7 +5447,7 @@ class ComfyUIDrawPlugin(Star):
         if was_img2img and not is_img2img:
             resolved_wf = fallback_wf or None
         logger.info(
-            f"[llm_draw] 工作流决策：is_img2img={is_img2img}, "
+            f"【工具·llm_draw】 工作流决策：is_img2img={is_img2img}, "
             f"指定 img2img_workflow={img2img_workflow!r}, 指定 workflow={workflow!r}, "
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
@@ -5432,7 +5504,7 @@ class ComfyUIDrawPlugin(Star):
                     try:
                         await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as _e:
-                        logger.warning(f"[出图] comfyui_draw 主动发送图片失败: {_e}")
+                        logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
 
         if img_paths:
             if is_companion:
@@ -5467,7 +5539,7 @@ class ComfyUIDrawPlugin(Star):
                 if q and q not in imgs:
                     imgs.append(q)
         except Exception as qe:
-            logger.debug(f"[取图] 原始消息抓引用图失败（忽略）: {qe}")
+            logger.debug(f"【取图】 原始消息抓引用图失败（忽略）: {qe}")
         return [p for p in imgs if p and os.path.exists(p)]
 
     def _record_user_images(self, sid: str, imgs: list[str]) -> None:
@@ -5507,9 +5579,9 @@ class ComfyUIDrawPlugin(Star):
             imgs = await self._collect_user_images(event)
             self._record_user_images(sid, imgs)
             if imgs:
-                logger.debug(f"[取图] 消息前置缓存 {len(imgs)} 张: {imgs}")
+                logger.debug(f"【取图】 消息前置缓存 {len(imgs)} 张: {imgs}")
         except Exception as e:
-            logger.debug(f"[取图] 消息前置捕获图片失败（忽略）: {e}")
+            logger.debug(f"【取图】 消息前置捕获图片失败（忽略）: {e}")
 
     # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时也捕获一次图片，
     # 写入 g_recent_user_images（按会话滚动），供 LLM 工具兜底使用。
@@ -5527,9 +5599,9 @@ class ComfyUIDrawPlugin(Star):
             imgs = await self._collect_user_images(event)
             self._record_user_images(sid, imgs)
             if imgs:
-                logger.debug(f"[取图] Agent 前置缓存 {len(imgs)} 张: {imgs}")
+                logger.debug(f"【取图】 Agent 前置缓存 {len(imgs)} 张: {imgs}")
         except Exception as e:
-            logger.debug(f"[取图] 捕获用户消息图片失败（忽略）: {e}")
+            logger.debug(f"【取图】 捕获用户消息图片失败（忽略）: {e}")
 
     # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
     # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，
@@ -5566,7 +5638,7 @@ class ComfyUIDrawPlugin(Star):
                         if q and q not in cached:
                             cached.append(q)
                 except Exception as qe:
-                    logger.debug(f"[取图] 缓存时解析引用图失败（忽略）: {qe}")
+                    logger.debug(f"【取图】 缓存时解析引用图失败（忽略）: {qe}")
                 cached = [p for p in cached if p and os.path.exists(p)]
                 if cached:
                     bucket = g_last_received.setdefault(sid, [])
@@ -5575,11 +5647,11 @@ class ComfyUIDrawPlugin(Star):
                             bucket.append(p)
                     if len(bucket) > 5:
                         g_last_received[sid] = bucket[-5:]
-                    logger.debug(f"[取图] 已缓存会话最近收到图片 {len(bucket)} 张: {bucket}")
+                    logger.debug(f"【取图】 已缓存会话最近收到图片 {len(bucket)} 张: {bucket}")
                 else:
-                    logger.debug("[取图] 缓存时未从消息/引用取到任何图")
+                    logger.debug("【取图】 缓存时未从消息/引用取到任何图")
         except Exception as e:
-            logger.debug(f"[取图] 缓存会话图片失败（忽略）: {e}")
+            logger.debug(f"【取图】 缓存会话图片失败（忽略）: {e}")
 
     # 记录「用户通过 LLM 对话触发画图」时，主对话 LLM 调用的 token 消耗。
     # 背景：用户说"画一张小女孩"进入 LLM Agent 流程，那次主对话调用发生在 AstrBot
@@ -5610,7 +5682,7 @@ class ComfyUIDrawPlugin(Star):
             model = g_draw_agent_sessions.get(sid, "") or self._current_chat_provider_id()
             self._record_llm_token("agent_draw", model, response, event)
         except Exception as e:
-            logger.warning(f"[token] 记录画图主对话用量失败: {e}")
+            logger.warning(f"【统计·token】 记录画图主对话用量失败: {e}")
 
     def _current_chat_provider_id(self) -> str:
         """获取 AstrBot 当前正在使用的对话 provider id；取不到返回空串。"""
@@ -5945,7 +6017,7 @@ class ComfyUIDrawPlugin(Star):
             name = w.get("name", "(未命名)")
             has_image = bool((w.get("image_node") or "").strip())
             img_tag = " [支持图生图]" if has_image else " [仅文生图]"
-            anima = " [Anima]" if w.get("is_anima") else ""
+            anima = " 【Anima】" if w.get("is_anima") else ""
             lines.append(f"- {name}{img_tag}{anima}")
 
         default = self._cfg("default_workflow", "")
@@ -6075,7 +6147,7 @@ class ComfyUIDrawPlugin(Star):
             _ts_map2[_sid_key2] = _now2
             _is_companion_call2 = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
             if not _is_companion_call2 and _prev2 and (_now2 - _prev2) < 4.0:
-                logger.info(f"[llm_img2img] 会话 {_sid_key2} 4 秒内重复调用，已拦截（防止连发多张）")
+                logger.info(f"【工具·llm_img2img】 会话 {_sid_key2} 4 秒内重复调用，已拦截（防止连发多张）")
                 return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
         except Exception:
             pass
@@ -6093,7 +6165,7 @@ class ComfyUIDrawPlugin(Star):
                 _prev_fp2, _prev_fp_t2 = _fp_map2.get(_sid_key3, (None, 0.0))
                 _fp_map2[_sid_key3] = (_fp2, _now3)
                 if _prev_fp2 == _fp2 and (_now3 - _prev_fp_t2) < 30.0:
-                    logger.info(f"[llm_img2img] 会话 {_sid_key3} 相同 prompt+seed 重复调用，判定为死循环，拦截")
+                    logger.info(f"【工具·llm_img2img】 会话 {_sid_key3} 相同 prompt+seed 重复调用，判定为死循环，拦截")
                     return "你已经用同样的参数画过了，图片已发送。本次请求到此结束，【绝对不要】再用相同 prompt+seed 重复调用画图工具；等待用户下一条新消息的明确指示。"
             except Exception:
                 pass
@@ -6103,7 +6175,7 @@ class ComfyUIDrawPlugin(Star):
         _count2 = max(1, int(count or 1))
         _allowed2, _budget_hint2 = plugin._llm_draw_budget(event, _count2, source=source)
         if _allowed2 <= 0:
-            logger.info(f"[llm_img2img] 会话出图预算已用尽，拦截本次调用")
+            logger.info(f"【工具·llm_img2img】 会话出图预算已用尽，拦截本次调用")
             return _budget_hint2
         count = _allowed2
 
@@ -6158,14 +6230,14 @@ class ComfyUIDrawPlugin(Star):
         got_explicit_image = False
         if image and image.strip():
             img_url = image.strip()
-            logger.info(f"[取图] llm_img2img image 参数: {img_url}")
+            logger.info(f"【取图】 llm_img2img image 参数: {img_url}")
             p = await _image_to_local_path(img_url)
             if p:
                 init_images.append(p)
                 got_explicit_image = True
-                logger.info(f"[取图] image 参数下载成功: {p}")
+                logger.info(f"【取图】 image 参数下载成功: {p}")
             else:
-                logger.warning(f"[取图] image 参数下载失败: {img_url}")
+                logger.warning(f"【取图】 image 参数下载失败: {img_url}")
 
         if not got_explicit_image:
             # ② 从事件中自动提取图片（仅在未通过 image 参数显式拿到图时才探测）。
@@ -6175,7 +6247,7 @@ class ComfyUIDrawPlugin(Star):
             event_images = await plugin._extract_images(event)
             last_ev = getattr(plugin, "_last_event", None)
             if not event_images and last_ev is not None and last_ev is not event:
-                logger.info("[取图] llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+                logger.info("【取图】 llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
                 event_images = await plugin._extract_images(last_ev)
             # 去重合并
             seen = set(init_images)
@@ -6215,7 +6287,7 @@ class ComfyUIDrawPlugin(Star):
                         init_images.append(p)
                         break
             if init_images:
-                logger.info(f"[取图] 启用兜底图片（本会话用户最近收到/历史/生成图）: {init_images}")
+                logger.info(f"【取图】 启用兜底图片（本会话用户最近收到/历史/生成图）: {init_images}")
             else:
                 return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 
@@ -6267,7 +6339,7 @@ class ComfyUIDrawPlugin(Star):
                     try:
                         await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as _e:
-                        logger.warning(f"[出图] comfyui_img2img 主动发送图片失败: {_e}")
+                        logger.warning(f"【出图·成功】 comfyui_img2img 主动发送图片失败: {_e}")
 
         if img_paths:
             if is_companion:
