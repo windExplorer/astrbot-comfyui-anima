@@ -2726,6 +2726,39 @@ class ComfyUIDrawPlugin(Star):
                         f"【LoRA】 启用 {nm} → 未配置 model_name，节点沿用工作流默认文件（可能不是该 LoRA）"
                     )
 
+        # 自动追加 LoRA 触发词到正向提示词：每个启用的 LoRA 配置的 trigger_words
+        # 会被写入 positive（去重，仅追加缺失的词），否则只加了 LoRA 节点却没触发词，
+        # 出图效果会偏离预期。仅当启用了 LoRA 且确实有触发词时才处理。
+        if enabled:
+            _lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+            _triggers: list[str] = []
+            for nm in enabled:
+                _lc = next(
+                    (l for l in (loras_cfg or [])
+                     if (l.get("name") or "").strip() == nm),
+                    None,
+                )
+                _tw_raw = (
+                    (_lc.get("trigger_words") if _lc else None)
+                    or (_lib.get(nm) or {}).get("trigger_words")
+                    or ""
+                )
+                for _tw in re.split(r"[\n,，、;；]+", str(_tw_raw).strip()):
+                    _tw = _tw.strip()
+                    if _tw and _tw not in _triggers:
+                        _triggers.append(_tw)
+            if _triggers:
+                _pos_set = [p.strip() for p in re.split(r"[\n,，、;；]+", positive or "")]
+                _add = [t for t in _triggers if t not in _pos_set and t not in (positive or "")]
+                if _add:
+                    positive = (positive.strip() + ", " if positive and positive.strip() else "") + ", ".join(_add)
+                    workflow_builder.set_text_node(
+                        prompt, wf.get("positive_node"), "text", positive
+                    )
+                    logger.info(f"【LoRA 触发词】 已追加到正向提示词: {_add}")
+                else:
+                    logger.info(f"【LoRA 触发词】 启用 LoRA 的触发词均已存在于正向提示词中，无需追加")
+
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
         seeds_used = workflow_builder.randomize_seed(prompt, seed)
         if seeds_used:
