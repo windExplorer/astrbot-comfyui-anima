@@ -2992,7 +2992,8 @@ class ComfyUIDrawPlugin(Star):
                             )
                             await self._send(
                                 event,
-                                f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}",
+                                f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}"
+                                f"如果想看这张图，可以在私聊里用「/图库 取图」取到你最近生成的那张。",
                             )
                             # 标记被拦截：不发送、不入图库、不 yield 图片，但继续走
                             # 后续「绘图结束」日志与操作日志（记录为拦截），多图时跳到下一张。
@@ -3000,14 +3001,7 @@ class ComfyUIDrawPlugin(Star):
                     if not _nsfw_blocked:
                         yield event.image_result(_send_img_path), _send_img_path
 
-                    # 绘图结束：本次生图主流程走完，打印耗时便于统计（区分是否被 NSFW 拦截）。
-                    logger.info(
-                        f"【绘图·结束】trace={_trace_id} 状态={'拦截' if _nsfw_blocked else '成功'} "
-                        f"耗时={time.time() - _draw_start:.1f}秒 工作流={wf.get('name') or '(未命名)'}"
-                    )
-
-                    # 出图成功业务日志：带 content hash，方便与图库去重日志对照
-                    # （被 NSFW 拦截的图不记录成功、不入图库）
+                    # 出图成功业务日志（仅成功发送时打印用户信息，被 NSFW 拦截的图不发）
                     if not _nsfw_blocked:
                         try:
                             from .image_store import _sha256_of
@@ -3016,46 +3010,58 @@ class ComfyUIDrawPlugin(Star):
                         try:
                             _sha = _sha256_of(img_path)
                             _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
-                            _cost = time.time() - _draw_start
-                            # 文件大小友好展示（B / KB / MB）
-                            try:
-                                _fs = os.path.getsize(img_path or "")
-                                if _fs >= 1024 * 1024:
-                                    _fs_fmt = f"{_fs / 1024 / 1024:.2f} MB"
-                                elif _fs >= 1024:
-                                    _fs_fmt = f"{_fs / 1024:.1f} KB"
-                                else:
-                                    _fs_fmt = f"{_fs} B"
-                            except Exception:
-                                _fs_fmt = "(未知)"
                             logger.info(
                                 "【出图·成功】\n"
                                 "  user : %s\n"
                                 "  用户昵称 : %s\n"
                                 "  工作流 : %s\n"
                                 "  种子 : %s\n"
-                                "  尺寸 : %sx%s\n"
-                                "  文件大小 : %s\n"
-                                "  NSFW置信度 : %s\n"
-                                "  耗时 : %.1f秒\n"
                                 "  时间 : %s\n"
-                                "  文件名 : %s\n"
-                                "  sha256 : %s"
+                                "  文件名 : %s"
                                 % (
                                     _uid,
                                     user_name or "(未知)",
                                     wf.get("name") or "(未命名)",
                                     (seeds_used[0] if seeds_used else "?"),
-                                    (_real_w if _real_w else "?"),
-                                    (_real_h if _real_h else "?"),
-                                    _fs_fmt,
-                                    _nsfw_log,
-                                    _cost,
                                     time.strftime("%Y-%m-%d %H:%M:%S"),
                                     (img_path or "").split("/")[-1].split("\\")[-1],
-                                    (_sha[:16] if _sha else "?"),
                                 )
                             )
+                        except Exception:
+                            _sha = None
+                    else:
+                        _sha = None
+
+                    # 绘图结束：本次生图主流程走完（成功或拦截均打印，位于成功日志之下）。
+                    # 不论成功/拦截都带上完整图片信息，确保拦截时也能看到尺寸/NSFW 等。
+                    try:
+                        _fs = os.path.getsize(img_path or "") if not _nsfw_blocked else 0
+                        if _fs >= 1024 * 1024:
+                            _fs_fmt = f"{_fs / 1024 / 1024:.2f} MB"
+                        elif _fs >= 1024:
+                            _fs_fmt = f"{_fs / 1024:.1f} KB"
+                        else:
+                            _fs_fmt = f"{_fs} B" if _nsfw_blocked is False else "—"
+                    except Exception:
+                        _fs_fmt = "—"
+                    _end_lines = [
+                        "【绘图·结束】",
+                        f"  状态 : {'拦截' if _nsfw_blocked else '成功'}",
+                        f"  工作流 : {wf.get('name') or '(未命名)'}",
+                        f"  种子 : {seeds_used[0] if seeds_used else '?'}",
+                        f"  尺寸 : {_real_w if _real_w else '?'}x{_real_h if _real_h else '?'}",
+                        f"  文件大小 : {_fs_fmt}",
+                        f"  NSFW置信度 : {_nsfw_log}",
+                        f"  sha256 : {(_sha[:16] if _sha else '—')}",
+                        f"  耗时 : {time.time() - _draw_start:.1f}秒",
+                    ]
+                    if _nsfw_blocked:
+                        _end_lines.append(
+                            "  拦截理由 : 群聊NSFW护栏触发"
+                            + (f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else "")
+                            + ("（检测依赖不可用，按最严策略拦截）" if not _nsfw_avail else "")
+                        )
+                    logger.info("\n".join(_end_lines))
                             if self.oplog is not None:
                                 self.oplog.add(
                                     "draw_success",
@@ -4532,6 +4538,7 @@ class ComfyUIDrawPlugin(Star):
             "· 打标签 [图] <标签...>　给图加标签（可用 /图库 打标签 或 /图库 标签）\n"
             "· 找标签 <标签>　按标签取图\n"
             "· 取图 <序号>　发某张图（序号指列表里的编号；可多张，逗号或空格隔开）\n"
+            "· 取图（不带参数）　发你最近生成的那张图\n"
             "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张）\n"
             "· 收藏列表 [页码]　查看自己收藏的图（★，群聊仅本群，私聊看所有）\n"
             "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后他人可检索）\n"
@@ -4901,7 +4908,18 @@ class ComfyUIDrawPlugin(Star):
 
         elif sub == "send":
             if not rest:
-                await self._send(event, "用法：/图库 取图 <序号>（可多张，用逗号或空格隔开，如「/图库 取图 1,2,3」）")
+                # 不带参数：取「当前用户最近生成的一张图」（编号 1 即按 created_at DESC 的最新一张）。
+                # 私聊取自己；群聊也只取自己（eff_owner 已限定 owner），避免误发他人图。
+                eff_owner = "" if all_view else owner
+                r = self.gallery.get_by_global_no(1, owner=eff_owner, session=session_scope)
+                if r:
+                    ok = await self._gallery_send_image(event, r["sha256"], owner=eff_owner)
+                    if ok:
+                        await self._send(event, "已发送你最近生成的那张图～")
+                    else:
+                        await self._send(event, "找到图但发送失败，请稍后再试。")
+                else:
+                    await self._send(event, "你还没有生成过图，先去画一张吧～")
             else:
                 targets = self._parse_gallery_targets(rest)
                 eff_owner = "" if all_view else owner
