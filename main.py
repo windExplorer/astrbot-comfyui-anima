@@ -2957,6 +2957,8 @@ class ComfyUIDrawPlugin(Star):
                     # NSFW 护栏（群聊）：生图后发送前对结果图做 NSFW 检测，
                     # 群聊场景一律拦截（检测不通过或检测不可用均拦截），私聊放行。
                     _nsfw_blocked = False
+                    # NSFW 检测结果摘要（供出图成功日志展示，私聊/未检测时为「未检测」）。
+                    _nsfw_log = "（未检测）"
                     if not self._is_private_event(event):
                         try:
                             from .nsfw_detector import get_detector
@@ -2976,6 +2978,11 @@ class ComfyUIDrawPlugin(Star):
                         except Exception as _e:
                             logger.warning(f"【NSFW】 出图群聊检测异常: {_e}")
                             _is_nsfw, _nsfw_score, _nsfw_avail = True, 1.0, False
+                        # 无论放行/拦截都把置信度记下来，便于出图日志核对
+                        if isinstance(_nsfw_score, (int, float)):
+                            _nsfw_log = f"{_nsfw_score:.2f}" + ("(检测不可用)" if not _nsfw_avail else "")
+                        else:
+                            _nsfw_log = "(检测不可用)" if not _nsfw_avail else "(无分数)"
                         if _is_nsfw:
                             _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
                             _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_avail else ""
@@ -3010,6 +3017,17 @@ class ComfyUIDrawPlugin(Star):
                             _sha = _sha256_of(img_path)
                             _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
                             _cost = time.time() - _draw_start
+                            # 文件大小友好展示（B / KB / MB）
+                            try:
+                                _fs = os.path.getsize(img_path or "")
+                                if _fs >= 1024 * 1024:
+                                    _fs_fmt = f"{_fs / 1024 / 1024:.2f} MB"
+                                elif _fs >= 1024:
+                                    _fs_fmt = f"{_fs / 1024:.1f} KB"
+                                else:
+                                    _fs_fmt = f"{_fs} B"
+                            except Exception:
+                                _fs_fmt = "(未知)"
                             logger.info(
                                 "【出图·成功】\n"
                                 "  user : %s\n"
@@ -3017,6 +3035,8 @@ class ComfyUIDrawPlugin(Star):
                                 "  工作流 : %s\n"
                                 "  种子 : %s\n"
                                 "  尺寸 : %sx%s\n"
+                                "  文件大小 : %s\n"
+                                "  NSFW置信度 : %s\n"
                                 "  耗时 : %.1f秒\n"
                                 "  时间 : %s\n"
                                 "  文件名 : %s\n"
@@ -3026,7 +3046,10 @@ class ComfyUIDrawPlugin(Star):
                                     user_name or "(未知)",
                                     wf.get("name") or "(未命名)",
                                     (seeds_used[0] if seeds_used else "?"),
-                                    w, h,
+                                    (_real_w if _real_w else "?"),
+                                    (_real_h if _real_h else "?"),
+                                    _fs_fmt,
+                                    _nsfw_log,
                                     _cost,
                                     time.strftime("%Y-%m-%d %H:%M:%S"),
                                     (img_path or "").split("/")[-1].split("\\")[-1],
@@ -3042,10 +3065,11 @@ class ComfyUIDrawPlugin(Star):
                                     session_id=sid,
                                 ref_sha=(_sha or "")[:16],
                                 detail=f"seed={seeds_used[0] if seeds_used else '?'} "
-                                       f"w={w} h={h} 耗时={time.time() - _draw_start:.1f}s",
+                                       f"w={_real_w if _real_w else '?'} h={_real_h if _real_h else '?'} "
+                                       f"耗时={time.time() - _draw_start:.1f}s",
                                 extra={
                                     "seed": seeds_used[0] if seeds_used else None,
-                                    "w": w, "h": h,
+                                    "w": _real_w if _real_w else None, "h": _real_h if _real_h else None,
                                     "workflow": wf.get("name") or "",
                                     "sha16": (_sha or "")[:16],
                                 },
