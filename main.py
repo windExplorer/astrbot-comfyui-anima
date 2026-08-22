@@ -3118,24 +3118,24 @@ class ComfyUIDrawPlugin(Star):
                             + ("（检测依赖不可用，按最严策略拦截）" if not _nsfw_avail else "")
                         )
                     logger.info("\n".join(_end_lines))
-                            if self.oplog is not None:
-                                self.oplog.add(
-                                    "draw_success",
-                                    f"生图成功（{wf.get('name') or '未知工作流'}）",
-                                    user_id=_uid,
-                                    user_name=user_name,
-                                    session_id=sid,
-                                ref_sha=(_sha or "")[:16],
-                                detail=f"seed={seeds_used[0] if seeds_used else '?'} "
-                                       f"w={_real_w if _real_w else '?'} h={_real_h if _real_h else '?'} "
-                                       f"耗时={time.time() - _draw_start:.1f}s",
-                                extra={
-                                    "seed": seeds_used[0] if seeds_used else None,
-                                    "w": _real_w if _real_w else None, "h": _real_h if _real_h else None,
-                                    "workflow": wf.get("name") or "",
-                                    "sha16": (_sha or "")[:16],
-                                },
-                            )
+                    if self.oplog is not None:
+                        self.oplog.add(
+                            "draw_success",
+                            f"生图成功（{wf.get('name') or '未知工作流'}）",
+                            user_id=_uid,
+                            user_name=user_name,
+                            session_id=sid,
+                            ref_sha=(_sha or "")[:16],
+                            detail=f"seed={seeds_used[0] if seeds_used else '?'} "
+                                   f"w={_real_w if _real_w else '?'} h={_real_h if _real_h else '?'} "
+                                   f"耗时={time.time() - _draw_start:.1f}s",
+                            extra={
+                                "seed": seeds_used[0] if seeds_used else None,
+                                "w": _real_w if _real_w else None, "h": _real_h if _real_h else None,
+                                "workflow": wf.get("name") or "",
+                                "sha16": (_sha or "")[:16],
+                            },
+                        )
                         except Exception:
                             pass
 
