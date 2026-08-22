@@ -2371,6 +2371,18 @@ class ComfyUIDrawPlugin(Star):
         self._last_event = event
         # 出图计时起点（用于生成完成后的耗时报告）
         _draw_start = time.time()
+        # [TRACE] 绘图 LLM 调用链路追踪：为本会话本次绘图生成唯一 trace_id，
+        # 串起「主对话 agent_draw(核心层) + 翻译/改写」等所有 LLM 调用，便于 grep
+        # 统计一次绘图实际经过几个 LLM。格式固定前缀 [DRAW-LLM]。
+        import uuid as _uuid
+        _trace_id = _uuid.uuid4().hex[:8]
+        _session_id = (getattr(event, "session_id", "") or "") if event is not None else ""
+        if _session_id:
+            g_draw_agent_sessions[_session_id] = self._resolve_translate_provider_id() or ""
+        logger.info(
+            f"[DRAW-LLM] trace={_trace_id} session={_session_id} 绘图开始 "
+            f"(source={source or '(原生)'}, is_img2img={is_img2img})"
+        )
         # 图生图参考图的 sha256（归档成品图时回填到 ref_sha256 字段）
         ref_sha256 = None
         # 用户标识（成品图归档用）：用 get_sender_id() 取真实用户ID，避免归档成"无主图"
@@ -2510,11 +2522,13 @@ class ComfyUIDrawPlugin(Star):
         if source:
             try:
                 if wf.get("is_anima"):
+                    logger.info(f"[DRAW-LLM] trace={_trace_id} scene=rewrite_anima 第三方插件调用，准备 LLM 改写为 Anima 提示词")
                     rewritten = await self._rewrite_to_anima_llm(positive)
                     if rewritten and rewritten.strip():
                         positive = rewritten
                         logger.info(f"[Anima] 第三方插件调用，LLM 改写为 Anima 提示词: {positive}")
                 else:
+                    logger.info(f"[DRAW-LLM] trace={_trace_id} scene=rewrite_real 第三方插件调用，准备 LLM 清理为写实提示词")
                     rewritten = await self._rewrite_to_real_llm(positive)
                     if rewritten and rewritten.strip():
                         positive = rewritten
@@ -2522,6 +2536,7 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 logger.warning(f"[提示词] LLM 改写失败，保留原提示词: {e}")
         elif wf.get("is_anima") and self._has_chinese(positive):
+            logger.info(f"[DRAW-LLM] trace={_trace_id} scene=translate 原生调用含中文，准备 LLM 翻译提示词")
             translated = await self._translate_prompt(wf, positive)
             if translated:
                 positive = translated
@@ -2729,10 +2744,31 @@ class ComfyUIDrawPlugin(Star):
             if workflow_builder.set_denoise(prompt, denoise):
                 logger.info(f"本次 denoise: {denoise}")
 
-        # 调试用：打印最终提交给 ComfyUI 的工作流（拼接结果），便于核对 LoRA 注入/禁用是否正确
+        # 绘图摘要：不再打印完整 workflow JSON，仅展示关键信息，减少日志噪声。
+        # LoRA 权重以 active_map（命令 --名称:权重 优先，None 表示沿用工作流默认）为准。
+        _lora_weight = {}
+        for nm, w in (active_map or {}).items():
+            if w is None:
+                _cfg_w = next(
+                    (l.get("weight") for l in (loras_cfg or [])
+                     if (l.get("name") or "").strip() == nm),
+                    None,
+                )
+                _lora_weight[nm] = _cfg_w if _cfg_w is not None else "默认"
+            else:
+                _lora_weight[nm] = w
+        _enabled_lora = (
+            ", ".join(f"{nm}:{_lora_weight.get(nm, '?')}" for nm in (enabled or []))
+            or "无"
+        )
         logger.info(
-            "最终工作流（提交给 ComfyUI）:\n"
-            + json.dumps(prompt, ensure_ascii=False, indent=2)
+            "[绘图摘要] 工作流=%s | 正向提示词=%s | 负向提示词=%s | 启用LoRA(%s)"
+            % (
+                wf.get("name"),
+                positive if positive else "(空)",
+                negative if negative else "(空)",
+                _enabled_lora,
+            )
         )
 
         # 提交到 ComfyUI（client 已在工作流加载时创建）

@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.0
+
+- **补齐插件发布元信息（metadata.yaml）**：将占位的 `repo` 改为真实仓库 `https://github.com/windExplorer/astrbot-comfyui-anima`，修正 `author` 为 `windExplorer`，并补充 `author_url` / `category: AI 增强` / `tags` / `astrbot_version: >=4.22.0` / `support_platforms` / `short_desc`，使插件可在 AstrBot 插件市场正确登记与安装。
+- **绘图日志优化**：原「最终工作流」会打印完整 ComfyUI workflow JSON，噪声极大；改为单行 `[绘图摘要]`，仅展示工作流名、正向/负向提示词、启用的 LoRA 及权重。
+- **新增绘图 LLM 链路追踪**：`_do_draw` 入口生成 `trace_id`，在各 LLM 调用点打 `[DRAW-LLM]` 标记（scene=rewrite_anima / rewrite_real / translate），便于生产环境统计一次绘图实际经过几个 LLM。
+
 ## v4.6.19
 
 - **修复 WebUI 版本号被构建脚本误带 `# 插件版本号` 注释**：`build_webui.ps1` 提取 `metadata.yaml` 的 `version` 时，正则未排除行尾注释，导致注入前端的版本常量变成 `v4.6.18 # 插件版本号`，顶栏显示异常。修正正则后仅注入纯版本号。
