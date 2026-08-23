@@ -45,7 +45,7 @@
 
 <script setup lang="ts">
 import { h, onMounted, reactive, ref } from "vue";
-import { useMessage, NDataTable, NCheckbox, NFormItem, NInputNumber, NInput, NSpace, NTag, type DataTableColumns } from "naive-ui";
+import { useMessage, NButton, NDataTable, NCheckbox, NFormItem, NInputNumber, NInput, NSpace, NTag, type DataTableColumns } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { useRefresh } from "@/composables/useRefresh";
 import { useDevice } from "@/composables/useDevice";

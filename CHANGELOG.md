@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.22
+
+- **修复限额页报错**：v4.7.21 把 QuotaView 的 `NButton` 误从 import 删除，导致表格操作列渲染时 `ReferenceError: NButton is not defined`。已恢复 import。
+- **回到顶部/去底部按钮改为移动端专属**：PC 端不再显示该悬浮按钮（PC 端内容区用侧边栏/滚轮即可），仅在移动端 MobileShell 右下角保留。
+
 ## v4.7.21
 
 - **移动端与 PC 操作面板/交互优化**：
