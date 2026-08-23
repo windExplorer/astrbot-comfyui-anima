@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.23
+
+- **修复回到顶部/去底部按钮无响应**：移动端 MobileShell 为页面级滚动（`min-height:100dvh`，内容超出时整个 body 滚动），但按钮此前把滚动目标错指向了 `.ms-content`（其内部 `overflow-y:auto` 在无固定高度父级下不产生滚动）。改为不传 scrollTarget，直接滚动 `window`，按钮点击即生效。
+
 ## v4.7.22
 
 - **修复限额页报错**：v4.7.21 把 QuotaView 的 `NButton` 误从 import 删除，导致表格操作列渲染时 `ReferenceError: NButton is not defined`。已恢复 import。

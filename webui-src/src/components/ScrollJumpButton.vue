@@ -1,11 +1,11 @@
 <template>
   <div class="scroll-jump">
     <!-- 回到顶部 -->
-    <button class="sj-btn" title="回到顶部" @click="scrollTop">
+    <button class="sj-btn" title="回到顶部" @click.prevent="scrollTop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
     </button>
     <!-- 去底部 -->
-    <button class="sj-btn" title="去底部" @click="scrollBottom">
+    <button class="sj-btn" title="去底部" @click.prevent="scrollBottom">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
     </button>
   </div>
@@ -21,11 +21,10 @@ const props = withDefaults(
   { scrollTarget: null, offset: 0 }
 );
 
-function getScroller(): HTMLElement | Window | null {
+function getScroller(): HTMLElement | Window {
   if (props.scrollTarget) return props.scrollTarget;
-  // 默认找页面内主要滚动容器（content 区），否则回退 window
-  const el = document.querySelector(".app-content") as HTMLElement | null;
-  return el || window;
+  // 未指定滚动容器时滚动整个页面（移动端 MobileShell 为页面级滚动）
+  return window;
 }
 
 function scrollTop() {
