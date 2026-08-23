@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.13
+
+- **修复：图库查看大图被缩放/用 base64 传输的问题**。此前点开大图时：独立模式走 `/img/{sha}/thumb` 被后端当成 300px 缩略图；内嵌模式走 `gallery/image?meta=1` 把大图缩到 1600px 转 base64 返回，导致大图"变小"且加载慢。
+  - `ImageViewer.vue` `loadMain`：大图一律走**原图直链**（不缩放、不 base64）——独立模式用 `/img/{sha}`（原图直链 + token），内嵌模式用同源相对直链 `./gallery/image?sha=...`；元数据改用 `noimg=1` 单独获取，不再触发后端生成大图 base64。
+  - `webui_api.py` `gallery_image`：`meta=1` 分支支持 `noimg=1`，仅回元数据不生成 base64（保留不带 noimg 时的 base64 兜底，向后兼容）。
+
 ## v4.7.12
 
 - **修复：所有 `template_list` 配置项报「找不到对应模板，请删除后重新添加」**。AstrBot 4.27.4 对 `template_list` 类型强制要求每个预设项含 `__template_key` 字段。此前仅 `draw_ratio` 补了 key，而 `comfyui_servers`/`loras`/`workflows` 仍缺，导致这些列表的已有项（升级前就配好的）在 WebUI 报「找不到对应模板」（新建项正常）。

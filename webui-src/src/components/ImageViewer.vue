@@ -162,32 +162,26 @@ const typeText = computed(() => {
 async function loadMain(sha: string) {
   mainSrc.value = "";
   try {
-    // 独立模式：用原图直链 URL（<img> 直接加载 + 浏览器缓存），大图不缩放保真；仅额外取元信息
-    if (isStandaloneMode()) {
-      mainSrc.value = standaloneImgUrl(sha);
-      try {
-        const data = await apiGet("gallery/image", { sha, meta: 1 });
-        if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };
-      } catch (e) { /* meta 获取失败不阻塞看图 */ }
-      const meta = item.value;
-      item.value = {
-        ...item.value,
-        prompt: meta?.prompt,
-        prompt_raw: meta?.prompt_raw,
-      };
-      return;
-    }
-    // 内嵌页：后端转 data URL
-    const data = await apiGet("gallery/image", { sha, meta: 1, size: 1400 });
-    if (data && data.data_url) mainSrc.value = data.data_url;
-    if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };
-    // 提示词取原始
+    // 元数据单独取（noimg=1：只回 meta，不生成大图 base64，避免大图被转码/缩小）
+    try {
+      const data = await apiGet("gallery/image", { sha, meta: 1, noimg: 1 });
+      if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };
+    } catch (e) { /* meta 获取失败不阻塞看图 */ }
     const meta = item.value;
     item.value = {
       ...item.value,
       prompt: meta?.prompt,
       prompt_raw: meta?.prompt_raw,
     };
+
+    // 大图一律走原图直链（不缩放、不 base64）：
+    // - 独立服务：/img/{sha} 原图直链（自带 token，浏览器原生缓存）
+    // - 内嵌页：同源相对直链，后端返回原图 binary（file_response）
+    if (isStandaloneMode()) {
+      mainSrc.value = standaloneImgUrl(sha);
+    } else {
+      mainSrc.value = "./gallery/image?sha=" + encodeURIComponent(sha);
+    }
   } catch (e) {
     mainSrc.value = "";
   }

@@ -1014,21 +1014,26 @@ class WebUIApi:
                 meta = g.get_by_sha(sha)
             except Exception:
                 meta = None
-            try:
-                # 大图默认限制在 1600px 内转 data URL，避免图生图并排时两张原图 base64
-                # 体积过大导致加载慢/超时；需要更大可传 size=原尺寸。
+            # noimg=1 时只回元数据，不生成大图 base64（前端大图走直链加载）。
+            # 否则默认仍返回原图 data_url 作为兜底（避免个别环境直链不可用）。
+            noimg = request.query.get("noimg", "0") == "1"
+            if not noimg:
                 try:
-                    view_size = request.query.get("size", 1600, type=int)
-                except Exception:
-                    view_size = 1600
-                data_url = await asyncio.to_thread(_thumb_cached, path, view_size)
-                if not data_url:
-                    raw = await asyncio.to_thread(Path(path).read_bytes)
-                    mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-                    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-                return json_response({"data_url": data_url, "mime": None, "meta": meta})
-            except Exception as e:
-                return error_response(f"读取图片失败: {e}")
+                    # 大图默认限制在 1600px 内转 data URL，避免图生图并排时两张原图 base64
+                    # 体积过大导致加载慢/超时；需要更大可传 size=原尺寸。
+                    try:
+                        view_size = request.query.get("size", 1600, type=int)
+                    except Exception:
+                        view_size = 1600
+                    data_url = await asyncio.to_thread(_thumb_cached, path, view_size)
+                    if not data_url:
+                        raw = await asyncio.to_thread(Path(path).read_bytes)
+                        mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+                        data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                    return json_response({"data_url": data_url, "mime": None, "meta": meta})
+                except Exception as e:
+                    return error_response(f"读取图片失败: {e}")
+            return json_response({"data_url": None, "mime": None, "meta": meta})
         mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
         return file_response(path, filename=f"{sha}.{_ext_of(mime)}", content_type=mime)
 
