@@ -239,7 +239,7 @@ export function setStandaloneToken(token: string): void {
   standaloneAuthState.set(false);
 }
 
-function standaloneToken(): string {
+export function standaloneToken(): string {
   try {
     const q = new URLSearchParams(window.location.search).get("token");
     if (q) return q;
@@ -347,11 +347,14 @@ export function apiPost(endpoint: string, body?: Record<string, any>, options?: 
   return apiRaw(endpoint, opts);
 }
 
-/** 独立模式下生成图库图片直链 URL（带 token，<img> 直接加载 + 浏览器缓存）。 */
+/** 独立模式下生成图库图片直链 URL（带 token，<img> 直接加载 + 浏览器缓存）。
+ * 不传 size 时走 /img/{sha}（原图直链，后端不缩放）；传 size 时走 /img/{sha}/thumb
+ * 走缩略分支。注意：此前无 size 也拼 /thumb，导致后端把大图当 300px 缩略图返回。 */
 export function standaloneImgUrl(sha: string, size?: number): string {
-  const base = "/img/" + encodeURIComponent(sha) + "/thumb";
+  const wantThumb = size && size > 0;
+  const base = "/img/" + encodeURIComponent(sha) + (wantThumb ? "/thumb" : "");
   const qs: string[] = [];
-  if (size && size > 0) qs.push("size=" + size);
+  if (wantThumb) qs.push("size=" + size);
   const token = standaloneToken();
   if (token) qs.push("token=" + encodeURIComponent(token));
   return base + (qs.length ? "?" + qs.join("&") : "");

@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.17
+
+- **独立 WebUI 的 LoRA/工作流封面图改走文件直链（不再 base64）**。此前 `lora/image` 接口只对 LoRA 封面返回 base64 data URL，独立模式下也内联 base64，量大时卡顿。
+  - `standalone_webui.py`：新增 `/lora/file?name=xxx`（及 `/workflow/file`）直链路由，带 token 鉴权 + 防目录穿越，直接返回 `lora_assets/` 下的封面文件字节。
+  - `coverLazy.ts`：独立模式拼 `/lora/file` 直链（`<img>` 加载，带 token，不 base64）；内嵌页仍走 `apiGet("lora/image")` 取 base64（受 AstrBot 鉴权保护，`<img>` 直链会 401，只能用 base64）。
+  - `bridge.ts`：导出 `standaloneToken()` 供封面直链复用。
+  - 至此独立 WebUI 的缩略图、大图、LoRA/工作流封面均已走链接（无 base64）；内嵌页三类因鉴权限制仍用 base64。
+
 ## v4.7.16
 
 - **修复：内嵌页（AstrBot 后台 iframe）大图直链报 401**。AstrBot 的 page API 路由受登录鉴权保护，`<img>` 加载图片不自动带凭证，相对直链 `./gallery/image?sha` 会 401。内嵌模式只能用 base64（架构限制，非将就）。

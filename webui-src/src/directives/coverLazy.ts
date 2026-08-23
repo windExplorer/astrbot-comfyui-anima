@@ -16,7 +16,7 @@
  * - 失败兜底：请求失败/超时置空且不重试，不阻塞其他封面；下次重新挂载可再触发。
  */
 import type { Directive } from "vue";
-import { apiGet } from "@/api/bridge";
+import { apiGet, isStandaloneMode, standaloneToken } from "@/api/bridge";
 
 /** 同一时刻最多并发拉取封面的数量 */
 const CONCURRENCY = 3;
@@ -46,13 +46,22 @@ async function fetchCover(name: string): Promise<string> {
   if (cache.has(name)) return cache.get(name)!;
   let p = inflight.get(name);
   if (!p) {
-    p = apiGet("lora/image", { name })
-      .then((d) => {
-        const url = (d && (d.url || "")) || "";
-        if (url) cache.set(name, url);
-        return url;
-      })
-      .catch(() => "");
+    // 独立 WebUI：直接用 /lora/file 文件直链（<img> 加载，带 token，不 base64）
+    if (isStandaloneMode()) {
+      const token = standaloneToken();
+      const url = "/lora/file?name=" + encodeURIComponent(name) + (token ? "&token=" + encodeURIComponent(token) : "");
+      cache.set(name, url);
+      p = Promise.resolve(url);
+    } else {
+      // 内嵌页：受 AstrBot 鉴权保护，<img> 直链会 401，只能走 bridge 取 base64
+      p = apiGet("lora/image", { name })
+        .then((d) => {
+          const url = (d && (d.url || "")) || "";
+          if (url) cache.set(name, url);
+          return url;
+        })
+        .catch(() => "");
+    }
     inflight.set(name, p);
   }
   const url = await p;

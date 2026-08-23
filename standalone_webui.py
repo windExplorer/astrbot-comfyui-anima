@@ -176,6 +176,10 @@ class StandaloneWebUI:
         # 必须注册在 /{path:.+} 之前，否则会被静态路由吞掉。
         app.router.add_get("/img/{sha}", self._handle_img)
         app.router.add_get("/img/{sha}/thumb", self._handle_img)
+        # LoRA/工作流封面文件直链：独立模式下 <img> 直接加载，避免 base64 内联。
+        # 必须注册在静态路由之前。带 token 鉴权 + 防目录穿越。
+        app.router.add_get("/lora/file", self._handle_lora_file)
+        app.router.add_get("/workflow/file", self._handle_lora_file)
         # 静态资源：index.html 之外的 js/css/图等
         app.router.add_get("/{path:.+}", self._handle_static)
 
@@ -245,6 +249,34 @@ class StandaloneWebUI:
         except Exception as e:
             return _err(f"读取图片失败: {e}", status=500)
         ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        return web.Response(body=raw, content_type=ctype,
+                            headers={"Cache-Control": "public, max-age=31536000"})
+
+    async def _handle_lora_file(self, request: web.Request) -> web.Response:
+        """LoRA/工作流封面文件直链：/lora/file?name=xxx 或 /workflow/file?name=xxx。
+
+        独立模式下 <img> 直接加载，避免 base64 内联。带 token 鉴权 + 防目录穿越。
+        """
+        denied = self._authed(request)
+        if denied is not None:
+            return denied
+        name = (request.query.get("name", "") or "").strip()
+        if not name:
+            return _err("缺少 name 参数", status=400)
+        # 仅允许纯文件名，防目录穿越
+        if "/" in name or "\\" in name or ".." in name:
+            return _err("非法文件名", status=400)
+        assets_dir = getattr(self.plugin, "lora_assets_dir", None)
+        if assets_dir is None:
+            assets_dir = (getattr(self.plugin, "data_dir", None) or Path(os.getcwd())) / "lora_assets"
+        path = Path(assets_dir) / name
+        if not path.exists() or not path.is_file():
+            return _err("图片不存在", status=404)
+        try:
+            raw = await asyncio.to_thread(path.read_bytes)
+        except Exception as e:
+            return _err(f"读取图片失败: {e}", status=500)
+        ctype = mimetypes.guess_type(str(path))[0] or "image/jpeg"
         return web.Response(body=raw, content_type=ctype,
                             headers={"Cache-Control": "public, max-age=31536000"})
 
