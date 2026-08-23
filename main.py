@@ -3190,7 +3190,10 @@ class ComfyUIDrawPlugin(Star):
     async def cmd_draw(self, event: AstrMessageEvent):
         """通过指令绘图。用法：/draw 提示词 [--wf 工作流] [--名称[:权重]] [--名称/预设名[:权重]] [--w 宽] [--h 高] [--seed 数字]
 （--名称[:权重] 为 LoRA 简写，如 --安魂曲:1、--安魂曲:0.5，冒号支持 : 与 ：；--名称/预设名 引用该 LoRA 的预设提示词，如 --安魂曲/预设1）"""
-        args = self._strip_command(event.message_str, "draw")
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "draw",
+        )
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         if not prompt.strip():
             await self._send(event,
@@ -3214,7 +3217,11 @@ class ComfyUIDrawPlugin(Star):
     @filter.command("img2img", alias={"图生图", "图转图"})
     async def cmd_img2img(self, event: AstrMessageEvent):
         """图生图：用附带的一张图片作为参考图重绘。用法：/图生图 描述 [--wf 工作流] [...]"""
-        args = self._strip_command(event.message_str, "img2img", ("图生图", "图转图"))
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "img2img",
+            ("图生图", "图转图"),
+        )
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         images = await self._extract_images(event)
         # 图生图专用兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API
@@ -3259,7 +3266,7 @@ class ComfyUIDrawPlugin(Star):
     # 工作流名是可选的，且必须以空格与提示词分隔；若指定的工作流不存在，
     # 直接回复「xx 工作流不存在」并列出可用工作流，不再静默回退默认。
     # 与 /draw 并存，互不冲突。
-    _DRAW_TRIGGER_PATTERN = r"^[/／]?(画|绘图|绘画|生图|画图|作画|画画)(?:\s+(.+))?$"
+    _DRAW_TRIGGER_PATTERN = r"^[/／]?(画|绘图|绘画|生图|画图|作画|画画)(?:\s+([\s\S]+))?$"
 
     @filter.regex(_DRAW_TRIGGER_PATTERN)
     async def cmd_draw_wf(self, event: AstrMessageEvent):
@@ -3274,6 +3281,10 @@ class ComfyUIDrawPlugin(Star):
         （绘图/绘画/生图/画图/作画/画画）整句即为提示词。其余参数（--lora / --w /
         --h / --seed / --wf 等）与 /draw 完全一致。"""
         text = (event.message_str or "").strip()
+        # 归一化换行：用户经常把提示词写成多行（含 \n/\r），
+        # @filter.regex 预匹配及后续参数解析都按单行处理，否则会被换行截断，
+        # 导致「画」系指令整体不匹配、消息回流到 LLM Agent。
+        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
         m = re.match(self._DRAW_TRIGGER_PATTERN, text, re.S)
         rest = (m.group(2) or "").strip() if m else ""
         if not rest:

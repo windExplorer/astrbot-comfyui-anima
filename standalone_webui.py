@@ -211,15 +211,17 @@ class StandaloneWebUI:
         p = g.path_of(sha)
         if not p or not Path(p).exists():
             return _err("图片不存在", status=404)
-        # 缩略：/img/{sha}/thumb 或 ?size=
+        # 缩略：仅当显式请求缩略（路径含 /thumb）或 ?size= 显式给了较小值时才缩放；
+        # 大图直连 /img/{sha}（无 /thumb、无 size 参数）直接返回原图二进制，不缩放、保真且更快。
         want_thumb = request.match_info.get("sha") is not None and "/thumb" in request.path
+        explicit_size = request.query.get("size")
         try:
-            size = self._qint(request, "size", 300)
+            size = self._qint(request, "size", 0)
         except Exception:
-            size = 300
-        if want_thumb or size < 200000:
+            size = 0
+        if want_thumb or (explicit_size is not None and size < 200000 and size > 0):
             try:
-                data_url = await asyncio.to_thread(self._thumb_cached, p, size)
+                data_url = await asyncio.to_thread(self._thumb_cached, p, size or 300)
                 if data_url and data_url.startswith("data:"):
                     # data:image/jpeg;base64,xxx → 解码为字节
                     header, _, b64 = data_url.partition(",")
@@ -233,10 +235,10 @@ class StandaloneWebUI:
                                         headers={"Cache-Control": "public, max-age=31536000"})
             except Exception:
                 pass
-        raw = await asyncio.to_thread(Path(p).read_bytes)
+        # 原图直返（含大图直连）：浏览器 <img> 原生缓存，无 base64 往返、不缩放
         ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-        return web.Response(body=raw, content_type=ctype,
-                            headers={"Cache-Control": "public, max-age=31536000"})
+        return web.FileResponse(p, content_type=ctype,
+                                headers={"Cache-Control": "public, max-age=31536000"})
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         idx = PAGES_DIR / "index.html"

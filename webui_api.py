@@ -1294,8 +1294,46 @@ def _ext_of(mime: str) -> str:
     return ext_map.get((mime or "").lower(), "jpg")
 
 
-def _thumb_data_url(path, max_w: int = 300) -> str:
-    """生成缩略图 data URL（不走 AstrBot 路由、无需 token，前端 <img> 直连可用）。
+def _thumb_bytes(path, max_w: int = 300) -> tuple:
+    """生成缩略图二进制（JPEG 字节），用于独立 WebUI 直连返回。
+
+    与 _thumb_data_url 的区别：直接返回压缩后的 JPEG 字节，省去 base64 编解码的
+    往返开销（base64 比原字节大 ~33% 且需再解码）；大图经此返回体积更小、加载更快。
+    返回 (bytes, mime)；失败降级为 (原图字节, 原图 mime)。"""
+    try:
+        p = str(path)
+        if not p or not Path(p).exists():
+            return (b"", "image/jpeg")
+        try:
+            from PIL import Image as _PILImage
+        except Exception:
+            _PILImage = None
+        mime = mimetypes.guess_type(p)[0] or "image/jpeg"
+        raw = Path(p).read_bytes()
+        if _PILImage is not None:
+            try:
+                with _PILImage.open(p) as im:
+                    im.seek(0)
+                    w, h = im.size
+                    if w > max_w:
+                        nh = max(1, int(h * max_w / w))
+                        im = im.resize((max_w, nh), _PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    fmt = "JPEG" if mime in ("image/jpeg", "image/webp") else "PNG"
+                    if fmt == "JPEG":
+                        im = im.convert("RGB") if im.mode != "RGB" else im
+                        im.save(buf, format=fmt, optimize=True, quality=88)
+                    else:
+                        im.save(buf, format=fmt, optimize=True)
+                    return (buf.getvalue(), "image/jpeg" if fmt == "JPEG" else "image/png")
+            except Exception:
+                pass
+        return (raw, mime)
+    except Exception:
+        return (b"", "image/jpeg")
+
+
+def _thumb_data_url(path, max_w: int = 300) -> str:    """生成缩略图 data URL（不走 AstrBot 路由、无需 token，前端 <img> 直连可用）。
 
     背景：AstrBot 插件 API 挂在 /api/v1/plugins/extensions/<插件名>/... 下且需要登录
     token，浏览器 <img> 直连后端返回的裸路径要么 404 要么 401；而直接内联整图 base64
