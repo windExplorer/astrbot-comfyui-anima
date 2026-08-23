@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.20
+
+- **修复移动端 WebUI 崩溃与空白（v4.7.19 引入的严重问题）**：刷新页面 / 切换菜单时报 `TypeError: Cannot read properties of null (reading 'emitsOptions')` 与 `Cannot destructure property 'bum' of 'X' as it is null`，操作弹窗看不到内容，图库看不到分页。
+  - 根因：MobileShell 此前用 naive-ui `n-drawer` 放导航与筛选面板，其内部 `VLazyTeleport` 在抽屉关闭时**不渲染内容 DOM**，导致 View 里 `<Teleport to="#mobile-filter-slot">` 的目标 `#mobile-filter-slot` 从无到有，触发 Teleport 内容 fallback 原位 + 组件复用/卸载竞态崩溃（Vue 访问空实例）。
+  - 修复：`MobileShell.vue` 改为**自绘常驻面板**（`v-show` 控制显隐，`#mobile-filter-slot` 首帧即存在于 DOM），不再依赖 `n-drawer`/`VLazyTeleport`；菜单仍是共享 `NAV_ITEMS` + `RouterLink`；卸载时清理滚动锁定。
+- **移动端分页器精简**（问题 5）：`Pager.vue` 在移动端改用 naive `simple` 模式（只显示「上/下页 + 当前/总数」），隐藏每页条数选择器、跳页输入框和「共 N 条」，居中单行显示，不再溢出或遮挡。
+
 ## v4.7.19
 
 - **WebUI 更名「萌绘控制台」并全域换上 logo.png**（PC + 移动端 + 登录页 + 浏览器标题 + 插件页面列表）。

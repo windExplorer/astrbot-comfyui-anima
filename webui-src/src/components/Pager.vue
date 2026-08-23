@@ -1,7 +1,8 @@
 <template>
-  <div class="pager">
-    <span class="pager-total">共 {{ total }} 条</span>
+  <div class="pager" :class="{ 'pager-mobile': isMobile }">
+    <span v-if="!isMobile" class="pager-total">共 {{ total }} 条</span>
     <n-pagination
+      v-if="!isMobile"
       :page="page"
       :page-size="pageSize"
       :item-count="total"
@@ -10,7 +11,14 @@
       @update:page="onPage"
       @update:page-size="onSize"
     />
-    <div class="pager-jump">
+    <n-pagination
+      v-else
+      simple
+      :page="page"
+      :item-count="total"
+      @update:page="onPage"
+    />
+    <div v-if="!isMobile" class="pager-jump">
       <n-input-number
         :value="jumpVal"
         :min="1"
@@ -28,6 +36,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NPagination, NInputNumber, NButton } from "naive-ui";
+import { useDevice } from "@/composables/useDevice";
 
 const props = defineProps<{
   page: number;
@@ -40,8 +49,11 @@ const emit = defineEmits<{
   (e: "update:page-size", s: number): void;
 }>();
 
+const { isMobile } = useDevice();
 const jumpVal = ref(props.page);
 
+// 移动端 simple 模式只显示「x / y」+ 上一页/下一页，不触发 page-size 变更，
+// 也不需要同步 jumpVal（无跳页输入框），但仍兜底同步以保证一致性。
 watch(() => props.page, (v) => { jumpVal.value = v; });
 
 const maxPage = computed(() => Math.max(1, Math.ceil(props.total / props.pageSize)));
@@ -78,18 +90,14 @@ function jump() {
   align-items: center;
   gap: 6px;
 }
-/* 移动端：分页器精简，避免一行放不下。隐藏每页数量选择器与跳页，
-   仅保留页码（n-pagination 自身会折叠页码显示省略号）；整体居中并允许横向滚动兜底 */
-@media (max-width: 768px) {
-  .pager {
-    justify-content: center;
-    gap: 10px;
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  .pager :deep(.n-pagination-sizer) { display: none !important; }
-  .pager-jump { display: none !important; }
-  .pager :deep(.n-pagination) { overflow-x: auto; }
+/* 移动端：simple 模式，单行紧凑居中，不换行不溢出 */
+.pager-mobile {
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+  padding-top: 10px;
+}
+.pager-mobile :deep(.n-pagination) {
+  font-size: 13px;
 }
 </style>
