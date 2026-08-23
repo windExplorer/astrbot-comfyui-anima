@@ -455,12 +455,17 @@ class StandaloneWebUI:
             if not p or not Path(p).exists():
                 return _err("图片不存在", status=404)
             if want_meta:
-                meta = g.get_by_sha(sha)
-                size = self._qint(request, "size", 1600)
-                data_url = await asyncio.to_thread(self._thumb_cached, p, size)
-                return _ok({"data_url": data_url or "", "mime": None, "meta": meta})
+                # 只回元数据，绝不生成 data_url（大图走 /img/{sha} 直链，避免 base64 卡顿）
+                meta = None
+                try:
+                    meta = g.get_by_sha(sha)
+                except Exception:
+                    meta = None
+                return _ok({"data_url": None, "mime": None, "meta": meta})
             ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-            return web.FileResponse(p, content_type=ctype)
+            return web.Response(body=await asyncio.to_thread(Path(p).read_bytes),
+                                content_type=ctype,
+                                headers={"Cache-Control": "public, max-age=31536000"})
         if path == "/gallery/star":
             body = await request.json() if request.body_exists else {}
             sha = (body.get("sha") or "") if isinstance(body, dict) else ""

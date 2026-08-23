@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.15
+
+- **修复：独立 WebUI 点开大图仍返回 base64 导致卡半天**。根因：独立服务 `_api_gallery` 的 `/gallery/image` 路由（与主进程 `webui_api.gallery_image` 是两套独立实现）在 `meta=1` 时仍调用 `_thumb_cached` 生成大图 base64，之前只修了主进程那套、漏了独立服务这套。
+  - `standalone_webui.py` `/gallery/image`：`meta=1` 仅回元数据（`data_url: None`），不再生成 base64；非 meta 改为读字节 `web.Response` 返回原图（与主进程一致，绕开 FileResponse 的 500）。
+
 ## v4.7.14
 
 - **修复：独立 WebUI 图库大图 `/img/{sha}` 返回 500 Internal Server Error**。v4.7.13 把大图从 `/img/{sha}/thumb` 改为 `/img/{sha}`（原图直返），但原图分支用的是 `web.FileResponse`，在部分环境（Windows 路径/文件锁/aiohttp 版本）下抛未捕获异常 → 裸 500。
