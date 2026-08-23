@@ -208,7 +208,10 @@ class StandaloneWebUI:
         g = self.plugin.gallery
         if g is None:
             return _err("图库未启用", status=500)
-        p = g.path_of(sha)
+        try:
+            p = g.path_of(sha)
+        except Exception as e:
+            return _err(f"路径解析失败: {e}", status=500)
         if not p or not Path(p).exists():
             return _err("图片不存在", status=404)
         # 缩略：仅当显式请求缩略（路径含 /thumb）或 ?size= 显式给了较小值时才缩放；
@@ -235,10 +238,15 @@ class StandaloneWebUI:
                                         headers={"Cache-Control": "public, max-age=31536000"})
             except Exception:
                 pass
-        # 原图直返（含大图直连）：浏览器 <img> 原生缓存，无 base64 往返、不缩放
+        # 原图直返（含大图直连）：读字节后用 web.Response 返回，避免 web.FileResponse
+        # 在特定环境（Windows 路径/文件锁/aiohttp 版本）下抛 500；不缩放、保真且更快。
+        try:
+            raw = await asyncio.to_thread(Path(p).read_bytes)
+        except Exception as e:
+            return _err(f"读取图片失败: {e}", status=500)
         ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-        return web.FileResponse(p, content_type=ctype,
-                                headers={"Cache-Control": "public, max-age=31536000"})
+        return web.Response(body=raw, content_type=ctype,
+                            headers={"Cache-Control": "public, max-age=31536000"})
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         idx = PAGES_DIR / "index.html"

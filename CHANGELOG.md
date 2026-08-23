@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.14
+
+- **修复：独立 WebUI 图库大图 `/img/{sha}` 返回 500 Internal Server Error**。v4.7.13 把大图从 `/img/{sha}/thumb` 改为 `/img/{sha}`（原图直返），但原图分支用的是 `web.FileResponse`，在部分环境（Windows 路径/文件锁/aiohttp 版本）下抛未捕获异常 → 裸 500。
+  - `standalone_webui.py` `_handle_img`：原图直返改为**读字节 + `web.Response(body=raw)`**（与缩略分支一致），彻底绕开 `FileResponse` 的 500；同时给 `path_of` 调用加 try 包裹，异常时返回明确错误而非裸 500。
+  - `webui_api.py` `gallery_image`：`meta=1&noimg=1` 仅回元数据，不再生成大图 base64（前端取元数据更快）。
+  - `ImageViewer.vue` `loadMain`：大图按模式走直链——独立模式 `/img/{sha}`（原图），内嵌模式 `./gallery/image?sha`（原图 binary）；均不缩放、不 base64。
+
 ## v4.7.13
 
 - **修复：图库查看大图被缩放/用 base64 传输的问题**。此前点开大图时：独立模式走 `/img/{sha}/thumb` 被后端当成 300px 缩略图；内嵌模式走 `gallery/image?meta=1` 把大图缩到 1600px 转 base64 返回，导致大图"变小"且加载慢。

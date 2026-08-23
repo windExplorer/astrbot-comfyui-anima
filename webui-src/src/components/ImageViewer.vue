@@ -174,9 +174,9 @@ async function loadMain(sha: string) {
       prompt_raw: meta?.prompt_raw,
     };
 
-    // 大图一律走原图直链（不缩放、不 base64）：
+    // 大图直链（不缩放、不 base64）：
     // - 独立服务：/img/{sha} 原图直链（自带 token，浏览器原生缓存）
-    // - 内嵌页：同源相对直链，后端返回原图 binary（file_response）
+    // - 内嵌页：同源 gallery/image?sha 直链，后端返回原图二进制（file_response）
     if (isStandaloneMode()) {
       mainSrc.value = standaloneImgUrl(sha);
     } else {
