@@ -1333,7 +1333,8 @@ def _thumb_bytes(path, max_w: int = 300) -> tuple:
         return (b"", "image/jpeg")
 
 
-def _thumb_data_url(path, max_w: int = 300) -> str:    """生成缩略图 data URL（不走 AstrBot 路由、无需 token，前端 <img> 直连可用）。
+def _thumb_data_url(path, max_w: int = 300) -> str:
+    """生成缩略图 data URL（不走 AstrBot 路由、无需 token，前端 <img> 直连可用）。
 
     背景：AstrBot 插件 API 挂在 /api/v1/plugins/extensions/<插件名>/... 下且需要登录
     token，浏览器 <img> 直连后端返回的裸路径要么 404 要么 401；而直接内联整图 base64

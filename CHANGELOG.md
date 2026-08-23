@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.11
+
+- **修复：webui_api.py 第 1336 行 `def _thumb_data_url` 与 docstring 被拼接在同一行导致语法错误**。该缩进 bug 由 v4.7.9 新增 `_thumb_bytes` 时的替换操作引入，使整个 `webui_api.py` 无法导入，进而导致独立 WebUI、WebUI 路由、日志缓冲等所有依赖它的初始化全部失败（页面无法访问）。已拆分修复，模块恢复正常导入。
+
 ## v4.7.10
 
 - **修复：_conf_schema.json 的 draw_ratio（template_list）缺少 `__template_key` 导致插件加载校验失败**。AstrBot 4.27.4 对 `template_list` 类型强制要求每个预设项含 `__template_key` 字段，缺省会校验不通过并导致插件加载失败（表现为独立 WebUI 整页无法访问）。已为 9 个尺寸比例预设补全 `__template_key`。
