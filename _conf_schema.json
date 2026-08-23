@@ -669,6 +669,7 @@
     },
     "default": [
       {
+        "__template_key": "square_1_1",
         "name": "方形 1:1",
         "keyword": "方形,正方形,1:1,1比1,square",
         "width": 1024,
@@ -676,6 +677,7 @@
         "enabled": true
       },
       {
+        "__template_key": "portrait_3_4",
         "name": "竖版 3:4",
         "keyword": "竖版,竖图,竖屏,3:4,3比4,portrait",
         "width": 864,
@@ -683,6 +685,7 @@
         "enabled": true
       },
       {
+        "__template_key": "portrait_2_3",
         "name": "竖版 2:3",
         "keyword": "2:3,2比3",
         "width": 768,
@@ -690,6 +693,7 @@
         "enabled": true
       },
       {
+        "__template_key": "portrait_9_16",
         "name": "竖版 9:16",
         "keyword": "9:16,9比16,手机壁纸,vertical",
         "width": 640,
@@ -697,6 +701,7 @@
         "enabled": true
       },
       {
+        "__template_key": "landscape_4_3",
         "name": "横版 4:3",
         "keyword": "横版,横图,横屏,4:3,4比3,landscape",
         "width": 1152,
@@ -704,6 +709,7 @@
         "enabled": true
       },
       {
+        "__template_key": "landscape_3_2",
         "name": "横版 3:2",
         "keyword": "3:2,3比2",
         "width": 1152,
@@ -711,6 +717,7 @@
         "enabled": true
       },
       {
+        "__template_key": "landscape_16_9",
         "name": "横版 16:9",
         "keyword": "16:9,16比9,宽屏,wide",
         "width": 1152,
@@ -718,6 +725,7 @@
         "enabled": true
       },
       {
+        "__template_key": "long_1_2",
         "name": "长图 1:2",
         "keyword": "长图,竖长图,1:2,1比2",
         "width": 576,
@@ -725,6 +733,7 @@
         "enabled": true
       },
       {
+        "__template_key": "ultrawide_21_9",
         "name": "超宽 21:9",
         "keyword": "21:9,21比9,超宽",
         "width": 1152,

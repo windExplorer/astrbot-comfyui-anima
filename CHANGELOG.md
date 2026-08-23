@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.10
+
+- **修复：_conf_schema.json 的 draw_ratio（template_list）缺少 `__template_key` 导致插件加载校验失败**。AstrBot 4.27.4 对 `template_list` 类型强制要求每个预设项含 `__template_key` 字段，缺省会校验不通过并导致插件加载失败（表现为独立 WebUI 整页无法访问）。已为 9 个尺寸比例预设补全 `__template_key`。
+
 ## v4.7.9
 
 - **修复：指令绘图因提示词含换行而误进 LLM Agent**。`/绘图` 系指令的 regex 预匹配原用 `.+$` 无法跨换行，用户把提示词写成多行时整体匹配失败，handler 不触发、消息回流到 LLM Agent 走工具绘图（既多耗 LLM 又不被指令逻辑接管）。现 pattern 改为 `([\s\S]+)` 跨换行匹配，并在 `cmd_draw`/`cmd_draw_wf`/`cmd_img2img` 入口归一化换行。
