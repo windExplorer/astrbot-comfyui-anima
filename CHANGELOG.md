@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.12
+
+- **修复：所有 `template_list` 配置项报「找不到对应模板，请删除后重新添加」**。AstrBot 4.27.4 对 `template_list` 类型强制要求每个预设项含 `__template_key` 字段。此前仅 `draw_ratio` 补了 key，而 `comfyui_servers`/`loras`/`workflows` 仍缺，导致这些列表的已有项（升级前就配好的）在 WebUI 报「找不到对应模板」（新建项正常）。
+  - `_conf_schema.json`：为全部 4 个 `template_list` 的 `templates.default.items` 补全 `__template_key` 字段声明，使新建项能正确对应模板。
+  - `main.py`：新增初始化兜底——插件启动时自动扫描这 4 个列表，给缺 `__template_key` 的旧配置项生成一个并 `save_config()` 落盘。升级前的旧 servers/loras/workflows/比例预设无需手动删除重加，重启插件即自动修复。全程 try/except 包裹，失败仅 warning，不影响启动与出图。
+
 ## v4.7.11
 
 - **修复：webui_api.py 第 1336 行 `def _thumb_data_url` 与 docstring 被拼接在同一行导致语法错误**。该缩进 bug 由 v4.7.9 新增 `_thumb_bytes` 时的替换操作引入，使整个 `webui_api.py` 无法导入，进而导致独立 WebUI、WebUI 路由、日志缓冲等所有依赖它的初始化全部失败（页面无法访问）。已拆分修复，模块恢复正常导入。

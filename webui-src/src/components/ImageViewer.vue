@@ -162,9 +162,9 @@ const typeText = computed(() => {
 async function loadMain(sha: string) {
   mainSrc.value = "";
   try {
-    // 独立模式：用直链 URL（<img> 直接加载 + 浏览器缓存），仅额外取元信息
+    // 独立模式：用原图直链 URL（<img> 直接加载 + 浏览器缓存），大图不缩放保真；仅额外取元信息
     if (isStandaloneMode()) {
-      mainSrc.value = standaloneImgUrl(sha, 1600);
+      mainSrc.value = standaloneImgUrl(sha);
       try {
         const data = await apiGet("gallery/image", { sha, meta: 1 });
         if (data && data.meta) item.value = { ...(item.value || {}), ...data.meta, sha: data.meta.sha256 || sha };

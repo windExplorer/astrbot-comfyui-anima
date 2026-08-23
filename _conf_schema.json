@@ -8,6 +8,11 @@
         "name": "服务器",
         "display_item": "name",
         "items": {
+          "__template_key": {
+            "type": "string",
+            "description": "模板标识键（自动生成，勿手动修改）",
+            "default": ""
+          },
           "name": {
             "type": "string",
             "description": "服务器名称",
@@ -46,6 +51,11 @@
         "name": "LoRA",
         "display_item": "name",
         "items": {
+          "__template_key": {
+            "type": "string",
+            "description": "模板标识键（自动生成，勿手动修改）",
+            "default": ""
+          },
           "name": {
             "type": "string",
             "description": "LoRA 名称（引用键）",
@@ -134,6 +144,11 @@
         "name": "工作流",
         "display_item": "name",
         "items": {
+          "__template_key": {
+            "type": "string",
+            "description": "模板标识键（自动生成，勿手动修改）",
+            "default": ""
+          },
           "name": {
             "type": "string",
             "description": "工作流名称",
@@ -634,6 +649,11 @@
         "name": "尺寸比例",
         "display_item": "name",
         "items": {
+          "__template_key": {
+            "type": "string",
+            "description": "模板标识键（自动生成，勿手动修改）",
+            "default": ""
+          },
           "name": {
             "type": "string",
             "description": "比例名称",

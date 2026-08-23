@@ -777,6 +777,35 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 独立 WebUI 启动失败（可忽略）: {e}")
 
+        # 兼容旧配置：为新版 AstrBot 的 template_list 自动补 __template_key。
+        # 升级前就已存在的 comfyui_servers / loras / workflows / draw_ratio 条目
+        # 没有 __template_key，新 AstrBot 会报「找不到对应模板，请删除后重新添加」。
+        # 这里给缺 key 的条目自动生成一个并落盘，避免用户手动删配重加。
+        try:
+            patched = 0
+            for key in ("comfyui_servers", "loras", "workflows", "draw_ratio"):
+                items = self.config.get(key)
+                if not isinstance(items, list):
+                    continue
+                changed = False
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if not item.get("__template_key"):
+                        item["__template_key"] = uuid.uuid4().hex
+                        changed = True
+                        patched += 1
+                if changed:
+                    self.config[key] = items
+            if patched:
+                try:
+                    self.config.save_config()
+                except Exception:
+                    pass
+                logger.info(f"【初始化】 已为 {patched} 个旧配置项补 __template_key 并落盘")
+        except Exception as e:
+            logger.warning(f"【初始化】 补 __template_key 失败（可忽略）: {e}")
+
     async def terminate(self) -> None:
         # 停止独立 WebUI 服务
         try:
