@@ -55,9 +55,12 @@
                 </div>
               </div>
 
-              <div class="app-content">
+              <div ref="contentRef" class="app-content">
                 <router-view />
               </div>
+
+              <!-- 回到顶部 / 去底部（PC 端右下角） -->
+              <ScrollJumpButton :scroll-target="contentRef" />
             </div>
           </div>
         </n-loading-bar-provider>
@@ -92,6 +95,7 @@ import {
 import { useTheme, initThemeBridge } from "@/composables/useTheme";
 import { useDevice } from "@/composables/useDevice";
 import MobileShell from "@/components/MobileShell.vue";
+import ScrollJumpButton from "@/components/ScrollJumpButton.vue";
 import { LOGO_DATA_URL } from "@/assets/logo";
 import { PLUGIN_VERSION } from "@/version";
 
@@ -103,6 +107,7 @@ const { isMobile } = useDevice();
 const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
+const contentRef = ref<HTMLElement | null>(null);
 
 // 品牌名（浏览器标题 / 控制台品牌标题共用，站点统一为「萌绘控制台」）
 const APP_NAME = "萌绘控制台";

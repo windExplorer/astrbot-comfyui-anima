@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.21
+
+- **移动端与 PC 操作面板/交互优化**：
+  - 全局新增**回到顶部 / 去底部**悬浮按钮（右下角，移动端滚动 `.ms-content`，PC 端滚动 `.app-content`），新组件 `ScrollJumpButton.vue`。
+  - **Token 用量页**：临时隐藏「重置统计」按钮（PC 同样隐藏）；「刷新」「日期单选」「合并插件记录」移动端收进底部操作弹窗面板，日期单选在窄屏自动换行；各表格首列加宽（场景/模型/用户/明细）；全部表格包一层横向滚动容器 + `scroll-x`，明细表格不再超出界面。
+  - **生图限额页**：临时隐藏「重置全部次数」按钮（PC 同样隐藏）；「刷新」移动端收进操作弹窗面板；用户表格移动端加高（`panel-table min-height:480px` / `table-wrap min-height:420px`），短屏也能看到更多行。
+  - **LoRA 页**：操作弹窗面板内的底模 / 分类筛选单选按钮改为自适应换行，不再超出屏幕。
+  - **日志页**：「刷新」与「出图记录 / 操作日志 / 运行日志」切换移动端收进操作弹窗面板；出图记录表格移动端加高（`table-scroll min-height:520px`），一屏可看更多条。
+
 ## v4.7.20
 
 - **修复移动端 WebUI 崩溃与空白（v4.7.19 引入的严重问题）**：刷新页面 / 切换菜单时报 `TypeError: Cannot read properties of null (reading 'emitsOptions')` 与 `Cannot destructure property 'bum' of 'X' as it is null`，操作弹窗看不到内容，图库看不到分页。

@@ -16,7 +16,7 @@
     <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
       <div class="filter-bar">
         <span class="filter-label">底模：</span>
-        <n-radio-group v-model:value="filterModel" size="small">
+        <n-radio-group v-model:value="filterModel" size="small" class="filter-radios">
           <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
           <n-radio-button value="anima">anima ({{ countByModel("anima") }})</n-radio-button>
           <n-radio-button value="z-image-turbo">z-image-turbo ({{ countByModel("z-image-turbo") }})</n-radio-button>
@@ -27,7 +27,7 @@
       </div>
       <div class="filter-bar">
         <span class="filter-label">分类：</span>
-        <n-radio-group v-model:value="filterCategory" size="small">
+        <n-radio-group v-model:value="filterCategory" size="small" class="filter-radios">
           <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
           <n-radio-button value="角色">角色 ({{ countByCategory("角色") }})</n-radio-button>
           <n-radio-button value="风格">风格 ({{ countByCategory("风格") }})</n-radio-button>
@@ -440,6 +440,10 @@ onMounted(load);
 .view-actions { display: flex; gap: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex: 0 0 auto; flex-wrap: wrap; }
 .filter-label { color: var(--text-sub); font-size: 13px; }
+/* radio-group 内按钮自动换行：长选项在窄屏不溢出 */
+.filter-radios { display: flex; flex-wrap: wrap; gap: 4px; }
+.filter-radios :deep(.n-radio-group) { flex-wrap: wrap; gap: 4px; }
+.filter-radios :deep(.n-radio-button) { flex: 0 0 auto; }
 .lora-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .lora-card {

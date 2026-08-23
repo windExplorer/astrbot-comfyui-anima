@@ -5,13 +5,17 @@
         <h2>出图记录 / 日志</h2>
         <p>出图记录：谁、发了什么消息、出的图、尺寸/大小/耗时/成败。运行日志：插件运行流水。</p>
       </div>
-      <n-button :loading="loading" @click="refresh">刷新</n-button>
-    </div>
-
-    <div class="tab-bar">
-      <button class="tab-btn" :class="{ active: activeTab === 'records' }" @click="activeTab = 'records'">出图记录</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'oplog' }" @click="switchOplog">操作日志</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'runlog' }" @click="activeTab = 'runlog'">运行日志</button>
+      <!-- 刷新 + 切换：PC 端留在原位；移动端收进底部操作弹窗面板 -->
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="mobile-actions">
+          <n-button size="small" :loading="loading" @click="refresh">刷新</n-button>
+          <div class="mobile-tabs">
+            <button class="tab-btn" :class="{ active: activeTab === 'records' }" @click="activeTab = 'records'">出图记录</button>
+            <button class="tab-btn" :class="{ active: activeTab === 'oplog' }" @click="switchOplog">操作日志</button>
+            <button class="tab-btn" :class="{ active: activeTab === 'runlog' }" @click="activeTab = 'runlog'">运行日志</button>
+          </div>
+        </div>
+      </Teleport>
     </div>
 
     <!-- 出图记录 -->
@@ -124,10 +128,12 @@ import { fetchThumb } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { fmtBytes, fmtDuration, fmtDateTime, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import { useDevice } from "@/composables/useDevice";
 import ImageViewer from "@/components/ImageViewer.vue";
 import Pager from "@/components/Pager.vue";
 
 const message = useMessage();
+const { isMobile } = useDevice();
 const activeTab = ref("records");
 const loading = ref(false);
 
@@ -457,7 +463,20 @@ onMounted(() => {
   .toolbar :deep(.n-input) { width: 100% !important; flex: 1 1 100%; }
   .toolbar :deep(.n-select) { width: 100% !important; flex: 1 1 100%; }
   .tab-bar :deep(.n-button) { flex: 1 1 auto; }
-  /* 短屏手机：上方 tabs/工具栏堆叠会挤占空间，给表格兜底最小高度，保证可见且内部滚动 */
-  .table-scroll { min-height: 300px; }
+  /* 短屏手机：上方 tabs/工具栏堆叠会挤占空间，给表格加高兜底，一屏能看到更多条记录 */
+  .table-scroll { min-height: 520px; }
+}
+
+/* 移动端操作弹窗面板内的刷新 + tab 切换 */
+.mobile-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+.mobile-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 </style>

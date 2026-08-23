@@ -5,10 +5,12 @@
         <h2>生图限额</h2>
         <p>查看与配置每个用户的生图次数限制（总次数 / 每小时次数）。-1 表示不限制。</p>
       </div>
-      <div class="view-actions">
-        <n-button :loading="loading" @click="load">刷新</n-button>
-        <n-button type="error" ghost @click="resetAll">重置全部次数</n-button>
-      </div>
+      <!-- 刷新按钮移动端收进底部操作弹窗面板 -->
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="view-actions">
+          <n-button :loading="loading" @click="load">刷新</n-button>
+        </div>
+      </Teleport>
     </div>
 
     <div class="panel">
@@ -43,12 +45,13 @@
 
 <script setup lang="ts">
 import { h, onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NDataTable, NCheckbox, NFormItem, NInputNumber, NInput, NSpace, NTag, type DataTableColumns } from "naive-ui";
+import { useMessage, NDataTable, NCheckbox, NFormItem, NInputNumber, NInput, NSpace, NTag, type DataTableColumns } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { useRefresh } from "@/composables/useRefresh";
+import { useDevice } from "@/composables/useDevice";
 
 const message = useMessage();
-const dialog = useDialog();
+const { isMobile } = useDevice();
 const loading = ref(false);
 const global = reactive({ enabled: false, max_total: -1, max_hour: -1, max_day: -1, admin_exempt: true });
 const users = ref<any[]>([]);
@@ -150,24 +153,6 @@ function resetUser(row: any) {
   });
 }
 
-function resetAll() {
-  dialog.warning({
-    title: "重置全部次数",
-    content: "确定要重置所有用户的生图次数吗？",
-    positiveText: "重置全部",
-    negativeText: "取消",
-    onPositiveClick: async () => {
-      try {
-        const d = await apiPost("quota/reset", { all: true });
-        message.success(`已重置 ${d.count || 0} 个用户`);
-        load();
-      } catch (e: any) {
-        message.error(e.message || "重置失败");
-      }
-    },
-  });
-}
-
 async function saveGlobal() {
   try {
     await apiPost("quota/save_global", { ...global });
@@ -211,8 +196,8 @@ onMounted(load);
   .panel { padding: 12px; }
   /* 限额输入框固定 140px 在窄屏改为全宽 */
   .panel :deep(.n-input-number) { width: 100% !important; }
-  /* 短屏手机：上方全局配置堆叠会挤占空间，给表格兜底最小高度，保证可见且内部滚动 */
-  .panel-table { min-height: 340px; }
-  .table-wrap { min-height: 280px; }
+  /* 短屏手机：上方全局配置堆叠会挤占空间，给表格加高兜底，保证可见更多行 */
+  .panel-table { min-height: 480px; }
+  .table-wrap { min-height: 420px; }
 }
 </style>

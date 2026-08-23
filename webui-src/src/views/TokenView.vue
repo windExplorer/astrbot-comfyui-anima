@@ -5,25 +5,32 @@
         <h2>Token 用量</h2>
         <p>统计插件自发起的辅助 LLM 调用（翻译 / 动漫改写 / 写实清理 / 参数提取）消耗的 token。</p>
       </div>
-      <div class="view-actions">
-        <n-button :loading="loading" @click="load">刷新</n-button>
-        <n-button type="error" ghost @click="resetAll">重置统计</n-button>
-      </div>
+      <!-- 刷新 / 日期单选 / 合并开关 移动端收进底部操作弹窗面板 -->
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="view-actions">
+          <n-button :loading="loading" @click="load">刷新</n-button>
+        </div>
+      </Teleport>
     </div>
 
     <div class="token-scroll">
     <div class="scope-toolbar">
-      <n-radio-group v-model:value="scope" size="small" @update:value="onScopeChange">
-        <n-radio-button value="today">今天</n-radio-button>
-        <n-radio-button value="yesterday">昨天</n-radio-button>
-        <n-radio-button value="1">近 1 天</n-radio-button>
-        <n-radio-button value="3">近 3 天</n-radio-button>
-        <n-radio-button value="7">近 7 天</n-radio-button>
-        <n-radio-button value="30">近 30 天</n-radio-button>
-        <n-radio-button value="90">近 90 天</n-radio-button>
-        <n-radio-button value="all">全部</n-radio-button>
-      </n-radio-group>
-      <n-checkbox v-model:checked="merge" size="small" @update:checked="onScopeChange">合并插件记录</n-checkbox>
+      <!-- 日期单选 + 合并开关：PC 端留在原位；移动端收进底部操作弹窗面板（面板内可换行） -->
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="scope-mobile-block">
+          <n-radio-group v-model:value="scope" size="small" @update:value="onScopeChange" class="scope-radios">
+            <n-radio-button value="today">今天</n-radio-button>
+            <n-radio-button value="yesterday">昨天</n-radio-button>
+            <n-radio-button value="1">近 1 天</n-radio-button>
+            <n-radio-button value="3">近 3 天</n-radio-button>
+            <n-radio-button value="7">近 7 天</n-radio-button>
+            <n-radio-button value="30">近 30 天</n-radio-button>
+            <n-radio-button value="90">近 90 天</n-radio-button>
+            <n-radio-button value="all">全部</n-radio-button>
+          </n-radio-group>
+          <n-checkbox v-model:checked="merge" size="small" @update:checked="onScopeChange">合并插件记录</n-checkbox>
+        </div>
+      </Teleport>
     </div>
 
     <n-spin :show="loading">
@@ -48,25 +55,33 @@
       <!-- 按调用场景 -->
       <div class="panel">
         <div class="panel-title"><h3>按调用场景</h3><span class="count">翻译 / 动漫改写 / 写实清理 / 参数提取</span></div>
-        <n-data-table :columns="sceneColumns" :data="scenes" :bordered="false" size="small" />
+        <div class="table-scroll-wrap">
+          <n-data-table :columns="sceneColumns" :data="scenes" :bordered="false" size="small" :scroll-x="700" />
+        </div>
       </div>
 
       <!-- 按 LLM 模型 -->
       <div class="panel">
         <div class="panel-title"><h3>按 LLM 模型</h3></div>
-        <n-data-table :columns="modelColumns" :data="models" :bordered="false" size="small" />
+        <div class="table-scroll-wrap">
+          <n-data-table :columns="modelColumns" :data="models" :bordered="false" size="small" :scroll-x="760" />
+        </div>
       </div>
 
       <!-- 用户排行 -->
       <div class="panel">
         <div class="panel-title"><h3>用户 Token 排行</h3></div>
-        <n-data-table :columns="userColumns" :data="users" :bordered="false" size="small" />
+        <div class="table-scroll-wrap">
+          <n-data-table :columns="userColumns" :data="users" :bordered="false" size="small" :scroll-x="700" />
+        </div>
       </div>
 
       <!-- 明细 -->
       <div class="panel">
         <div class="panel-title"><h3>明细</h3></div>
-        <n-data-table :columns="detailColumns" :data="detail" :bordered="false" size="small" />
+        <div class="table-scroll-wrap">
+          <n-data-table :columns="detailColumns" :data="detail" :bordered="false" size="small" :scroll-x="1000" />
+        </div>
         <Pager :page="page" :page-size="pageSize" :total="detailTotal" @update:page="onPage" @update:page-size="onPageSize" />
       </div>
     </n-spin>
@@ -76,16 +91,17 @@
 
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
-import { useMessage, useDialog, NButton, NRadioGroup, NRadioButton, NCheckbox, NCard, NDataTable, NSpin, NTag, type DataTableColumns } from "naive-ui";
+import { useMessage, NRadioGroup, NRadioButton, NCheckbox, NCard, NDataTable, NSpin, NTag, type DataTableColumns } from "naive-ui";
 import AreaChart from "@/components/AreaChart.vue";
 import Pager from "@/components/Pager.vue";
 import { apiGet, apiPost } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { fmtDateTime } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import { useDevice } from "@/composables/useDevice";
 
 const message = useMessage();
-const dialog = useDialog();
+const { isMobile } = useDevice();
 const loading = ref(false);
 const scope = ref("1");
 const merge = ref(false);
@@ -188,7 +204,7 @@ function fmtBucketLabel(b: any): string {
 
 function makeSceneColumns(): DataTableColumns {
   return [
-    { title: "场景", key: "scene", render: (row) => row.scene || "-" },
+    { title: "场景", key: "scene", width: 160, render: (row) => row.scene || "-" },
     { title: "非缓存输入", key: "input", width: 110, render: (row) => fmtToken(row.input_other) },
     { title: "缓存命中", key: "cached_input", width: 100, render: (row) => fmtToken(row.input_cached) },
     { title: "输出", key: "output", width: 100, render: (row) => fmtToken(row.output) },
@@ -200,7 +216,7 @@ const sceneColumns = makeSceneColumns();
 
 function makeModelColumns(): DataTableColumns {
   return [
-    { title: "模型", key: "model", render: (row) => row.model || "-" },
+    { title: "模型", key: "model", width: 240, ellipsis: { tooltip: true }, render: (row) => row.model || "-" },
     { title: "非缓存输入", key: "input", width: 110, render: (row) => fmtToken(row.input_other) },
     { title: "缓存命中", key: "cached_input", width: 100, render: (row) => fmtToken(row.input_cached) },
     { title: "输出", key: "output", width: 100, render: (row) => fmtToken(row.output) },
@@ -212,7 +228,7 @@ const modelColumns = makeModelColumns();
 
 function makeUserColumns(): DataTableColumns {
   return [
-    { title: "用户 / ID", key: "name", render: (row) => `${row.user_name || ""}${row.user_id ? ` (${row.user_id})` : ""}` || "-" },
+    { title: "用户 / ID", key: "name", width: 180, ellipsis: { tooltip: true }, render: (row) => `${row.user_name || ""}${row.user_id ? ` (${row.user_id})` : ""}` || "-" },
     { title: "非缓存输入", key: "input", width: 110, render: (row) => fmtToken(row.input_other) },
     { title: "缓存命中", key: "cached_input", width: 100, render: (row) => fmtToken(row.input_cached) },
     { title: "输出", key: "output", width: 100, render: (row) => fmtToken(row.output) },
@@ -224,10 +240,10 @@ const userColumns = makeUserColumns();
 
 function makeDetailColumns(): DataTableColumns {
   return [
-    { title: "时间", key: "hour_bucket", width: 150, render: (row) => row.hour_bucket || row.day_bucket || fmtDateTime(row.created_at) },
-    { title: "用户ID", key: "user_id", width: 110, render: (row) => row.user_id || "-" },
-    { title: "场景", key: "scene", width: 120, render: (row) => row.scene || "-" },
-    { title: "模型", key: "model", ellipsis: { tooltip: true }, render: (row) => row.model || "-" },
+    { title: "时间", key: "hour_bucket", width: 160, render: (row) => row.hour_bucket || row.day_bucket || fmtDateTime(row.created_at) },
+    { title: "用户ID", key: "user_id", width: 140, ellipsis: { tooltip: true }, render: (row) => row.user_id || "-" },
+    { title: "场景", key: "scene", width: 140, render: (row) => row.scene || "-" },
+    { title: "模型", key: "model", width: 200, ellipsis: { tooltip: true }, render: (row) => row.model || "-" },
     { title: "非缓存输入", key: "input_other", width: 100, render: (row) => fmtToken(row.input_other) },
     { title: "缓存命中", key: "input_cached", width: 90, render: (row) => fmtToken(row.input_cached) },
     { title: "输出", key: "output", width: 90, render: (row) => fmtToken(row.output) },
@@ -236,24 +252,6 @@ function makeDetailColumns(): DataTableColumns {
   ];
 }
 const detailColumns = makeDetailColumns();
-
-function resetAll() {
-  dialog.warning({
-    title: "重置统计",
-    content: "确定要重置全部 LLM token 统计吗？此操作不可恢复！",
-    positiveText: "重置全部",
-    negativeText: "取消",
-    onPositiveClick: async () => {
-      try {
-        await apiPost("token/reset", { all: true });
-        message.success("已重置");
-        load();
-      } catch (e: any) {
-        message.error(e.message || "重置失败");
-      }
-    },
-  });
-}
 
 useRefresh(load);
 onMounted(load);
@@ -277,6 +275,14 @@ onMounted(load);
 .count { color: var(--text-sub); font-size: 12px; }
 .chart-wrap { margin-top: 8px; }
 .empty { color: var(--text-sub); text-align: center; padding: 30px; }
+/* 表格外层容器：窄屏横向滚动，防止超出界面 */
+.table-scroll-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll-wrap :deep(.n-data-table) { min-width: 640px; }
+/* 移动端面板内：日期单选可换行、勾选与单选分段 */
+.scope-mobile-block { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.scope-radios { display: flex; flex-wrap: wrap; gap: 4px; }
+.scope-radios :deep(.n-radio-group) { flex-wrap: wrap; gap: 4px; }
+.scope-radios :deep(.n-radio-button) { flex: 0 0 auto; }
 
 @media (max-width: 768px) {
   .token-view { padding: 0; }

@@ -12,12 +12,15 @@
     </header>
 
     <!-- 内容区：正常文档流滚动 -->
-    <main class="ms-content">
+    <main ref="contentRef" class="ms-content">
       <slot />
     </main>
 
     <!-- 右下角可拖动悬浮按钮：打开筛选/操作面板 -->
     <FloatingActionButton @click="panelOpen = true" />
+
+    <!-- 回到顶部 / 去底部（滚动区为 .ms-content） -->
+    <ScrollJumpButton :scroll-target="contentRef" />
 
     <!-- 遮罩（菜单/面板共用；打开时锁定背景滚动） -->
     <div
@@ -60,10 +63,12 @@
 import { ref, watch, onBeforeUnmount } from "vue";
 import { useRoute, RouterLink } from "vue-router";
 import FloatingActionButton from "@/components/FloatingActionButton.vue";
+import ScrollJumpButton from "@/components/ScrollJumpButton.vue";
 import { NAV_ITEMS } from "@/router/nav";
 import { LOGO_DATA_URL } from "@/assets/logo";
 
 const route = useRoute();
+const contentRef = ref<HTMLElement | null>(null);
 
 const navOpen = ref(false);
 const panelOpen = ref(false);
