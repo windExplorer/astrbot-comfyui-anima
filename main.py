@@ -1689,6 +1689,7 @@ class ComfyUIDrawPlugin(Star):
         is_img2img: bool = False,
         fallback_on_missing: bool = False,
         positive: str = "",
+        explicit_default: bool = False,
     ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
@@ -1712,32 +1713,38 @@ class ComfyUIDrawPlugin(Star):
             if alias_target and alias_target != name:
                 name = alias_target
         if not name:
-            # 未指定工作流时，先按提示词语义判断「真人/动漫」，命中则用对应默认工作流；
-            # 语义不明才按「风格优先级 + 文生图/图生图」选全局默认。
-            _sem = self._detect_style_from_prompt("" if positive is None else str(positive))
-            if _sem == "real":
-                _cand = (
-                    self._cfg("default_img2img_workflow_real", "")
-                    if is_img2img
-                    else self._cfg("default_workflow_real", "")
-                ) or self._cfg("default_workflow_real", "")
-                if _cand:
-                    name = _cand
-                    logger.info(f"【绘图·解析】 提示词含「真人/写实」语义，选用真人工流={name}")
-            elif _sem == "anime":
-                _cand = (
-                    self._cfg("default_img2img_workflow", "")
-                    if is_img2img
-                    else self._cfg("default_workflow", "")
-                ) or self._cfg("default_workflow", "")
-                if _cand:
-                    name = _cand
-                    logger.info(f"【绘图·解析】 提示词含「动漫/二次元」语义，选用动漫工作流={name}")
+            # 未指定工作流时：
+            #  - explicit_default=True（指令绘图且用户未显式指定工作流）→
+            #    直接使用全局「风格优先级 + 文生图/图生图」默认工作流，
+            #    **绝不**根据提示词内容（如 realistic）自行切换工作流，尊重指令语义。
+            #  - explicit_default=False（LLM/Agent/第三方调用）→ 先按提示词语义判断
+            #    「真人/动漫」，命中则用对应默认工作流；语义不明才走全局默认。
+            if not explicit_default:
+                _sem = self._detect_style_from_prompt("" if positive is None else str(positive))
+                if _sem == "real":
+                    _cand = (
+                        self._cfg("default_img2img_workflow_real", "")
+                        if is_img2img
+                        else self._cfg("default_workflow_real", "")
+                    ) or self._cfg("default_workflow_real", "")
+                    if _cand:
+                        name = _cand
+                        logger.info(f"【绘图·解析】 提示词含「真人/写实」语义，选用真人工流={name}")
+                elif _sem == "anime":
+                    _cand = (
+                        self._cfg("default_img2img_workflow", "")
+                        if is_img2img
+                        else self._cfg("default_workflow", "")
+                    ) or self._cfg("default_workflow", "")
+                    if _cand:
+                        name = _cand
+                        logger.info(f"【绘图·解析】 提示词含「动漫/二次元」语义，选用动漫工作流={name}")
             if not name:
                 name = self._pick_default_workflow_name(is_img2img)
                 logger.info(
                     f"【绘图·解析】 未指定工作流，按风格优先级={self._cfg('default_style_priority', 'anime')} "
                     f"{'图生图' if is_img2img else '文生图'}选定默认工作流={name or '（均无配置，回退第一个）'}"
+                    f"{'（指令默认，不读提示词语义）' if explicit_default else ''}"
                 )
         if name:
             # 1) 精确匹配工作流名称
@@ -2364,6 +2371,7 @@ class ComfyUIDrawPlugin(Star):
         denoise: float | None = None,
         notify_pending: bool = True,
         source: str = "",
+        explicit_default: bool = False,
     ):
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
         # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
@@ -2415,7 +2423,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
-            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True, positive=positive)
+            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True, positive=positive, explicit_default=explicit_default)
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
                 f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
@@ -3185,7 +3193,7 @@ class ComfyUIDrawPlugin(Star):
         args = self._strip_command(event.message_str, "draw")
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         if not prompt.strip():
-            await self._send(event, 
+            await self._send(event,
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
             )
             return
@@ -3196,6 +3204,7 @@ class ComfyUIDrawPlugin(Star):
             init_images=images,
             is_img2img=bool(images),
             denoise=denoise,
+            explicit_default=(wf_name is None),
         ):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
@@ -3237,6 +3246,7 @@ class ComfyUIDrawPlugin(Star):
             init_images=images,
             is_img2img=True,
             denoise=denoise,
+            explicit_default=(wf_name is None),
         ):
             yield m
         event.stop_event()
@@ -3327,6 +3337,7 @@ class ComfyUIDrawPlugin(Star):
             init_images=images,
             is_img2img=is_img,
             denoise=denoise,
+            explicit_default=(wf_name is None),
         ):
             yield out
         # 收尾终止事件：同 /draw，避免 pipeline 在首个 yield 后中断 _do_draw
