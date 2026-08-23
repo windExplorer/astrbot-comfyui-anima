@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.16
+
+- **修复：内嵌页（AstrBot 后台 iframe）大图直链报 401**。AstrBot 的 page API 路由受登录鉴权保护，`<img>` 加载图片不自动带凭证，相对直链 `./gallery/image?sha` 会 401。内嵌模式只能用 base64（架构限制，非将就）。
+  - `ImageViewer.vue` `loadMain`：内嵌分支改回 `gallery/image?meta=1` 取原图 data_url（base64）给 `<img>`；独立服务仍走 `/img/{sha}` 原图直链（不缩放、不 base64）。两种模式彻底分开。
+  - 内嵌 base64 大图后端默认缩到 1600px（主进程 `webui_api.gallery_image` 的 `view_size` 默认 1600），避免原图 3MB+ 转 base64 卡死。
+
 ## v4.7.15
 
 - **修复：独立 WebUI 点开大图仍返回 base64 导致卡半天**。根因：独立服务 `_api_gallery` 的 `/gallery/image` 路由（与主进程 `webui_api.gallery_image` 是两套独立实现）在 `meta=1` 时仍调用 `_thumb_cached` 生成大图 base64，之前只修了主进程那套、漏了独立服务这套。

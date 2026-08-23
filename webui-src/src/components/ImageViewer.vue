@@ -174,13 +174,17 @@ async function loadMain(sha: string) {
       prompt_raw: meta?.prompt_raw,
     };
 
-    // 大图直链（不缩放、不 base64）：
-    // - 独立服务：/img/{sha} 原图直链（自带 token，浏览器原生缓存）
-    // - 内嵌页：同源 gallery/image?sha 直链，后端返回原图二进制（file_response）
+    // 大图加载按模式区分：
+    // - 独立服务：/img/{sha} 原图直链（自带 token，浏览器原生缓存，不缩放、不 base64）
+    // - 内嵌页：AstrBot 的 page API 受登录鉴权保护，<img> 直链会 401，只能用 base64。
+    //   故内嵌走 gallery/image?meta=1（后端返回原图 data_url），前端直接给 <img>。
     if (isStandaloneMode()) {
       mainSrc.value = standaloneImgUrl(sha);
     } else {
-      mainSrc.value = "./gallery/image?sha=" + encodeURIComponent(sha);
+      try {
+        const img = await apiGet("gallery/image", { sha, meta: 1 });
+        if (img && img.data_url) mainSrc.value = img.data_url;
+      } catch (e) { /* 加载失败不阻塞，mainSrc 保持空 */ }
     }
   } catch (e) {
     mainSrc.value = "";
