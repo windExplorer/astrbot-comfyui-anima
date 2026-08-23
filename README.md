@@ -183,7 +183,7 @@ AI 会调用 `comfyui_draw` 工具，并按你提到的 LoRA 名称启用对应 
 
 > 边界：`comfyui_draw` 永远只生成【新】图，绝不复用图库旧图；任何「发已有的图/找某类图/收藏这张」都走 `comfyui_gallery`。
 
-## WebUI 控制台（Anima 控制台）
+## WebUI 控制台（萌绘控制台）
 
 插件自带 WebUI 控制台（AstrBot 插件页面），包含「配置 / 日志 / 统计 / 工作流 / LoRA / 图库 / 限额 / Token」八个模块：
 

@@ -5,6 +5,7 @@
     :class="{ dragging }"
     :style="{ left: x + 'px', top: y + 'px' }"
     @pointerdown="onDown"
+    @click="onNativeClick"
   >
     <slot>
       <span class="fab-icon">⚙</span>
@@ -22,6 +23,11 @@ const x = ref(0);
 const y = ref(0);
 const dragging = ref(false);
 
+// 点击与拖动的位移判定阈值（px）。真实手机 tap 时手指常有 5~10px 抖动，
+// 阈值过小会把点击误判为拖动导致「点了没反应」。
+const CLICK_SLOP = 10;
+const SIZE = 56;
+
 let startX = 0;
 let startY = 0;
 let origX = 0;
@@ -35,9 +41,8 @@ function clamp(v: number, min: number, max: number) {
 function placeDefault() {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  const size = 56;
-  x.value = clamp(w - size - 16, 0, w - size);
-  y.value = clamp(h - size - 16, 0, h - size);
+  x.value = clamp(w - SIZE - 16, 0, w - SIZE);
+  y.value = clamp(h - SIZE - 16, 0, h - SIZE);
 }
 
 function onDown(e: PointerEvent) {
@@ -47,40 +52,61 @@ function onDown(e: PointerEvent) {
   startY = e.clientY;
   origX = x.value;
   origY = y.value;
-  (fab.value as HTMLElement).setPointerCapture(e.pointerId);
+  // 捕获后续 pointer 事件，保证拖动跟手；老环境不支持时静默降级
+  try {
+    (fab.value as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* ignore */
+  }
 }
 
 function onMove(e: PointerEvent) {
   if (!dragging.value) return;
   const dx = e.clientX - startX;
   const dy = e.clientY - startY;
-  if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
-  const size = 56;
-  x.value = clamp(origX + dx, 0, window.innerWidth - size);
-  y.value = clamp(origY + dy, 0, window.innerHeight - size);
+  if (Math.abs(dx) > CLICK_SLOP || Math.abs(dy) > CLICK_SLOP) moved = true;
+  x.value = clamp(origX + dx, 0, window.innerWidth - SIZE);
+  y.value = clamp(origY + dy, 0, window.innerHeight - SIZE);
 }
 
 function onUp(e: PointerEvent) {
   if (!dragging.value) return;
+  // 抬起时最终位移再判定一次（防止过程中未超阈值、抬起瞬间拉动）
+  const dx = e.clientX - startX;
+  const dy = e.clientY - startY;
+  if (Math.abs(dx) > CLICK_SLOP || Math.abs(dy) > CLICK_SLOP) moved = true;
   dragging.value = false;
   try {
     (fab.value as HTMLElement).releasePointerCapture(e.pointerId);
   } catch {
     /* ignore */
   }
-  // 拖动距离很小才视为点击
-  if (!moved) emit("click");
+  // 注意：这里不 emit。点击统一交给浏览器合成的原生 click（onNativeClick）触发，
+  // 保证不支持 PointerEvent / pointer 流程异常时点击依然可用。
+}
+
+// 核心点击入口：鼠标/触摸/笔在无拖动时都会由浏览器合成 click。
+// 拖动（moved=true）或拖动后的合成 click 会被跳过，不会误触发。
+function onNativeClick() {
+  if (moved) {
+    moved = false;
+    return;
+  }
+  moved = false;
+  emit("click");
 }
 
 onMounted(() => {
   placeDefault();
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("pointermove", onMove);
   window.removeEventListener("pointerup", onUp);
+  window.removeEventListener("pointercancel", onUp);
 });
 </script>
 

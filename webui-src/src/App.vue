@@ -15,10 +15,10 @@
           <div v-else class="app-shell">
             <div class="app-sider" :class="{ collapsed: siderCollapsed }">
               <div class="brand">
-                <div class="brand-logo">✦</div>
+                <img :src="LOGO_DATA_URL" alt="logo" class="brand-logo" />
                 <div v-if="!siderCollapsed" class="brand-text">
                   <div class="brand-title">萌绘控制台</div>
-                  <div class="brand-sub">ComfyUI / 萌图工厂</div>
+                  <div class="brand-sub">ComfyUI / 萌绘</div>
                 </div>
               </div>
               <n-menu
@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter, RouterLink } from "vue-router";
 import {
   darkTheme,
@@ -92,6 +92,7 @@ import {
 import { useTheme, initThemeBridge } from "@/composables/useTheme";
 import { useDevice } from "@/composables/useDevice";
 import MobileShell from "@/components/MobileShell.vue";
+import { LOGO_DATA_URL } from "@/assets/logo";
 import { PLUGIN_VERSION } from "@/version";
 
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
@@ -103,11 +104,23 @@ const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
 
+// 品牌名（浏览器标题 / 控制台品牌标题共用，站点统一为「萌绘控制台」）
+const APP_NAME = "萌绘控制台";
+
 // 与 AstrBot 主题联动：监听 html[data-theme] 与 bridge.onContext。
 // 独立模式认证已迁移到路由守卫（router/index.ts）与 LoginView，App 只负责控制台布局。
 onMounted(() => {
   initThemeBridge();
 });
+
+// 网页标题：路由切换时同步（浏览器标签页标题 = 「页面名 - 萌绘控制台」）
+watch(
+  () => route.meta.title,
+  (t) => {
+    document.title = t ? `${t} - ${APP_NAME}` : APP_NAME;
+  },
+  { immediate: true }
+);
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -150,7 +163,7 @@ function iconSvg(text: string) {
 }
 
 const activeKey = computed(() => route.name as string);
-const currentTitle = computed(() => String(route.meta.title || "Anima 控制台"));
+const currentTitle = computed(() => String(route.meta.title || APP_NAME));
 
 function onMenuSelect(key: string) {
   router.push({ name: key });
@@ -202,6 +215,8 @@ function onMenuSelect(key: string) {
   background: linear-gradient(135deg, #ffb3d1, #ff8fb3);
   color: #fff;
   box-shadow: 0 3px 8px rgba(255, 143, 179, 0.35);
+  object-fit: cover;
+  flex: 0 0 auto;
 }
 .brand-title {
   font-weight: 800;

@@ -24,6 +24,6 @@ support_platforms: # 支持的适配器平台
 # 因此新版目录 anima-console-vue 字典序在前作为默认，旧版目录名刻意排在其后。
 pages:
   - name: anima-console-vue
-    title: Anima 控制台
+    title: 萌绘控制台
   - name: anima-console-vue-legacy
-    title: Anima 控制台 (旧版)
+    title: 萌绘控制台 (旧版)

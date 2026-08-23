@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.19
+
+- **WebUI 更名「萌绘控制台」并全域换上 logo.png**（PC + 移动端 + 登录页 + 浏览器标题 + 插件页面列表）。
+  - 网页标题 / 浏览器标签页标题统一为「萌绘控制台」：`index.html` `<title>`、`_page.json`、`metadata.yaml` pages title、旧版页面（`anima-console-vue-legacy`）同步更新；`App.vue` 新增路由守卫级 `document.title` 联动（切换页面时标签页显示「页面名 - 萌绘控制台」）。
+  - logo：仓库根 `logo.png` 复制到 `webui-src/public/`（Vite 静态复制进产物 + 作 favicon），并生成 `favicon.png`/`favicon.svg`；PC 侧边栏品牌图标、移动端顶栏 logo、独立模式登录页 logo 全部改为 logo 图片（base64 内联 `src/assets/logo.ts`，规避 iframe 嵌套下相对路径解析问题）。新增 `webui-src/scripts/gen_logo_assets.ps1` 一键重新生成四类资源。
+  - 注：`metadata.yaml` 版本号仍为 v4.7.18，如需发布请同步递增。
+
 ## v4.7.18
 
 - **移动端 WebUI 布局重构（按 UA 渲染，不靠媒体查询）**。此前移动端沿用 PC 的固定高度外壳，内容区高度链塌缩导致固定头部以下看不到。
@@ -10,6 +17,7 @@
   - 新增 `components/FloatingActionButton.vue`：pointer 事件拖动、落右下角、点击触发面板。
   - `App.vue`：按 `isMobile` 切换 `MobileShell`（移动端）/ 原 PC 布局；删除原移动端 `@media` 侧边栏转顶栏样式（改由组件接管）。
   - 各 View 筛选/操作栏（图库 `toolbar`+刷新备份、LoRA 底模/分类筛选、工作流/LoRA 的新增刷新）用 `<Teleport to="#mobile-filter-slot" :disabled="!isMobile">` 收进悬浮面板：**PC 端常驻不变，移动端自动收进面板**（零业务逻辑改动）。
+  - **修复移动端交互问题**：悬浮按钮点击无反应（拖动判定阈值 4px→10px，点击统一走浏览器原生 click 兜底，`FloatingActionButton.vue`）；侧边抽屉菜单顺序与 PC 不一致且部分菜单点击无效（抽屉菜单改为与 PC 共用的导航条目 `router/nav.ts` + `RouterLink` 渲染，移除无效路径）。
 
 ## v4.7.17
 

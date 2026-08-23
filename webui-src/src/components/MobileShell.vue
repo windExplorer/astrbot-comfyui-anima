@@ -2,8 +2,10 @@
   <div class="mobile-shell">
     <!-- 顶部轻量栏：logo + 标题 + 菜单开关 -->
     <header class="ms-topbar">
-      <div class="ms-logo">✦</div>
-      <span class="ms-title">Anima 控制台</span>
+      <div class="ms-logo-wrap">
+        <img :src="LOGO_DATA_URL" alt="logo" class="ms-logo" />
+      </div>
+      <span class="ms-title">萌绘控制台</span>
       <button class="ms-menu-btn" @click="navOpen = true" aria-label="菜单">
         <span></span><span></span><span></span>
       </button>
@@ -17,20 +19,21 @@
     <!-- 右下角可拖动悬浮按钮：打开筛选/操作面板 -->
     <FloatingActionButton @click="panelOpen = true" />
 
-    <!-- 侧边抽屉导航 -->
+    <!-- 侧边抽屉导航（条目与 PC 侧边栏完全一致，RouterLink 跳转保证点击可用） -->
     <n-drawer v-model:show="navOpen" placement="left" :width="240">
       <n-drawer-content title="导航" :native-scrollbar="false">
         <div class="ms-nav">
-          <div
-            v-for="item in navItems"
+          <RouterLink
+            v-for="item in NAV_ITEMS"
             :key="item.path"
+            :to="item.path"
             class="ms-nav-item"
             :class="{ active: route.path === item.path }"
-            @click="go(item.path)"
+            @click="navOpen = false"
           >
             <span class="ms-nav-ico">{{ item.icon }}</span>
             <span>{{ item.label }}</span>
-          </div>
+          </RouterLink>
         </div>
       </n-drawer-content>
     </n-drawer>
@@ -46,29 +49,16 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute, RouterLink } from "vue-router";
 import { NDrawer, NDrawerContent } from "naive-ui";
 import FloatingActionButton from "@/components/FloatingActionButton.vue";
+import { NAV_ITEMS } from "@/router/nav";
+import { LOGO_DATA_URL } from "@/assets/logo";
 
 const route = useRoute();
-const router = useRouter();
 
 const navOpen = ref(false);
 const panelOpen = ref(false);
-
-const navItems = [
-  { path: "/gallery", label: "图库", icon: "🖼" },
-  { path: "/loras", label: "LoRA 库", icon: "🎨" },
-  { path: "/workflows", label: "工作流", icon: "🧩" },
-  { path: "/records", label: "出图记录", icon: "📜" },
-  { path: "/monitor", label: "监控", icon: "📡" },
-  { path: "/settings", label: "设置", icon: "⚙" },
-];
-
-function go(path: string) {
-  navOpen.value = false;
-  if (route.path !== path) router.push(path);
-}
 </script>
 
 <style scoped>
@@ -91,12 +81,22 @@ function go(path: string) {
   color: #fff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
-.ms-logo {
-  width: 30px;
-  height: 30px;
+.ms-logo-wrap {
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   background: #fff;
-  object-fit: contain;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.ms-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .ms-title {
   font-weight: 700;
@@ -141,6 +141,7 @@ function go(path: string) {
   font-size: 15px;
   color: #333;
   cursor: pointer;
+  text-decoration: none;
 }
 .ms-nav-item.active {
   background: #fff0f5;
