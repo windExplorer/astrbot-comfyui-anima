@@ -5,32 +5,36 @@
         <h2>LoRA 库</h2>
         <p>卡片式查看 LoRA：封面图、别名、底模、触发词、描述；可编辑、上传封面或从 C 站链接抓取。</p>
       </div>
-      <div class="view-actions">
-        <n-button :loading="loading" @click="load">刷新</n-button>
-        <n-button type="primary" @click="addLora">＋ 新增 LoRA</n-button>
-      </div>
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="view-actions">
+          <n-button :loading="loading" @click="load">刷新</n-button>
+          <n-button type="primary" @click="addLora">＋ 新增 LoRA</n-button>
+        </div>
+      </Teleport>
     </div>
 
-    <div class="filter-bar">
-      <span class="filter-label">底模：</span>
-      <n-radio-group v-model:value="filterModel" size="small">
-        <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
-        <n-radio-button value="anima">anima ({{ countByModel("anima") }})</n-radio-button>
-        <n-radio-button value="z-image-turbo">z-image-turbo ({{ countByModel("z-image-turbo") }})</n-radio-button>
-        <n-radio-button value="krea2">krea2 ({{ countByModel("krea2") }})</n-radio-button>
-        <n-radio-button value="illustrious">illustrious ({{ countByModel("illustrious") }})</n-radio-button>
-        <n-radio-button value="__none__">通用 ({{ countByModel("__none__") }})</n-radio-button>
-      </n-radio-group>
-    </div>
-    <div class="filter-bar">
-      <span class="filter-label">分类：</span>
-      <n-radio-group v-model:value="filterCategory" size="small">
-        <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
-        <n-radio-button value="角色">角色 ({{ countByCategory("角色") }})</n-radio-button>
-        <n-radio-button value="风格">风格 ({{ countByCategory("风格") }})</n-radio-button>
-        <n-radio-button value="__none__">未分类 ({{ countByCategory("__none__") }})</n-radio-button>
-      </n-radio-group>
-    </div>
+    <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+      <div class="filter-bar">
+        <span class="filter-label">底模：</span>
+        <n-radio-group v-model:value="filterModel" size="small">
+          <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
+          <n-radio-button value="anima">anima ({{ countByModel("anima") }})</n-radio-button>
+          <n-radio-button value="z-image-turbo">z-image-turbo ({{ countByModel("z-image-turbo") }})</n-radio-button>
+          <n-radio-button value="krea2">krea2 ({{ countByModel("krea2") }})</n-radio-button>
+          <n-radio-button value="illustrious">illustrious ({{ countByModel("illustrious") }})</n-radio-button>
+          <n-radio-button value="__none__">通用 ({{ countByModel("__none__") }})</n-radio-button>
+        </n-radio-group>
+      </div>
+      <div class="filter-bar">
+        <span class="filter-label">分类：</span>
+        <n-radio-group v-model:value="filterCategory" size="small">
+          <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
+          <n-radio-button value="角色">角色 ({{ countByCategory("角色") }})</n-radio-button>
+          <n-radio-button value="风格">风格 ({{ countByCategory("风格") }})</n-radio-button>
+          <n-radio-button value="__none__">未分类 ({{ countByCategory("__none__") }})</n-radio-button>
+        </n-radio-group>
+      </div>
+    </Teleport>
     <div class="lora-scroll">
     <n-spin :show="loading">
       <n-empty v-if="!loading && !loras.length" description="尚未配置任何 LoRA，点「新增 LoRA」添加。" style="padding:60px" />
@@ -129,11 +133,13 @@ import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases } from "@/utils/format";
 import { sanitizeHtml } from "@/utils/sanitizeHtml";
 import { useRefresh } from "@/composables/useRefresh";
+import { useDevice } from "@/composables/useDevice";
 import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 import CoverPicker from "@/components/CoverPicker.vue";
 
 const message = useMessage();
 const dialog = useDialog();
+const { isMobile } = useDevice();
 const loading = ref(false);
 const saving = ref(false);
 const loras = ref<any[]>([]);

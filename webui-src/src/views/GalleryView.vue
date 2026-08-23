@@ -5,10 +5,12 @@
         <h2>图库</h2>
         <p>点击任意图片查看大图与详情；删除会先移入回收站，回收站内彻底删除才是真删。</p>
       </div>
-      <div class="view-actions">
-        <n-button :loading="loading" @click="loadStats">刷新</n-button>
-        <n-button @click="backupDb">备份数据库</n-button>
-      </div>
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="view-actions">
+          <n-button :loading="loading" @click="loadStats">刷新</n-button>
+          <n-button @click="backupDb">备份数据库</n-button>
+        </div>
+      </Teleport>
     </div>
 
     <div v-if="stats" class="gal-stats">
@@ -49,65 +51,67 @@
       </div>
     </div>
 
-    <div class="toolbar">
-      <n-tabs v-model:value="activeTab" type="segment" size="small" @update:value="onTabChange">
-        <n-tab-pane name="normal" tab="图库" />
-        <n-tab-pane name="trash" tab="回收站" />
-      </n-tabs>
-      <n-input v-model:value="search" size="small" placeholder="搜索关键词、prompt…" style="width:220px" clearable @keyup.enter="doSearch(1)" />
-      <n-input v-model:value="tagFilter" size="small" placeholder="按标签筛选（精确匹配）…" style="width:180px" clearable @keyup.enter="doSearch(1)" />
-      <n-input v-model:value="userSearch" size="small" placeholder="筛选用户昵称 / QQ…" style="width:200px" clearable @keyup.enter="doSearch(1)" />
-      <n-select
-        v-model:value="type"
-        size="small"
-        style="width:110px"
-        :options="typeOptions"
-        @update:value="doSearch(1)"
-      />
-      <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
-      <n-select
-        v-model:value="nsfwFilter"
-        size="small"
-        style="width:120px"
-        :options="nsfwOptions"
-        @update:value="doSearch(1)"
-      />
-      <n-button size="small" type="primary" @click="doSearch(1)">搜索</n-button>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-switch v-model:value="nsfwBlurGlobal" size="small" @update:value="onBlurGlobalChange">
-            <template #checked>NSFW 模糊：开</template>
-            <template #unchecked>NSFW 模糊：关</template>
-          </n-switch>
-        </template>
-        一键开关所有 NSFW 图的模糊显示
-      </n-tooltip>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-button size="small" @click="startScan" :disabled="scanState.running" :loading="scanState.running">
-            {{ scanState.running ? "检测中…" : "一键检测" }}
-          </n-button>
-        </template>
-        检测图库中所有未检测的图
-      </n-tooltip>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-button size="small" @click="startRescan" :disabled="scanState.running" :loading="scanState.running">
-            {{ scanState.running ? "重扫中…" : "重新检测" }}
-          </n-button>
-        </template>
-        调整 NSFW 阈值后，用新阈值全量重新检测所有图片
-      </n-tooltip>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-button size="small" quaternary @click="refreshScanProgress">↻</n-button>
-        </template>
-        刷新检测进度
-      </n-tooltip>
-      <span v-if="scanState.running" class="scan-progress">检测中 {{ scanState.done }}/{{ scanState.total || "?" }}</span>
-      <span v-else-if="scanState.finished_at" class="scan-progress scan-done">上次检测 {{ scanState.done }} 张，NSFW {{ scanState.nsfw }}</span>
-      <span class="count">{{ total ? total + " 条" : "" }}</span>
-    </div>
+    <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+      <div class="toolbar">
+        <n-tabs v-model:value="activeTab" type="segment" size="small" @update:value="onTabChange">
+          <n-tab-pane name="normal" tab="图库" />
+          <n-tab-pane name="trash" tab="回收站" />
+        </n-tabs>
+        <n-input v-model:value="search" size="small" placeholder="搜索关键词、prompt…" style="width:220px" clearable @keyup.enter="doSearch(1)" />
+        <n-input v-model:value="tagFilter" size="small" placeholder="按标签筛选（精确匹配）…" style="width:180px" clearable @keyup.enter="doSearch(1)" />
+        <n-input v-model:value="userSearch" size="small" placeholder="筛选用户昵称 / QQ…" style="width:200px" clearable @keyup.enter="doSearch(1)" />
+        <n-select
+          v-model:value="type"
+          size="small"
+          style="width:110px"
+          :options="typeOptions"
+          @update:value="doSearch(1)"
+        />
+        <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
+        <n-select
+          v-model:value="nsfwFilter"
+          size="small"
+          style="width:120px"
+          :options="nsfwOptions"
+          @update:value="doSearch(1)"
+        />
+        <n-button size="small" type="primary" @click="doSearch(1)">搜索</n-button>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-switch v-model:value="nsfwBlurGlobal" size="small" @update:value="onBlurGlobalChange">
+              <template #checked>NSFW 模糊：开</template>
+              <template #unchecked>NSFW 模糊：关</template>
+            </n-switch>
+          </template>
+          一键开关所有 NSFW 图的模糊显示
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" @click="startScan" :disabled="scanState.running" :loading="scanState.running">
+              {{ scanState.running ? "检测中…" : "一键检测" }}
+            </n-button>
+          </template>
+          检测图库中所有未检测的图
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" @click="startRescan" :disabled="scanState.running" :loading="scanState.running">
+              {{ scanState.running ? "重扫中…" : "重新检测" }}
+            </n-button>
+          </template>
+          调整 NSFW 阈值后，用新阈值全量重新检测所有图片
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" quaternary @click="refreshScanProgress">↻</n-button>
+          </template>
+          刷新检测进度
+        </n-tooltip>
+        <span v-if="scanState.running" class="scan-progress">检测中 {{ scanState.done }}/{{ scanState.total || "?" }}</span>
+        <span v-else-if="scanState.finished_at" class="scan-progress scan-done">上次检测 {{ scanState.done }} 张，NSFW {{ scanState.nsfw }}</span>
+        <span class="count">{{ total ? total + " 条" : "" }}</span>
+      </div>
+    </Teleport>
 
     <div class="gal-scroll">
       <n-spin :show="searching">
@@ -189,11 +193,13 @@ import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { fmtBytes, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import { useDevice } from "@/composables/useDevice";
 import ImageViewer from "@/components/ImageViewer.vue";
 import Pager from "@/components/Pager.vue";
 
 const message = useMessage();
 const dialog = useDialog();
+const { isMobile } = useDevice();
 const loading = ref(false);
 const searching = ref(false);
 const activeTab = ref("normal");

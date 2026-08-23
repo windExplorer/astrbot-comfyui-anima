@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.7.18
+
+- **移动端 WebUI 布局重构（按 UA 渲染，不靠媒体查询）**。此前移动端沿用 PC 的固定高度外壳，内容区高度链塌缩导致固定头部以下看不到。
+  - 新增 `composables/useDevice.ts`：按 UA 判断 `isMobile`（非媒体查询）。
+  - 新增 `components/MobileShell.vue`：移动端外壳——顶部仅 logo + 标题 + 菜单开关（点开侧边抽屉导航）；内容区正常文档流滚动（`min-height:100dvh`，不再死高度）；右下角全局**可拖动悬浮按钮**（`FloatingActionButton.vue`），点击打开底部抽屉面板。
+  - 新增 `components/FloatingActionButton.vue`：pointer 事件拖动、落右下角、点击触发面板。
+  - `App.vue`：按 `isMobile` 切换 `MobileShell`（移动端）/ 原 PC 布局；删除原移动端 `@media` 侧边栏转顶栏样式（改由组件接管）。
+  - 各 View 筛选/操作栏（图库 `toolbar`+刷新备份、LoRA 底模/分类筛选、工作流/LoRA 的新增刷新）用 `<Teleport to="#mobile-filter-slot" :disabled="!isMobile">` 收进悬浮面板：**PC 端常驻不变，移动端自动收进面板**（零业务逻辑改动）。
+
 ## v4.7.17
 
 - **独立 WebUI 的 LoRA/工作流封面图改走文件直链（不再 base64）**。此前 `lora/image` 接口只对 LoRA 封面返回 base64 data URL，独立模式下也内联 base64，量大时卡顿。

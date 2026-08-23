@@ -7,7 +7,11 @@
           <div v-if="route.name === 'login'" class="app-login-outlet">
             <router-view />
           </div>
-          <!-- 控制台布局 -->
+          <!-- 移动端：按 UA 渲染独立外壳（轻量顶部栏 + 抽屉导航 + 内容区 + 悬浮按钮） -->
+          <MobileShell v-else-if="isMobile">
+            <router-view />
+          </MobileShell>
+          <!-- PC 端：控制台布局（侧边栏 + 顶栏 + 内容区） -->
           <div v-else class="app-shell">
             <div class="app-sider" :class="{ collapsed: siderCollapsed }">
               <div class="brand">
@@ -86,12 +90,15 @@ import {
   type GlobalThemeOverrides,
 } from "naive-ui";
 import { useTheme, initThemeBridge } from "@/composables/useTheme";
+import { useDevice } from "@/composables/useDevice";
+import MobileShell from "@/components/MobileShell.vue";
 import { PLUGIN_VERSION } from "@/version";
 
 // 注意：App.vue 自身是 <n-message-provider>/<n-dialog-provider> 的祖先组件，
 // 不能在 App 的 setup 里调用 useMessage()/useDialog()（provider 尚未挂载会抛错）。
 // 消息提示只能在各 View（provider 的后代）里用。
 const { isDark } = useTheme();
+const { isMobile } = useDevice();
 const route = useRoute();
 const router = useRouter();
 const siderCollapsed = ref(false);
@@ -263,62 +270,6 @@ function onMenuSelect(key: string) {
 }
 .app-content > * {
   height: 100%;
-}
-
-/* ===================== 移动端适配（≤768px 时侧边栏转顶部横向导航） ===================== */
-@media (max-width: 768px) {
-  .app-shell {
-    flex-direction: column;
-    height: 100vh;
-    height: 100dvh; /* 动态视口高度，规避移动端地址栏高度抖动 */
-  }
-  .app-sider {
-    width: 100% !important;
-    flex: 0 0 auto;
-    flex-direction: row;
-    align-items: center;
-    border-right: none;
-    border-bottom: 1px solid var(--border-color);
-    padding: 0 8px;
-    gap: 4px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
-  .app-sider.collapsed { width: 100% !important; }
-  .brand {
-    flex: 0 0 auto;
-    padding: 10px 8px 10px 4px;
-  }
-  .brand-logo { width: 28px; height: 28px; font-size: 16px; }
-  .brand-text { display: none; } /* 移动端只留 logo，节省横向空间 */
-  .app-sider :deep(.n-menu) {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
-    white-space: nowrap;
-    min-height: 0;
-  }
-  /* Naive Menu 在横向模式下需要覆盖默认竖向内边距/宽度 */
-  .app-sider :deep(.n-menu-item) { flex: 0 0 auto; }
-  .app-sider :deep(.n-submenu) { flex: 0 0 auto; }
-  .sider-trigger {
-    display: none !important; /* 移动端横向导航不需要折叠按钮 */
-  }
-  .app-header {
-    padding: 0 12px;
-    height: 46px;
-  }
-  .header-title { font-size: 14px; }
-  .header-right { gap: 8px; }
-  .header-right :deep(.n-button) { font-size: 12px; }
-  .app-content {
-    padding: 10px 10px;
-    overflow: hidden; /* 移动端仍交由各视图内部 flex + overflow:auto 管理滚动，避免破坏 height:100% 链导致表格/图库高度塌缩 */
-  }
 }
 </style>
 

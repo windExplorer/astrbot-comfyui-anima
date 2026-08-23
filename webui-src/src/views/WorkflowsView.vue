@@ -5,10 +5,12 @@
         <h2>工作流</h2>
         <p>卡片式查看工作流：名称、别名、底模、服务器、是否 Anima；可编辑、查看可用 LoRA。</p>
       </div>
-      <div class="view-actions">
-        <n-button :loading="loading" @click="load">刷新</n-button>
-        <n-button type="primary" @click="addWorkflow">＋ 新增工作流</n-button>
-      </div>
+      <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+        <div class="view-actions">
+          <n-button :loading="loading" @click="load">刷新</n-button>
+          <n-button type="primary" @click="addWorkflow">＋ 新增工作流</n-button>
+        </div>
+      </Teleport>
     </div>
 
     <div class="wf-scroll">
@@ -127,11 +129,13 @@ import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInpu
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
+import { useDevice } from "@/composables/useDevice";
 import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 import CoverPicker from "@/components/CoverPicker.vue";
 
 const message = useMessage();
 const dialog = useDialog();
+const { isMobile } = useDevice();
 const loading = ref(false);
 const saving = ref(false);
 const workflows = ref<any[]>([]);
