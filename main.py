@@ -4741,7 +4741,8 @@ class ComfyUIDrawPlugin(Star):
             "· 取图（不带参数）　发你最近生成的那张图\n"
             "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张；收藏图永不清理）\n"
             "· 收藏列表 [页码]　查看自己收藏的图（★）\n"
-            "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后群聊列表/搜索也能找到，他人可检索）\n"
+            "· 公开 <序号> / 私有 <序号>　设置可见性（公开后任何群聊可见，他人可检索/发送）\n"
+            "· 全局 <序号> / 取消全局 <序号>　设为全局后任何群聊的列表/搜索都能看到（跨群共享），但他人不可检索/发送，仅作者本人可发图\n"
             "· 保存 [标签...]　收藏当前这张图（同时加入收藏列表与打标签）\n"
             # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
             # "· 回收站　查看回收站\n"
@@ -4791,6 +4792,8 @@ class ComfyUIDrawPlugin(Star):
             "统计": "stats", "状态": "stats",
             "公开": "public",
             "私有": "private",
+            "全局": "global", "开放": "global",
+            "取消全局": "unset_global", "撤全局": "unset_global",
             "帮助": "help", "怎么用": "help", "说明": "help",
             "全部": "all", "全库": "all", "所有": "all",
             "重扫": "rescan", "重新检测": "rescan", "重新扫描": "rescan",
@@ -5273,6 +5276,30 @@ class ComfyUIDrawPlugin(Star):
                         await self._send(event, f"已设为{'公开' if is_pub else '私有'}。{'其他人现在也能检索到这张图了。' if is_pub else '只有你能看到这张图了。'}")
                     else:
                         await self._send(event, "设置可见性失败。")
+
+        elif sub in ("global", "unset_global"):
+            # /gallery global|unset_global <序号或sha前几位>
+            # 全局：任何群聊的列表/搜索都能看到这张图（跨会话共享），
+            # 但他人不可检索/发送（发送仍仅作者本人/管理员），区别于「公开」。
+            is_gl = sub == "global"
+            if not rest:
+                await self._send(event, f"用法：/图库 {('全局' if is_gl else '取消全局')} <序号>")
+            else:
+                first = rest[0]
+                # 归属校验：只有图主/管理员能设置他人图片的全局状态
+                sha, _err = self._resolve_op_target(event, first, owner, all_view)
+                if _err:
+                    await self._send(event, _err)
+                    event.stop_event()
+                    return
+                if sha:
+                    if self.gallery.set_global(sha, is_gl):
+                        if is_gl:
+                            await self._send(event, "已设为全局。现在任何群聊的列表/搜索都能看到这张图了（他人不可检索/发送，仅作者本人可发图）。")
+                        else:
+                            await self._send(event, "已取消全局。恢复为仅本会话可见。")
+                    else:
+                        await self._send(event, "设置失败。")
         else:
             await self._send(
                 event,
@@ -5285,7 +5312,7 @@ class ComfyUIDrawPlugin(Star):
                 "· star/收藏 <sha>　unstar/取消收藏 <sha>　starred/收藏列表 [页码]\n"
                 # "· del/删除 <sha>　trash/回收站　restore/恢复 <sha>　purge/清空 <sha>\n"
                 "· save/保存 [标签...] 收藏当前图\n"
-                "· public/公开 <序号/sha>　private/私有 <序号/sha>　stats/统计",
+                "· public/公开 <序号/sha>　private/私有 <序号/sha>　global/全局 <序号/sha>　unset_global/取消全局 <序号/sha>　stats/统计",
             )
         event.stop_event()
 

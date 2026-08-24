@@ -160,6 +160,7 @@ class ImageStore:
                     deleted    INTEGER NOT NULL DEFAULT 0,
                     deleted_at REAL DEFAULT NULL,
                     is_public  INTEGER NOT NULL DEFAULT 0,
+                    is_global  INTEGER NOT NULL DEFAULT 0,
                     session_id TEXT DEFAULT ''
                 )
                 """
@@ -175,6 +176,7 @@ class ImageStore:
                 ("deleted", "INTEGER NOT NULL DEFAULT 0"),
                 ("deleted_at", "REAL DEFAULT NULL"),
                 ("is_public", "INTEGER NOT NULL DEFAULT 0"),
+                ("is_global", "INTEGER NOT NULL DEFAULT 0"),
                 ("session_id", "TEXT DEFAULT ''"),
                 ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
                 ("nsfw_score", "REAL DEFAULT NULL"),
@@ -817,6 +819,21 @@ class ImageStore:
             )
             conn.commit()
             return cur.rowcount > 0
+
+    def set_global(self, sha256: str, on: bool) -> bool:
+        """设置图片「全局」：on=True 后，任何群聊的列表/搜索都能看到这张图（跨会话共享）。
+        与「公开」的区别：全局图他人可见但不可检索/发送（仅作者/管理员可发图），
+        公开图他人可检索/发送。返回是否成功。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return False
+        conn = self._conn_get()
+        try:
+            cur = conn.execute(
+                "UPDATE images SET is_global=? WHERE sha256 LIKE ?",
+                (1 if on else 0, sha256 + "%"),
+            )
+            conn.commit()
+            return cur.rowcount > 0
         except Exception as e:
             logger.warning(f"[图库] 设置可见性失败: {e}")
             return False
@@ -854,6 +871,7 @@ class ImageStore:
             "deleted": bool(row["deleted"]),
             "deleted_at": row["deleted_at"],
             "is_public": bool(row["is_public"]),
+            "is_global": bool(row["is_global"]) if "is_global" in row.keys() else False,
             "nsfw": bool(row["nsfw"]) if "nsfw" in row.keys() else False,
             "nsfw_score": row["nsfw_score"] if "nsfw_score" in row.keys() else None,
             "nsfw_blur": row["nsfw_blur"] if "nsfw_blur" in row.keys() else None,
@@ -885,7 +903,8 @@ class ImageStore:
         args: list = [1] if trash else []
         where += " AND status=0"
         if owner:
-            where += " AND (is_public=1 OR user_id=?)"
+            # 公开图(is_public)与全局图(is_global)所有人可见；私有/非全局图仅本人。
+            where += " AND (is_public=1 OR is_global=1 OR user_id=?)"
             args.append(owner)
         # 计算「按 created_at DESC, sha256 DESC 排序时排在该条之前」的条数
         where += " AND (created_at > ? OR (created_at = ? AND sha256 > ?))"
@@ -934,10 +953,10 @@ class ImageStore:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
         if session:
-            # 会话范围过滤：非空时统计「当前会话内的图」或「公开图(is_public=1)」。
-            # 公开图全局可见，跨会话也会出现在列表/搜索里（开放到群聊/全局共享）。
+            # 会话范围过滤：非空时统计「当前会话内的图」「公开图(is_public=1)」或
+            # 「全局图(is_global=1)」。公开/全局图跨会话出现在列表/搜索里（开放到群聊/全局共享）。
             # 仅作为检索范围缩小，不替代 owner 权限过滤。
-            sql += " AND (session_id=? OR is_public=1)"
+            sql += " AND (session_id=? OR is_public=1 OR is_global=1)"
             args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
@@ -1012,10 +1031,10 @@ class ImageStore:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
         if session:
-            # 会话范围过滤：非空时检索「当前会话内的图」或「公开图(is_public=1)」。
-            # 公开图全局可见，跨会话也会出现在列表/搜索里（开放到群聊/全局共享）。
+            # 会话范围过滤：非空时检索「当前会话内的图」「公开图(is_public=1)」或
+            # 「全局图(is_global=1)」。公开/全局图跨会话出现在列表/搜索里（开放到群聊/全局共享）。
             # 仅缩小检索范围，不替代 owner（user_id）权限隔离。
-            sql += " AND (session_id=? OR is_public=1)"
+            sql += " AND (session_id=? OR is_public=1 OR is_global=1)"
             args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
