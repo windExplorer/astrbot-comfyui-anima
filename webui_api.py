@@ -141,7 +141,10 @@ class WebUIApi:
                         prompt = None
             if not isinstance(prompt, dict):
                 return error_response("未找到工作流文件或 JSON 无效")
-            import workflow_builder
+            try:
+                from . import workflow_builder
+            except ImportError:
+                import workflow_builder
             return json_response(workflow_builder.get_sampler_defaults(prompt))
         except Exception as e:
             return error_response(f"读取采样器参数失败: {e}")
@@ -241,7 +244,10 @@ class WebUIApi:
                             prompt = None
             if not isinstance(prompt, dict):
                 return error_response("未找到工作流文件或 JSON 无效")
-            import workflow_builder
+            try:
+                from . import workflow_builder
+            except ImportError:
+                import workflow_builder
             return json_response(workflow_builder.get_sampler_defaults(prompt))
         except Exception as e:
             return error_response(f"读取采样器参数失败: {e}")

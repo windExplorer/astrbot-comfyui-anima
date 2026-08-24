@@ -365,7 +365,10 @@ class StandaloneWebUI:
                 _wn = (body.get("workflow_name") or "").strip()
                 if not _wn:
                     return _err("缺少 workflow_name")
-                import workflow_builder
+                try:
+                    from . import workflow_builder
+                except ImportError:
+                    import workflow_builder
                 prompt = None
                 wdir = getattr(self.plugin, "workflow_dir", None)
                 if wdir is not None:

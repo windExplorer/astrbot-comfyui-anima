@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.17
+
+- **修复「读取采样器参数」报 `No module named 'workflow_builder'`**：`standalone_webui.py` 与 `webui_api.py` 中 `import workflow_builder` 是顶层导入，但 `workflow_builder` 是插件包内模块，顶层导入失败。已改为相对导入（`from . import workflow_builder`，带回退）。
+  - ⚠️ 改动 `standalone_webui.py` / `webui_api.py`（依赖模块），**需完整重启 AstrBot**。
+
 ## v4.9.16
 
 - **修复独立 WebUI（standalone，端口 18848）下「读取采样器参数」报 `config 必须是对象`**：
