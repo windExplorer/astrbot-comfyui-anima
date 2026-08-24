@@ -2938,7 +2938,7 @@ class ComfyUIDrawPlugin(Star):
         if seeds_used:
             logger.info(f"本次种子: {seeds_used}")
 
-        # 注入 denoise（降噪幅度/重绘强度）
+        # 注入采样器参数：denoise（降噪幅度/重绘强度）
         # -1 = 不注入（沿用工作流原始值）；未传则用工作流配置的 default_denoise
         if denoise is None:
             cfg_denoise = wf.get("default_denoise")
@@ -2951,6 +2951,28 @@ class ComfyUIDrawPlugin(Star):
         if denoise is not None and denoise >= 0:
             if workflow_builder.set_denoise(prompt, denoise):
                 logger.info(f"本次 denoise: {denoise}")
+
+        # 注入采样器参数：steps（步数）/ cfg（CFG 引导系数）
+        # 「不注入」开关（steps_off / cfg_off=true）或配置值无效/非正 → 沿用工作流文件原值。
+        _set_steps = None
+        _set_cfg = None
+        if not wf.get("steps_off", False):
+            _raw_s = wf.get("default_steps")
+            if _raw_s is not None:
+                try:
+                    _set_steps = int(_raw_s) if float(_raw_s) > 0 else None
+                except (ValueError, TypeError):
+                    _set_steps = None
+        if not wf.get("cfg_off", False):
+            _raw_c = wf.get("default_cfg")
+            if _raw_c is not None:
+                try:
+                    _set_cfg = float(_raw_c) if float(_raw_c) > 0 else None
+                except (ValueError, TypeError):
+                    _set_cfg = None
+        if _set_steps is not None or _set_cfg is not None:
+            if workflow_builder.set_sampler_params(prompt, steps=_set_steps, cfg=_set_cfg):
+                logger.info(f"本次采样器参数: steps={_set_steps}, cfg={_set_cfg}")
 
         # 注入放大模型（替换工作流里【已存在】的放大模型节点模型名）
         # - 不填 upscale_node_id / upscale_model_name → 沿用工作流默认放大模型

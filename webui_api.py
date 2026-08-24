@@ -166,6 +166,42 @@ class WebUIApi:
             return error_response(f"保存配置失败: {e}")
 
     # -------------------------------------------------------------- #
+    # 工作流采样器参数读取
+    # -------------------------------------------------------------- #
+    async def workflow_sampler(self):
+        """读取工作流文件（或前端粘贴的 JSON）中的采样器参数（steps / cfg / denoise）。
+
+        query: workflow_name=文件名（相对插件 workflow/ 目录）或 workflow_json=JSON 文本。
+        返回 {"steps": int|null, "cfg": float|null, "denoise": float|null}。
+        """
+        try:
+            wname = (request.query.get("workflow_name", "") or "").strip()
+            wjson = (request.query.get("workflow_json", "") or "").strip()
+            prompt = None
+            if wjson:
+                try:
+                    prompt = json.loads(wjson)
+                except Exception:
+                    prompt = None
+            if not isinstance(prompt, dict) and wname:
+                wdir = getattr(self.plugin, "workflow_dir", None)
+                if wdir is not None:
+                    p = Path(wdir) / wname
+                    if not p.suffix:
+                        p = p.with_suffix(".json")
+                    if p.is_file():
+                        try:
+                            prompt = json.loads(p.read_text(encoding="utf-8"))
+                        except Exception:
+                            prompt = None
+            if not isinstance(prompt, dict):
+                return error_response("未找到工作流文件或 JSON 无效")
+            import workflow_builder
+            return json_response(workflow_builder.get_sampler_defaults(prompt))
+        except Exception as e:
+            return error_response(f"读取采样器参数失败: {e}")
+
+    # -------------------------------------------------------------- #
     # 翻译调试
     # -------------------------------------------------------------- #
     async def translate_test(self):
@@ -1466,6 +1502,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
         (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),
         (f"{prefix}/translate/test", api.translate_test, ["POST"], "翻译调试（测试三种翻译模式）"),
+        (f"{prefix}/workflows/sampler", api.workflow_sampler, ["GET"], "读取工作流采样器参数"),
     ]
     registered = []
     for path, handler, methods, desc in routes:

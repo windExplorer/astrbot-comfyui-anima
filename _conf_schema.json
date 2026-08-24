@@ -299,10 +299,34 @@
             },
             "default": 512
           },
+          "default_steps": {
+            "type": "int",
+            "description": "默认采样步数（steps）",
+            "hint": "出图时覆盖采样器节点的步数。可点 WebUI 编辑弹窗的「从工作流文件读取采样参数」自动填入文件中的值；留空/≤0 表示不注入（沿用工作流文件原值）。",
+            "default": 0
+          },
+          "steps_off": {
+            "type": "bool",
+            "description": "不注入采样步数",
+            "hint": "开启后不覆盖步数（default_steps 被忽略），始终沿用工作流文件中的原始步数。",
+            "default": false
+          },
+          "default_cfg": {
+            "type": "float",
+            "description": "默认 CFG 引导系数",
+            "hint": "出图时覆盖采样器节点的 CFG。可点 WebUI 编辑弹窗的「从工作流文件读取采样参数」自动填入文件中的值；留空/≤0 表示不注入（沿用工作流文件原值）。",
+            "default": 0
+          },
+          "cfg_off": {
+            "type": "bool",
+            "description": "不注入 CFG",
+            "hint": "开启后不覆盖 CFG（default_cfg 被忽略），始终沿用工作流文件中的原始 CFG。",
+            "default": false
+          },
           "default_denoise": {
             "type": "float",
             "description": "默认降噪幅度（denoise）",
-            "hint": "图生图时控制重绘强度：1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。文生图建议 1.0，图生图建议 0.55~0.8。填 -1 表示不注入（沿用工作流原始值）。",
+            "hint": "图生图时控制重绘强度：1.0 = 完全重绘（几乎忽略原图），0 = 完全保留原图。文生图建议 1.0，图生图建议 0.55~0.8。填 -1 表示不注入（沿用工作流原始值）；也可在 WebUI 编辑弹窗点「从工作流文件读取采样参数」自动填入文件中的值。",
             "slider": {
               "min": 0,
               "max": 1,

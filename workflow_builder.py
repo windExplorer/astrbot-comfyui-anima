@@ -172,6 +172,51 @@ def set_denoise(prompt: dict, denoise: float) -> bool:
     若节点没有 denoise 字段（如某些定制采样器），则跳过不报错。
     返回是否至少修改了一个节点。
     """
+    return set_sampler_params(prompt, denoise=denoise)
+
+
+def get_sampler_defaults(prompt: dict) -> dict:
+    """提取工作流中采样器节点的默认参数（steps / cfg / denoise）。
+
+    遍历所有采样器类节点（class_type 含 "sampler"），取第一个含对应字段的值。
+    返回 {"steps": int|None, "cfg": float|None, "denoise": float|None}；
+    某个参数在所有采样器节点都缺失时为 None。
+    """
+    out: dict = {"steps": None, "cfg": None, "denoise": None}
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        cls = (node.get("class_type") or "").lower()
+        if "sampler" not in cls:
+            continue
+        inputs = node.get("inputs") or {}
+        if out["steps"] is None and "steps" in inputs:
+            try:
+                out["steps"] = int(inputs["steps"])
+            except (ValueError, TypeError):
+                pass
+        if out["cfg"] is None and "cfg" in inputs:
+            try:
+                out["cfg"] = float(inputs["cfg"])
+            except (ValueError, TypeError):
+                pass
+        if out["denoise"] is None and "denoise" in inputs:
+            try:
+                out["denoise"] = float(inputs["denoise"])
+            except (ValueError, TypeError):
+                pass
+        if out["steps"] is not None and out["cfg"] is not None and out["denoise"] is not None:
+            break
+    return out
+
+
+def set_sampler_params(prompt: dict, steps=None, cfg=None, denoise=None) -> bool:
+    """为工作流中所有采样器节点设置采样参数（steps / cfg / denoise）。
+
+    只修改 inputs 中**已存在**对应字段的采样器节点（如 KSampler）；
+    节点缺该字段（如某些定制采样器）则跳过不报错。参数传 None 表示不修改。
+    返回是否至少修改了一个节点。
+    """
     changed = False
     for node in prompt.values():
         if not isinstance(node, dict):
@@ -180,7 +225,13 @@ def set_denoise(prompt: dict, denoise: float) -> bool:
         if "sampler" not in cls:
             continue
         inputs = node.setdefault("inputs", {})
-        if "denoise" in inputs:
+        if steps is not None and "steps" in inputs:
+            inputs["steps"] = int(steps)
+            changed = True
+        if cfg is not None and "cfg" in inputs:
+            inputs["cfg"] = float(cfg)
+            changed = True
+        if denoise is not None and "denoise" in inputs:
             inputs["denoise"] = float(denoise)
             changed = True
     return changed

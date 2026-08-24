@@ -131,15 +131,35 @@
           <n-form-item label="放大模型节点"><n-input v-model:value="editForm.upscale_node_id" placeholder="放大模型加载节点键名（如 14）" /></n-form-item>
           <n-form-item label="放大模型名称"><n-input v-model:value="editForm.upscale_model_name" placeholder="替换成的放大模型文件名（如 4x-UltraSharp.pth）" /></n-form-item>
         </div>
+        <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
+
+        <n-divider style="margin:8px 0">── 采样器参数（steps / cfg / denoise）──</n-divider>
+        <n-form-item label="从工作流文件读取">
+          <n-space vertical :size="6" style="width:100%">
+            <n-button size="tiny" :loading="samplerLoading" @click="fetchSamplerParams">↻ 读取文件中的采样器参数</n-button>
+            <span class="form-hint">根据上方「工作流文件名」读取文件采样器节点的默认 steps / cfg / denoise，自动填入下方字段</span>
+          </n-space>
+        </n-form-item>
         <div class="form-grid">
-          <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
-          <n-form-item label="默认 denoise">
+          <n-form-item label="默认 steps">
             <n-space vertical :size="4" style="width:100%">
-              <n-input-number v-model:value="editForm.default_denoise" :min="-1" :max="1" :step="0.05" :precision="2" :disabled="editForm.denoise_off" style="width:100%" />
-              <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
+              <n-input-number v-model:value="editForm.default_steps" :min="0" :max="200" :step="1" :disabled="editForm.steps_off" style="width:100%" />
+              <n-checkbox v-model:checked="editForm.steps_off">不注入（沿用工作流原值）</n-checkbox>
+            </n-space>
+          </n-form-item>
+          <n-form-item label="默认 CFG">
+            <n-space vertical :size="4" style="width:100%">
+              <n-input-number v-model:value="editForm.default_cfg" :min="0" :max="30" :step="0.5" :precision="2" :disabled="editForm.cfg_off" style="width:100%" />
+              <n-checkbox v-model:checked="editForm.cfg_off">不注入（沿用工作流原值）</n-checkbox>
             </n-space>
           </n-form-item>
         </div>
+        <n-form-item label="默认 denoise">
+          <n-space vertical :size="4" style="width:100%">
+            <n-input-number v-model:value="editForm.default_denoise" :min="-1" :max="1" :step="0.05" :precision="2" :disabled="editForm.denoise_off" style="width:100%" />
+            <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
+          </n-space>
+        </n-form-item>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="默认 LoRA">
           <div class="lora-list">
@@ -371,6 +391,10 @@ function openForm(idx: number, prefill?: any) {
     lora_clip: w.lora_clip || "",
     upscale_node_id: w.upscale_node_id || "",
     upscale_model_name: w.upscale_model_name || "",
+    default_steps: w.default_steps ?? 0,
+    steps_off: !!w.steps_off,
+    default_cfg: w.default_cfg ?? 0,
+    cfg_off: !!w.cfg_off,
     default_denoise: (w.default_denoise ?? -1),
     denoise_off: (w.default_denoise ?? -1) <= -1,
     workflow_json: w.workflow_json || "",
@@ -419,6 +443,29 @@ async function saveEdit() {
     message.error(e.message || "保存失败");
   } finally {
     saving.value = false;
+  }
+}
+
+// 从工作流文件读取采样器参数（steps / cfg / denoise）
+const samplerLoading = ref(false);
+async function fetchSamplerParams() {
+  const name = (editForm.workflow_name || "").trim();
+  if (!name) { message.warning("请先填写工作流文件名"); return; }
+  samplerLoading.value = true;
+  try {
+    const d = await apiGet("workflows/sampler", { workflow_name: name });
+    if (d && typeof d === "object" && !d.error) {
+      if (d.steps != null) editForm.default_steps = d.steps;
+      if (d.cfg != null) editForm.default_cfg = d.cfg;
+      if (d.denoise != null && !editForm.denoise_off) editForm.default_denoise = d.denoise;
+      message.success("已从工作流文件读取采样器参数");
+    } else {
+      message.warning((d && d.error) || "文件里未解析到采样器参数");
+    }
+  } catch (e: any) {
+    message.error(e.message || "读取失败");
+  } finally {
+    samplerLoading.value = false;
   }
 }
 

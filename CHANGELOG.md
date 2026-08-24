@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.10
+
+- **WebUI 工作流编辑弹窗新增「采样器参数」区（steps / cfg / denoise）**：
+  - 工作流配置新增 `default_steps` / `default_cfg`（出图时覆盖采样器节点的步数与 CFG），各配「不注入」开关（`steps_off` / `cfg_off`，类似 denoise 的不注入机制，勾选后沿用工作流文件原值）。
+  - 「↻ 读取文件中的采样器参数」按钮：根据工作流文件名读取采样器节点默认值，自动填入 steps / cfg / denoise（denoise 仅当未勾选「不注入」时填充）。
+  - 后端新增 `workflow_builder.get_sampler_defaults` / `set_sampler_params` 与 WebUI API `GET /workflows/sampler`；`_do_draw` 出图时按配置注入 steps / cfg。
+  - denoise 说明同步优化（可读取文件中的值作为默认）。
+
 ## v4.9.9
 
 - **LoRA 新增「工具」分类**（用于加速、细节增强、质量提升类 LoRA）：
