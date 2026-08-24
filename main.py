@@ -686,6 +686,18 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 LLM token 统计初始化失败（功能不可用）: {e}", exc_info=True)
 
+        # 强制重载 webui_api 模块：AstrBot 热更新（watchfiles）只重载插件主模块 main.py，
+        # 不会级联重载依赖模块 webui_api.py，导致「新增 API 路由」在热更新后不注册（请求 404）。
+        # 这里在每次初始化（含热更新触发的重载）时先 importlib.reload 该模块，让路由与
+        # handler 的新代码立即生效，无需完整重启 AstrBot。
+        try:
+            import importlib
+            _mod_name = f"{__package__}.webui_api" if __package__ else "webui_api"
+            _webui_api_mod = importlib.import_module(_mod_name)
+            importlib.reload(_webui_api_mod)
+        except Exception as _re:
+            logger.warning(f"【初始化】 webui_api 模块强制重载失败（沿用已加载模块）: {_re}")
+
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
             try:

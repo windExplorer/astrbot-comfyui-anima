@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.11
+
+- **修复「新增 API 路由在热更新后不注册（404）」**：v4.9.10 新增 `/workflows/sampler` 路由后，AstrBot 热更新只重载插件主模块 `main.py`，不会重载依赖模块 `webui_api.py`，导致新路由不注册、WebUI「读取采样器参数」报 `Not Found: /workflows/sampler`。现改为初始化时强制 `importlib.reload(webui_api)`，热更新后新路由立即生效，**无需完整重启 AstrBot**。
+  - 更新到本版本后，在 AstrBot 里**重载一次插件**（或触发一次热更新）即可生效，无需重启。
+  - 后续凡新增 API 路由的版本，都会依赖此机制自动生效。
+
 ## v4.9.10
 
 - **WebUI 工作流编辑弹窗新增「采样器参数」区（steps / cfg / denoise）**：
