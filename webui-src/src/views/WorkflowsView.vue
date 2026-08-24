@@ -284,11 +284,18 @@ const filteredWorkflows = computed(() => {
   });
 });
 
-// LoRA 下拉选项：全局 LoRA 库 + 已选但库中不存在的名称（保留老配置可编辑，标记未知）
+// LoRA 下拉选项：按工作流底模筛选（与 availLoras 逻辑一致：底模为空则全部，LoRA 底模为空则通用）
+// + 已选但库中不存在/底模不匹配的名称（保留老配置可编辑，标记未知）
 const loraOptions = computed(() => {
   const known = new Set<string>();
+  const wbm = ((editForm.base_model || "") as string).trim().toLowerCase();
   const opts = loras.value
-    .filter((l) => (l.name || "").trim())
+    .filter((l) => {
+      const n = (l.name || "").trim();
+      if (!n) return false;
+      const lbm = (l.base_model || "").trim().toLowerCase();
+      return !wbm || !lbm || wbm === lbm;
+    })
     .map((l) => {
       const n = (l.name || "").trim();
       known.add(n);
@@ -298,7 +305,7 @@ const loraOptions = computed(() => {
     const n = (row.name || "").trim();
     if (n && !known.has(n)) {
       known.add(n);
-      opts.push({ label: `${n}（库中不存在）`, value: n });
+      opts.push({ label: `${n}（库中不存在或不匹配当前底模）`, value: n });
     }
   }
   return opts;
