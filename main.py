@@ -1742,15 +1742,17 @@ class ComfyUIDrawPlugin(Star):
                         return wf_name or name
         return name
 
-    def _wf_usable(self, w: dict, name: str, fallback_on_missing: bool):
+    def _wf_usable(self, w: dict, name: str, fallback_on_missing: bool, intercept_disabled: bool = False):
         """工作流可用性检查：enabled=false（已停用）时——
-        - fallback_on_missing=False（用户显式指定）：抛 ValueError，提示已停用；
-        - fallback_on_missing=True（自动回退路径）：返回 None，由调用方跳过该工作流。
+        - fallback_on_missing=False：抛 ValueError，提示已停用；
+        - fallback_on_missing=True 且 intercept_disabled=False（纯自动回退路径）：返回 None，跳过；
+        - fallback_on_missing=True 但 intercept_disabled=True（绘图入口显式指定了工作流名）：
+          同样抛 ValueError 拦截，避免用户/LLM 指定停用工作流时被静默替换。
         启用的工作流原样返回。"""
         if w.get("enabled", True):
             return w
         wname = ((w.get("name") or name or "").strip())
-        if fallback_on_missing:
+        if fallback_on_missing and not intercept_disabled:
             logger.warning(f"【绘图·解析】 工作流「{wname}」已停用，跳过")
             return None
         raise ValueError(f"工作流「{wname}」已停用，无法使用。")
@@ -1762,6 +1764,7 @@ class ComfyUIDrawPlugin(Star):
         fallback_on_missing: bool = False,
         positive: str = "",
         explicit_default: bool = False,
+        intercept_disabled: bool = False,
     ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
@@ -1822,7 +1825,7 @@ class ComfyUIDrawPlugin(Star):
             # 1) 精确匹配工作流名称
             for w in workflows:
                 if w.get("name") == name:
-                    _w = self._wf_usable(w, name, fallback_on_missing)
+                    _w = self._wf_usable(w, name, fallback_on_missing, intercept_disabled)
                     if _w is not None:
                         return _w
                     break  # 命中已停用 → 进入回退
@@ -1832,7 +1835,7 @@ class ComfyUIDrawPlugin(Star):
             for w in workflows:
                 n = (w.get("name") or "").strip()
                 if n.lower() == name_lower:
-                    _w = self._wf_usable(w, name, fallback_on_missing)
+                    _w = self._wf_usable(w, name, fallback_on_missing, intercept_disabled)
                     if _w is not None:
                         return _w
                     break
@@ -1847,7 +1850,7 @@ class ComfyUIDrawPlugin(Star):
                     or (not fn.endswith(".json") and fn + ".json" == name_lower)
                 )
                 if matched:
-                    _w = self._wf_usable(w, name, fallback_on_missing)
+                    _w = self._wf_usable(w, name, fallback_on_missing, intercept_disabled)
                     if _w is not None:
                         return _w
                     break
@@ -2517,7 +2520,16 @@ class ComfyUIDrawPlugin(Star):
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
-            wf = self._resolve_workflow(workflow_name, is_img2img=is_img2img, fallback_on_missing=True, positive=positive, explicit_default=explicit_default)
+            # intercept_disabled：只要本次请求**显式指定**了工作流名（workflow_name 非空），
+            # 该工作流若已停用就直接拦截提示，避免用户/LLM 指定的停用工作流被静默替换。
+            wf = self._resolve_workflow(
+                workflow_name,
+                is_img2img=is_img2img,
+                fallback_on_missing=True,
+                positive=positive,
+                explicit_default=explicit_default,
+                intercept_disabled=bool(workflow_name and workflow_name.strip()),
+            )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
                 f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
@@ -2525,8 +2537,13 @@ class ComfyUIDrawPlugin(Star):
             server = self._resolve_server(wf.get("server_name") or None)
         except ValueError as e:
             # 配置类问题：原因是插件自己给出的可读文案，直接说明
-            logger.warning(f"【绘图·失败】[配置] {e}")
-            await self._send(event, f"绘图配置有误：{e} 请联系管理员调整。")
+            msg = str(e)
+            if "已停用" in msg:
+                logger.warning(f"【绘图·失败】{msg}")
+                await self._send(event, msg)
+            else:
+                logger.warning(f"【绘图·失败】[配置] {e}")
+                await self._send(event, f"绘图配置有误：{e} 请联系管理员调整。")
             return
 
         # —— 无提示词 / 固定提示词工作流支持 ——
