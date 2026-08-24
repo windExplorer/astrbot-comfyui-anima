@@ -478,7 +478,14 @@ async function fetchSamplerParams() {
       samplerHint.value = "文件默认值：" + parts.join("　");
       message.success("已读取工作流文件的采样器参数");
     } else {
-      message.warning((d && d.error) || "未读取到采样器参数（文件里没有采样器节点？或插件后端未更新到 v4.9.12+）");
+      // 区分「返回了整个配置」vs「返回了 null」vs「报错」
+      const isConfigLike = !!d && typeof d === "object"
+        && (Array.isArray(d.workflows) || Array.isArray(d.lora_library) || "provider_settings" in d || "draw_limit" in d);
+      if (isConfigLike) {
+        message.warning("返回的是插件配置而非采样参数：请确认插件后端已更新到 v4.9.12+ 并重载插件后再试");
+      } else {
+        message.warning((d && d.error) || "未读取到采样器参数（文件里没有采样器节点？或插件后端未更新到 v4.9.12+）");
+      }
     }
   } catch (e: any) {
     message.error(e.message || "读取失败");

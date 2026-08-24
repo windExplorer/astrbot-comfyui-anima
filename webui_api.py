@@ -109,6 +109,11 @@ class WebUIApi:
             # 避免新增路由在前端桥接候选路径上的兼容问题。
             _ws_name = (request.query.get("workflow_sampler", "") or "").strip()
             if _ws_name:
+                try:
+                    from astrbot.api import logger as _api_logger
+                except Exception:
+                    _api_logger = _log
+                _api_logger.info(f"[WebUI] 读取采样器参数: workflow_name={_ws_name!r}")
                 return await self._read_workflow_sampler_file(_ws_name)
             cfg = self.plugin.config
             # AstrBot 的 Config 对象本身是可映射的，直接转 dict 后序列化
