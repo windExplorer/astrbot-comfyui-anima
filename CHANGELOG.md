@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.15
+
+- **采样器参数读取改用 POST body 传参**：`/config` GET 的 query 参数在前端页面桥接链路中可能丢失（导致接口返回整个插件配置而非采样参数）。现改为 **`POST /config` + body `{ "_read_sampler": true, "workflow_name": "xxx" }`** 读取工作流采样参数——POST body 在桥接链路中传递可靠（`save_config` 长期验证正常）。前端「读取文件中的采样器参数」按钮改走该通道。
+  - 保留 `get_config` 的 GET query 分支作为双保险（若 query 正常也可用）。
+
 ## v4.9.14
 
 - **采样器参数读取的诊断与提示优化**：

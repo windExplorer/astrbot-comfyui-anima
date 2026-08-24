@@ -162,6 +162,19 @@ class WebUIApi:
             body = await request.json(default={}) or {}
             if not isinstance(body, dict):
                 body = {}
+            # 采样器参数读取（POST body 传参：桥接链路里 body 传递比 GET query 可靠，
+            # 避免 config GET 接口的 query 在页面桥接中丢失而误返回整个配置）。
+            # body: { "_read_sampler": true, "workflow_name": "xxx.json" }
+            if body.get("_read_sampler"):
+                _wn = (body.get("workflow_name") or "").strip()
+                if not _wn:
+                    return error_response("缺少 workflow_name")
+                try:
+                    from astrbot.api import logger as _api_logger
+                except Exception:
+                    _api_logger = _log
+                _api_logger.info(f"[WebUI] 读取采样器参数(POST): workflow_name={_wn!r}")
+                return await self._read_workflow_sampler_file(_wn)
             new_cfg = body.get("config")
             if not isinstance(new_cfg, dict):
                 return error_response("config 必须是对象")

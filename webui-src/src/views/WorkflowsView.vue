@@ -456,9 +456,8 @@ async function fetchSamplerParams() {
   samplerLoading.value = true;
   samplerHint.value = "";
   try {
-    // 复用已长期可用的 /config 路由（query 带 workflow_sampler 返回采样参数），
-    // 规避新增路由在前端桥接候选路径上的兼容问题。
-    const d = await apiGet("config", { workflow_sampler: name });
+    // 复用已长期可用的 /config 路由（POST body 传参，桥接传递可靠性优于 GET query）
+    const d = await apiPost("config", { _read_sampler: true, workflow_name: name });
     const hasAny = !!d && typeof d === "object" && (d.steps != null || d.cfg != null || d.denoise != null);
     if (hasAny) {
       // 读到文件默认值：字段为空/未设置才自动填入（不覆盖用户已填值）；无论是否填入都在下方显示文件值
