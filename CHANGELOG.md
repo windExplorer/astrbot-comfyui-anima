@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.12
+
+- **采样器参数读取改用已验证可用的 `/config` 路由**：v4.9.10 新增的 `/workflows/sampler` 路由在前端桥接的候选路径上存在兼容问题（即使路由已注册，部分环境的 bridge 对新增子路径请求仍返回 404）。现改为**复用 `/config` GET 接口**——query 带 `workflow_sampler=<工作流文件名>` 时返回该工作流的采样器参数（steps/cfg/denoise），前端「读取文件中的采样器参数」按钮改走该接口。`/config` 是长期验证可用、WebUI 每次加载都会成功请求的路由，此改动无需重启/额外依赖。
+  - 原 `/workflows/sampler` 路由保留（无害）。
+
 ## v4.9.11
 
 - **修复「新增 API 路由在热更新后不注册（404）」**：v4.9.10 新增 `/workflows/sampler` 路由后，AstrBot 热更新只重载插件主模块 `main.py`，不会重载依赖模块 `webui_api.py`，导致新路由不注册、WebUI「读取采样器参数」报 `Not Found: /workflows/sampler`。现改为初始化时强制 `importlib.reload(webui_api)`，热更新后新路由立即生效，**无需完整重启 AstrBot**。

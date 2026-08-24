@@ -453,7 +453,9 @@ async function fetchSamplerParams() {
   if (!name) { message.warning("请先填写工作流文件名"); return; }
   samplerLoading.value = true;
   try {
-    const d = await apiGet("workflows/sampler", { workflow_name: name });
+    // 复用已长期可用的 /config 路由（query 带 workflow_sampler 返回采样参数），
+    // 规避新增路由在前端桥接候选路径上的兼容问题。
+    const d = await apiGet("config", { workflow_sampler: name });
     if (d && typeof d === "object" && !d.error) {
       if (d.steps != null) editForm.default_steps = d.steps;
       if (d.cfg != null) editForm.default_cfg = d.cfg;

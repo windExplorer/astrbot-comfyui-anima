@@ -104,6 +104,12 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     async def get_config(self):
         try:
+            # 兼容：query 带 workflow_sampler=<工作流文件名> 时，返回该工作流文件的
+            # 采样器参数（steps/cfg/denoise）。复用已长期可用的 /config 路由，
+            # 避免新增路由在前端桥接候选路径上的兼容问题。
+            _ws_name = (request.query.get("workflow_sampler", "") or "").strip()
+            if _ws_name:
+                return await self._read_workflow_sampler_file(_ws_name)
             cfg = self.plugin.config
             # AstrBot 的 Config 对象本身是可映射的，直接转 dict 后序列化
             try:
@@ -113,6 +119,27 @@ class WebUIApi:
             return json_response(safe)
         except Exception as e:
             return error_response(f"读取配置失败: {e}")
+
+    async def _read_workflow_sampler_file(self, wname: str):
+        """读取工作流文件（相对插件 workflow/ 目录）中的采样器参数。"""
+        try:
+            wdir = getattr(self.plugin, "workflow_dir", None)
+            prompt = None
+            if wdir is not None:
+                p = Path(wdir) / wname
+                if not p.suffix:
+                    p = p.with_suffix(".json")
+                if p.is_file():
+                    try:
+                        prompt = json.loads(p.read_text(encoding="utf-8"))
+                    except Exception:
+                        prompt = None
+            if not isinstance(prompt, dict):
+                return error_response("未找到工作流文件或 JSON 无效")
+            import workflow_builder
+            return json_response(workflow_builder.get_sampler_defaults(prompt))
+        except Exception as e:
+            return error_response(f"读取采样器参数失败: {e}")
 
     async def get_schema(self):
         try:
