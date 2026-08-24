@@ -3630,15 +3630,16 @@ class ComfyUIDrawPlugin(Star):
     async def cmd_loralist(self, event: AstrMessageEvent):
         """列出可用的 LoRA 名称（简洁）。
 
-        用法：/绘图lora [角色|风格]
+        用法：/绘图lora [角色|风格|工具]
           无参数   列出全部 LoRA 名称
           角色     只列「角色」分类
           风格     只列「风格」分类
+          工具     只列「工具」分类（如加速 LoRA）
         仅返回名称，便于快速选择；需要更全信息可在 WebUI 配置页查看。
         """
         args = self._strip_command(event.message_str, "loralist", ("绘图lora", "绘图LoRA", "lora列表"))
         cat = ""
-        for kw in ("角色", "风格"):
+        for kw in ("角色", "风格", "工具"):
             if kw in (args or ""):
                 cat = kw
                 break
@@ -4261,7 +4262,7 @@ class ComfyUIDrawPlugin(Star):
             "· /绘图 /绘画 /生图 /画图 /作画 /画画 [工作流名] 提示词   首 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）\n"
             "· 无提示词工作流：可只传图/引用图 + 工作流名（无需提示词；图生图类必须附图）\n"
             "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
-            "· /绘图lora [角色|风格]   查看可用 LoRA（英文 /loralist 亦可）\n"
+            "· /绘图lora [角色|风格|工具]   查看可用 LoRA（英文 /loralist 亦可）\n"
             "· /绘图工作流lora 工作流名   查看某工作流可用的 LoRA，如 /绘图工作流lora 动漫\n"
             "· /绘图工作流   查看 / 设置默认工作流，可 enable/disable 启用停用（英文 /workflows 亦可）\n"
             "· /绘图队列   查看排队状态（英文 /queuestatus 亦可）\n"
@@ -6286,7 +6287,7 @@ class ComfyUIDrawPlugin(Star):
         Args:
             base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
             keyword(string): 可选。按名称/别名/描述/触发词模糊匹配查找某个 LoRA。
-            category(string): 可选。按分类过滤（角色 / 风格）。当用户提到"某某角色/人物"或"某某风格/画风"时，可传入 角色 或 风格 缩小范围。
+            category(string): 可选。按分类过滤（角色 / 风格 / 工具）。当用户提到"某某角色/人物"、"某某风格/画风"或"某某工具类效果（如加速、细节增强、图像质量增强）"时，可传入 角色 / 风格 / 工具 缩小范围。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:

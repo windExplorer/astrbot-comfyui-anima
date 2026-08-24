@@ -31,6 +31,7 @@
           <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
           <n-radio-button value="角色">角色 ({{ countByCategory("角色") }})</n-radio-button>
           <n-radio-button value="风格">风格 ({{ countByCategory("风格") }})</n-radio-button>
+          <n-radio-button value="工具">工具 ({{ countByCategory("工具") }})</n-radio-button>
           <n-radio-button value="__none__">未分类 ({{ countByCategory("__none__") }})</n-radio-button>
         </n-radio-group>
       </div>
@@ -145,7 +146,7 @@ const saving = ref(false);
 const loras = ref<any[]>([]);
 
 const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
-const categoryOptions = ["", "角色", "风格"].map((o) => ({ label: o || "（未分类）", value: o }));
+const categoryOptions = ["", "角色", "风格", "工具"].map((o) => ({ label: o || "（未分类）", value: o }));
 
 // 底模分类筛选：all=全部；__none__=通用（base_model 为空）；其余=对应底模
 const filterModel = ref("all");
