@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.8.0
+
+- **修复群聊 NSFW 拦截时绘图崩溃**：`_uid`（发送者 ID）原本只在「出图成功」分支赋值，但 `oplog` 记录（含 user_id）在 NSFW 拦截分支也会执行，导致群聊图片被 NSFW 护栏拦截时触发 `UnboundLocalError: cannot access local variable '_uid'`，整个 `cmd_draw_wf` 处理函数抛异常。已将 `_uid` 提到生图主流程统一初始化（`get_sender_id` 兜底 `anon`），两个分支均可用。
+
 ## v4.7.23
 
 - **修复回到顶部/去底部按钮无响应**：移动端 MobileShell 为页面级滚动（`min-height:100dvh`，内容超出时整个 body 滚动），但按钮此前把滚动目标错指向了 `.ms-content`（其内部 `overflow-y:auto` 在无固定高度父级下不产生滚动）。改为不传 scrollTarget，直接滚动 `window`，按钮点击即生效。

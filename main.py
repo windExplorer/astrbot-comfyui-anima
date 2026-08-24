@@ -3050,6 +3050,8 @@ class ComfyUIDrawPlugin(Star):
                     # NSFW 护栏（群聊）：生图后发送前对结果图做 NSFW 检测，
                     # 群聊场景一律拦截（检测不通过或检测不可用均拦截），私聊放行。
                     _nsfw_blocked = False
+                    # 统一初始化发送者 uid，确保 NSFW 拦截分支（不进入成功日志分支）也能用。
+                    _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
                     # NSFW 检测结果摘要（供出图成功日志展示，私聊/未检测时为「未检测」）。
                     _nsfw_log = "（未检测）"
                     if not self._is_private_event(event):
@@ -3102,7 +3104,6 @@ class ComfyUIDrawPlugin(Star):
                             from image_store import _sha256_of
                         try:
                             _sha = _sha256_of(img_path)
-                            _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
                             logger.info(
                                 "【出图·成功】\n"
                                 "  user : %s\n"
