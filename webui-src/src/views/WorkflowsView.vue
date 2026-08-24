@@ -137,7 +137,8 @@
         <n-form-item label="从工作流文件读取">
           <n-space vertical :size="6" style="width:100%">
             <n-button size="tiny" :loading="samplerLoading" @click="fetchSamplerParams">↻ 读取文件中的采样器参数</n-button>
-            <span class="form-hint">根据上方「工作流文件名」读取文件采样器节点的默认 steps / cfg / denoise，自动填入下方字段</span>
+            <span v-if="samplerHint" class="form-hint" style="color:#c2255c">{{ samplerHint }}</span>
+            <span v-else class="form-hint">根据上方「工作流文件名」读取文件采样器节点的默认 steps / cfg / denoise，自动填入下方字段</span>
           </n-space>
         </n-form-item>
         <div class="form-grid">
@@ -448,21 +449,36 @@ async function saveEdit() {
 
 // 从工作流文件读取采样器参数（steps / cfg / denoise）
 const samplerLoading = ref(false);
+const samplerHint = ref("");
 async function fetchSamplerParams() {
   const name = (editForm.workflow_name || "").trim();
   if (!name) { message.warning("请先填写工作流文件名"); return; }
   samplerLoading.value = true;
+  samplerHint.value = "";
   try {
     // 复用已长期可用的 /config 路由（query 带 workflow_sampler 返回采样参数），
     // 规避新增路由在前端桥接候选路径上的兼容问题。
     const d = await apiGet("config", { workflow_sampler: name });
-    if (d && typeof d === "object" && !d.error) {
-      if (d.steps != null) editForm.default_steps = d.steps;
-      if (d.cfg != null) editForm.default_cfg = d.cfg;
-      if (d.denoise != null && !editForm.denoise_off) editForm.default_denoise = d.denoise;
-      message.success("已从工作流文件读取采样器参数");
+    const hasAny = !!d && typeof d === "object" && (d.steps != null || d.cfg != null || d.denoise != null);
+    if (hasAny) {
+      // 读到文件默认值：字段为空/未设置才自动填入（不覆盖用户已填值）；无论是否填入都在下方显示文件值
+      const parts: string[] = [];
+      if (d.steps != null) {
+        parts.push(`steps ${d.steps}`);
+        if (!editForm.steps_off && !editForm.default_steps) editForm.default_steps = d.steps;
+      }
+      if (d.cfg != null) {
+        parts.push(`cfg ${d.cfg}`);
+        if (!editForm.cfg_off && !editForm.default_cfg) editForm.default_cfg = d.cfg;
+      }
+      if (d.denoise != null) {
+        parts.push(`denoise ${d.denoise}`);
+        if (!editForm.denoise_off && editForm.default_denoise <= -1) editForm.default_denoise = d.denoise;
+      }
+      samplerHint.value = "文件默认值：" + parts.join("　");
+      message.success("已读取工作流文件的采样器参数");
     } else {
-      message.warning((d && d.error) || "文件里未解析到采样器参数");
+      message.warning((d && d.error) || "未读取到采样器参数（文件里没有采样器节点？或插件后端未更新到 v4.9.12+）");
     }
   } catch (e: any) {
     message.error(e.message || "读取失败");
