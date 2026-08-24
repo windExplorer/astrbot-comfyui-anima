@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.18
+
+- **修复工作流编辑弹窗残留上一个工作流的采样器数据**：打开新编辑弹窗时未重置「文件默认值」提示（`samplerHint`），导致显示了上一个工作流读取到的 steps/cfg/denoise。现 `openForm` 打开弹窗时重置提示与加载态。
+
 ## v4.9.17
 
 - **修复「读取采样器参数」报 `No module named 'workflow_builder'`**：`standalone_webui.py` 与 `webui_api.py` 中 `import workflow_builder` 是顶层导入，但 `workflow_builder` 是插件包内模块，顶层导入失败。已改为相对导入（`from . import workflow_builder`，带回退）。

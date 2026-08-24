@@ -368,6 +368,9 @@ function openForm(idx: number, prefill?: any) {
   const isNew = idx < 0 || idx >= workflows.value.length;
   editTitle.value = (isNew ? "新增" : "编辑") + " 工作流";
   editIndex.value = idx;
+  // 重置采样器文件默认值提示（避免打开新弹窗残留上一个工作流的读取结果）
+  samplerHint.value = "";
+  samplerLoading.value = false;
   const w = prefill ? prefill : (isNew ? {} : (workflows.value[idx] || {}));
   Object.keys(editForm).forEach((k) => delete editForm[k]);
   Object.assign(editForm, JSON.parse(JSON.stringify({
