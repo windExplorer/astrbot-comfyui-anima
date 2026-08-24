@@ -228,6 +228,9 @@ UI参考图/
 # 临时验证脚本（仅本地用，不入库）
 tests/_tmp_*.py
 
+# AI 生成的草稿图（不替换原 assets/ 静态帮助图时不入库）
+generated-images/
+
 # ===== Vue3 WebUI 开发（webui-src/） =====
 # 源码进 git，但 node_modules / 构建缓存 / 本地环境不入库。
 # 注意：pages/anima-console-vue/（构建产物）必须进 git（zip 打包依赖它），勿忽略。
