@@ -117,6 +117,36 @@ blockquote {
   border-radius: 8px;
   color: #666;
 }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 4px;
+}
+
+table th {
+  background: linear-gradient(135deg,#ff9edc,#ffb3d1);
+  color: #fff;
+  font-weight: 700;
+  padding: 8px 12px;
+  text-align: left;
+  border: 1px solid #ffd3e4;
+}
+
+table td {
+  padding: 8px 12px;
+  border: 1px solid #ffe3ec;
+  color: #333;
+  vertical-align: top;
+}
+
+/* 序号列加宽且不换行：3 位以上数字序号也不会被挤断换行 */
+table th:first-child,
+table td:first-child {
+  white-space: nowrap;
+  min-width: 96px;
+  text-align: center;
+}
 </style>
 </head>
 <body>
@@ -2120,9 +2150,10 @@ class ComfyUIDrawPlugin(Star):
         供 html_render 的 marked 渲染成 HTML <table>；非表格行（标题/翻页/提示）保持原样。
         无匹配表格行时原样返回 text，不影响其他渲染内容。
 
-        列结构固定为 5 列（序号/描述/工作流/时间/用户）：普通行只有 3 个数据列（描述|工作流|时间），
-        用户列为空；管理员视图会追加「| 👤 用户名」作为第 4 个数据列。解析时固定取最后
-        3 列作为「工作流/时间/用户」，其前所有列合并为描述，避免任何位置多出的「|」导致列错位。"""
+        列结构：普通行只有 3 个数据列（描述|工作流|时间）；全库/管理员视图会追加
+        「| 👤 用户名」作为第 4 个数据列。表格生成时按是否含有用户数据动态决定
+        是否渲染「用户」列（无用户数据则不显示用户列）。解析时固定取最后 3 列作为
+        「工作流/时间/用户」，其前所有列合并为描述，避免任何位置多出的「|」导致列错位。"""
         import re
 
         rows = []
@@ -2132,7 +2163,7 @@ class ComfyUIDrawPlugin(Star):
             if m and "|" in m.group(2):
                 cells = [c.strip() for c in m.group(2).split("|")]
                 if len(cells) >= 4:
-                    # 4+ 列（管理员带了用户列）：最后1列=用户，倒数2=时间，倒数3=类型，前面合并为描述。
+                    # 4+ 列（全库/管理员带了用户列）：最后1列=用户，倒数2=时间，倒数3=类型，前面合并为描述。
                     desc = " ".join(cells[:-3]).strip()
                     typ, tm, user = cells[-3], cells[-2], cells[-1]
                 else:
@@ -2144,8 +2175,13 @@ class ComfyUIDrawPlugin(Star):
                 others.append(line)
         if not rows:
             return text
-        header = "| 序号 | 描述 | 工作流 | 时间 | 用户 |\n|---|---|---|---|---|"
-        body = [f"| {no} | {desc} | {typ} | {tm} | {user} |" for no, desc, typ, tm, user in rows]
+        has_user = any((user or "").strip() for _, _, _, _, user in rows)
+        if has_user:
+            header = "| 序号 | 描述 | 工作流 | 时间 | 用户 |\n|---|---|---|---|---|"
+            body = [f"| {no} | {desc} | {typ} | {tm} | {user} |" for no, desc, typ, tm, user in rows]
+        else:
+            header = "| 序号 | 描述 | 工作流 | 时间 |\n|---|---|---|---|"
+            body = [f"| {no} | {desc} | {typ} | {tm} |" for no, desc, typ, tm, user in rows]
         table = "\n".join([header] + body)
         if not others:
             return table
@@ -4702,7 +4738,7 @@ class ComfyUIDrawPlugin(Star):
             "· 取图（不带参数）　发你最近生成的那张图\n"
             "· 收藏 <序号> / 取消收藏 <序号>　收藏或取消收藏（可多张）\n"
             "· 收藏列表 [页码]　查看自己收藏的图（★，群聊仅本群，私聊看所有）\n"
-            "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后他人可检索）\n"
+            "· 公开 <序号> / 私有 <序号>　设置图片可见性（公开后群聊列表/搜索也能找到，他人可检索）\n"
             "· 保存 [标签...]　收藏当前这张图\n"
             # "· 删除 <sha>　移入回收站；恢复 <sha> 从回收站找回；清空 <sha> 彻底删除\n"
             # "· 回收站　查看回收站\n"
@@ -4855,8 +4891,7 @@ class ComfyUIDrawPlugin(Star):
             if not rows:
                 await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
             else:
-                # 是否管理员（管理员额外展示所属会话 sid；全库模式展示 user_id/user_name）
-                is_admin = bool(getattr(event, "is_admin", lambda: False)())
+                # 用户列仅在「全部/全库」模式展示（跨用户查看时区分归属）
                 _head = "全库图" if all_view else "图库"
                 lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
@@ -4875,7 +4910,9 @@ class ComfyUIDrawPlugin(Star):
                     _uname = (r.get("user_name") or "").strip()
                     star = "❤️ " if r.get("starred") else ""
                     line = f"{_gno}. {star}{desc} | {_wf} | {_tm}"
-                    if is_admin and (_sid or all_view):
+                    # 用户列仅在「全部/全库」模式展示（跨用户查看时区分归属）；
+                    # 普通列表都是自己的图，不显示用户列。
+                    if all_view:
                         line += f" | 👤 {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 列表 <页码>（共 {total_pages} 页）")
@@ -4906,7 +4943,6 @@ class ComfyUIDrawPlugin(Star):
             if not rows:
                 await self._send(event, "你还没收藏任何图。收藏后可用 /图库 收藏列表 查看。")
             else:
-                is_admin = bool(getattr(event, "is_admin", lambda: False)())
                 _head = "全库收藏" if all_view else "我的收藏"
                 lines = [f"{_head}（第 {page}/{total_pages} 页，共 {total} 张）："]
                 for i, r in enumerate(rows, 1):
@@ -4922,7 +4958,9 @@ class ComfyUIDrawPlugin(Star):
                     _uid = (r.get("user_id") or "").strip()
                     _uname = (r.get("user_name") or "").strip()
                     line = f"{_gno}. ❤️ {desc} | {_wf} | {_tm}"
-                    if is_admin and (_sid or all_view):
+                    # 用户列仅在「全部/全库」模式展示（跨用户查看时区分归属）；
+                    # 普通列表都是自己的图，不显示用户列。
+                    if all_view:
                         line += f" | 👤 {_uname or _uid or '匿名'}"
                     lines.append(line)
                 lines.append(f"\n翻页：/图库 收藏列表 <页码>（共 {total_pages} 页）")
@@ -4962,7 +5000,6 @@ class ComfyUIDrawPlugin(Star):
                         if not rows:
                             await self._send(event, f"没找到含「{kw}」的图。")
                             return
-                        is_admin = bool(getattr(event, "is_admin", lambda: False)())
                         _head = "全库检索" if all_view else "检索"
                         lines = [f"{_head}「{kw}」（第 {page}/{total_pages} 页，共 {total} 张）："]
                         for i, r in enumerate(rows, 1):

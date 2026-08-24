@@ -118,6 +118,14 @@ html, body {
   vertical-align: top;
 }
 
+/* 序号列加宽且不换行：3 位以上数字序号也不会被挤断换行 */
+.content table th:first-child,
+.content table td:first-child {
+  white-space: nowrap;
+  min-width: 96px;
+  text-align: center;
+}
+
 .content table tr:nth-child(even) td {
   background: #fff6fb;
 }

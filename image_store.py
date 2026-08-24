@@ -926,9 +926,10 @@ class ImageStore:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
         if session:
-            # 会话范围过滤：非空时仅统计当前会话内的图。
+            # 会话范围过滤：非空时统计「当前会话内的图」或「公开图(is_public=1)」。
+            # 公开图全局可见，跨会话也会出现在列表/搜索里（开放到群聊/全局共享）。
             # 仅作为检索范围缩小，不替代 owner 权限过滤。
-            sql += " AND session_id=?"
+            sql += " AND (session_id=? OR is_public=1)"
             args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
@@ -1003,9 +1004,10 @@ class ImageStore:
             sql += " AND (is_public=1 OR user_id=?)"
             args.append(owner)
         if session:
-            # 会话范围过滤：非空时仅检索当前会话内的图（cross_session=false）。
+            # 会话范围过滤：非空时检索「当前会话内的图」或「公开图(is_public=1)」。
+            # 公开图全局可见，跨会话也会出现在列表/搜索里（开放到群聊/全局共享）。
             # 仅缩小检索范围，不替代 owner（user_id）权限隔离。
-            sql += " AND session_id=?"
+            sql += " AND (session_id=? OR is_public=1)"
             args.append(session)
         if keyword and keyword.strip():
             kw = f"%{keyword.strip()}%"
