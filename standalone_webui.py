@@ -358,7 +358,29 @@ class StandaloneWebUI:
             return _ok(dict(self.plugin.config))
         if path == "/config" and method == "POST":
             body = await request.json() if request.body_exists else {}
-            new_cfg = body.get("config") if isinstance(body, dict) else None
+            if not isinstance(body, dict):
+                body = {}
+            # 采样器参数读取（独立 WebUI 直接处理，不经过 webui_api.save_config）
+            if body.get("_read_sampler"):
+                _wn = (body.get("workflow_name") or "").strip()
+                if not _wn:
+                    return _err("缺少 workflow_name")
+                import workflow_builder
+                prompt = None
+                wdir = getattr(self.plugin, "workflow_dir", None)
+                if wdir is not None:
+                    p = Path(wdir) / _wn
+                    if not p.suffix:
+                        p = p.with_suffix(".json")
+                    if p.is_file():
+                        try:
+                            prompt = json.loads(p.read_text(encoding="utf-8"))
+                        except Exception:
+                            prompt = None
+                if not isinstance(prompt, dict):
+                    return _err("未找到工作流文件或 JSON 无效")
+                return _ok(workflow_builder.get_sampler_defaults(prompt))
+            new_cfg = body.get("config")
             if not isinstance(new_cfg, dict):
                 return _err("config 必须是对象")
             cfg = self.plugin.config

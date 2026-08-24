@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.16
+
+- **修复独立 WebUI（standalone，端口 18848）下「读取采样器参数」报 `config 必须是对象`**：
+  - 根因：独立 WebUI 的 `/config` POST 由 `standalone_webui.py` 的 `_dispatch` 直接处理，**不经过** `webui_api.save_config`。此前把 `_read_sampler` 分支加在 `webui_api.save_config` 里，独立 WebUI 根本不会走到，前端 POST `{_read_sampler:true}` 时因没有 `config` 字段而报错。
+  - 修复：在 `standalone_webui.py` 的 `/config` POST 分支增加 `_read_sampler` 处理（读取工作流文件采样参数）。
+  - main.py 的依赖模块强制重载机制扩展到 `standalone_webui.py`，减少重启依赖。
+  - ⚠️ 本版本改动 `standalone_webui.py`（依赖模块），**需完整重启 AstrBot**（仅热更新无法加载该模块新代码）。
+
 ## v4.9.15
 
 - **采样器参数读取改用 POST body 传参**：`/config` GET 的 query 参数在前端页面桥接链路中可能丢失（导致接口返回整个插件配置而非采样参数）。现改为 **`POST /config` + body `{ "_read_sampler": true, "workflow_name": "xxx" }`** 读取工作流采样参数——POST body 在桥接链路中传递可靠（`save_config` 长期验证正常）。前端「读取文件中的采样器参数」按钮改走该通道。

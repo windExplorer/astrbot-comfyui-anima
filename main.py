@@ -686,17 +686,21 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 LLM token 统计初始化失败（功能不可用）: {e}", exc_info=True)
 
-        # 强制重载 webui_api 模块：AstrBot 热更新（watchfiles）只重载插件主模块 main.py，
-        # 不会级联重载依赖模块 webui_api.py，导致「新增 API 路由」在热更新后不注册（请求 404）。
-        # 这里在每次初始化（含热更新触发的重载）时先 importlib.reload 该模块，让路由与
-        # handler 的新代码立即生效，无需完整重启 AstrBot。
+        # 强制重载 webui_api 与 standalone_webui 依赖模块：AstrBot 热更新（watchfiles）
+        # 只重载插件主模块 main.py，不会级联重载依赖模块，导致「新增 API 路由 / 接口改动」
+        # 在热更新后不生效。这里在每次初始化（含热更新触发的重载）时先 importlib.reload
+        # 这两个模块，让新代码立即生效，尽可能避免完整重启。
         try:
             import importlib
-            _mod_name = f"{__package__}.webui_api" if __package__ else "webui_api"
-            _webui_api_mod = importlib.import_module(_mod_name)
-            importlib.reload(_webui_api_mod)
+            for _dep_name in ("webui_api", "standalone_webui"):
+                try:
+                    _dn = f"{__package__}.{_dep_name}" if __package__ else _dep_name
+                    _dep_mod = importlib.import_module(_dn)
+                    importlib.reload(_dep_mod)
+                except Exception as _de:
+                    logger.warning(f"【初始化】 {_dep_name} 模块强制重载失败（沿用已加载模块）: {_de}")
         except Exception as _re:
-            logger.warning(f"【初始化】 webui_api 模块强制重载失败（沿用已加载模块）: {_re}")
+            logger.warning(f"【初始化】 依赖模块强制重载失败（沿用已加载模块）: {_re}")
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
