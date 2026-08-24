@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.6
+
+- **修复致命语法错误导致绘图/图库功能完全不可用**：v4.9.4 新增 `set_global` 时，把 `set_visibility` 方法内 `try` 块的 `except` 截断了，导致 `image_store.py` 在 `set_global` 定义处报 `SyntaxError: expected 'except' or 'finally' block`，整个插件模块无法加载（`cmd_draw_wf` 等一切功能报错）。已补回 `set_visibility` 缺失的 `except` 块。
+
 ## v4.9.5
 
 - **重制图库静态帮助图（`assets/gallery_help.png`）**：基于「UI参考图/28C52ED...webp」底图（白毛猫耳娘）+ 霞鹜文楷萌字体，半透明面板露出背景图；指令全部单独一行、说明通俗易懂、补全「一次打多个标签」示例（`/图库 打标签 3 合照 猫娘`）；右上角 150px 项目 logo；新增页脚提示「群聊搜不到的图，可先在私聊搜到记下序号，回群聊直接 /图库 取图 <序号> 也能发出来」。绘图帮助图 `assets/draw_help.png` 保持原样。

@@ -819,6 +819,9 @@ class ImageStore:
             )
             conn.commit()
             return cur.rowcount > 0
+        except Exception as _e:
+            logger.warning(f"[图库] 设置可见性失败: {_e}")
+            return False
 
     def set_global(self, sha256: str, on: bool) -> bool:
         """设置图片「全局」：on=True 后，任何群聊的列表/搜索都能看到这张图（跨会话共享）。
