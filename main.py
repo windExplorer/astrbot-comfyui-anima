@@ -1742,6 +1742,19 @@ class ComfyUIDrawPlugin(Star):
                         return wf_name or name
         return name
 
+    def _wf_usable(self, w: dict, name: str, fallback_on_missing: bool):
+        """工作流可用性检查：enabled=false（已停用）时——
+        - fallback_on_missing=False（用户显式指定）：抛 ValueError，提示已停用；
+        - fallback_on_missing=True（自动回退路径）：返回 None，由调用方跳过该工作流。
+        启用的工作流原样返回。"""
+        if w.get("enabled", True):
+            return w
+        wname = ((w.get("name") or name or "").strip())
+        if fallback_on_missing:
+            logger.warning(f"【绘图·解析】 工作流「{wname}」已停用，跳过")
+            return None
+        raise ValueError(f"工作流「{wname}」已停用，无法使用。")
+
     def _resolve_workflow(
         self,
         name: str | None = None,
@@ -1809,33 +1822,40 @@ class ComfyUIDrawPlugin(Star):
             # 1) 精确匹配工作流名称
             for w in workflows:
                 if w.get("name") == name:
-                    return w
+                    _w = self._wf_usable(w, name, fallback_on_missing)
+                    if _w is not None:
+                        return _w
+                    break  # 命中已停用 → 进入回退
             # 2) 大小写不敏感 + 去首尾空格匹配名称（AI 常把 Default 写成 default 等）
             name_trim = name.strip()
             name_lower = name_trim.lower()
             for w in workflows:
                 n = (w.get("name") or "").strip()
                 if n.lower() == name_lower:
-                    return w
+                    _w = self._wf_usable(w, name, fallback_on_missing)
+                    if _w is not None:
+                        return _w
+                    break
             # 3) 回退：按文件名匹配（解决 LLM 把文件名当工作流名的问题）
             for w in workflows:
                 fn = (w.get("workflow_name") or "").strip().lower()
                 if not fn:
                     continue
-                # 精确文件名（如 "sd.json"）
-                if fn == name_lower:
-                    return w
-                # 去掉 .json 后缀匹配（如 "sd" 匹配 "sd.json"）
-                if fn.endswith(".json") and fn[:-5] == name_lower:
-                    return w
-                # 加上 .json 后缀匹配（如 "sd.json" 匹配 "sd"）
-                if not fn.endswith(".json") and fn + ".json" == name_lower:
-                    return w
+                matched = (
+                    fn == name_lower
+                    or (fn.endswith(".json") and fn[:-5] == name_lower)
+                    or (not fn.endswith(".json") and fn + ".json" == name_lower)
+                )
+                if matched:
+                    _w = self._wf_usable(w, name, fallback_on_missing)
+                    if _w is not None:
+                        return _w
+                    break
             # 全部失败
             avail = "、".join((w.get("name") or "(未命名)") for w in workflows)
             if not fallback_on_missing:
                 raise ValueError(f"找不到名为「{name}」的工作流。可用工作流：{avail}。")
-            # 容错回退：按「风格优先级 + 文生图/图生图」默认工作流，未配置则第一个
+            # 容错回退：按「风格优先级 + 文生图/图生图」默认工作流，未配置则第一个可用
             fallback = self._pick_default_workflow_name(is_img2img)
             if fallback:
                 for w in workflows:
@@ -1843,19 +1863,32 @@ class ComfyUIDrawPlugin(Star):
                         w.get("name") == fallback
                         or (w.get("workflow_name") or "").strip().lower() == fallback.strip().lower()
                     ):
-                        logger.warning(
-                            f"【绘图·解析】 找不到工作流「{name}」（可用：{avail}），"
-                            f"容错回退到默认工作流「{w.get('name') or fallback}」"
-                        )
-                        return w
+                        _w = self._wf_usable(w, fallback, True)
+                        if _w is not None:
+                            logger.warning(
+                                f"【绘图·解析】 找不到工作流「{name}」（可用：{avail}），"
+                                f"容错回退到默认工作流「{w.get('name') or fallback}」"
+                            )
+                            return _w
                 logger.warning(
-                    f"【绘图·解析】 找不到工作流「{name}」，且默认工作流「{fallback}」也未匹配，回退第一个"
+                    f"【绘图·解析】 找不到工作流「{name}」，且默认工作流「{fallback}」已停用/未匹配，回退第一个可用工作流"
                 )
+                for w in workflows:
+                    if w.get("enabled", True):
+                        return w
+                logger.warning(f"【绘图·解析】 所有工作流均已停用，仍返回默认工作流「{fallback}」")
                 return workflows[0]
             logger.warning(
-                f"【绘图·解析】 找不到工作流「{name}」且未配置默认工作流，回退第一个（可用：{avail}）"
+                f"【绘图·解析】 找不到工作流「{name}」且未配置默认工作流，回退第一个可用工作流（可用：{avail}）"
             )
+            for w in workflows:
+                if w.get("enabled", True):
+                    return w
             return workflows[0]
+        # 未指定 name（默认工作流也未配置）：返回第一个启用的工作流
+        for w in workflows:
+            if w.get("enabled", True):
+                return w
         return workflows[0]
 
     # ------------------------------------------------------------------ #
@@ -4093,8 +4126,30 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.command("workflows", alias={"绘图工作流", "工作流列表"})
     async def cmd_workflows(self, event: AstrMessageEvent):
-        """列出工作流，或设置默认工作流：/绘图工作流 set 动漫文生图 | set_real 真人文生图 | set_img2img 动漫图生图 | set_img2img_real 真人图生图"""
+        """列出工作流，或设置默认工作流：/绘图工作流 set 动漫文生图 | set_real 真人文生图 | set_img2img 动漫图生图 | set_img2img_real 真人图生图
+        也可启用/停用工作流：/绘图工作流 enable 动漫 | /绘图工作流 disable 动漫（中文：启用/停用/禁用）"""
         args = self._strip_command(event.message_str, "workflows", ("绘图工作流", "工作流列表"))
+        # 启用/停用工作流：enable|启用 <名称> / disable|停用|禁用 <名称>
+        m_en = re.match(r"(?:enable|启用)\s+(\S+)", (args or "").strip())
+        m_dis = re.match(r"(?:disable|停用|禁用)\s+(\S+)", (args or "").strip())
+        if m_en or m_dis:
+            is_en = bool(m_en)
+            wname = (m_en or m_dis).group(1).strip()
+            target = next(
+                (w for w in self._workflows() if (w.get("name") or "").strip() == wname),
+                None,
+            )
+            if target is None:
+                await self._send(event, f"找不到名为「{wname}」的工作流。")
+            else:
+                target["enabled"] = is_en
+                try:
+                    self.config.save_config()
+                    await self._send(event, f"已{'启用' if is_en else '停用'}工作流「{wname}」。")
+                except Exception as _e:
+                    await self._send(event, f"保存配置失败：{_e}")
+            event.stop_event()
+            return
         # set_img2img_real / set_img2img / set_real / set 按长度优先匹配，防止被 set 正则吞掉后缀
         m_i2i_real = re.match(r"set_img2img_real\s+(\S+)", (args or "").strip())
         m_i2i = re.match(r"set_img2img\s+(\S+)", (args or "").strip())
@@ -4145,7 +4200,10 @@ class ComfyUIDrawPlugin(Star):
                 tags.append("真人图生图默认")
             tag = f"（{'，'.join(tags)}）" if tags else ""
             anima = " 【Anima】" if w.get("is_anima") else ""
-            lines.append(f"- {wname}{anima}{tag}")
+            disabled = " 【已停用】" if not w.get("enabled", True) else ""
+            lines.append(f"- {wname}{anima}{tag}{disabled}")
+        lines.append("")
+        lines.append("用 /绘图工作流 enable <名称> 或 disable <名称> 可启用/停用（中文：启用/停用）")
         await self._send(event, "\n".join(lines))
         event.stop_event()
 
@@ -4170,7 +4228,7 @@ class ComfyUIDrawPlugin(Star):
             "/loraon 名称 [--wf 工作流]  启用 LoRA（持久化到工作流默认列表）\n"
             "/loraoff 名称 [--wf 工作流] 禁用 LoRA（持久化）\n"
             "/queuestatus [--wf 工作流]  查看队列与排队位置\n"
-            "/workflows [set 名称 | set_img2img 名称]   列出/设置默认工作流（set 设置文生图默认，set_img2img 设置图生图默认）\n"
+            "/workflows [set 名称 | set_img2img 名称 | enable 名称 | disable 名称]   列出/设置默认/启用停用工作流（enable/disable 可写中文 启用/停用）\n"
             '也可直接对 AI 说"画一只猫，使用 xxx lora"，由 AI 自动调用绘图工具。'
         )
         await self._send(event, text)
@@ -4188,7 +4246,7 @@ class ComfyUIDrawPlugin(Star):
             "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
             "· /绘图lora [角色|风格]   查看可用 LoRA（英文 /loralist 亦可）\n"
             "· /绘图工作流lora 工作流名   查看某工作流可用的 LoRA，如 /绘图工作流lora 动漫\n"
-            "· /绘图工作流   查看 / 设置默认工作流（英文 /workflows 亦可）\n"
+            "· /绘图工作流   查看 / 设置默认工作流，可 enable/disable 启用停用（英文 /workflows 亦可）\n"
             "· /绘图队列   查看排队状态（英文 /queuestatus 亦可）\n"
             "· /绘图统计 [今天|昨天|周|月|全部]   出图统计\n"
             "· /绘图排行 [今天|昨天|周|月|全部]   绘图排行前五\n"

@@ -155,6 +155,12 @@
             "hint": "指令 /draw --wf 和 AI 调用时引用此名。",
             "default": "default"
           },
+          "enabled": {
+            "type": "bool",
+            "description": "是否启用该工作流",
+            "hint": "关闭（false）后该工作流不可使用：用户显式指定时提示「已停用」，自动/回退选择默认工作流时也会跳过它。列表仍会展示并标注「已停用」，可随时再启用。",
+            "default": true
+          },
           "base_model": {
             "type": "string",
             "description": "底模（基座模型）",

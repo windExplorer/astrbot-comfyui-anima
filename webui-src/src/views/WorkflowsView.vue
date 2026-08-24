@@ -34,6 +34,7 @@
           </div>
           <div class="card-head">
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
+            <n-tag v-if="w.enabled === false" size="small" type="error" :bordered="false">已停用</n-tag>
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
             <n-tag v-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
@@ -49,6 +50,7 @@
           <div class="card-avail">可用 LoRA：{{ availLoras(w).join("、") || "无匹配 LoRA" }}</div>
           <div class="card-actions">
             <n-button size="tiny" @click="editWorkflow(i)">编辑</n-button>
+            <n-button size="tiny" @click="toggleEnabled(i)">{{ w.enabled === false ? "启用" : "停用" }}</n-button>
             <n-button size="tiny" @click="copyWorkflow(i)">复制</n-button>
             <n-button size="tiny" @click="fetchCover(i)">抓封面</n-button>
             <n-button size="tiny" @click="uploadCover(i)">传封面</n-button>
@@ -82,6 +84,10 @@
         <n-form-item label="Anima 工作流">
           <n-switch v-model:value="editForm.is_anima" />
           <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
+        </n-form-item>
+        <n-form-item label="启用该工作流">
+          <n-switch v-model:value="editForm.enabled" />
+          <span class="form-hint">关闭后不可使用：显式指定会提示「已停用」，自动选择默认工作流也会跳过它</span>
         </n-form-item>
         <n-form-item label="锁定提示词（无需用户传词）">
           <n-switch
@@ -368,6 +374,7 @@ function openForm(idx: number, prefill?: any) {
     default_denoise: (w.default_denoise ?? -1),
     denoise_off: (w.default_denoise ?? -1) <= -1,
     workflow_json: w.workflow_json || "",
+    enabled: w.enabled !== false,
     require_prompt: w.require_prompt !== false,
     default_positive: w.default_positive || "",
     default_negative: w.default_negative || "",
@@ -412,6 +419,21 @@ async function saveEdit() {
     message.error(e.message || "保存失败");
   } finally {
     saving.value = false;
+  }
+}
+
+// 快捷启用/停用工作流
+async function toggleEnabled(idx: number) {
+  const w = workflows.value[idx];
+  if (!w) return;
+  const next = w.enabled === false;
+  w.enabled = next;
+  try {
+    await apiPost("config", { config: { workflows: workflows.value } });
+    message.success(next ? `已启用「${w.name || ""}」` : `已停用「${w.name || ""}」`);
+  } catch (e: any) {
+    w.enabled = !next;
+    message.error(e.message || "保存失败");
   }
 }
 

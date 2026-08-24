@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.7
+
+- **新增工作流启用/停用功能**：
+  - 工作流配置新增 `enabled` 字段（默认 true，`_conf_schema.json` 工作流模板）。
+  - 停用的工作流不可使用：用户显式指定（`/画 xxx`、`/draw --wf xxx`、`/绘图工作流 set xxx`）会提示「已停用」；自动回退/默认工作流选择会跳过停用的，从剩余可用工作流中挑选。
+  - 指令 `/绘图工作流`（`/workflows`）支持 `enable <名称>` / `disable <名称>`（中文 `启用` / `停用` / `禁用`）切换，列表会标注「【已停用】」。
+  - WebUI 工作流页：卡片显示「已停用」标签 + 快捷「启用/停用」按钮；编辑表单新增「启用该工作流」开关。
+
 ## v4.9.6
 
 - **修复致命语法错误导致绘图/图库功能完全不可用**：v4.9.4 新增 `set_global` 时，把 `set_visibility` 方法内 `try` 块的 `except` 截断了，导致 `image_store.py` 在 `set_global` 定义处报 `SyntaxError: expected 'except' or 'finally' block`，整个插件模块无法加载（`cmd_draw_wf` 等一切功能报错）。已补回 `set_visibility` 缺失的 `except` 块。
