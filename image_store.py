@@ -630,12 +630,20 @@ class ImageStore:
 
     def archive_user_image(self, src_path: str, tags=None, user_id: str = "", user_name: str = "", session_id: str = "") -> str | None:
         """方案 B：收藏用户在聊天里发来的图（或任意来源图）到 refs/。返回 sha256。
-        必须传 user_id，否则会成为"无主图"串给其他用户。"""
+        必须传 user_id，否则会成为"无主图"串给其他用户。
+        归档成功即自动加入收藏列表（starred=1），使「帮我收藏一下」/「/图库 收藏」同时
+        完成「入库 + 收藏 + 打标签」三步。"""
         _final = self.archive_image(src_path, source=SRC_USER, user_id=user_id, user_name=user_name, session_id=session_id)
         if not _final:
             return None
         # 从最终路径反算 sha（与归档时一致），供调用方做收藏/召回标识。
         sha = _sha256_of(_final)
+        if sha:
+            # 加入收藏列表（starred=1），收藏图永不参与 LRU 淘汰
+            try:
+                self.star(sha, 1)
+            except Exception as _se:
+                logger.warning(f"[图库] 归档后收藏失败（不影响归档）: {_se}")
         if sha and tags:
             self.add_tags(sha, tags)
         return sha
