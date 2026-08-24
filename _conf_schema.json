@@ -192,6 +192,26 @@
             "hint": "若为 true，提交前会把中文提示词翻译为英文标签（翻译模式见本工作流 translator_mode，或全局 translator_mode）。",
             "default": false
           },
+          "require_prompt": {
+            "type": "bool",
+            "description": "是否要求用户传提示词（false=锁定提示词，用户无需传词）",
+            "hint": "设为 false 时该工作流锁定提示词：用户只需传图/引用图（或直接调用）即可出图，用户传了提示词也会被忽略。未配置固定提示词时沿用工作流 JSON 内固化好的提示词。",
+            "default": true
+          },
+          "default_positive": {
+            "type": "string",
+            "description": "固定正向提示词（可选）",
+            "hint": "锁定提示词时用此提示词出图（覆盖工作流 JSON 内的提示词）；不锁定提示词时，用户未传提示词也会用它兜底。固定提示词不走翻译/LoRA 触发词改写。留空则沿用工作流 JSON 内的提示词。",
+            "obvious_hint": true,
+            "default": ""
+          },
+          "default_negative": {
+            "type": "string",
+            "description": "固定负向提示词（可选）",
+            "hint": "用户未传负向提示词时，用此负向提示词覆盖工作流 JSON 内的负向提示词。留空则沿用工作流 JSON 内的负向提示词。",
+            "obvious_hint": true,
+            "default": ""
+          },
           "translator_mode": {
             "type": "string",
             "description": "本工作流翻译模式（可选，覆盖全局）",

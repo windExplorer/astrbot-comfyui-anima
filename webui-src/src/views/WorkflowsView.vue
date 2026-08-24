@@ -13,11 +13,21 @@
       </Teleport>
     </div>
 
+    <!-- 工作流类型筛选：文生图 / 图生图（按是否配置参考图节点 image_node 判定） -->
+    <div class="filter-bar">
+      <n-radio-group v-model:value="filterType" size="small" class="filter-radios">
+        <n-radio-button value="all">全部</n-radio-button>
+        <n-radio-button value="txt2img">文生图</n-radio-button>
+        <n-radio-button value="img2img">图生图</n-radio-button>
+      </n-radio-group>
+      <span class="filter-hint">类型按「参考图节点」是否配置自动判定</span>
+    </div>
+
     <div class="wf-scroll">
     <n-spin :show="loading">
-      <n-empty v-if="!loading && !workflows.length" description="尚未配置任何工作流，点「新增工作流」添加。" style="padding:60px" />
+      <n-empty v-if="!loading && !filteredWorkflows.length" description="没有符合筛选条件的工作流。" style="padding:60px" />
       <div v-else class="card-grid">
-        <div v-for="(w, idx) in workflows" :key="idx" class="wf-card">
+        <div v-for="({ w, i }, _) in filteredWorkflows" :key="i" class="wf-card">
           <div class="card-cover" @click="openImage(w.image, w.name)">
             <img v-if="w.image" v-cover-lazy="w.image" alt="" loading="lazy" />
             <div v-else class="cover-empty">无封面</div>
@@ -25,6 +35,8 @@
           <div class="card-head">
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
+            <n-tag v-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
+            <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
           </div>
           <div class="card-alias">别名：{{ aliasStr(w.aliases) }}</div>
           <div class="card-meta">
@@ -36,11 +48,11 @@
           <div class="card-loracfg">{{ (w.loras_text || "").trim() ? "已配默认 LoRA" : "未配默认 LoRA" }}</div>
           <div class="card-avail">可用 LoRA：{{ availLoras(w).join("、") || "无匹配 LoRA" }}</div>
           <div class="card-actions">
-            <n-button size="tiny" @click="editWorkflow(idx)">编辑</n-button>
-            <n-button size="tiny" @click="copyWorkflow(idx)">复制</n-button>
-            <n-button size="tiny" @click="fetchCover(idx)">抓封面</n-button>
-            <n-button size="tiny" @click="uploadCover(idx)">传封面</n-button>
-            <n-button size="tiny" type="error" @click="removeWorkflow(idx)">删除</n-button>
+            <n-button size="tiny" @click="editWorkflow(i)">编辑</n-button>
+            <n-button size="tiny" @click="copyWorkflow(i)">复制</n-button>
+            <n-button size="tiny" @click="fetchCover(i)">抓封面</n-button>
+            <n-button size="tiny" @click="uploadCover(i)">传封面</n-button>
+            <n-button size="tiny" type="error" @click="removeWorkflow(i)">删除</n-button>
           </div>
         </div>
       </div>
@@ -71,6 +83,18 @@
           <n-switch v-model:value="editForm.is_anima" />
           <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
         </n-form-item>
+        <n-form-item label="锁定提示词（无需用户传词）">
+          <n-switch
+            v-model:value="editForm.require_prompt"
+            :checked-value="false"
+            :unchecked-value="true"
+          />
+          <span class="form-hint">开启后该工作流无需提示词即可出图（如「动漫转真人」，只需传图/引用图）；用户传了提示词也会被忽略</span>
+        </n-form-item>
+        <div class="form-grid">
+          <n-form-item label="固定正向提示词（可选）"><n-input v-model:value="editForm.default_positive" type="textarea" :rows="2" placeholder="锁定提示词时用此提示词覆盖工作流 JSON；未锁定时用户不传词也会兜底；不走翻译/改写" /></n-form-item>
+          <n-form-item label="固定负向提示词（可选）"><n-input v-model:value="editForm.default_negative" type="textarea" :rows="2" placeholder="用户未传负向提示词时，用此覆盖工作流 JSON 内的负向提示词" /></n-form-item>
+        </div>
         <div class="form-grid">
           <n-form-item label="C 站链接（抓封面）"><n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" /></n-form-item>
           <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="存于 lora_assets/，可抓取或上传" /></n-form-item>
@@ -111,7 +135,39 @@
           </n-form-item>
         </div>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
-        <n-form-item label="默认 LoRA（每行 名称|权重|启用）"><n-input v-model:value="editForm.loras_text" type="textarea" :rows="3" /></n-form-item>
+        <n-form-item label="默认 LoRA">
+          <div class="lora-list">
+            <div v-for="(row, ri) in (editForm.loraList || [])" :key="ri" class="lora-row">
+              <n-select
+                v-model:value="row.name"
+                :options="loraOptions"
+                filterable
+                clearable
+                placeholder="选择 LoRA（可搜索）"
+                style="flex: 1; min-width: 120px"
+              />
+              <n-input-number
+                v-model:value="row.weight"
+                :min="0"
+                :max="2"
+                :step="0.05"
+                :precision="2"
+                placeholder="权重"
+                style="width: 110px"
+              />
+              <n-switch v-model:value="row.enabled" size="small">
+                <template #checked>启用</template>
+                <template #unchecked>停用</template>
+              </n-switch>
+              <n-button size="tiny" quaternary type="error" @click="removeLoraRow(ri)">删除</n-button>
+            </div>
+            <n-space style="margin-top: 6px">
+              <n-button size="tiny" @click="addLoraRow">＋ 添加 LoRA</n-button>
+              <n-button size="tiny" @click="refreshLoras">↻ 刷新 LoRA 列表</n-button>
+            </n-space>
+            <div class="form-hint">从全局 LoRA 库下拉选择（可搜索）；保存后写回 loras_text（名称|权重|0/1）</div>
+          </div>
+        </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">
@@ -124,8 +180,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox } from "naive-ui";
+import { computed, onMounted, reactive, ref } from "vue";
+import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { parseAliases, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
@@ -159,6 +215,78 @@ async function load() {
 function aliasStr(raw: string): string {
   const a = parseAliases(raw);
   return a.length ? a.join(" / ") : "—";
+}
+
+// ── LoRA 图形化：与后端 _parse_loras_text / _serialize_loras_text 格式保持一致 ──
+type LoraRow = { name: string; weight: number; enabled: boolean };
+
+function parseLorasText(text: string): LoraRow[] {
+  const out: LoraRow[] = [];
+  for (const line of (text || "").split("\n")) {
+    const s = line.trim();
+    if (!s || s.startsWith("#")) continue;
+    const parts = s.split("|").map((p) => p.trim());
+    const name = parts[0] || "";
+    if (!name) continue;
+    const rawW = parseFloat(parts[1] || "");
+    const rawE = (parts[2] || "").toLowerCase();
+    const enabled = !(rawE && ["0", "0.0", "false", "禁用", "关"].includes(rawE));
+    out.push({ name, weight: isNaN(rawW) ? 1.0 : rawW, enabled });
+  }
+  return out;
+}
+
+function serializeLorasText(list: LoraRow[] | undefined | null): string {
+  return (list || [])
+    .filter((l) => l && (l.name || "").trim())
+    .map((l) => {
+      const w = Number(l.weight);
+      return `${(l.name || "").trim()}|${!isNaN(w) ? w : 1.0}|${l.enabled ? 1 : 0}`;
+    })
+    .join("\n");
+}
+
+// 工作流类型筛选：文生图 / 图生图（按是否配置参考图节点 image_node 判定，无新增字段）
+const filterType = ref<"all" | "txt2img" | "img2img">("all");
+const filteredWorkflows = computed(() => {
+  const items = workflows.value.map((w, i) => ({ w, i }));
+  if (filterType.value === "all") return items;
+  return items.filter(({ w }) => {
+    const isImg2img = !!((w.image_node || "").trim());
+    return filterType.value === "img2img" ? isImg2img : !isImg2img;
+  });
+});
+
+// LoRA 下拉选项：全局 LoRA 库 + 已选但库中不存在的名称（保留老配置可编辑，标记未知）
+const loraOptions = computed(() => {
+  const known = new Set<string>();
+  const opts = loras.value
+    .filter((l) => (l.name || "").trim())
+    .map((l) => {
+      const n = (l.name || "").trim();
+      known.add(n);
+      return { label: n, value: n };
+    });
+  for (const row of editForm.loraList || []) {
+    const n = (row.name || "").trim();
+    if (n && !known.has(n)) {
+      known.add(n);
+      opts.push({ label: `${n}（库中不存在）`, value: n });
+    }
+  }
+  return opts;
+});
+
+function addLoraRow() {
+  if (!editForm.loraList) editForm.loraList = [];
+  editForm.loraList.push({ name: "", weight: 1.0, enabled: true });
+}
+function removeLoraRow(i: number) {
+  editForm.loraList.splice(i, 1);
+}
+function refreshLoras() {
+  message.loading("正在刷新 LoRA 列表…", { duration: 3000 });
+  load();
 }
 
 function availLoras(w: any): string[] {
@@ -240,7 +368,11 @@ function openForm(idx: number, prefill?: any) {
     default_denoise: (w.default_denoise ?? -1),
     denoise_off: (w.default_denoise ?? -1) <= -1,
     workflow_json: w.workflow_json || "",
+    require_prompt: w.require_prompt !== false,
+    default_positive: w.default_positive || "",
+    default_negative: w.default_negative || "",
     loras_text: w.loras_text || "",
+    loraList: parseLorasText(w.loras_text || ""),
   })));
   editShow.value = true;
 }
@@ -265,6 +397,9 @@ async function saveEdit() {
     // denoise 开关：勾选不注入时强制 -1（低于 min 的语义值，后端识别为「不注入」）
     if (v.denoise_off) v.default_denoise = -1;
     delete v.denoise_off;
+    // LoRA 图形化列表 → 序列化为后端兼容的 loras_text（每行 名称|权重|0/1）
+    v.loras_text = serializeLorasText(v.loraList);
+    delete v.loraList;
     if (editIndex.value < 0 || editIndex.value >= workflows.value.length) {
       workflows.value.unshift(v);
     } else {
@@ -381,6 +516,13 @@ onMounted(load);
 .view-head h2 { margin: 0 0 4px; }
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
+.filter-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex: 0 0 auto; flex-wrap: wrap; }
+.filter-hint { color: var(--text-sub); font-size: 12px; }
+.filter-radios { display: flex; flex-wrap: wrap; gap: 4px; }
+.filter-radios :deep(.n-radio-group) { flex-wrap: wrap; gap: 4px; }
+.filter-radios :deep(.n-radio-button) { flex: 0 0 auto; }
+.lora-list { width: 100%; }
+.lora-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .wf-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .wf-card {

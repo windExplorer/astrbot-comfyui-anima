@@ -2445,10 +2445,6 @@ class ComfyUIDrawPlugin(Star):
             logger.info(f"【绘图·解析】 用户 {user_id or '(unknown)'} 触发生图限额，拒绝：{_reason}")
             await self._send(event, _reason)
             return
-        if not positive or not positive.strip():
-            await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
-            return
-
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
@@ -2463,6 +2459,52 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【绘图·失败】[配置] {e}")
             await self._send(event, f"绘图配置有误：{e} 请联系管理员调整。")
             return
+
+        # —— 无提示词 / 固定提示词工作流支持 ——
+        # 图生图工作流（配置了参考图节点 image_node）必须要有参考图（消息图或引用图），
+        # 否则直接拦截并提示，绝不回退默认工作流，也不允许无参考图的图生图裸跑。
+        if (wf.get("image_node") or "").strip() and not init_images:
+            _wf_n = wf.get("name") or "该工作流"
+            logger.info(f"【绘图·解析】 工作流「{_wf_n}」需要参考图但未传图/未引用图，拦截")
+            await self._send(
+                event,
+                f"「{_wf_n}」需要参考图哦～ 请在消息里附带一张图片，或引用一条带图片的消息后再试。",
+            )
+            return
+
+        # 固定提示词标记：提示词来自工作流配置（default_positive/negative），
+        # 视为作者精心写好的内容，跳过翻译 / LLM 改写 / LoRA 预设与触发词注入，
+        # 避免动态改写破坏固定配方。
+        _fixed_prompt = False
+        _require_prompt = bool(wf.get("require_prompt", True))
+        _default_pos = (wf.get("default_positive") or "").strip()
+        _default_neg = (wf.get("default_negative") or "").strip()
+
+        if not _require_prompt:
+            # 工作流锁定提示词：用户传的提示词静默忽略（不替换、不报错）。
+            if _default_pos:
+                positive = _default_pos
+                _fixed_prompt = True
+                logger.info(f"【提示词】 工作流「{wf.get('name')}」锁定提示词，使用配置的固定正向提示词")
+            else:
+                # 未配置固定提示词 → 走工作流 JSON 文件内固化好的提示词（不注入覆盖）
+                positive = ""
+                logger.info(f"【提示词】 工作流「{wf.get('name')}」锁定提示词且未配置固定提示词，沿用工作流 JSON 内的提示词")
+        else:
+            # 不锁定提示词：用户传了用用户的；没传则用固定提示词兜底；都没有则拦截。
+            if not positive or not positive.strip():
+                if _default_pos:
+                    positive = _default_pos
+                    _fixed_prompt = True
+                    logger.info(f"【提示词】 用户未提供提示词，使用工作流固定正向提示词")
+                else:
+                    await self._send(event, "请提供正向提示词，例如：/draw 一只白色水手服少女")
+                    return
+
+        # 负向提示词：用户未传负向时，若工作流配置了固定负向，则用它覆盖 JSON 原值。
+        if (not negative or not negative.strip()) and _default_neg:
+            negative = _default_neg
+            logger.info(f"【提示词】 用户未提供负向提示词，使用工作流固定负向提示词")
 
         # 加载工作流 JSON
         self._cleanup_temp()
@@ -2557,7 +2599,9 @@ class ComfyUIDrawPlugin(Star):
         # - 动漫工作流（is_anima=true）：改写为纯英文 Anima 标签（强制动漫风格）。
         # - 真人/写实工作流（is_anima=false）：清理结构标记、统一为中文写实提示词。
         # 原生调用（source 为空）：仅动漫工作流含中文时按翻译模式处理中文片段。
-        if source:
+        # 固定提示词（来自 default_positive，_fixed_prompt=True）跳过改写/翻译，
+        # 视为作者精心写好的内容，不做任何动态加工。
+        if source and not _fixed_prompt:
             try:
                 if wf.get("is_anima"):
                     logger.info(f"【绘图·LLM①】trace={_trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
@@ -2573,22 +2617,26 @@ class ComfyUIDrawPlugin(Star):
                         logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {positive}")
             except Exception as e:
                 logger.warning(f"【提示词】 LLM 改写失败，保留原提示词: {e}")
-        elif wf.get("is_anima") and self._has_chinese(positive):
+        elif not _fixed_prompt and wf.get("is_anima") and self._has_chinese(positive):
             logger.info(f"【绘图·LLM③】trace={_trace_id} 阶段=翻译中文提示词 原生调用含中文进入LLM")
             translated = await self._translate_prompt(wf, positive)
             if translated:
                 positive = translated
                 logger.info(f"Anima 提示词翻译结果: {positive}")
 
-        # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词
-        if lora_presets:
+        # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词。
+        # 固定提示词或走 JSON 原值（positive 为空）时跳过，避免污染固定配方。
+        if lora_presets and positive and not _fixed_prompt:
             positive, negative = self._apply_lora_presets(lora_presets, positive, negative)
 
-        # 注入提示词（正/负下输入框名固定为 text，无需配置）
-        logger.info(f"正向提示词: {positive}")
-        workflow_builder.set_text_node(
-            prompt, wf.get("positive_node"), "text", positive
-        )
+        # 注入提示词（正/负下输入框名固定为 text，无需配置）。
+        # 仅当提示词非空时注入：锁定提示词且未配置固定提示词时 positive 为空，
+        # 此时保留工作流 JSON 内固化好的提示词原值，绝不用空串覆盖。
+        if positive:
+            logger.info(f"正向提示词: {positive}")
+            workflow_builder.set_text_node(
+                prompt, wf.get("positive_node"), "text", positive
+            )
         if negative:
             logger.info(f"负向提示词: {negative}")
             workflow_builder.set_text_node(
@@ -2729,7 +2777,8 @@ class ComfyUIDrawPlugin(Star):
                         if not (lora_presets and (lora_presets.get(ln) or "").strip() == "0"):
                             always_pre[ln] = "0"
                         break
-            if always_pre:
+            # 固定提示词或走 JSON 原值（positive 为空）时跳过常驻预设追加，避免污染固定配方
+            if always_pre and positive and not _fixed_prompt:
                 positive, negative = self._apply_lora_presets(
                     always_pre, positive, negative
                 )
@@ -2784,7 +2833,9 @@ class ComfyUIDrawPlugin(Star):
                     _tw = _tw.strip()
                     if _tw and _tw not in _triggers:
                         _triggers.append(_tw)
-            if _triggers:
+            # 固定提示词或走 JSON 原值（positive 为空）时不追加触发词，
+            # 避免覆盖工作流 JSON 内固化好的提示词
+            if _triggers and positive and not _fixed_prompt:
                 _pos_set = [p.strip() for p in re.split(r"[\n,，、;；]+", positive or "")]
                 _add = [t for t in _triggers if t not in _pos_set and t not in (positive or "")]
                 if _add:
@@ -3326,13 +3377,14 @@ class ComfyUIDrawPlugin(Star):
             await self.cmd_help(event)
             event.stop_event()
             return
-        # 触发词行为区分（关键）：
-        #   /画 允许可选工作流名；/绘图|/绘画|/生图|/画图|/作画|/画画 语义明确是
-        #   「用默认工作流」，首 token 一律当作提示词，绝不解析工作流名。
-        #   否则「/绘图 一个女孩」会把首 token "一个女孩" 误判为工作流名而报错。
+        # 触发词行为区分：
+        #   /画 允许可选工作流名；/绘图|/绘画|/生图|/画图|/作画|/画画 也可解析首 token
+        #   工作流名（支持「[图片] /绘图 动漫转真人」这类无提示词调用锁定提示词的工作流）。
+        #   规则：首 token 长度 ≤ 10 且命中已知工作流才拆出作为工作流名，否则整句当提示词，
+        #   因此「/绘图 一个女孩」不会被误判（"一个女孩" 不是已知工作流）。
         trig = (m.group(1) or "").strip().lstrip("/／")
-        allow_wf = (trig == "画")
-        # 尝试把 rest 首 token 当作可选工作流名（仅 /画 触发词）。规则：
+        allow_wf = True
+        # 尝试把 rest 首 token 当作可选工作流名。规则：
         #  - 首 token 长度 > 10（多半是用户直接写提示词，只是恰好开头像工作流名）
         #    → 不解析为工作流，整句当作提示词用默认工作流。
         #  - 首 token 长度 ≤ 10，且命中已知工作流 → 拆出作为指定工作流名。
@@ -3355,8 +3407,11 @@ class ComfyUIDrawPlugin(Star):
         prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest_for_parse)
         # 工作流优先级：显式 --wf > 首 token 推断的工作流名 > 默认
         wf_name = wf_arg or wf_specified
-        if not prompt.strip():
-            await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf=wf_name or "默认"))
+        # 空提示词拦截：仅当「既无提示词又未指定工作流」时才提示用法。
+        # 指定了工作流名则放行——该工作流可能锁定提示词（require_prompt=false，
+        # 无提示词即可出图，如 [图片] /绘图 动漫转真人），由 _do_draw 统一处理。
+        if not prompt.strip() and not wf_name:
+            await self._send(event, random.choice(_WF_HINTS["no_arg"]).format(wf="默认"))
             event.stop_event()
             return
         # 提前取图：决定是否走图生图默认工作流
