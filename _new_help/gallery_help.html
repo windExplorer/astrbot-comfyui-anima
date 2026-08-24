@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>图库使用指南</title>
+<style>
+  @font-face {
+    font-family: "LXGW";
+    src: url("LXGWWenKaiLite-GB2312.woff2") format("woff2");
+    font-weight: normal;
+    font-style: normal;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 720px; }
+  body {
+    font-family: "LXGW", "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: url(base.webp) center 8% / cover no-repeat;
+    padding: 26px 24px 30px;
+  }
+  .panel {
+    position: relative;
+    background: rgba(255, 255, 255, .75);
+    border-radius: 22px;
+    padding: 30px 34px 24px;
+    box-shadow: 0 8px 28px rgba(120, 70, 110, .22);
+  }
+
+  .logo {
+    position: absolute; top: 22px; right: 24px; width: 150px; height: 150px;
+    border-radius: 50%; border: 5px solid #fff; object-fit: cover;
+    box-shadow: 0 4px 14px rgba(180, 80, 130, .35);
+  }
+
+  h1 {
+    font-size: 40px; color: #d6336c; letter-spacing: 2px; font-weight: 700;
+    padding-right: 170px;
+  }
+  .sub { font-size: 16px; color: #a05a78; margin-top: 6px; letter-spacing: 1px; }
+
+  .group { margin-top: 24px; }
+  h2 {
+    font-size: 23px; color: #d6336c; display: flex; align-items: center; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .dot { width: 15px; height: 15px; border-radius: 50%; display: inline-block; flex: 0 0 auto;
+    background: #ff5c8a; box-shadow: 0 0 0 4px #ffd9e4; }
+  .line { font-size: 20px; color: #333; line-height: 2.0; padding: 2px 0; }
+  .cmd { color: #c2255c; font-weight: 700; }
+  .desc { color: #5c5c6e; }
+  .note { color: #8a8a9a; font-size: 16px; padding-left: 2px; }
+
+  .tip {
+    margin-top: 20px; text-align: center; color: #b06a86; font-size: 15.5px;
+  }
+
+  footer {
+    margin-top: 18px; text-align: center; color: #8a5a70; font-size: 15px;
+    border-top: 1px dashed rgba(214, 51, 108, .3); padding-top: 12px;
+  }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <img class="logo" src="logo.png" alt="">
+
+    <h1>图库使用指南</h1>
+    <div class="sub">ComfyUI 萌绘 · 图库模块</div>
+
+    <div class="group">
+      <h2><span class="dot"></span>基础操作</h2>
+      <div class="line"><span class="cmd">/图库 列表</span> <span class="desc">— 看看图库里存了什么</span></div>
+      <div class="line"><span class="cmd">/图库 搜索 猫</span> <span class="desc">— 按画面关键词找图</span></div>
+      <div class="line"><span class="cmd">/图库 取图 3</span> <span class="desc">— 把第 3 张图发出来（多张：1,5）</span></div>
+      <div class="line"><span class="cmd">/图库 打标签 3 合照</span> <span class="desc">— 给第 3 张图加标签「合照」</span></div>
+      <div class="line"><span class="cmd">/图库 打标签 3 合照 猫娘</span> <span class="desc">— 一次加多个标签（空格隔开）</span></div>
+      <div class="line"><span class="cmd">/图库 找标签 合照</span> <span class="desc">— 用标签把图找出来</span></div>
+    </div>
+
+    <div class="group">
+      <h2><span class="dot"></span>收藏</h2>
+      <div class="line"><span class="cmd">/图库 收藏 3</span> <span class="desc">— 收藏第 3 张图（永不清理）</span></div>
+      <div class="line"><span class="cmd">/图库 取消收藏 3</span> <span class="desc">— 取消收藏</span></div>
+      <div class="line"><span class="cmd">/图库 收藏列表</span> <span class="desc">— 看我收藏的图</span></div>
+      <div class="line"><span class="cmd">/图库 保存 [标签]</span> <span class="desc">— 收藏当前这张图（可顺手打标签）</span></div>
+    </div>
+
+    <div class="group">
+      <h2><span class="dot"></span>可见性</h2>
+      <div class="line"><span class="cmd">/图库 全局 3</span> <span class="desc">— 任何群聊的列表/搜索都能看到</span></div>
+      <div class="line"><span class="cmd">/图库 取消全局 3</span> <span class="desc">— 取消全局，仅本会话可见</span></div>
+      <div class="line note">　全局图他人不可检索/发送，仅作者本人可发图</div>
+      <div class="line"><span class="cmd">/图库 公开 3</span> <span class="desc">— 公开，他人可检索/发送</span></div>
+      <div class="line"><span class="cmd">/图库 私有 3</span> <span class="desc">— 设回私有，仅本人可见</span></div>
+    </div>
+
+    <div class="tip">小技巧：群聊搜不到的图，先在私聊搜到记下序号，回群聊 /图库 取图 序号 也能发出来</div>
+
+    <footer>数字 = 列表里的序号　·　只能操作自己的图　·　收藏/全局/公开的图不参与清理</footer>
+  </div>
+</body>
+</html>
