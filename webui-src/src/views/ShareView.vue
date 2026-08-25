@@ -38,6 +38,7 @@
             :load-more="loadWorld"
             :loading="world.loading"
             :nsfw="true"
+            :refresh="refreshWorld"
             @item-click="m => openViewer(m, world.list)"
           >
             <template #meta="{ item: m }">
@@ -69,6 +70,7 @@
               :load-more="loadGallery"
               :loading="gallery.loading"
               :nsfw="true"
+              :refresh="refreshGallery"
               @item-click="m => openViewer(m, gallery.list)"
             >
               <template #badges="{ item: m }">
@@ -98,6 +100,7 @@
               :items="fav.mine"
               :img-src="m => imgUrl(m.sha256, true, 600)"
               :nsfw="true"
+              :refresh="loadFav"
               @item-click="m => openViewer(m, fav.mine)"
             >
               <template #meta="{ item: m }">
@@ -114,6 +117,7 @@
               :items="fav.others"
               :img-src="m => imgUrl(m.sha256, true, 600)"
               :nsfw="true"
+              :refresh="loadFav"
               @item-click="m => openViewer(m, fav.others)"
             >
               <template #meta="{ item: m }">
@@ -163,6 +167,7 @@
                 :items="recycle"
                 :img-src="m => imgUrl(m.sha256, true, 600)"
                 :nsfw="true"
+                :refresh="refreshRecycle"
                 @item-click="m => openViewer(m, recycle)"
               >
                 <template #meta="{ item: m }">
@@ -365,6 +370,13 @@ async function loadWorld() {
     world.loading = false;
   }
 }
+async function refreshWorld() {
+  world.list = [];
+  world.offset = 0;
+  world.hasMore = true;
+  await loadWorld();
+  toast("已刷新");
+}
 
 // ---- 图库 ----
 const galleryVis = ref("all");
@@ -383,6 +395,13 @@ async function loadGallery() {
   } finally {
     gallery.loading = false;
   }
+}
+async function refreshGallery() {
+  gallery.list = [];
+  gallery.offset = 0;
+  gallery.hasMore = true;
+  await loadGallery();
+  toast("已刷新");
 }
 function onVisChange(v: string) {
   galleryVis.value = v;
@@ -422,6 +441,15 @@ async function loadProfile() {
     const r = await getJ("recycle");
     recycle.value = r.images || [];
   } catch { /* ignore */ }
+}
+async function refreshRecycle() {
+  try {
+    const r = await getJ("recycle");
+    recycle.value = r.images || [];
+    toast("已刷新");
+  } catch (e: any) {
+    toast("刷新失败: " + e.message);
+  }
 }
 
 // ---- 操作 ----

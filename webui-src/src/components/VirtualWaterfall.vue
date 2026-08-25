@@ -1,6 +1,18 @@
 <template>
-  <div ref="boxRef" class="vf-box" @scroll.passive="onScroll">
-    <div class="vf-canvas" :style="{ height: totalHeight + 'px' }">
+  <div
+    ref="boxRef"
+    class="vf-box"
+    @scroll.passive="onScroll"
+    @touchstart.passive="onTouchStart"
+    @touchend="onTouchEnd"
+    @touchcancel="onTouchEnd"
+  >
+    <div class="vf-pull" :style="pullStyle">
+      <template v-if="pullState === 'refreshing'">↻ 刷新中…</template>
+      <template v-else-if="pullState === 'release'">⇅ 松手刷新</template>
+      <template v-else>⇃ 下拉刷新</template>
+    </div>
+    <div ref="canvasEl" class="vf-canvas" :style="canvasStyle">
       <div v-for="v in visible" :key="v.m.sha256 || v.m.sha" class="vf-item" :style="itemStyle(v)">
         <div class="wf-card">
           <div class="wf-img" :style="{ height: v.h + 'px' }" @click="onClick(v.m)">
@@ -30,14 +42,95 @@ const props = defineProps<{
   hasMore?: boolean;
   loading?: boolean;
   nsfw?: boolean;
+  refresh?: () => void | Promise<void>;
 }>();
 
 const emit = defineEmits<{ (e: "item-click", item: any): void }>();
+
+// ---- 下拉刷新 ----
+const PULL_THRESHOLD = 70;
+const pullState = ref<"idle" | "pull" | "release" | "refreshing">("idle");
+const pullDist = ref(0);
+const refreshing = ref(false);
+let touchStartY = 0;
+let touchActive = false;
+let pullActive = false;
+let pullTimer: any = null;
+
+function onTouchStart(e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t) return;
+  touchStartY = t.clientY;
+  touchActive = true;
+  pullActive = false;
+}
+function onTouchMove(e: TouchEvent) {
+  if (!touchActive) return;
+  const t = e.touches[0];
+  if (!t) return;
+  const el = boxRef.value;
+  const dy = t.clientY - touchStartY;
+  // 仅当在顶部且向下拉时启用下拉刷新（避免与上滑滚动冲突）
+  if (el && el.scrollTop <= 0 && dy > 0) {
+    if (refreshing.value) {
+      pullDist.value = 0;
+      return;
+    }
+    pullActive = true;
+    // 阻止页面级橡皮筋/下拉刷新，让手势归本组件处理
+    if (e.cancelable) e.preventDefault();
+    // 跟手时禁用过渡，松手时恢复
+    if (canvasEl.value) canvasEl.value.style.transition = "none";
+    // 阻尼：越拉越费力
+    const damp = Math.min(1, dy / 140);
+    pullDist.value = Math.min(120, dy * damp);
+    pullState.value = pullDist.value >= PULL_THRESHOLD ? "release" : "pull";
+  } else if (!pullActive) {
+    // 正常滚动，不干预
+  }
+}
+async function onTouchEnd() {
+  touchActive = false;
+  if (!pullActive) return;
+  pullActive = false;
+  const dist = pullDist.value;
+  pullDist.value = 0;
+  if (canvasEl.value) canvasEl.value.style.transition = "";
+  if (dist >= PULL_THRESHOLD && !refreshing.value) {
+    pullState.value = "refreshing";
+    refreshing.value = true;
+    try {
+      if (props.refresh) await props.refresh();
+    } finally {
+      refreshing.value = false;
+      pullState.value = "idle";
+      pullTimer = setTimeout(() => {
+        pullState.value = "idle";
+        pullDist.value = 0;
+      }, 0);
+    }
+  } else {
+    pullState.value = "idle";
+  }
+}
+
+const pullStyle = computed(() => {
+  const h = pullState.value === "refreshing" ? 44 : pullDist.value;
+  return {
+    height: h + "px",
+    opacity: Math.min(1, (pullState.value === "refreshing" ? 1 : pullDist.value) / PULL_THRESHOLD),
+  };
+});
+const canvasStyle = computed(() => {
+  const dy = pullState.value === "refreshing" ? 44 : pullDist.value;
+  return { height: totalHeight.value + "px", transform: `translateY(${dy}px)` };
+});
 
 // 卡片附加高度：meta 行 + actions 行 + 内外边距（各 tab 的按钮高度保持一致）
 const CARD_EXTRA = 62;
 
 const boxRef = ref<HTMLElement | null>(null);
+const canvasEl = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewH = ref(600);
 const colW = ref(0);
@@ -125,12 +218,18 @@ onMounted(() => {
     measure();
     rebuild();
   });
-  if (boxRef.value) ro.observe(boxRef.value);
+  if (boxRef.value) {
+    ro.observe(boxRef.value);
+    // touchmove 需非 passive 才能 preventDefault（禁掉橡皮筋/页面刷新）
+    boxRef.value.addEventListener("touchmove", onTouchMove, { passive: false });
+  }
   rebuild();
   nextTick(() => maybeLoad());
 });
 onUnmounted(() => {
   ro?.disconnect();
+  boxRef.value?.removeEventListener("touchmove", onTouchMove as any);
+  clearTimeout(pullTimer);
 });
 
 watch(
@@ -150,8 +249,16 @@ watch([colW, colCount], () => rebuild());
   height: 100%;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
-.vf-canvas { position: relative; width: 100%; }
+.vf-canvas { position: relative; width: 100%; transition: transform 0.25s ease; }
+.vf-pull {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-sub, #9a7a88); font-size: 12px;
+  overflow: hidden; pointer-events: none;
+}
 .vf-item { position: absolute; top: 0; left: 0; }
 .wf-card {
   border-radius: 12px;
