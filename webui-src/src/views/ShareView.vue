@@ -40,7 +40,7 @@
             :has-more="world.hasMore"
             :load-more="loadWorld"
             :loading="world.loading"
-            :nsfw="true"
+            :nsfw="nsfwBlurGlobal"
             :refresh="refreshWorld"
             @item-click="m => openViewer(m, world.list, 'world')"
           >
@@ -67,7 +67,7 @@
             :has-more="gallery.hasMore"
             :load-more="loadGallery"
             :loading="gallery.loading"
-            :nsfw="true"
+            :nsfw="nsfwBlurGlobal"
             :refresh="refreshGallery"
             @item-click="m => openViewer(m, gallery.list, 'gallery')"
           >
@@ -95,7 +95,7 @@
           <VirtualWaterfall
             :items="favList"
             :img-src="m => imgUrl(m.sha256, true, 600)"
-            :nsfw="true"
+            :nsfw="nsfwBlurGlobal"
             :refresh="loadFav"
             @item-click="m => openViewer(m, fav.list, 'fav')"
           >
@@ -142,7 +142,7 @@
               <VirtualWaterfall
                 :items="recycle"
                 :img-src="m => imgUrl(m.sha256, true, 600)"
-                :nsfw="true"
+                :nsfw="nsfwBlurGlobal"
                 :refresh="refreshRecycle"
                 @item-click="m => openViewer(m, recycle, 'recycle')"
               >
