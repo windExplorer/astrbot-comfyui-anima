@@ -133,167 +133,140 @@ class ImageStore:
         if not _HAS_SQLITE:
             logger.warning("[图库] 环境无 sqlite3，图库功能不可用")
             return
-        try:
-            conn = self._conn_get()
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS images (
-                    sha256     TEXT PRIMARY KEY,
-                    ext        TEXT NOT NULL DEFAULT 'png',
-                    month      TEXT NOT NULL DEFAULT '',
-                    prompt     TEXT NOT NULL DEFAULT '',
-                    prompt_raw TEXT NOT NULL DEFAULT '',
-                    workflow   TEXT NOT NULL DEFAULT '',
-                    loras      TEXT NOT NULL DEFAULT '',
-                    seed       INTEGER,
-                    w          INTEGER,
-                    h          INTEGER,
-                    denoise    REAL,
-                    is_img2img INTEGER NOT NULL DEFAULT 0,
-                    ref_sha256 TEXT NOT NULL DEFAULT '',
-                    source     TEXT NOT NULL DEFAULT 'gen',
-                    use_count  INTEGER NOT NULL DEFAULT 0,
-                    starred    INTEGER NOT NULL DEFAULT 0,
-                    created_at REAL NOT NULL DEFAULT 0,
-                    size_bytes INTEGER DEFAULT NULL,
-                    cost_sec   REAL DEFAULT NULL,
-                    user_id    TEXT DEFAULT NULL,
-                    user_name  TEXT DEFAULT NULL,
-                    trigger_msg TEXT DEFAULT NULL,
-                    status     INTEGER NOT NULL DEFAULT 0,
-                    deleted    INTEGER NOT NULL DEFAULT 0,
-                    deleted_at REAL DEFAULT NULL,
-                    is_public  INTEGER NOT NULL DEFAULT 0,
-                    is_global  INTEGER NOT NULL DEFAULT 0,
-                    session_id TEXT DEFAULT ''
-                )
-                """
-            )
-            # 兼容已存在的旧库：缺列则补上
-            for _col, _type in (
-                ("size_bytes", "INTEGER"),
-                ("cost_sec", "REAL"),
-                ("user_id", "TEXT"),
-                ("user_name", "TEXT"),
-                ("trigger_msg", "TEXT"),
-                ("status", "INTEGER NOT NULL DEFAULT 0"),
-                ("deleted", "INTEGER NOT NULL DEFAULT 0"),
-                ("deleted_at", "REAL DEFAULT NULL"),
-                ("is_public", "INTEGER NOT NULL DEFAULT 0"),
-                ("is_global", "INTEGER NOT NULL DEFAULT 0"),
-                ("session_id", "TEXT DEFAULT ''"),
-                ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
-                ("nsfw_score", "REAL DEFAULT NULL"),
-                ("nsfw_blur", "INTEGER DEFAULT NULL"),
-                ("nsfw_checked", "INTEGER NOT NULL DEFAULT 0"),
-            ):
-                try:
-                    conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
-                except Exception:
-                    pass
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS image_tags (
-                    sha256 TEXT NOT NULL,
-                    tag     TEXT NOT NULL,
-                    PRIMARY KEY (sha256, tag)
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_images_month ON images(month)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_images_session ON images(session_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tags_tag ON image_tags(tag)"
-            )
-            # 分享站：点赞（按用户+时间记录，不只计数）
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS image_likes (
-                    sha256    TEXT NOT NULL,
-                    user_id   TEXT NOT NULL,
-                    user_name TEXT DEFAULT NULL,
-                    created_at REAL NOT NULL,
-                    PRIMARY KEY (sha256, user_id)
-                )
-                """
-            )
-            # 分享站：收藏（按用户+时间记录）
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS image_favorites (
-                    sha256    TEXT NOT NULL,
-                    user_id   TEXT NOT NULL,
-                    user_name TEXT DEFAULT NULL,
-                    created_at REAL NOT NULL,
-                    PRIMARY KEY (sha256, user_id)
-                )
-                """
-            )
-            # 分享站：临时访问令牌（带过期）
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS share_tokens (
-                    token      TEXT PRIMARY KEY,
-                    user_id    TEXT NOT NULL,
-                    user_name  TEXT DEFAULT NULL,
-                    created_at REAL NOT NULL,
-                    expire_at  REAL NOT NULL
-                )
-                """
-            )
-            # 用户表：集中维护用户元数据（QQ 号、昵称、平台、首次使用 / 最后活跃）。
-            # 无独立用户表时用户身份散落在各业务表（images/likes/favorites/share_tokens 的 user_id）。
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id    TEXT PRIMARY KEY,
-                    user_name  TEXT DEFAULT NULL,
-                    platform   TEXT DEFAULT NULL,
-                    first_seen REAL NOT NULL,
-                    last_seen  REAL NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
-            # 用户维度索引：用户登记回填（按 user_id 查最早活动）与用户统计使用
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_likes_user ON image_likes(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_fav_user ON image_favorites(user_id)")
-            conn.commit()
-        except Exception as e:  # pragma: no cover
-            logger.error(f"[图库] 初始化数据库失败: {e}", exc_info=True)
-            # 兜底：上面主建表流程失败时，users 表与用户维度索引可能没建。
-            # 用独立 try 逐条执行，防止单条失败阻断，并打具体错误便于定位。
-            for _sql, _label in (
-                ("""CREATE TABLE IF NOT EXISTS users (
-                    user_id    TEXT PRIMARY KEY,
-                    user_name  TEXT DEFAULT NULL,
-                    platform   TEXT DEFAULT NULL,
-                    first_seen REAL NOT NULL,
-                    last_seen  REAL NOT NULL
-                )""", "users 表"),
-                ("CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id)", "idx_images_user"),
-                ("CREATE INDEX IF NOT EXISTS idx_likes_user ON image_likes(user_id)", "idx_likes_user"),
-                ("CREATE INDEX IF NOT EXISTS idx_fav_user ON image_favorites(user_id)", "idx_fav_user"),
-            ):
-                try:
-                    conn.execute(_sql)
-                    logger.info(f"[图库] 兜底建 {_label} 成功")
-                except Exception as _e2:
-                    logger.warning(f"[图库] 兜底建 {_label} 失败: {_e2}")
+        conn = self._conn_get()
+
+        def _ddl(label: str, sql: str) -> None:
+            """执行一条 DDL，成功打 INFO、失败打 WARNING（不中断后续建表）。"""
             try:
-                conn.commit()
-            except Exception as _e3:
-                logger.warning(f"[图库] 兜底 commit 失败: {_e3}")
+                conn.execute(sql)
+                logger.info(f"[图库] 建 {label} 成功")
+            except Exception as _e:
+                logger.warning(f"[图库] 建 {label} 失败: {_e}")
+
+        # 每张表 / 每个索引独立执行并打日志，任一步失败都不阻断，且失败信息直接可见。
+        _ddl(
+            "images 表",
+            """CREATE TABLE IF NOT EXISTS images (
+                sha256     TEXT PRIMARY KEY,
+                ext        TEXT NOT NULL DEFAULT 'png',
+                month      TEXT NOT NULL DEFAULT '',
+                prompt     TEXT NOT NULL DEFAULT '',
+                prompt_raw TEXT NOT NULL DEFAULT '',
+                workflow   TEXT NOT NULL DEFAULT '',
+                loras      TEXT NOT NULL DEFAULT '',
+                seed       INTEGER,
+                w          INTEGER,
+                h          INTEGER,
+                denoise    REAL,
+                is_img2img INTEGER NOT NULL DEFAULT 0,
+                ref_sha256 TEXT NOT NULL DEFAULT '',
+                source     TEXT NOT NULL DEFAULT 'gen',
+                use_count  INTEGER NOT NULL DEFAULT 0,
+                starred    INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL DEFAULT 0,
+                size_bytes INTEGER DEFAULT NULL,
+                cost_sec   REAL DEFAULT NULL,
+                user_id    TEXT DEFAULT NULL,
+                user_name  TEXT DEFAULT NULL,
+                trigger_msg TEXT DEFAULT NULL,
+                status     INTEGER NOT NULL DEFAULT 0,
+                deleted    INTEGER NOT NULL DEFAULT 0,
+                deleted_at REAL DEFAULT NULL,
+                is_public  INTEGER NOT NULL DEFAULT 0,
+                is_global  INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT DEFAULT ''
+            )""",
+        )
+        # 兼容已存在的旧库：缺列则补上
+        for _col, _type in (
+            ("size_bytes", "INTEGER"),
+            ("cost_sec", "REAL"),
+            ("user_id", "TEXT"),
+            ("user_name", "TEXT"),
+            ("trigger_msg", "TEXT"),
+            ("status", "INTEGER NOT NULL DEFAULT 0"),
+            ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+            ("deleted_at", "REAL DEFAULT NULL"),
+            ("is_public", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_global", "INTEGER NOT NULL DEFAULT 0"),
+            ("session_id", "TEXT DEFAULT ''"),
+            ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
+            ("nsfw_score", "REAL DEFAULT NULL"),
+            ("nsfw_blur", "INTEGER DEFAULT NULL"),
+            ("nsfw_checked", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
+            except Exception:
+                pass
+        _ddl(
+            "image_tags 表",
+            """CREATE TABLE IF NOT EXISTS image_tags (
+                sha256 TEXT NOT NULL,
+                tag     TEXT NOT NULL,
+                PRIMARY KEY (sha256, tag)
+            )""",
+        )
+        _ddl("idx_images_month", "CREATE INDEX IF NOT EXISTS idx_images_month ON images(month)")
+        _ddl("idx_images_created", "CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at)")
+        _ddl("idx_images_session", "CREATE INDEX IF NOT EXISTS idx_images_session ON images(session_id)")
+        _ddl("idx_tags_tag", "CREATE INDEX IF NOT EXISTS idx_tags_tag ON image_tags(tag)")
+        # 分享站：点赞（按用户+时间记录，不只计数）
+        _ddl(
+            "image_likes 表",
+            """CREATE TABLE IF NOT EXISTS image_likes (
+                sha256    TEXT NOT NULL,
+                user_id   TEXT NOT NULL,
+                user_name TEXT DEFAULT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (sha256, user_id)
+            )""",
+        )
+        # 分享站：收藏（按用户+时间记录）
+        _ddl(
+            "image_favorites 表",
+            """CREATE TABLE IF NOT EXISTS image_favorites (
+                sha256    TEXT NOT NULL,
+                user_id   TEXT NOT NULL,
+                user_name TEXT DEFAULT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (sha256, user_id)
+            )""",
+        )
+        # 分享站：临时访问令牌（带过期）
+        _ddl(
+            "share_tokens 表",
+            """CREATE TABLE IF NOT EXISTS share_tokens (
+                token      TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL,
+                user_name  TEXT DEFAULT NULL,
+                created_at REAL NOT NULL,
+                expire_at  REAL NOT NULL
+            )""",
+        )
+        # 用户表：集中维护用户元数据（QQ 号、昵称、平台、首次使用 / 最后活跃）。
+        # 无独立用户表时用户身份散落在各业务表（images/likes/favorites/share_tokens 的 user_id）。
+        _ddl(
+            "users 表",
+            """CREATE TABLE IF NOT EXISTS users (
+                user_id    TEXT PRIMARY KEY,
+                user_name  TEXT DEFAULT NULL,
+                platform   TEXT DEFAULT NULL,
+                first_seen REAL NOT NULL,
+                last_seen  REAL NOT NULL
+            )""",
+        )
+        _ddl("idx_likes_sha", "CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
+        _ddl("idx_fav_sha", "CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
+        _ddl("idx_share_user", "CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
+        # 用户维度索引：用户登记回填（按 user_id 查最早活动）与用户统计使用
+        _ddl("idx_images_user", "CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id)")
+        _ddl("idx_likes_user", "CREATE INDEX IF NOT EXISTS idx_likes_user ON image_likes(user_id)")
+        _ddl("idx_fav_user", "CREATE INDEX IF NOT EXISTS idx_fav_user ON image_favorites(user_id)")
+        try:
+            conn.commit()
+        except Exception as _e:
+            logger.warning(f"[图库] 初始化 commit 失败: {_e}")
 
     def close(self) -> None:
         if self._conn is not None:
