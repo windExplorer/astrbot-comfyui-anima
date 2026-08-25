@@ -189,6 +189,7 @@ class StandaloneWebUI:
         app.router.add_route("*", "/api/share/{tail:.*}", self._handle_share_api)
         app.router.add_get("/share/img/{sha}", self._handle_share_img)
         app.router.add_get("/share/img/{sha}/thumb", self._handle_share_img)
+        app.router.add_get("/share/avatar/{user_id}", self._handle_share_avatar)
 
         # 所有业务 API（前缀 /api/*），走统一鉴权 + 分发
         for method in ("GET", "POST"):
@@ -1077,6 +1078,63 @@ class StandaloneWebUI:
             ok = g.restore(sha)
             return _ok({"ok": ok})
         return _err("Not Found: " + path, status=404)
+
+    async def _handle_share_avatar(self, request: web.Request) -> web.Response:
+        """分享站用户头像：/share/avatar/{user_id}。
+
+        优先返回本地缓存的头像（data_dir/avatars/{uid}/current.png）；无缓存时尝试从
+        QQ 头像接口拉取并缓存（拉取前把旧头像移入 history/ 作为历史记录）。失败返回 404。
+        """
+        tok = self._share_token_from(request)
+        g = self.plugin.gallery
+        info = g.get_share_token(tok) if (g and tok) else None
+        if not info:
+            return _err("分享链接无效或已过期", status=401)
+        uid = request.match_info.get("user_id", "") or ""
+        if not uid:
+            return _err("缺少 user_id", status=400)
+        data_dir = getattr(self.plugin, "data_dir", None) or Path.cwd()
+        av_dir = Path(data_dir) / "avatars" / uid
+        try:
+            av_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        current = av_dir / "current.png"
+        if current.is_file():
+            try:
+                raw = await asyncio.to_thread(current.read_bytes)
+                return web.Response(body=raw, content_type="image/png",
+                                    headers={"Cache-Control": "public, max-age=3600"})
+            except Exception:
+                pass
+        # 尝试从 QQ 拉取头像并缓存（含历史备份）
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(
+                    f"https://q1.qlogo.cn/g?b=qq&nk={uid}&s=640",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        raw = await resp.read()
+                        if raw and len(raw) > 100:
+                            if current.is_file():
+                                hist = av_dir / "history"
+                                try:
+                                    hist.mkdir(parents=True, exist_ok=True)
+                                    old = await asyncio.to_thread(current.read_bytes)
+                                    ts = time.strftime("%Y%m%d-%H%M%S")
+                                    await asyncio.to_thread((hist / f"{ts}.png").write_bytes, old)
+                                except Exception:
+                                    pass
+                            try:
+                                await asyncio.to_thread(current.write_bytes, raw)
+                            except Exception:
+                                pass
+                            return web.Response(body=raw, content_type="image/png",
+                                                headers={"Cache-Control": "public, max-age=3600"})
+        except Exception:
+            pass
+        return _err("头像不存在", status=404)
 
     async def _handle_share_img(self, request: web.Request) -> web.Response:
         tok = self._share_token_from(request)
