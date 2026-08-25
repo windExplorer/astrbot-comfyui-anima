@@ -3565,9 +3565,9 @@ class ComfyUIDrawPlugin(Star):
             uname = (getattr(event, "get_sender_name", lambda: "")() or "").strip()
         except Exception:
             pass
-        # 白名单
+        # 白名单（管理员豁免，避免把管理员自己锁在门外；留空=所有人可用）
         wl = (cfg.get("whitelist") or "").strip()
-        if wl:
+        if wl and not self._is_admin(event):
             allowed = [x.strip() for x in re.split(r"[\s,，;；\n]+", wl) if x.strip()]
             if uid not in allowed:
                 yield event.plain_result("🔒 你不在分享功能白名单中，暂不可使用 /萌绘。")
