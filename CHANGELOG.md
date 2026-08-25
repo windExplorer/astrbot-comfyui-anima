@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.47
+
+- **修复 `/萌绘` 分享链接「扫码即失效」的真正根因**：`create_share_token` 此前把 `ensure_user` 与 `INSERT share_tokens` 放在同一个 try 块，若 `ensure_user` 抛异常则 INSERT 不执行，令牌只写入内存，插件重启后内存清空、SQLite 中也没有该令牌 → 扫码必失效。
+  - `INSERT share_tokens` 改为独立 try 并优先执行，令牌**一定持久化到 SQLite**（重启/多实例均可查到）；`ensure_user` 单独 try 不影响写入；
+  - `get_share_token` 在内存与 SQLite 均查不到时打详细诊断日志（token 前缀、长度、内存令牌数），便于定位是否多实例/未持久化。
+
 ## v4.9.46
 
 - **分享站 token 多渠道兜底 + 失效判定修正**：

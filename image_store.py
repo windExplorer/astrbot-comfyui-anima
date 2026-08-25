@@ -1076,8 +1076,10 @@ class ImageStore:
             for _k in [k for k, v in self._share_tokens_mem.items()
                        if (v.get("expire_at") or 0) < time.time()]:
                 self._share_tokens_mem.pop(_k, None)
+        # SQLite 持久化：独立 try，确保令牌一定写入库中（重启/多实例后也能查到）。
+        # 绝不能与 ensure_user 放在同一 try——此前 ensure_user 异常会导致 INSERT 不执行，
+        # 令牌只进内存，插件一重启就查不到 → 扫码「链接已失效」。
         try:
-            self.ensure_user(user_id, user_name)
             conn = self._conn_get()
             conn.execute(
                 "INSERT OR REPLACE INTO share_tokens(token,user_id,user_name,created_at,expire_at) VALUES(?,?,?,?,?)",
@@ -1085,7 +1087,12 @@ class ImageStore:
             )
             conn.commit()
         except Exception as e:
-            logger.warning(f"[图库] 创建分享令牌失败（内存兜底仍可用）: {e}")
+            logger.warning(f"[图库] 创建分享令牌 SQLite 写入失败（内存兜底仍可用）: {e}")
+        # 用户登记：独立处理，绝不影响令牌写入
+        try:
+            self.ensure_user(user_id, user_name)
+        except Exception:
+            pass
         return token
 
     def get_share_token(self, token: str) -> dict | None:
@@ -1105,6 +1112,11 @@ class ImageStore:
                 "SELECT token,user_id,user_name,created_at,expire_at FROM share_tokens WHERE token=?", (token,)
             ).fetchone()
             if not row:
+                # 诊断：内存未命中 + SQLite 查无此令牌，说明令牌未持久化（或校验方与创建方非同一实例）
+                logger.warning(
+                    f"[图库] 分享令牌校验失败：内存与SQLite均无此令牌 "
+                    f"token_head={token[:8]} token_len={len(token)} 内存令牌数={len(self._share_tokens_mem)}"
+                )
                 return None
             if (row["expire_at"] or 0) < time.time():
                 try:
