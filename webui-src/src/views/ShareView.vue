@@ -94,6 +94,15 @@
 
         <!-- 个人中心 -->
         <section v-else-if="tab === 'profile'" class="profile">
+          <div class="user-card" v-if="stats && stats.user">
+            <div class="uc-avatar">👤</div>
+            <div class="uc-info">
+              <div class="uc-name">@{{ stats.user.user_name || stats.user.user_id }}</div>
+              <div class="uc-sub">UID：{{ stats.user.user_id }}</div>
+              <div class="uc-sub" v-if="stats.user.first_seen">首次使用：{{ fmt(stats.user.first_seen) }}</div>
+              <div class="uc-sub" v-if="stats.user.last_seen">最近活跃：{{ fmt(stats.user.last_seen) }}</div>
+            </div>
+          </div>
           <div class="stats" v-if="stats">
             <div class="stat"><b>{{ stats.total }}</b><span>总作品</span></div>
             <div class="stat"><b>{{ stats.public }}</b><span>公开</span></div>
@@ -565,6 +574,29 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
   border-radius: 999px;
   cursor: pointer;
 }
+.user-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border-color, #ffe3ec);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.uc-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ffb3d1, #ff8fb3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  flex: 0 0 auto;
+}
+.uc-name { font-size: 15px; font-weight: 700; }
+.uc-sub { font-size: 12px; color: var(--text-sub, #9a7a88); margin-top: 2px; }
 .profile .stats {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));

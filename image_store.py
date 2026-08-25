@@ -245,6 +245,19 @@ class ImageStore:
                 )
                 """
             )
+            # 用户表：集中维护用户元数据（QQ 号、昵称、平台、首次使用 / 最后活跃）。
+            # 无独立用户表时用户身份散落在各业务表（images/likes/favorites/share_tokens 的 user_id）。
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id    TEXT PRIMARY KEY,
+                    user_name  TEXT DEFAULT NULL,
+                    platform   TEXT DEFAULT NULL,
+                    first_seen REAL NOT NULL,
+                    last_seen  REAL NOT NULL
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
@@ -534,6 +547,9 @@ class ImageStore:
         if not src_path or not os.path.exists(src_path):
             logger.warning(f"[图库] 归档失败：源文件不存在 {src_path}")
             return None
+        # 用户登记：出图/入库时记录用户元数据（首次使用即创建用户）
+        if user_id:
+            self.ensure_user(user_id, user_name)
         sha = _sha256_of(src_path)
         if not sha:
             return None
@@ -929,6 +945,7 @@ class ImageStore:
         if not sha256 or not user_id or not self.enabled() or not _HAS_SQLITE:
             return False
         try:
+            self.ensure_user(user_id, user_name)
             conn = self._conn_get()
             conn.execute(
                 "INSERT OR REPLACE INTO image_likes(sha256,user_id,user_name,created_at) VALUES(?,?,?,?)",
@@ -976,6 +993,7 @@ class ImageStore:
         if not sha256 or not user_id or not self.enabled() or not _HAS_SQLITE:
             return False
         try:
+            self.ensure_user(user_id, user_name)
             conn = self._conn_get()
             conn.execute(
                 "INSERT OR REPLACE INTO image_favorites(sha256,user_id,user_name,created_at) VALUES(?,?,?,?)",
@@ -1036,6 +1054,7 @@ class ImageStore:
     def create_share_token(self, user_id: str, user_name: str = None, ttl_sec: int = 3600) -> str:
         token = secrets.token_urlsafe(24)
         try:
+            self.ensure_user(user_id, user_name)
             conn = self._conn_get()
             conn.execute(
                 "INSERT OR REPLACE INTO share_tokens(token,user_id,user_name,created_at,expire_at) VALUES(?,?,?,?,?)",
@@ -1231,8 +1250,53 @@ class ImageStore:
             "SELECT COUNT(*) c FROM image_likes WHERE sha256 IN (SELECT sha256 FROM images WHERE user_id=?)",
             [user_id],
         )
+        user = self.get_user(user_id)
         return {"total": total, "public": public, "private": private, "favorites": favorites,
-                "likes_given": likes_given, "likes_received": likes_received, "recycle": recycle}
+                "likes_given": likes_given, "likes_received": likes_received, "recycle": recycle,
+                "user": user}
+
+    def ensure_user(self, user_id: str, user_name: str = None, platform: str = "") -> None:
+        """用户登记：首次出现时创建用户记录，之后更新昵称与最后活跃时间。
+
+        用户第一次使用指令（出图 / 点赞 / 收藏 / 发 /萌绘）时由各业务入口调用，
+        集中维护 users 表；业务数据的归属仍由各表自身的 user_id 字段承载。
+        """
+        if not user_id:
+            return
+        try:
+            conn = self._conn_get()
+            now = time.time()
+            conn.execute(
+                "INSERT OR IGNORE INTO users(user_id,user_name,platform,first_seen,last_seen) VALUES(?,?,?,?,?)",
+                (user_id, user_name, platform or "", now, now),
+            )
+            conn.execute(
+                "UPDATE users SET user_name=COALESCE(?,user_name), platform=COALESCE(?,platform), "
+                "last_seen=? WHERE user_id=?",
+                (user_name, platform or "", now, user_id),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[图库] 用户登记失败: {e}")
+
+    def get_user(self, user_id: str) -> dict | None:
+        """读取用户元数据（users 表）。"""
+        if not user_id:
+            return None
+        try:
+            conn = self._conn_get()
+            row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if not row:
+                return None
+            return {
+                "user_id": row["user_id"],
+                "user_name": row["user_name"],
+                "platform": row["platform"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+            }
+        except Exception:
+            return None
 
     def set_public(self, sha256: str, on: bool, owner: str = "") -> bool:
         if not sha256:
