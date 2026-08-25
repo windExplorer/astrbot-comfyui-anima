@@ -47,15 +47,11 @@
             :loading="world.loading"
             :nsfw="true"
             :refresh="refreshWorld"
-            @item-click="m => openViewer(m, world.list)"
+            @item-click="m => openViewer(m, world.list, 'world')"
           >
-            <template #meta="{ item: m }">
-              <span v-if="m.user_id !== me?.user_id" class="who">{{ m.user_name || m.user_id }}</span>
+            <template #info="{ item: m }">
+              <span class="who">{{ m.user_id === me?.user_id ? "我" : (m.user_name || m.user_id) }}</span>
               <span class="when">{{ fmtShort(m.created_at) }}</span>
-            </template>
-            <template #actions="{ item: m }">
-              <button class="like" :class="{ on: m.liked }" @click.stop="toggleLike(m)">❤ {{ m.like_count }}</button>
-              <button class="fav" :class="{ on: m.favorited }" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
             </template>
           </VirtualWaterfall>
           <n-empty v-if="!world.loading && world.list.length === 0" description="还没有公开作品~" class="sh-empty" />
@@ -79,21 +75,15 @@
               :loading="gallery.loading"
               :nsfw="true"
               :refresh="refreshGallery"
-              @item-click="m => openViewer(m, gallery.list)"
+              @item-click="m => openViewer(m, gallery.list, 'gallery')"
             >
               <template #badges="{ item: m }">
                 <div class="wf-badges">
-                  <button v-if="!m.is_public" class="bpub" @click.stop="setPublic(m, true)">🌐公开</button>
-                  <button v-else class="bunpub" @click.stop="setPublic(m, false)">🔓私有</button>
-                  <button class="bdel" @click.stop="delImg(m)">🗑️</button>
+                  <span class="bstate" :class="m.is_public ? 'bpub' : 'bpriv'">{{ m.is_public ? "公开" : "私有" }}</span>
                 </div>
               </template>
-              <template #meta="{ item: m }">
+              <template #info="{ item: m }">
                 <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </template>
-              <template #actions="{ item: m }">
-                <button class="like" :class="{ on: m.liked }" @click.stop="toggleLike(m)">❤ {{ m.like_count }}</button>
-                <button class="fav" :class="{ on: m.favorited }" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
               </template>
             </VirtualWaterfall>
           </div>
@@ -109,13 +99,11 @@
               :img-src="m => imgUrl(m.sha256, true, 600)"
               :nsfw="true"
               :refresh="loadFav"
-              @item-click="m => openViewer(m, fav.mine)"
+              @item-click="m => openViewer(m, fav.mine, 'fav')"
             >
-              <template #meta="{ item: m }">
+              <template #info="{ item: m }">
+                <span class="who">{{ m.user_id === me?.user_id ? "我" : (m.user_name || m.user_id) }}</span>
                 <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </template>
-              <template #actions="{ item: m }">
-                <button class="fav on" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
               </template>
             </VirtualWaterfall>
           </div>
@@ -126,14 +114,11 @@
               :img-src="m => imgUrl(m.sha256, true, 600)"
               :nsfw="true"
               :refresh="loadFav"
-              @item-click="m => openViewer(m, fav.others)"
+              @item-click="m => openViewer(m, fav.others, 'fav')"
             >
-              <template #meta="{ item: m }">
+              <template #info="{ item: m }">
                 <span class="who">{{ m.user_name || m.user_id }}</span>
                 <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </template>
-              <template #actions="{ item: m }">
-                <button class="fav on" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
               </template>
             </VirtualWaterfall>
           </div>
@@ -176,13 +161,10 @@
                 :img-src="m => imgUrl(m.sha256, true, 600)"
                 :nsfw="true"
                 :refresh="refreshRecycle"
-                @item-click="m => openViewer(m, recycle)"
+                @item-click="m => openViewer(m, recycle, 'recycle')"
               >
-                <template #meta="{ item: m }">
+                <template #info="{ item: m }">
                   <span class="when">{{ fmtShort(m.created_at) }}</span>
-                </template>
-                <template #actions="{ item: m }">
-                  <button class="restore" @click.stop="restoreImg(m.sha256)">恢复</button>
                 </template>
               </VirtualWaterfall>
             </div>
@@ -208,17 +190,65 @@
           <div v-if="viewerLoading" class="vloading">加载中…</div>
           <div class="vtools">
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
-            <button class="vtool" @click="viewerFull = true">全屏</button>
+            <button class="vtool" @click="viewerFull = true">⛶</button>
             <button class="vtool" @click="closeViewer">✕</button>
           </div>
+          <div class="vswitch">
+            <button class="vs-btn" @click="prevImg">‹</button>
+            <span class="vs-count">{{ viewerIndex + 1 }}/{{ viewerList.length }}</span>
+            <button class="vs-btn" @click="nextImg">›</button>
+          </div>
         </div>
-        <div class="vmeta" v-if="viewerM">
-          <button class="nav" @click="prevImg">‹</button>
-          <span class="vmeta-main">{{ viewerIndex + 1 }}/{{ viewerList.length }}</span>
-          <span>{{ viewerM.w }}×{{ viewerM.h }}</span>
-          <button class="like" :class="{ on: viewerM.liked }" @click="toggleLike(viewerM)">❤ {{ viewerM.like_count }}</button>
-          <button class="fav" :class="{ on: viewerM.favorited }" @click="toggleFav(viewerM)">★ {{ viewerM.favorite_count }}</button>
-          <button class="nav" @click="nextImg">›</button>
+
+        <!-- 底部半透明抽屉：详情 + 操作 -->
+        <div v-if="viewerM" class="vdrawer" :class="{ open: drawerOpen }">
+          <div class="vdrawer-handle" @click="drawerOpen = !drawerOpen">
+            <div class="vdrawer-grip"></div>
+            <span class="vdrawer-hint">{{ drawerOpen ? "下拉收起信息" : "上拉查看详情" }}</span>
+          </div>
+          <div class="vdrawer-body">
+            <!-- 发布人 -->
+            <div class="vd-user">
+              <img :src="viewerAvatar" class="vd-avatar" @error="viewerAvatarFb = true" />
+              <div class="vd-user-text">
+                <div class="vd-name">{{ viewerM.user_name || viewerM.user_id }} <span v-if="viewerM.user_id === me?.user_id" class="vd-me">我的</span></div>
+                <div class="vd-time">{{ fmt(viewerM.created_at) }}</div>
+              </div>
+            </div>
+            <!-- 统计 + 公开私有 -->
+            <div class="vd-stats">
+              <button class="vstat" :class="{ on: viewerM.liked }" @click="toggleLike(viewerM)">❤ <b>{{ viewerM.like_count }}</b></button>
+              <button class="vstat" :class="{ on: viewerM.favorited }" @click="toggleFav(viewerM)">★ <b>{{ viewerM.favorite_count }}</b></button>
+              <span class="vstat-badge" :class="viewerM.is_public ? 'pub' : 'priv'">{{ viewerM.is_public ? "🌐 公开" : "🔒 私有" }}</span>
+            </div>
+            <!-- 信息行 -->
+            <div class="vd-rows">
+              <div class="vd-row">
+                <span class="vlabel">尺寸</span>
+                <span class="vvalue">{{ viewerM.w }}×{{ viewerM.h }}</span>
+              </div>
+              <div class="vd-row">
+                <span class="vlabel">工作流</span>
+                <span class="vvalue">{{ viewerM.is_img2img ? "🖼️ 图生图" : "✨ 文生图" }}</span>
+              </div>
+              <div class="vd-row">
+                <span class="vlabel">NSFW 评分</span>
+                <span class="vvalue" :class="nsfwLevelClass">{{ nsfwScoreText }}</span>
+              </div>
+            </div>
+            <!-- 标签 -->
+            <div class="vd-tags">
+              <span class="vlabel">标签</span>
+              <div class="vtag-list">
+                <n-tag v-for="t in viewerTags" :key="t" size="small" round :bordered="false" class="vtag">{{ t }}</n-tag>
+                <span v-if="viewerTags.length === 0" class="vtag-empty">暂无标签</span>
+              </div>
+            </div>
+            <!-- 上下文操作 -->
+            <div v-if="viewerOps.length" class="vd-ops">
+              <button v-for="op in viewerOps" :key="op.key" class="vop" :class="op.cls" @click="op.run()">{{ op.label }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </n-modal>
@@ -242,7 +272,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useMessage, useDialog, NModal, NEmpty, NButton, NRadioGroup, NRadioButton } from "naive-ui";
+import { useMessage, useDialog, NModal, NEmpty, NButton, NRadioGroup, NRadioButton, NTag } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import VirtualWaterfall from "@/components/VirtualWaterfall.vue";
 import { useTheme } from "@/composables/useTheme";
@@ -496,6 +526,7 @@ function delImg(m: any) {
       try {
         await postJ("delete", { sha: m.sha256 });
         gallery.list = gallery.list.filter((x) => x.sha256 !== m.sha256);
+        viewer.value = false;
         toast("已移入回收站");
       } catch (e: any) { toast("操作失败: " + e.message); }
     },
@@ -511,6 +542,7 @@ function restoreImg(sha: string) {
       try {
         await postJ("restore", { sha });
         recycle.value = recycle.value.filter((x) => x.sha256 !== sha);
+        viewer.value = false;
         toast("已恢复");
       } catch (e: any) { toast("操作失败: " + e.message); }
     },
@@ -527,20 +559,76 @@ watch(nsfwBlurGlobal, (val) => {
   try { localStorage.setItem("anima_share_nsfw_blur", val ? "1" : "0"); } catch { /* ignore */ }
 });
 
-// ---- 大图查看器（默认原图，左右切换）----
+// ---- 大图查看器（默认原图，左右切换 + 底部详情抽屉）----
 const viewer = ref(false);
 const viewerFull = ref(false);
 const viewerM = ref<any>(null);
 const viewerList = ref<any[]>([]);
 const viewerIndex = ref(0);
+const viewerCtx = ref<"world" | "gallery" | "fav" | "recycle">("world");
+const drawerOpen = ref(true);
 const showRef = ref(false);
 const viewerSrc = ref("");
 const viewerLoading = ref(false);
-function openViewer(m: any, list: any[]) {
+const viewerAvatarFb = ref(false);
+
+const viewerAvatar = computed(() => {
+  const m = viewerM.value;
+  if (!m) return "";
+  const uid = m.user_id || "";
+  const tok = encodeURIComponent(token.value || sharedToken || "");
+  if (viewerAvatarFb.value) {
+    return `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(uid)}&s=100`;
+  }
+  return `/share/avatar/${encodeURIComponent(uid)}?share_t=${tok}`;
+});
+
+const viewerTags = computed(() => {
+  const m = viewerM.value;
+  if (!m || !Array.isArray(m.tags)) return [];
+  return m.tags.slice(0, 12);
+});
+
+const nsfwScoreText = computed(() => {
+  const m = viewerM.value;
+  if (!m || m.nsfw_score == null) return "未检测";
+  const pct = Math.max(0, Math.min(100, Math.round((m.nsfw_score as number) * 100)));
+  return `${pct}%`;
+});
+const nsfwLevelClass = computed(() => {
+  const m = viewerM.value;
+  if (!m || m.nsfw_score == null) return "";
+  const s = m.nsfw_score as number;
+  if (s >= 0.6) return "lv-high";
+  if (s >= 0.3) return "lv-mid";
+  return "lv-low";
+});
+
+// 按打开上下文展示操作按钮
+const viewerOps = computed(() => {
+  const m = viewerM.value;
+  if (!m) return [];
+  switch (viewerCtx.value) {
+    case "gallery":
+      return [
+        { key: "pub", label: m.is_public ? "设为私有" : "设为公开", cls: "op-pub", run: () => setPublic(m, !m.is_public) },
+        { key: "del", label: "删除", cls: "op-del", run: () => delImg(m) },
+      ];
+    case "recycle":
+      return [{ key: "restore", label: "恢复图片", cls: "op-restore", run: () => restoreImg(m.sha256) }];
+    default:
+      return [];
+  }
+});
+
+function openViewer(m: any, list: any[], ctx: "world" | "gallery" | "fav" | "recycle" = "world") {
   viewerM.value = m;
   viewerList.value = list || [];
   const idx = (list || []).findIndex((x) => x.sha256 === m.sha256);
   viewerIndex.value = idx >= 0 ? idx : 0;
+  viewerCtx.value = ctx;
+  drawerOpen.value = true;
+  viewerAvatarFb.value = false;
   viewer.value = true;
   showRef.value = false;
   loadOriginal();
@@ -568,6 +656,7 @@ function nextImg() {
   if (!list.length) return;
   viewerIndex.value = (viewerIndex.value + 1) % list.length;
   viewerM.value = list[viewerIndex.value];
+  viewerAvatarFb.value = false;
   showRef.value = false;
   loadOriginal();
 }
@@ -576,6 +665,7 @@ function prevImg() {
   if (!list.length) return;
   viewerIndex.value = (viewerIndex.value - 1 + list.length) % list.length;
   viewerM.value = list[viewerIndex.value];
+  viewerAvatarFb.value = false;
   showRef.value = false;
   loadOriginal();
 }
@@ -666,21 +756,16 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .fav-half { flex: 1 1 50%; min-height: 0; display: flex; flex-direction: column; }
 .fav-half .fsec { flex: 0 0 auto; }
 
-/* ---- 卡片内按钮 ---- */
-.who { color: #ff6b9d; font-weight: 600; }
-.when { opacity: 0.85; }
+/* ---- 瀑布流卡片叠层 ---- */
+.who { color: #ffd3e3; font-weight: 700; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
+.when { opacity: 0.95; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
 .wf-badges { position: absolute; top: 6px; left: 6px; z-index: 3; display: flex; gap: 4px; }
-.wf-badges button {
-  border: none; border-radius: 999px; padding: 2px 8px; font-size: 10px; cursor: pointer;
-  background: rgba(0, 0, 0, 0.55); color: #fff;
+.bstate {
+  border-radius: 999px; padding: 2px 9px; font-size: 10px; font-weight: 600; color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
-.wf-badges .bdel { background: rgba(214, 69, 65, 0.85); }
-.wf-acts button, .vmeta button {
-  border: none; background: var(--bg-body, #fff1f4); color: var(--text-sub, #b05c7a);
-  border-radius: 999px; font-size: 11px; padding: 3px 10px; cursor: pointer;
-}
-.wf-acts button.on { background: #ff8fb3; color: #fff; }
-.wf-acts .restore { background: #e8f7ee; color: #2e9e5b; }
+.bstate.bpub { background: linear-gradient(135deg, #ff8fb3, #ff6b9d); }
+.bstate.bpriv { background: rgba(60, 60, 60, 0.75); }
 
 /* ---- 个人中心 ---- */
 .user-card { display: flex; align-items: center; gap: 12px; background: var(--bg-panel, #fff); border: 1px solid var(--border-color, #ffe3ec); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
@@ -709,18 +794,86 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .tabbar-item.on { color: #ff6b9d; }
 .tabbar-icon { font-size: 20px; line-height: 1; }
 
-/* ---- 大图查看器 ---- */
+/* ---- 大图查看器（图片 + 底部半透明抽屉） ---- */
 .viewer-modal { width: var(--tw); max-width: 94vw; }
-.viewer { background: #000; border-radius: 12px; overflow: hidden; }
-.vimg { position: relative; display: flex; align-items: center; justify-content: center; max-height: 78vh; }
-.vimg img { max-width: 100%; max-height: 78vh; display: block; cursor: zoom-in; }
+.viewer {
+  display: flex; flex-direction: column;
+  background: #000; border-radius: 12px; overflow: hidden;
+  max-height: 92vh;
+}
+.vimg {
+  position: relative; flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.vimg img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; cursor: zoom-in; }
 .vloading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; background: rgba(0,0,0,0.4); }
-.vtools { position: absolute; bottom: 10px; right: 10px; display: flex; gap: 8px; }
-.vtool { border: none; background: rgba(0,0,0,0.6); color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
-.vmeta { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: #fff; background: #111; font-size: 12px; }
-.vmeta .nav { background: rgba(255,255,255,0.12); color: #fff; font-size: 14px; padding: 4px 12px; }
-.vmeta .vmeta-main { min-width: 46px; text-align: center; }
-.vmeta button.on { background: #ff6b9d; }
+.vtools { position: absolute; top: 10px; right: 10px; display: flex; gap: 8px; }
+.vtool { border: none; background: rgba(0,0,0,0.6); color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; backdrop-filter: blur(6px); }
+.vswitch {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(0, 0, 0, 0.5); color: #fff; border-radius: 999px; padding: 4px 6px;
+  backdrop-filter: blur(6px); font-size: 12px;
+}
+.vs-btn { border: none; background: rgba(255,255,255,0.15); color: #fff; width: 26px; height: 26px; border-radius: 50%; font-size: 15px; cursor: pointer; }
+.vs-count { min-width: 40px; text-align: center; }
+
+/* ---- 底部半透明抽屉 ---- */
+.vdrawer {
+  flex: 0 0 auto; color: #fff;
+  background: rgba(20, 16, 18, 0.72);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.vdrawer-handle { display: flex; flex-direction: column; align-items: center; padding: 6px 0 8px; cursor: pointer; user-select: none; }
+.vdrawer-grip { width: 36px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.3); margin-bottom: 4px; }
+.vdrawer-hint { font-size: 11px; color: rgba(255, 255, 255, 0.55); }
+.vdrawer-body { max-height: 0; overflow: hidden; transition: max-height 0.28s ease; padding: 0 14px; }
+.vdrawer.open .vdrawer-body { max-height: 46vh; overflow-y: auto; padding: 0 14px 14px; }
+
+.vd-user { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.vd-avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(255, 143, 179, 0.6); flex: 0 0 auto; background: #333; }
+.vd-name { font-size: 14px; font-weight: 700; }
+.vd-me { font-size: 10px; color: #ff9dc4; border: 1px solid rgba(255, 157, 196, 0.5); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+.vd-time { font-size: 12px; color: rgba(255, 255, 255, 0.55); margin-top: 2px; }
+
+.vd-stats { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.vstat {
+  border: none; cursor: pointer; border-radius: 999px; padding: 5px 12px; font-size: 12px;
+  background: rgba(255, 255, 255, 0.1); color: #fff; display: inline-flex; align-items: center; gap: 4px;
+}
+.vstat.on { background: linear-gradient(135deg, #ff8fb3, #ff6b9d); }
+.vstat b { font-weight: 700; }
+.vstat-badge { border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; }
+.vstat-badge.pub { background: rgba(46, 158, 91, 0.25); color: #7fe0a8; border: 1px solid rgba(46, 158, 91, 0.45); }
+.vstat-badge.priv { background: rgba(255, 180, 90, 0.18); color: #ffc277; border: 1px solid rgba(255, 180, 90, 0.4); }
+
+.vd-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.vd-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.vlabel { color: rgba(255, 255, 255, 0.45); width: 64px; flex: 0 0 auto; }
+.vvalue { color: #fff; }
+.vvalue.lv-low { color: #7fe0a8; }
+.vvalue.lv-mid { color: #ffc277; }
+.vvalue.lv-high { color: #ff7b7b; }
+
+.vd-tags { margin-bottom: 12px; }
+.vtag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.vtag {
+  --n-color: rgba(255, 143, 179, 0.16);
+  --n-color-hover: rgba(255, 143, 179, 0.22);
+  --n-text-color: #ffd3e3;
+  --n-text-color-hover: #fff;
+}
+.vtag-empty { font-size: 12px; color: rgba(255, 255, 255, 0.4); }
+
+.vd-ops { display: flex; gap: 8px; flex-wrap: wrap; }
+.vop {
+  border: none; cursor: pointer; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600;
+  background: rgba(255, 255, 255, 0.12); color: #fff;
+}
+.vop.op-pub { background: rgba(255, 143, 179, 0.28); color: #ffd3e3; }
+.vop.op-del { background: rgba(214, 69, 65, 0.35); color: #ffb3b3; }
+.vop.op-restore { background: rgba(46, 158, 91, 0.32); color: #b8f0cd; }
 
 /* 全屏查看 */
 .viewer-full-modal { width: 100vw; height: 100vh; }

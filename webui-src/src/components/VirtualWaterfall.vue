@@ -14,16 +14,17 @@
     </div>
     <div ref="canvasEl" class="vf-canvas" :style="canvasStyle">
       <div v-for="v in visible" :key="v.m.sha256 || v.m.sha" class="vf-item" :style="itemStyle(v)">
-        <div class="wf-card">
+        <div class="wf-card" :style="{ height: v.cardH + 'px' }">
           <div class="wf-img" :style="{ height: v.h + 'px' }" @click="onClick(v.m)">
             <img :src="imgSrc(v.m)" loading="lazy" :class="{ 'nsfw-blur': nsfw && isNsfw(v.m) }" />
             <div v-if="nsfw && isNsfw(v.m)" class="nsfw-mask">
               <span>🔞</span><span class="nsfw-tip">点击查看</span>
             </div>
             <slot name="badges" :item="v.m"></slot>
+            <div class="wf-info">
+              <slot name="info" :item="v.m"></slot>
+            </div>
           </div>
-          <div class="wf-meta"><slot name="meta" :item="v.m"></slot></div>
-          <div class="wf-acts"><slot name="actions" :item="v.m"></slot></div>
         </div>
       </div>
     </div>
@@ -126,8 +127,8 @@ const canvasStyle = computed(() => {
   return { height: totalHeight.value + "px", transform: `translateY(${dy}px)` };
 });
 
-// 卡片附加高度：meta 行 + actions 行 + 内外边距（各 tab 的按钮高度保持一致）
-const CARD_EXTRA = 62;
+// 卡片附加高度：信息叠在图片上，无额外行
+const CARD_EXTRA = 0;
 
 const boxRef = ref<HTMLElement | null>(null);
 const canvasEl = ref<HTMLElement | null>(null);
@@ -277,13 +278,15 @@ watch([colW, colCount], () => rebuild());
   pointer-events: none;
 }
 .nsfw-tip { font-size: 11px; }
-.wf-meta {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 10px 0; min-height: 20px; font-size: 11px; color: var(--text-sub, #9a7a88);
+/* 图片底部渐变叠层：关键信息（发布人/时间）叠在图上，保持瀑布流干净 */
+.wf-info {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 18px 10px 7px;
+  font-size: 11px; color: #fff;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
+  pointer-events: none;
 }
-.wf-acts {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px 8px; min-height: 36px;
-}
+.wf-info .when { opacity: 0.9; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
 .vf-loading { text-align: center; color: var(--text-sub, #9a7a88); padding: 12px; font-size: 12px; }
 </style>
