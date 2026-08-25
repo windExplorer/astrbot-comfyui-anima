@@ -3598,7 +3598,7 @@ class ComfyUIDrawPlugin(Star):
             qr = self._make_share_qr(url, cfg.get("logo", "") or "")
             if qr:
                 b64 = base64.b64encode(qr).decode("ascii")
-                yield event.image_result(Image(file="base64://" + b64))
+                yield event.image_result("base64://" + b64)
                 yield event.plain_result(f"🎨 扫码进入你的专属萌绘图库（{minutes} 分钟有效）")
             else:
                 yield event.plain_result(f"🎨 你的专属萌绘图库（{minutes} 分钟有效）：\n{url}")

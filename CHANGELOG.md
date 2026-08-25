@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.31
+
+- **修复 `/萌绘` 二维码发送报 `AttributeError: 'Image' object has no attribute 'startswith'`**：`cmd_meng_share` 把 `Image(...)` 组件对象误传给 `event.image_result()`（其参数应为 url/路径/base64 字符串），已改为直接传 `"base64://" + b64` 字符串。
+
 ## v4.9.30
 
 - **修复 `/萌绘` 二维码发送报 `NameError: name 'base64' is not defined`**：`cmd_meng_share` 生成二维码时使用 `base64.b64encode` 但 `main.py` 顶部缺少 `import base64`，已补上。该问题影响二维码模式（mode=qrcode，默认）发送分享链接。
