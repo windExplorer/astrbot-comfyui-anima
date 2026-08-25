@@ -7,6 +7,7 @@ import LorasView from "@/views/LorasView.vue";
 import GalleryView from "@/views/GalleryView.vue";
 import QuotaView from "@/views/QuotaView.vue";
 import TokenView from "@/views/TokenView.vue";
+import ShareView from "@/views/ShareView.vue";
 import LoginView from "@/views/LoginView.vue";
 import { authState, checkStandaloneAuth } from "@/composables/auth";
 import { isStandaloneMode } from "@/api/bridge";
@@ -27,6 +28,7 @@ const router = createRouter({
     { path: "/gallery", name: "gallery", component: GalleryView, meta: { title: "图库" } },
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },
+    { path: "/share", name: "share", component: ShareView, meta: { title: "萌绘分享", public: true } },
     { path: "/:pathMatch(.*)*", redirect: "/config" },
   ],
 });
@@ -34,6 +36,8 @@ const router = createRouter({
 // 独立服务认证守卫：登录页放行；独立模式下未认证的路由强制跳转 /login。
 // 内嵌页（AstrBot）无 token 概念，直接放行。
 router.beforeEach(async (to) => {
+  // 分享站为公开路由（令牌鉴权），不要求独立服务管理员登录
+  if (to.meta && to.meta.public) return true;
   if (!isStandaloneMode()) {
     // 内嵌页：不做独立口令校验
     return true;

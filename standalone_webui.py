@@ -75,7 +75,15 @@ class StandaloneWebUI:
 
     @property
     def enabled(self) -> bool:
-        return bool(self._cfg("enabled", False))
+        if bool(self._cfg("enabled", False)):
+            return True
+        # 分享站由独立 WebUI 服务承载（公开、同域直连），开启分享站即视为启用
+        try:
+            if self.plugin._cfg("share_webui", {}).get("enabled", True):
+                return True
+        except Exception:
+            pass
+        return False
 
     @property
     def port(self) -> int:
@@ -169,6 +177,12 @@ class StandaloneWebUI:
     def _setup_routes(self, app: web.Application) -> None:
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/api/ping", self._handle_ping)
+
+        # 分享站（公开，分享令牌鉴权，与独立服务 admin token 解耦）
+        app.router.add_route("*", "/api/share/{tail:.*}", self._handle_share_api)
+        app.router.add_get("/share/img/{sha}", self._handle_share_img)
+        app.router.add_get("/share/img/{sha}/thumb", self._handle_share_img)
+
         # 所有业务 API（前缀 /api/*），走统一鉴权 + 分发
         for method in ("GET", "POST"):
             app.router.add_route(method, "/api/{tail:.*}", self._handle_api)
@@ -874,6 +888,159 @@ class StandaloneWebUI:
         if isinstance(result, web.Response):
             return result
         return _ok(result)
+
+    # ------------------------------------------------------------------ #
+    # 分享站（公开，分享令牌鉴权，与独立服务 admin token 解耦）
+    # ------------------------------------------------------------------ #
+    def _share_token_from(self, request: web.Request) -> str:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        q = request.query.get("token", "")
+        return q or ""
+
+    async def _handle_share_api(self, request: web.Request) -> web.Response:
+        tail = request.match_info.get("tail", "") or ""
+        path = "/" + tail.strip("/")
+        tok = self._share_token_from(request)
+        g = self.plugin.gallery
+        info = g.get_share_token(tok) if (g and tok) else None
+        if not info:
+            return _err("分享链接无效或已过期，请重新发送 /萌绘 获取新链接", status=401)
+        try:
+            return await self._dispatch_share(path, request.method.upper(), request, info)
+        except Exception as e:
+            return _err(f"处理失败: {e}")
+
+    async def _dispatch_share(self, path: str, method: str, request: web.Request, info: dict) -> web.Response:
+        g = self.plugin.gallery
+        if g is None:
+            return _err("图库未启用", status=500)
+        uid = info.get("user_id", "")
+
+        async def _body() -> dict:
+            try:
+                if getattr(request, "body_exists", False):
+                    b = await request.json()
+                    return b if isinstance(b, dict) else {}
+            except Exception:
+                pass
+            return {}
+
+        if path == "/me" and method == "GET":
+            return _ok({"user_id": uid, "user_name": info.get("user_name"), "expire_at": info.get("expire_at")})
+        if path == "/world" and method == "GET":
+            limit = max(1, min(self._qint(request, "limit", 40), 100))
+            offset = max(0, self._qint(request, "offset", 0))
+            return _ok(g.world_list(user_id=uid, limit=limit, offset=offset))
+        if path == "/gallery" and method == "GET":
+            vis = (self._q(request, "vis", "all") or "all").strip().lower()
+            if vis not in ("all", "public", "private"):
+                vis = "all"
+            limit = max(1, min(self._qint(request, "limit", 40), 100))
+            offset = max(0, self._qint(request, "offset", 0))
+            return _ok(g.gallery_list(user_id=uid, visibility=vis, limit=limit, offset=offset))
+        if path == "/favorites" and method == "GET":
+            limit = max(1, min(self._qint(request, "limit", 60), 200))
+            offset = max(0, self._qint(request, "offset", 0))
+            return _ok(g.favorites_list(user_id=uid, limit=limit, offset=offset))
+        if path == "/profile" and method == "GET":
+            return _ok(g.profile_stats(user_id=uid))
+        if path == "/recycle" and method == "GET":
+            return _ok({"images": g.recycle_list(user_id=uid)})
+        if path == "/like" and method == "POST":
+            b = await _body()
+            sha = (b.get("sha") or "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            on = bool(b.get("on", True))
+            ok = g.like(sha, uid, info.get("user_name")) if on else g.unlike(sha, uid)
+            return _ok({"ok": ok, "liked": on, "like_count": g.like_count(sha)})
+        if path == "/favorite" and method == "POST":
+            b = await _body()
+            sha = (b.get("sha") or "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            on = bool(b.get("on", True))
+            ok = g.favorite(sha, uid, info.get("user_name")) if on else g.unfavorite(sha, uid)
+            return _ok({"ok": ok, "favorited": on, "favorite_count": g.favorite_count(sha)})
+        if path == "/set_public" and method == "POST":
+            b = await _body()
+            sha = (b.get("sha") or "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            on = bool(b.get("on", True))
+            ok = g.set_public(sha, on, owner=uid)
+            return _ok({"ok": ok, "is_public": on})
+        if path == "/delete" and method == "POST":
+            b = await _body()
+            sha = (b.get("sha") or "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            ok = g.recycle(sha, owner=uid)
+            return _ok({"ok": ok})
+        if path == "/restore" and method == "POST":
+            b = await _body()
+            sha = (b.get("sha") or "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            m = g.get_by_sha(sha)
+            if not m or m.get("user_id") != uid:
+                return _err("无权操作该图", status=403)
+            ok = g.restore(sha)
+            return _ok({"ok": ok})
+        return _err("Not Found: " + path, status=404)
+
+    async def _handle_share_img(self, request: web.Request) -> web.Response:
+        tok = self._share_token_from(request)
+        g = self.plugin.gallery
+        info = g.get_share_token(tok) if (g and tok) else None
+        if not info:
+            return _err("分享链接无效或已过期", status=401)
+        sha = request.match_info.get("sha", "") or ""
+        if not sha:
+            return _err("缺少 sha", status=400)
+        if g is None:
+            return _err("图库未启用", status=500)
+        try:
+            p = g.path_of(sha)
+        except Exception as e:
+            return _err(f"路径解析失败: {e}", status=500)
+        if not p or not Path(p).exists():
+            return _err("图片不存在", status=404)
+        m = g.get_by_sha(sha)
+        if m is None or m.get("deleted"):
+            return _err("图片不存在", status=404)
+        if not m.get("is_public") and m.get("user_id") != info.get("user_id"):
+            return _err("无权限查看该图", status=403)
+        want_thumb = "/thumb" in request.path
+        size = self._qint(request, "size", 0)
+        if want_thumb or (size and size > 0 and size < 200000):
+            try:
+                data_url = await asyncio.to_thread(self._thumb_cached, p, size or 320)
+                if data_url and data_url.startswith("data:"):
+                    header, _, b64 = data_url.partition(",")
+                    cmime = (header.replace("data:", "").split(";")[0] or "image/jpeg").strip()
+                    try:
+                        raw = base64.b64decode(b64)
+                    except Exception:
+                        raw = await asyncio.to_thread(Path(p).read_bytes)
+                        cmime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+                    return web.Response(
+                        body=raw, content_type=cmime,
+                        headers={"Cache-Control": "public, max-age=31536000"},
+                    )
+            except Exception:
+                pass
+        try:
+            raw = await asyncio.to_thread(Path(p).read_bytes)
+        except Exception as e:
+            return _err(f"读取图片失败: {e}", status=500)
+        ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        return web.Response(
+            body=raw, content_type=ctype,
+            headers={"Cache-Control": "public, max-age=31536000"},
+        )
 
     # ------------------------------------------------------------------ #
     # 工具

@@ -7,6 +7,10 @@
           <div v-if="route.name === 'login'" class="app-login-outlet">
             <router-view />
           </div>
+          <!-- 分享站：公开独立页面，不含控制台布局 -->
+          <div v-else-if="route.meta && route.meta.public" class="app-share-outlet">
+            <router-view />
+          </div>
           <!-- 移动端：按 UA 渲染独立外壳（轻量顶部栏 + 抽屉导航 + 内容区 + 悬浮按钮） -->
           <MobileShell v-else-if="isMobile">
             <router-view />

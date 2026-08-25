@@ -1027,6 +1027,51 @@
         "description": "访问口令（留空不鉴权）",
         "hint": "可选。设置后浏览器访问独立 WebUI 时需输入该口令，所有 API 请求也要带它，避免管理功能暴露在局域网/公网。留空 = 不鉴权（任何能访问该端口的人都能操作，建议局域网内使用）。"
       }
+    },
+    "share_webui": {
+      "type": "object",
+      "description": "用户级独立分享 WebUI（/萌绘 指令）",
+      "hint": "用户发送 /萌绘 后获得一条带过期时间的临时链接或二维码，扫码进入独立分享站（世界/图库/收藏/个人中心）。分享站由独立 WebUI 服务承载，需开启「独立 WebUI 服务」或本功能 enabled=true。",
+      "items": {
+        "enabled": {
+          "type": "bool",
+          "default": true,
+          "description": "启用分享 WebUI 功能（同时会拉起独立 WebUI 服务承载分享站）",
+          "hint": "关闭后 /萌绘 指令不生效。开启则会随插件启动拉起独立 WebUI 服务（若未单独开启「独立 WebUI 服务」）。"
+        },
+        "domain": {
+          "type": "string",
+          "default": "",
+          "description": "分享站对外域名/基地址（留空则用独立服务地址）",
+          "hint": "例如 https://share.example.com。留空时链接使用独立 WebUI 服务的 host:port。务必保证该地址公网/局域网可达。"
+        },
+        "expire_minutes": {
+          "type": "int",
+          "default": 60,
+          "description": "分享链接有效期（分钟）",
+          "hint": "过期后链接失效、接口返回 404，需重新发送 /萌绘 获取新链接。",
+          "slider": { "min": 5, "max": 1440, "step": 5 }
+        },
+        "mode": {
+          "type": "string",
+          "default": "qrcode",
+          "description": "发送方式：二维码 / 链接",
+          "options": ["qrcode", "link"],
+          "hint": "qrcode=发送带 logo 的二维码图片；link=发送纯文本链接。"
+        },
+        "whitelist": {
+          "type": "string",
+          "default": "",
+          "description": "白名单用户 ID（逗号/空格/换行分隔，留空=所有人可用）",
+          "hint": "仅列表中的用户发送 /萌绘 才生效；其他用户会收到「无权限」提示。填写发送者的用户 ID（如 QQ 号）。"
+        },
+        "logo": {
+          "type": "string",
+          "default": "",
+          "description": "二维码中心 logo 图片路径（留空则用默认萌字 logo）",
+          "hint": "可选。填写本地图片绝对路径；留空则生成默认「萌」字圆角 logo。"
+        }
+      }
     }
   }
 }

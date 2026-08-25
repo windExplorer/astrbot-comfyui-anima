@@ -2129,6 +2129,74 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _e:
             logger.warning(f"【发送】 主动发送文本失败（忽略，不中断主流程）: {_e}")
 
+    def _share_base_url(self) -> str:
+        cfg = self._cfg("share_webui", {}) or {}
+        domain = (cfg.get("domain") or "").strip().rstrip("/")
+        if domain:
+            return domain
+        sw = self._cfg("webui_standalone", {}) or {}
+        host = (sw.get("host") or "127.0.0.1").strip()
+        if host in ("0.0.0.0", "", "::"):
+            host = "127.0.0.1"
+        port = int(sw.get("port", 8848) or 8848)
+        return f"http://{host}:{port}"
+
+    def _make_share_qr(self, url: str, logo_path: str = "") -> bytes:
+        import io
+        try:
+            import qrcode
+        except Exception:
+            qrcode = None
+        if qrcode is None:
+            return b""
+        from PIL import Image as PILImage, ImageDraw
+        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="#1f1f2e", back_color="white").convert("RGB")
+        logo = None
+        if logo_path and os.path.exists(logo_path):
+            try:
+                logo = PILImage.open(logo_path).convert("RGBA")
+            except Exception:
+                logo = None
+        if logo is None:
+            logo = self._make_default_share_logo()
+        qw, qh = img.size
+        lw = max(40, int(qw * 0.22))
+        lh = max(40, int(qh * 0.22))
+        logo = logo.resize((lw, lh))
+        pad = max(6, int(lw * 0.08))
+        box = (int((qw - lw) / 2), int((qh - lh) / 2))
+        mask = PILImage.new("L", (lw + pad * 2, lh + pad * 2), 0)
+        d = ImageDraw.Draw(mask)
+        d.rounded_rectangle([0, 0, lw + pad * 2, lh + pad * 2], radius=pad * 2, fill=255)
+        white = PILImage.new("RGBA", (lw + pad * 2, lh + pad * 2), (255, 255, 255, 255))
+        img.paste(white, (box[0] - pad, box[1] - pad), mask)
+        img.paste(logo, box, logo if logo.mode == "RGBA" else None)
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
+
+    def _make_default_share_logo(self):
+        from PIL import Image as PILImage, ImageDraw, ImageFont
+        size = 240
+        img = PILImage.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([0, 0, size, size], radius=48, fill=(255, 143, 179, 255))
+        try:
+            font = ImageFont.truetype("msyh.ttc", 150)
+        except Exception:
+            try:
+                font = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", 150)
+            except Exception:
+                font = ImageFont.load_default()
+        text = "萌"
+        bbox = d.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        d.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), text, fill=(255, 255, 255, 255), font=font)
+        return img
+
     async def _send_display(self, event: AstrMessageEvent, text: str) -> None:
         """按图库配置的展示方式发送展示内容。
 
@@ -3461,6 +3529,51 @@ class ComfyUIDrawPlugin(Star):
             explicit_default=(wf_name is None),
         ):
             yield m
+        event.stop_event()
+
+    @filter.command("萌绘", alias={"萌绘分享", "meng", "share"})
+    async def cmd_meng_share(self, event: AstrMessageEvent):
+        """发送 /萌绘：给本人生成一条可分享的临时图库链接（或二维码）。
+        仅白名单内用户可用；链接带过期时间，过期后失效需重新发送。"""
+        cfg = self._cfg("share_webui", {}) or {}
+        if not cfg.get("enabled", True):
+            yield event.plain_result("分享功能未启用。")
+            event.stop_event()
+            return
+        uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
+        uname = ""
+        try:
+            uname = (getattr(event, "get_sender_name", lambda: "")() or "").strip()
+        except Exception:
+            pass
+        # 白名单
+        wl = (cfg.get("whitelist") or "").strip()
+        if wl:
+            allowed = [x.strip() for x in re.split(r"[\s,，;；\n]+", wl) if x.strip()]
+            if uid not in allowed:
+                yield event.plain_result("🔒 你不在分享功能白名单中，暂不可使用 /萌绘。")
+                event.stop_event()
+                return
+        if self.gallery is None:
+            yield event.plain_result("图库功能未启用，无法生成分享链接。")
+            event.stop_event()
+            return
+        ttl = max(1, int(cfg.get("expire_minutes", 60) or 60)) * 60
+        token = self.gallery.create_share_token(uid, uname, ttl_sec=ttl)
+        base = self._share_base_url()
+        url = f"{base}/?token={token}#/share"
+        mode = (cfg.get("mode") or "qrcode").strip().lower()
+        minutes = max(1, int(ttl // 60))
+        if mode == "link":
+            yield event.plain_result(f"🎨 你的专属萌绘图库（{minutes} 分钟有效）：\n{url}")
+        else:
+            qr = self._make_share_qr(url, cfg.get("logo", "") or "")
+            if qr:
+                b64 = base64.b64encode(qr).decode("ascii")
+                yield event.image_result(Image(file="base64://" + b64))
+                yield event.plain_result(f"🎨 扫码进入你的专属萌绘图库（{minutes} 分钟有效）")
+            else:
+                yield event.plain_result(f"🎨 你的专属萌绘图库（{minutes} 分钟有效）：\n{url}")
         event.stop_event()
 
     # 「画」系绘图指令（独立新增指令，非 /draw 别名）：

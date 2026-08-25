@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -208,6 +209,45 @@ class ImageStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tags_tag ON image_tags(tag)"
             )
+            # 分享站：点赞（按用户+时间记录，不只计数）
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS image_likes (
+                    sha256    TEXT NOT NULL,
+                    user_id   TEXT NOT NULL,
+                    user_name TEXT DEFAULT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (sha256, user_id)
+                )
+                """
+            )
+            # 分享站：收藏（按用户+时间记录）
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS image_favorites (
+                    sha256    TEXT NOT NULL,
+                    user_id   TEXT NOT NULL,
+                    user_name TEXT DEFAULT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (sha256, user_id)
+                )
+                """
+            )
+            # 分享站：临时访问令牌（带过期）
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS share_tokens (
+                    token      TEXT PRIMARY KEY,
+                    user_id    TEXT NOT NULL,
+                    user_name  TEXT DEFAULT NULL,
+                    created_at REAL NOT NULL,
+                    expire_at  REAL NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
             conn.commit()
         except Exception as e:  # pragma: no cover
             logger.error(f"[图库] 初始化数据库失败: {e}", exc_info=True)
@@ -881,6 +921,351 @@ class ImageStore:
             "nsfw_checked": bool(row["nsfw_checked"]) if "nsfw_checked" in row.keys() else False,
             "tags": self.tags_of(row["sha256"]),
         }
+
+    # ------------------------------------------------------------------ #
+    # 分享站：点赞 / 收藏（按用户+时间记录） / 分享令牌 / 世界·图库·收藏·个人中心
+    # ------------------------------------------------------------------ #
+    def like(self, sha256: str, user_id: str, user_name: str = None) -> bool:
+        if not sha256 or not user_id or not self.enabled() or not _HAS_SQLITE:
+            return False
+        try:
+            conn = self._conn_get()
+            conn.execute(
+                "INSERT OR REPLACE INTO image_likes(sha256,user_id,user_name,created_at) VALUES(?,?,?,?)",
+                (sha256, user_id, user_name, time.time()),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 点赞失败: {e}")
+            return False
+
+    def unlike(self, sha256: str, user_id: str) -> bool:
+        if not sha256 or not user_id:
+            return False
+        try:
+            conn = self._conn_get()
+            conn.execute("DELETE FROM image_likes WHERE sha256=? AND user_id=?", (sha256, user_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 取消点赞失败: {e}")
+            return False
+
+    def is_liked(self, sha256: str, user_id: str) -> bool:
+        if not sha256 or not user_id:
+            return False
+        try:
+            conn = self._conn_get()
+            row = conn.execute("SELECT 1 FROM image_likes WHERE sha256=? AND user_id=?", (sha256, user_id)).fetchone()
+            return row is not None
+        except Exception:
+            return False
+
+    def like_count(self, sha256: str) -> int:
+        if not sha256:
+            return 0
+        try:
+            conn = self._conn_get()
+            row = conn.execute("SELECT COUNT(*) c FROM image_likes WHERE sha256=?", (sha256,)).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception:
+            return 0
+
+    def favorite(self, sha256: str, user_id: str, user_name: str = None) -> bool:
+        if not sha256 or not user_id or not self.enabled() or not _HAS_SQLITE:
+            return False
+        try:
+            conn = self._conn_get()
+            conn.execute(
+                "INSERT OR REPLACE INTO image_favorites(sha256,user_id,user_name,created_at) VALUES(?,?,?,?)",
+                (sha256, user_id, user_name, time.time()),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 收藏失败: {e}")
+            return False
+
+    def unfavorite(self, sha256: str, user_id: str) -> bool:
+        if not sha256 or not user_id:
+            return False
+        try:
+            conn = self._conn_get()
+            conn.execute("DELETE FROM image_favorites WHERE sha256=? AND user_id=?", (sha256, user_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 取消收藏失败: {e}")
+            return False
+
+    def is_favorited(self, sha256: str, user_id: str) -> bool:
+        if not sha256 or not user_id:
+            return False
+        try:
+            conn = self._conn_get()
+            row = conn.execute("SELECT 1 FROM image_favorites WHERE sha256=? AND user_id=?", (sha256, user_id)).fetchone()
+            return row is not None
+        except Exception:
+            return False
+
+    def favorite_count(self, sha256: str) -> int:
+        if not sha256:
+            return 0
+        try:
+            conn = self._conn_get()
+            row = conn.execute("SELECT COUNT(*) c FROM image_favorites WHERE sha256=?", (sha256,)).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception:
+            return 0
+
+    def _share_flags(self, conn, user_id: str, shas: list):
+        liked, fav = set(), set()
+        if not user_id or not shas:
+            return liked, fav
+        try:
+            ph = ",".join("?" * len(shas))
+            for r in conn.execute(f"SELECT sha256 FROM image_likes WHERE user_id=? AND sha256 IN ({ph})", [user_id, *shas]):
+                liked.add(r["sha256"])
+            for r in conn.execute(f"SELECT sha256 FROM image_favorites WHERE user_id=? AND sha256 IN ({ph})", [user_id, *shas]):
+                fav.add(r["sha256"])
+        except Exception:
+            pass
+        return liked, fav
+
+    def create_share_token(self, user_id: str, user_name: str = None, ttl_sec: int = 3600) -> str:
+        token = secrets.token_urlsafe(24)
+        try:
+            conn = self._conn_get()
+            conn.execute(
+                "INSERT OR REPLACE INTO share_tokens(token,user_id,user_name,created_at,expire_at) VALUES(?,?,?,?,?)",
+                (token, user_id, user_name, time.time(), time.time() + ttl_sec),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[图库] 创建分享令牌失败: {e}")
+        return token
+
+    def get_share_token(self, token: str) -> dict | None:
+        if not token:
+            return None
+        try:
+            conn = self._conn_get()
+            row = conn.execute(
+                "SELECT token,user_id,user_name,created_at,expire_at FROM share_tokens WHERE token=?", (token,)
+            ).fetchone()
+            if not row:
+                return None
+            if (row["expire_at"] or 0) < time.time():
+                try:
+                    conn.execute("DELETE FROM share_tokens WHERE token=?", (token,))
+                    conn.commit()
+                except Exception:
+                    pass
+                return None
+            return {
+                "token": row["token"],
+                "user_id": row["user_id"],
+                "user_name": row["user_name"],
+                "created_at": row["created_at"],
+                "expire_at": row["expire_at"],
+            }
+        except Exception as e:
+            logger.warning(f"[图库] 读取分享令牌失败: {e}")
+            return None
+
+    def invalidate_share_token(self, token: str) -> None:
+        if not token:
+            return
+        try:
+            conn = self._conn_get()
+            conn.execute("DELETE FROM share_tokens WHERE token=?", (token,))
+            conn.commit()
+        except Exception:
+            pass
+
+    def _share_enrich(self, conn, rows, user_id: str):
+        shas = [r["sha256"] for r in rows]
+        liked, fav = self._share_flags(conn, user_id, shas)
+        liked_cnt, fav_cnt = {}, {}
+        if shas:
+            ph = ",".join("?" * len(shas))
+            for r in conn.execute(f"SELECT sha256, COUNT(*) c FROM image_likes WHERE sha256 IN ({ph}) GROUP BY sha256", shas):
+                liked_cnt[r["sha256"]] = int(r["c"])
+            for r in conn.execute(f"SELECT sha256, COUNT(*) c FROM image_favorites WHERE sha256 IN ({ph}) GROUP BY sha256", shas):
+                fav_cnt[r["sha256"]] = int(r["c"])
+        out = []
+        for r in rows:
+            d = self._row_to_dict(r)
+            d["like_count"] = liked_cnt.get(d["sha256"], 0)
+            d["favorite_count"] = fav_cnt.get(d["sha256"], 0)
+            d["liked"] = d["sha256"] in liked
+            d["favorited"] = d["sha256"] in fav
+            out.append(d)
+        return out
+
+    def world_list(self, user_id: str = "", limit: int = 40, offset: int = 0) -> dict:
+        """世界：全部公开图，按热度(点赞+收藏)降序、再生成时间倒序。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return {"images": [], "total": 0}
+        conn = self._conn_get()
+        where = "i.is_public=1 AND i.deleted=0 AND i.status=0"
+        base = "FROM images i WHERE " + where
+        total = 0
+        try:
+            row = conn.execute(f"SELECT COUNT(*) c {base}").fetchone()
+            total = int(row["c"]) if row else 0
+        except Exception:
+            pass
+        rows = []
+        try:
+            sql = (
+                "SELECT i.*, "
+                "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
+                "(SELECT COUNT(*) FROM image_favorites f WHERE f.sha256=i.sha256) AS fc "
+                f"{base} ORDER BY (lc+fc) DESC, i.created_at DESC LIMIT ? OFFSET ?"
+            )
+            rows = conn.execute(sql, (int(limit), int(offset))).fetchall()
+        except Exception as e:
+            logger.warning(f"[图库] 世界列表失败: {e}")
+        return {"images": self._share_enrich(conn, rows, user_id), "total": total}
+
+    def gallery_list(self, user_id: str, visibility: str = "all", limit: int = 40, offset: int = 0) -> dict:
+        """图库：本人生成的图（不含回收站），按时间倒序。visibility: all/public/private。"""
+        if not self.enabled() or not _HAS_SQLITE or not user_id:
+            return {"images": [], "total": 0}
+        conn = self._conn_get()
+        where = "i.user_id=? AND i.deleted=0 AND i.status=0"
+        args = [user_id]
+        if visibility == "public":
+            where += " AND i.is_public=1"
+        elif visibility == "private":
+            where += " AND i.is_public=0"
+        base = "FROM images i WHERE " + where
+        total = 0
+        try:
+            row = conn.execute(f"SELECT COUNT(*) c {base}", args).fetchone()
+            total = int(row["c"]) if row else 0
+        except Exception:
+            pass
+        rows = []
+        try:
+            sql = (
+                "SELECT i.*, "
+                "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
+                "(SELECT COUNT(*) FROM image_favorites f WHERE f.sha256=i.sha256) AS fc "
+                f"{base} ORDER BY i.created_at DESC LIMIT ? OFFSET ?"
+            )
+            rows = conn.execute(sql, args + [int(limit), int(offset)]).fetchall()
+        except Exception as e:
+            logger.warning(f"[图库] 图库列表失败: {e}")
+        return {"images": self._share_enrich(conn, rows, user_id), "total": total}
+
+    def favorites_list(self, user_id: str, limit: int = 60, offset: int = 0) -> dict:
+        """收藏：我收藏的图（跨用户）。返回含 owner_is_me 标记。"""
+        if not self.enabled() or not _HAS_SQLITE or not user_id:
+            return {"images": [], "total": 0}
+        conn = self._conn_get()
+        base = (
+            "FROM image_favorites f JOIN images i ON i.sha256=f.sha256 "
+            "WHERE f.user_id=? AND i.deleted=0 AND i.status=0"
+        )
+        args = [user_id]
+        total = 0
+        try:
+            row = conn.execute(f"SELECT COUNT(*) c {base}", args).fetchone()
+            total = int(row["c"]) if row else 0
+        except Exception:
+            pass
+        rows = []
+        try:
+            sql = (
+                "SELECT i.*, "
+                "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
+                "(SELECT COUNT(*) FROM image_favorites f2 WHERE f2.sha256=i.sha256) AS fc "
+                f"{base} ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
+            )
+            rows = conn.execute(sql, args + [int(limit), int(offset)]).fetchall()
+        except Exception as e:
+            logger.warning(f"[图库] 收藏列表失败: {e}")
+        imgs = self._share_enrich(conn, rows, user_id)
+        for d in imgs:
+            d["owner_is_me"] = (d.get("user_id") == user_id)
+        return {"images": imgs, "total": total}
+
+    def recycle_list(self, user_id: str, limit: int = 100, offset: int = 0) -> list:
+        if not self.enabled() or not _HAS_SQLITE or not user_id:
+            return []
+        conn = self._conn_get()
+        rows = []
+        try:
+            rows = conn.execute(
+                "SELECT * FROM images WHERE user_id=? AND deleted=1 AND status=0 ORDER BY deleted_at DESC LIMIT ? OFFSET ?",
+                (user_id, int(limit), int(offset)),
+            ).fetchall()
+        except Exception as e:
+            logger.warning(f"[图库] 回收站列表失败: {e}")
+        return [self._row_to_dict(r) for r in rows]
+
+    def profile_stats(self, user_id: str) -> dict:
+        if not self.enabled() or not _HAS_SQLITE or not user_id:
+            return {"total": 0, "public": 0, "private": 0, "favorites": 0,
+                    "likes_given": 0, "likes_received": 0, "recycle": 0}
+        conn = self._conn_get()
+
+        def _c(sql, a=None):
+            try:
+                r = conn.execute(sql, a or []).fetchone()
+                return int(r["c"]) if r else 0
+            except Exception:
+                return 0
+
+        own = "user_id=? AND deleted=0 AND status=0"
+        total = _c(f"SELECT COUNT(*) c FROM images WHERE {own}", [user_id])
+        public = _c(f"SELECT COUNT(*) c FROM images WHERE {own} AND is_public=1", [user_id])
+        private = _c(f"SELECT COUNT(*) c FROM images WHERE {own} AND is_public=0", [user_id])
+        recycle = _c("SELECT COUNT(*) c FROM images WHERE user_id=? AND deleted=1 AND status=0", [user_id])
+        favorites = _c("SELECT COUNT(*) c FROM image_favorites WHERE user_id=?", [user_id])
+        likes_given = _c("SELECT COUNT(*) c FROM image_likes WHERE user_id=?", [user_id])
+        likes_received = _c(
+            "SELECT COUNT(*) c FROM image_likes WHERE sha256 IN (SELECT sha256 FROM images WHERE user_id=?)",
+            [user_id],
+        )
+        return {"total": total, "public": public, "private": private, "favorites": favorites,
+                "likes_given": likes_given, "likes_received": likes_received, "recycle": recycle}
+
+    def set_public(self, sha256: str, on: bool, owner: str = "") -> bool:
+        if not sha256:
+            return False
+        try:
+            conn = self._conn_get()
+            if owner:
+                r = conn.execute("SELECT 1 FROM images WHERE sha256=? AND user_id=?", (sha256, owner)).fetchone()
+                if not r:
+                    return False
+            conn.execute("UPDATE images SET is_public=? WHERE sha256=?", (1 if on else 0, sha256))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 设置公开失败: {e}")
+            return False
+
+    def recycle(self, sha256: str, owner: str = "") -> bool:
+        """移到回收站（分享图库删除）。仅本人可操作。"""
+        if not sha256:
+            return False
+        try:
+            conn = self._conn_get()
+            if owner:
+                r = conn.execute("SELECT 1 FROM images WHERE sha256=? AND user_id=?", (sha256, owner)).fetchone()
+                if not r:
+                    return False
+            conn.execute("UPDATE images SET deleted=1, deleted_at=? WHERE sha256=? AND deleted=0", (time.time(), sha256))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 移入回收站失败: {e}")
+            return False
 
     def _gidx_rank(
         self,
