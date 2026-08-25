@@ -212,6 +212,7 @@ async function loadWorld() {
     world.offset += items.length;
     world.hasMore = world.offset < (r.total || 0);
   } catch (e: any) {
+    console.warn("[ShareView] me 请求失败", e.message, "token=", token.value, "url=", window.location.href);
     if (/401|过期|无效/.test(String(e.message))) expired.value = true;
     else toast("加载失败: " + e.message);
   } finally {
@@ -377,6 +378,8 @@ function onKey(e: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener("keydown", onKey);
   if (!token.value) {
+    // 诊断：token 为空，打印实际 URL/hash 便于排查
+    console.warn("[ShareView] token 为空 url=", window.location.href, "hash=", window.location.hash);
     expired.value = true;
     return;
   }

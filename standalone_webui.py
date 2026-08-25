@@ -28,6 +28,12 @@ import aiohttp
 from aiohttp import web
 
 try:
+    from astrbot.api import logger as _log
+except ImportError:  # pragma: no cover - 非 AstrBot 环境
+    import logging
+    _log = logging.getLogger("standalone_webui")
+
+try:
     from . import webui_api
 except ImportError:
     import webui_api
@@ -906,6 +912,11 @@ class StandaloneWebUI:
         g = self.plugin.gallery
         info = g.get_share_token(tok) if (g and tok) else None
         if not info:
+            # 诊断：记录收到的令牌与查询条件，便于排查「分享链接已失效」
+            _log.warning(
+                f"[独立WebUI] 分享令牌无效 path={path} token_len={len(tok)} "
+                f"token_head={(tok[:8] or '(empty)')} query={str(request.query)}"
+            )
             return _err("分享链接无效或已过期，请重新发送 /萌绘 获取新链接", status=401)
         try:
             return await self._dispatch_share(path, request.method.upper(), request, info)
