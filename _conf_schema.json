@@ -1065,8 +1065,14 @@
         "default": "",
         "description": "白名单用户 ID（逗号/空格/换行分隔，留空=所有人可用）",
         "hint": "仅列表中的用户发送 /萌绘 才生效；其他用户会收到「无权限」提示。填写发送者的用户 ID（如 QQ 号）。管理员默认豁免，无需填入。留空=所有人可用。"
-      },
-      "logo": {
+        },
+        "qr_fill_color": {
+        "type": "string",
+        "default": "#ff8fb3",
+        "description": "二维码颜色（前景色，HEX）",
+        "hint": "默认使用插件主题粉 #ff8fb3；填写 HEX 色值可自定义（如 #000000）。背景固定为白色。颜色过浅可能影响扫码识别。"
+        },
+        "logo": {
         "type": "string",
         "default": "",
         "description": "二维码中心 logo 图片路径（留空则用插件内置 logo）",

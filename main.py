@@ -2172,7 +2172,18 @@ class ComfyUIDrawPlugin(Star):
         qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
         qr.add_data(url)
         qr.make(fit=True)
-        img = qr.make_image(fill_color="#1f1f2e", back_color="white").convert("RGB")
+        # 二维码前景色：默认插件主题粉 #ff8fb3，可通过 share_webui.qr_fill_color 配置
+        _fill = "#ff8fb3"
+        try:
+            _c = (self._cfg("share_webui", {}).get("qr_fill_color") or "").strip()
+            if _c:
+                _fill = _c
+        except Exception:
+            pass
+        try:
+            img = qr.make_image(fill_color=_fill, back_color="white").convert("RGB")
+        except Exception:
+            img = qr.make_image(fill_color="#ff8fb3", back_color="white").convert("RGB")
         logo = None
         if logo_path and os.path.exists(logo_path):
             try:
