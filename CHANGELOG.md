@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.50
+
+- **分享站失效页显示诊断信息**：页面显示「链接已失效」时，同时显示当前完整 URL、解析到的 token、后端错误，便于直接定位是「URL 无 token」「token 解析失败」还是「后端拒绝」。另新增 `/s/{token}` 后端渲染引导页：token 放路径（扫码不易丢），由 JS 校验通过后拼出标准分享站地址跳转。
+
+## v4.9.49
+
+- **回退分享链接 URL 格式到 hash 内 query（`/#/share?token=xxx`）**：v4.9.48 把 token 改到路径（`/#/share/TOKEN`）是错误决定，破坏了向后兼容——缓存中旧版本 JS（v4.9.34~v4.9.47）只认 hash 内 query、不认路径参数，导致扫码新链接后页面 token 解析为空显示失效。现回退到 v4.9.34 起的兼容格式，所有版本 JS 都能直接解析进分享站；新 JS 仍保留 cookie + 多渠道兜底作为加固。
+
 ## v4.9.48
 
 - **分享链接 token 改为路径参数传递（`/#/share/{token}`）**：此前 token 放在 hash 内的 query（`#/share?token=xxx`），扫码工具/浏览器对 hash 内 query 的处理容易把 token 丢弃，导致页面 token 为空、`me` 虽成功却仍显示「链接已失效」。现将 token 放入 hash 内路径（`/share/:token`），路径参数几乎不会被扫码工具改动；前端解析优先 `route.params.token`，并兼容旧格式 query 链接。

@@ -6,6 +6,12 @@
         <div class="s404-emoji">🔗⏰</div>
         <div class="s404-title">链接已失效</div>
         <div class="s404-sub">该分享链接已过期或不存在。<br />请重新发送 /萌绘 获取新的临时链接。</div>
+        <!-- 诊断：把失效的具体原因直接显示在页面上，便于定位（token 是否解析、URL、后端错误） -->
+        <div class="s404-diag" v-if="diag">
+          <div><b>URL:</b> {{ diag.url }}</div>
+          <div><b>token:</b> {{ diag.token }}</div>
+          <div v-if="diag.error"><b>error:</b> {{ diag.error }}</div>
+        </div>
       </div>
     </div>
 
@@ -190,6 +196,7 @@ if (sharedToken) {
   } catch { /* ignore */ }
 }
 const expired = ref(false);
+const diag = ref<{ url: string; token: string; error?: string } | null>(null);
 const me = ref<any>(null);
 const tab = ref("world");
 const toastMsg = ref("");
@@ -411,9 +418,10 @@ function onKey(e: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onKey);
-  if (!token.value) {
-    // 诊断：token 为空，打印实际 URL/hash 便于排查
+  const cur = token.value || sharedToken || "";
+  if (!cur) {
     console.warn("[ShareView] token 为空 url=", window.location.href, "hash=", window.location.hash);
+    diag.value = { url: window.location.href, token: "(空)" };
     expired.value = true;
     return;
   }
@@ -421,6 +429,12 @@ onMounted(async () => {
     me.value = await getJ("me");
     loadWorld();
   } catch (e: any) {
+    diag.value = {
+      url: window.location.href,
+      token: cur,
+      error: (e && e.message) || String(e),
+    };
+    console.warn("[ShareView] me 失败", diag.value);
     expired.value = true;
   }
 });
@@ -785,6 +799,18 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
   font-size: 14px;
   color: #9a7a88;
   line-height: 1.7;
+}
+.s404-diag {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: #fff1f4;
+  border: 1px dashed #ffb3c9;
+  border-radius: 8px;
+  font-size: 11px;
+  color: #7a5a68;
+  text-align: left;
+  word-break: break-all;
+  line-height: 1.5;
 }
 .toast {
   position: fixed;

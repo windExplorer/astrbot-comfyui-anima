@@ -182,6 +182,7 @@ class StandaloneWebUI:
     # ------------------------------------------------------------------ #
     def _setup_routes(self, app: web.Application) -> None:
         app.router.add_get("/", self._handle_index)
+        app.router.add_get("/s/{token}", self._handle_share_landing)
         app.router.add_get("/api/ping", self._handle_ping)
 
         # 分享站（公开，分享令牌鉴权，与独立服务 admin token 解耦）
@@ -311,6 +312,66 @@ class StandaloneWebUI:
             text = text.replace("<head>", "<head>\n    " + marker, 1)
         # index.html 不缓存：确保每次拿到最新引用的 hash 资源，避免升级后浏览器用旧 JS
         return web.Response(text=text, content_type="text/html", charset="utf-8",
+                            headers={"Cache-Control": "no-cache"})
+
+    async def _handle_share_landing(self, request: web.Request) -> web.Response:
+        """分享链接引导页：/s/{token}。
+
+        分享链接的 token 放在 URL 路径里（扫码工具几乎不会丢）。此页由后端直接渲染
+        （极简 HTML，不依赖 Vue/无缓存），内嵌 JS 从路径取 token → 先调后端校验 →
+        有效则用 location.replace 由 JS 拼出标准分享站地址（#/share?token=...）跳转。
+        这样 token 的最终传递完全由 JS 控制，绕开扫码工具对 URL query 的处理和旧 JS
+        缓存不认新格式的问题。
+        """
+        token = (request.match_info.get("token") or "").strip()
+        _esc = lambda s: (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        token_js = _esc(token)
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>萌绘图库</title>
+<style>
+  body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#fff6f9;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}}
+  .card{{background:#fff;border:1px solid #ffe3ec;border-radius:16px;padding:40px 48px;box-shadow:0 8px 30px rgba(255,143,179,.18);text-align:center;max-width:340px;}}
+  .emoji{{font-size:42px;}}
+  .title{{margin:12px 0 8px;font-size:18px;font-weight:700;color:#3a2a33;}}
+  .sub{{font-size:13px;color:#9a7a88;line-height:1.6;}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="emoji">🎨</div>
+  <div class="title" id="t">正在进入萌绘图库…</div>
+  <div class="sub" id="s">请稍候</div>
+</div>
+<script>
+(function(){{
+  var token = "{token_js}";
+  var title = document.getElementById("t");
+  var sub = document.getElementById("s");
+  function fail(){{
+    title.textContent = "链接已失效";
+    sub.innerHTML = "该分享链接已过期或不存在。<br>请重新发送 /萌绘 获取新的临时链接。";
+  }}
+  if(!token){{ fail(); return; }}
+  fetch("/api/share/me?token=" + encodeURIComponent(token))
+    .then(function(r){{ return r.json(); }})
+    .then(function(j){{
+      if(j && j.success){{
+        // 由 JS 拼出标准分享站地址并跳转：token 放在 hash 内 query，兼容所有版本前端
+        location.replace("/index.html#/share?token=" + encodeURIComponent(token));
+      }} else {{
+        fail();
+      }}
+    }})
+    .catch(fail);
+}})();
+</script>
+</body>
+</html>"""
+        return web.Response(text=html, content_type="text/html", charset="utf-8",
                             headers={"Cache-Control": "no-cache"})
 
     async def _handle_static(self, request: web.Request) -> web.Response:
