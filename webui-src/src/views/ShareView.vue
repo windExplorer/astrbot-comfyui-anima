@@ -218,18 +218,14 @@ function imgUrl(sha: string, thumb = true, size = 0) {
 async function getJ(path: string, params: any = {}): Promise<any> {
   const tok = token.value || sharedToken;
   if (!tok) throw new Error("缺少分享令牌");
-  // 分享站请求必须用 URL 里的分享令牌（token 显式放 query），后端 _share_token_from 优先取
-  // query token，绝不会被独立服务的访问口令（Authorization header）顶替。
-  const r: any = await apiGet("share/" + path, { token: tok, ...params }, { token: tok });
-  if (!r || !r.ok) throw new Error((r && r.error) || "请求失败");
-  return r.data;
+  // apiGet 成功时已解包返回 data（对象），失败时抛 Error。注意：返回的 data 没有 .ok 字段，
+  // 绝不能再用 !r.ok 判断——此前正是这里把成功的响应误判成失败，导致页面永远显示「链接已失效」。
+  return await apiGet("share/" + path, { token: tok, ...params }, { token: tok });
 }
 async function postJ(path: string, body: any = {}): Promise<any> {
   const tok = token.value || sharedToken;
   if (!tok) throw new Error("缺少分享令牌");
-  const r: any = await apiPost("share/" + path, { token: tok, ...body }, { token: tok });
-  if (!r || !r.ok) throw new Error((r && r.error) || "请求失败");
-  return r.data;
+  return await apiPost("share/" + path, { token: tok, ...body }, { token: tok });
 }
 
 function fmt(ts: number) {
