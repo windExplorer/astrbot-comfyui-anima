@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.32
+
+- **修复 `/萌绘` 二维码发送报 `OSError: File name too long`**：aiocqhttp 后端不支持 `base64://` 内联图片（会把整个 base64 串当作文件路径读取导致文件名过长）。改为先把二维码 PNG 写入插件 `temp/` 目录，再用本地文件路径发送（与出图流程一致）；写入/发送失败时回退为纯文本链接。
+
 ## v4.9.31
 
 - **修复 `/萌绘` 二维码发送报 `AttributeError: 'Image' object has no attribute 'startswith'`**：`cmd_meng_share` 把 `Image(...)` 组件对象误传给 `event.image_result()`（其参数应为 url/路径/base64 字符串），已改为直接传 `"base64://" + b64` 字符串。

@@ -3,7 +3,6 @@
 import os
 import json
 import random
-import base64
 import re
 import time
 import tempfile
@@ -3597,9 +3596,16 @@ class ComfyUIDrawPlugin(Star):
         else:
             qr = self._make_share_qr(url, cfg.get("logo", "") or "")
             if qr:
-                b64 = base64.b64encode(qr).decode("ascii")
-                yield event.image_result("base64://" + b64)
-                yield event.plain_result(f"🎨 扫码进入你的专属萌绘图库（{minutes} 分钟有效）")
+                # 二维码先落盘为临时文件再按路径发送：aiocqhttp 后端不支持 base64:// 内联
+                # （会把整个 base64 串当文件路径读取导致「文件名过长」），与出图流程一致用本地路径。
+                try:
+                    _qr_path = self.temp_dir / f"share_qr_{uuid.uuid4().hex}.png"
+                    _qr_path.write_bytes(qr)
+                    yield event.image_result(str(_qr_path))
+                    yield event.plain_result(f"🎨 扫码进入你的专属萌绘图库（{minutes} 分钟有效）")
+                except Exception as _e:
+                    logger.warning(f"【萌绘】 二维码生成/发送失败，回退链接: {_e}")
+                    yield event.plain_result(f"🎨 你的专属萌绘图库（{minutes} 分钟有效）：\n{url}")
             else:
                 yield event.plain_result(f"🎨 你的专属萌绘图库（{minutes} 分钟有效）：\n{url}")
         event.stop_event()
