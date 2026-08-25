@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.68
+
+- **大图抽屉优化**：详情行 label 加宽至 88px 并禁止换行（NSFW 评分不再折行）；抽屉展开时点击图片/空白区域自动收起抽屉（收起后再点才关闭大图或切换 contain/cover）。
+
 ## v4.9.67
 
 - **缩略图全面转 WebP 压缩**：`_thumb_data_url`/`_thumb_bytes` 此前对非 JPEG 原图存成 PNG（无损、体积大），改为统一 WebP（quality=72 + method=4），支持透明、浏览器全兼容，传输体积大幅减小（尤其 PNG 原图场景）。旧 Pillow 无 WebP 时降级 JPEG。分享站缩略图 URL 加 `v=2` 版本参数，强制刷新浏览器旧缓存。

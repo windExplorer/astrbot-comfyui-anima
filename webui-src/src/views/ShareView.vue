@@ -167,9 +167,9 @@
 
     <!-- 大图查看器（全屏覆盖 + 底部拖拽抽屉） -->
     <n-modal v-model:show="viewer" :mask-closable="true" class="viewer-full-modal">
-      <div class="vfull" @click.self="closeViewer">
-        <div class="vimg">
-          <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="imgFit = imgFit === 'contain' ? 'cover' : 'contain'" />
+      <div class="vfull" @click.self="onVfullClick">
+        <div class="vimg" @click.self="onVfullClick">
+          <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="onImgClick" />
           <div v-if="viewerLoading" class="vloading"><span class="vf-spin"></span>加载中…</div>
           <div class="vtools">
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
@@ -610,6 +610,23 @@ function onDrawerEnd() {
   drawerOffset.value = drawerOffset.value < drawerCollapsedPx.value / 2 ? 0 : drawerCollapsedPx.value;
 }
 
+// 点击大图空白：抽屉展开时先收起，收起后再点才关闭查看器
+function onVfullClick() {
+  if (drawerOpen.value) {
+    drawerOffset.value = drawerCollapsedPx.value;
+  } else {
+    closeViewer();
+  }
+}
+// 点击图片：抽屉展开时先收起，收起后再点切换 contain/cover
+function onImgClick() {
+  if (drawerOpen.value) {
+    drawerOffset.value = drawerCollapsedPx.value;
+    return;
+  }
+  imgFit.value = imgFit.value === "contain" ? "cover" : "contain";
+}
+
 const viewerAvatar = computed(() => {
   const m = viewerM.value;
   if (!m) return "";
@@ -923,7 +940,7 @@ onUnmounted(() => {
 
 .vd-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .vd-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.vlabel { color: rgba(255, 255, 255, 0.45); width: 64px; flex: 0 0 auto; }
+.vlabel { color: rgba(255, 255, 255, 0.45); width: 88px; flex: 0 0 auto; white-space: nowrap; }
 .vvalue { color: #fff; }
 .vvalue.lv-low { color: #7fe0a8; }
 .vvalue.lv-mid { color: #ffc277; }
