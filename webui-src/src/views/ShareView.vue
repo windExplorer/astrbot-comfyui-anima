@@ -642,10 +642,16 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
   border: 1px solid var(--border-color, #ffe3ec); background: var(--bg-panel, #fff);
   font-size: 15px; display: flex; align-items: center; justify-content: center;
 }
-.sh-user { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.sh-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 2px solid #ffb3d1; }
-.sh-user-name { font-size: 13px; font-weight: 700; }
+.sh-user { display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; }
+.sh-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 2px solid #ffb3d1; flex: 0 0 auto; }
+.sh-user-name { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 22vw; }
 .sh-user-exp { font-size: 11px; color: var(--text-sub, #9a7a88); }
+/* 窄屏：隐藏有效期文字，避免 header 拥挤 */
+@media (max-width: 420px) {
+  .sh-user-exp { display: none; }
+  .sh-header { padding: 10px 10px; }
+  .sh-header-right { gap: 8px; }
+}
 
 /* ---- 内容区 ---- */
 .sh-main { flex: 1 1 auto; overflow: hidden; padding: 12px 12px 76px; }
