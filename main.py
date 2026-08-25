@@ -3578,6 +3578,11 @@ class ComfyUIDrawPlugin(Star):
             yield event.plain_result("分享功能未启用。")
             event.stop_event()
             return
+        # 仅限私聊使用：分享链接为个人专属（含本人图库/收藏），群聊不开放
+        if not self._is_private_event(event):
+            yield event.plain_result("该功能仅支持私聊使用，请私聊机器人发送 /萌绘 获取专属分享链接。")
+            event.stop_event()
+            return
         uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
         uname = ""
         try:
