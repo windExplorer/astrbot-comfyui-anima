@@ -59,69 +59,57 @@
 
         <!-- 图库 -->
         <section v-else-if="tab === 'gallery'" class="sh-pane">
-          <div class="gfilter">
-            <n-radio-group v-model:value="galleryVis" size="small" @update:value="onVisChange">
-              <n-radio-button value="all">全部</n-radio-button>
-              <n-radio-button value="public">公开</n-radio-button>
-              <n-radio-button value="private">私有</n-radio-button>
-            </n-radio-group>
-          </div>
-          <div class="glist">
-            <VirtualWaterfall
-              :items="gallery.list"
-              :img-src="m => imgUrl(m.sha256, true, 600)"
-              :has-more="gallery.hasMore"
-              :load-more="loadGallery"
-              :loading="gallery.loading"
-              :nsfw="true"
-              :refresh="refreshGallery"
-              @item-click="m => openViewer(m, gallery.list, 'gallery')"
-            >
-              <template #badges="{ item: m }">
-                <div class="wf-badges">
-                  <span class="bstate" :class="m.is_public ? 'bpub' : 'bpriv'">{{ m.is_public ? "公开" : "私有" }}</span>
-                </div>
-              </template>
-              <template #info="{ item: m }">
-                <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </template>
-            </VirtualWaterfall>
-          </div>
+          <FloatFilter
+            :options="galleryVisOpts"
+            :model-value="galleryVis"
+            :top="64"
+            :right="12"
+            @update:model-value="onVisChange"
+          />
+          <VirtualWaterfall
+            :items="gallery.list"
+            :img-src="m => imgUrl(m.sha256, true, 600)"
+            :has-more="gallery.hasMore"
+            :load-more="loadGallery"
+            :loading="gallery.loading"
+            :nsfw="true"
+            :refresh="refreshGallery"
+            @item-click="m => openViewer(m, gallery.list, 'gallery')"
+          >
+            <template #badges="{ item: m }">
+              <div class="wf-badges">
+                <span class="bstate" :class="m.is_public ? 'bpub' : 'bpriv'">{{ m.is_public ? "公开" : "私有" }}</span>
+              </div>
+            </template>
+            <template #info="{ item: m }">
+              <span class="when">{{ fmtShort(m.created_at) }}</span>
+            </template>
+          </VirtualWaterfall>
           <n-empty v-if="!gallery.loading && gallery.list.length === 0" description="还没有作品~" class="sh-empty" />
         </section>
 
         <!-- 收藏 -->
-        <section v-else-if="tab === 'favorites'" class="sh-pane fav-split">
-          <div class="fav-half">
-            <h3 class="fsec">自己的收藏</h3>
-            <VirtualWaterfall
-              :items="fav.mine"
-              :img-src="m => imgUrl(m.sha256, true, 600)"
-              :nsfw="true"
-              :refresh="loadFav"
-              @item-click="m => openViewer(m, fav.mine, 'fav')"
-            >
-              <template #info="{ item: m }">
-                <span class="who">{{ m.user_id === me?.user_id ? "我" : (m.user_name || m.user_id) }}</span>
-                <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </template>
-            </VirtualWaterfall>
-          </div>
-          <div class="fav-half">
-            <h3 class="fsec">其他人的收藏</h3>
-            <VirtualWaterfall
-              :items="fav.others"
-              :img-src="m => imgUrl(m.sha256, true, 600)"
-              :nsfw="true"
-              :refresh="loadFav"
-              @item-click="m => openViewer(m, fav.others, 'fav')"
-            >
-              <template #info="{ item: m }">
-                <span class="who">{{ m.user_name || m.user_id }}</span>
-                <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </template>
-            </VirtualWaterfall>
-          </div>
+        <section v-else-if="tab === 'favorites'" class="sh-pane">
+          <FloatFilter
+            :options="favVisOpts"
+            :model-value="favVis"
+            :top="64"
+            :right="12"
+            @update:model-value="onFavVisChange"
+          />
+          <VirtualWaterfall
+            :items="favList"
+            :img-src="m => imgUrl(m.sha256, true, 600)"
+            :nsfw="true"
+            :refresh="loadFav"
+            @item-click="m => openViewer(m, fav.list, 'fav')"
+          >
+            <template #info="{ item: m }">
+              <span class="who">{{ m.user_id === me?.user_id ? "我" : (m.user_name || m.user_id) }}</span>
+              <span class="when">{{ fmtShort(m.created_at) }}</span>
+            </template>
+          </VirtualWaterfall>
+          <n-empty v-if="!fav.loading && favList.length === 0" description="还没有收藏~" class="sh-empty" />
         </section>
 
         <!-- 个人中心 -->
@@ -268,9 +256,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useMessage, useDialog, NModal, NEmpty, NButton, NRadioGroup, NRadioButton, NTag } from "naive-ui";
+import { useMessage, useDialog, NModal, NEmpty, NButton, NTag } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import VirtualWaterfall from "@/components/VirtualWaterfall.vue";
+import FloatFilter from "@/components/FloatFilter.vue";
 import { useTheme } from "@/composables/useTheme";
 import { PLUGIN_VERSION } from "@/version";
 
@@ -417,6 +406,11 @@ async function refreshWorld() {
 }
 
 // ---- 图库 ----
+const galleryVisOpts = [
+  { label: "全部", value: "all" },
+  { label: "公开", value: "public" },
+  { label: "私有", value: "private" },
+];
 const galleryVis = ref("all");
 const gallery = reactive({ list: [] as any[], offset: 0, loading: false, hasMore: true });
 async function loadGallery() {
@@ -450,14 +444,26 @@ function onVisChange(v: string) {
 }
 
 // ---- 收藏 ----
-const fav = reactive({ mine: [] as any[], others: [] as any[], loading: false });
+const favVisOpts = [
+  { label: "全部", value: "all" },
+  { label: "我的", value: "mine" },
+  { label: "他人", value: "others" },
+];
+const favVis = ref<"all" | "mine" | "others">("all");
+const fav = reactive({ list: [] as any[], loading: false });
+const favList = computed(() => {
+  if (favVis.value === "mine") return fav.list.filter((x: any) => x.owner_is_me);
+  if (favVis.value === "others") return fav.list.filter((x: any) => !x.owner_is_me);
+  return fav.list;
+});
+function onFavVisChange(v: string) {
+  favVis.value = v as "all" | "mine" | "others";
+}
 async function loadFav() {
   fav.loading = true;
   try {
     const r = await getJ("favorites", { limit: 100, offset: 0 });
-    const items = r.images || [];
-    fav.mine = items.filter((x: any) => x.owner_is_me);
-    fav.others = items.filter((x: any) => !x.owner_is_me);
+    fav.list = r.images || [];
   } catch (e: any) {
     toast("加载失败: " + e.message);
   } finally {
@@ -793,14 +799,7 @@ onUnmounted(() => {
 .sh-main { flex: 1 1 auto; overflow: hidden; padding: 12px 12px 76px; }
 .sh-pane { height: 100%; min-height: 0; }
 .sh-empty { padding: 50px 0; }
-.fsec { font-size: 13px; color: var(--text-sub, #9a7a88); margin: 0 0 8px; }
-.gfilter { display: flex; justify-content: center; margin-bottom: 12px; flex: 0 0 auto; }
-.glist { height: calc(100% - 40px); }
-
-/* 收藏拆分 */
-.fav-split { display: flex; flex-direction: column; gap: 10px; }
-.fav-half { flex: 1 1 50%; min-height: 0; display: flex; flex-direction: column; }
-.fav-half .fsec { flex: 0 0 auto; }
+.glist { height: calc(100% - 48px); }
 
 /* ---- 瀑布流卡片叠层 ---- */
 .who { color: #ffd3e3; font-weight: 700; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
