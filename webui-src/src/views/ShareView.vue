@@ -15,14 +15,22 @@
     </div>
 
     <template v-else>
-      <!-- 顶部：品牌 + 当前用户 -->
+      <!-- 顶部：品牌 + 主题/版本 + 当前用户 -->
       <header class="sh-header">
-        <div class="sh-brand">🎨 萌绘图库</div>
-        <div class="sh-user" v-if="me" @click="switchTab('profile')">
-          <img :src="avatarSrc" class="sh-avatar" @error="avatarFallback" />
-          <div class="sh-user-info">
-            <div class="sh-user-name">@{{ me.user_name || me.user_id }}</div>
-            <div class="sh-user-exp">有效期至 {{ expireText }}</div>
+        <div class="sh-brand">
+          🎨 萌绘图库
+          <span class="sh-ver" title="插件版本号">{{ PLUGIN_VERSION }}</span>
+        </div>
+        <div class="sh-header-right">
+          <button class="sh-theme" @click="toggleDark" :title="isDark ? '切换到浅色' : '切换到深色'">
+            {{ isDark ? "🌙" : "☀️" }}
+          </button>
+          <div class="sh-user" v-if="me" @click="switchTab('profile')">
+            <img :src="avatarSrc" class="sh-avatar" @error="avatarFallback" />
+            <div class="sh-user-info">
+              <div class="sh-user-name">@{{ me.user_name || me.user_id }}</div>
+              <div class="sh-user-exp">有效期至 {{ expireText }}</div>
+            </div>
           </div>
         </div>
       </header>
@@ -237,6 +245,10 @@ import { useRoute, useRouter } from "vue-router";
 import { useMessage, useDialog, NModal, NEmpty, NButton, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import VirtualWaterfall from "@/components/VirtualWaterfall.vue";
+import { useTheme } from "@/composables/useTheme";
+import { PLUGIN_VERSION } from "@/version";
+
+const { isDark, toggleDark } = useTheme();
 
 const route = useRoute();
 const router = useRouter();
@@ -618,7 +630,18 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border-color, #ffe3ec);
 }
-.sh-brand { font-size: 16px; font-weight: 800; color: #e86f9c; }
+.sh-brand { font-size: 16px; font-weight: 800; color: #e86f9c; display: flex; align-items: center; gap: 6px; }
+.sh-ver {
+  font-size: 10px; font-weight: 600; color: var(--text-sub, #9a7a88);
+  background: var(--bg-panel, #fff); border: 1px solid var(--border-color, #ffe3ec);
+  border-radius: 999px; padding: 1px 8px;
+}
+.sh-header-right { display: flex; align-items: center; gap: 10px; }
+.sh-theme {
+  width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--border-color, #ffe3ec); background: var(--bg-panel, #fff);
+  font-size: 15px; display: flex; align-items: center; justify-content: center;
+}
 .sh-user { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .sh-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 2px solid #ffb3d1; }
 .sh-user-name { font-size: 13px; font-weight: 700; }

@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.57
+
+- **分享站顶部加主题切换 + 版本号展示**：header 右侧新增深/浅色切换按钮（🌙/☀️，复用 `useTheme` 与 AstrBot 联动，与主控制台一致），品牌名旁展示插件版本号 `PLUGIN_VERSION`。
+
 ## v4.9.56
 
 - **分享站移动端下拉刷新**：`VirtualWaterfall` 支持下拉手势刷新（顶部向下拉阻尼反馈→松手刷新→回弹），非 passive touchmove 阻止浏览器橡皮筋/页面级刷新，`overscroll-behavior: contain` 隔离滚动。世界/图库/收藏/回收站全部接入。
