@@ -899,12 +899,21 @@ class StandaloneWebUI:
     # 分享站（公开，分享令牌鉴权，与独立服务 admin token 解耦）
     # ------------------------------------------------------------------ #
     def _share_token_from(self, request: web.Request) -> str:
-        # 分享站令牌优先从 URL query 取（分享链接把 token 放在 #/share?token=xxx，请求时
-        # 以 query 形式发给后端）。query 没有时才用 Authorization 头（兼容独立服务管理口令）。
-        # 关键：分享站的请求 URL 里必然带 token，绝不能反向让 header 的管理口令顶替它。
+        # 分享令牌多渠道收集，按优先级返回：
+        #  1) URL query token（分享链接 #/share?token=xxx，请求时以 query 传给后端）
+        #  2) cookie anima_share_token（前端把分享令牌写入 cookie，同源请求自动携带，
+        #     即使某次请求漏带 query token 也能兜住）
+        #  3) Authorization 头（仅作为最后兜底，正常情况下分享令牌不会走这里，
+        #     避免与独立服务管理口令混淆）
         q = request.query.get("token", "")
         if q:
             return q.strip()
+        try:
+            ck = request.cookies.get("anima_share_token", "")
+            if ck:
+                return ck.strip()
+        except Exception:
+            pass
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip()

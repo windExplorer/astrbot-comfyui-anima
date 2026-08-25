@@ -178,6 +178,13 @@ const token = computed(_extractToken);
 // 即使 computed 因路由变化重算也不影响已发出的请求。
 let sharedToken = "";
 try { sharedToken = _extractToken(); } catch { /* ignore */ }
+// 把分享令牌写入 cookie（同源请求自动携带），后端 _share_token_from 会作为兜底读取，
+// 防止任何一次请求漏带 query token 导致 401。
+if (sharedToken) {
+  try {
+    document.cookie = "anima_share_token=" + encodeURIComponent(sharedToken) + "; path=/; max-age=86400; SameSite=Lax";
+  } catch { /* ignore */ }
+}
 const expired = ref(false);
 const me = ref<any>(null);
 const tab = ref("world");
@@ -234,9 +241,10 @@ async function loadWorld() {
     world.offset += items.length;
     world.hasMore = world.offset < (r.total || 0);
   } catch (e: any) {
-    console.warn("[ShareView] me 请求失败", e.message, "token=", token.value, "url=", window.location.href);
-    if (/401|过期|无效/.test(String(e.message))) expired.value = true;
-    else toast("加载失败: " + e.message);
+    // 局部接口失败只提示，不整页判失效（令牌有效性由 me 决定，me 已成功就不该因
+    // world 失败而显示「链接已失效」）。
+    console.warn("[ShareView] world 加载失败", e.message, "token=", token.value, "url=", window.location.href);
+    toast("世界加载失败: " + e.message);
   } finally {
     world.loading = false;
   }
