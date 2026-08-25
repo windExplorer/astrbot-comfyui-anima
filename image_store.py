@@ -102,6 +102,9 @@ class ImageStore:
         # 提供后 _nsfw_cfg 等实时读取配置；未提供则用构造时的 cfg 快照。
         self._cfg_provider = cfg_provider if callable(cfg_provider) else None
         self._conn = None
+        # 分享令牌内存兜底：同一进程内创建/校验必然一致，
+        # 规避 SQLite 读写不一致导致的「分享链接已失效」（token 在库中查不到）。
+        self._share_tokens_mem: dict[str, dict] = {}
         # 后台 NSFW 扫描任务状态（线程内更新，读取加锁）
         self._scan_lock = threading.Lock()
         self._scan_thread: "threading.Thread | None" = None
@@ -1057,21 +1060,43 @@ class ImageStore:
 
     def create_share_token(self, user_id: str, user_name: str = None, ttl_sec: int = 3600) -> str:
         token = secrets.token_urlsafe(24)
+        now = time.time()
+        # 内存兜底：同一进程内创建/校验必然一致，规避 SQLite 读写不一致导致的「链接已失效」
+        self._share_tokens_mem[token] = {
+            "token": token,
+            "user_id": user_id,
+            "user_name": user_name,
+            "created_at": now,
+            "expire_at": now + ttl_sec,
+        }
+        # 顺带清理内存中已过期的令牌，避免长期累积
+        if len(self._share_tokens_mem) > 500:
+            for _k in [k for k, v in self._share_tokens_mem.items()
+                       if (v.get("expire_at") or 0) < time.time()]:
+                self._share_tokens_mem.pop(_k, None)
         try:
             self.ensure_user(user_id, user_name)
             conn = self._conn_get()
             conn.execute(
                 "INSERT OR REPLACE INTO share_tokens(token,user_id,user_name,created_at,expire_at) VALUES(?,?,?,?,?)",
-                (token, user_id, user_name, time.time(), time.time() + ttl_sec),
+                (token, user_id, user_name, now, now + ttl_sec),
             )
             conn.commit()
         except Exception as e:
-            logger.warning(f"[图库] 创建分享令牌失败: {e}")
+            logger.warning(f"[图库] 创建分享令牌失败（内存兜底仍可用）: {e}")
         return token
 
     def get_share_token(self, token: str) -> dict | None:
         if not token:
             return None
+        now = time.time()
+        # 内存兜底优先：同一进程内创建的令牌必然命中，规避 SQLite 读写不一致
+        mem = self._share_tokens_mem.get(token)
+        if mem is not None:
+            if (mem.get("expire_at") or 0) < now:
+                self._share_tokens_mem.pop(token, None)
+                return None
+            return dict(mem)
         try:
             conn = self._conn_get()
             row = conn.execute(
@@ -1100,6 +1125,7 @@ class ImageStore:
     def invalidate_share_token(self, token: str) -> None:
         if not token:
             return
+        self._share_tokens_mem.pop(token, None)
         try:
             conn = self._conn_get()
             conn.execute("DELETE FROM share_tokens WHERE token=?", (token,))
