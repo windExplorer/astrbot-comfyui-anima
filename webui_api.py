@@ -1410,6 +1410,10 @@ class WebUIApi:
 
         数据库文件通常不大（SQLite 元数据），走 bridge 拉取 base64 后在前端
         构造 Blob 下载，规避 AstrBot 裸路径需登录 token 的问题。
+
+        注意：图库开启了 WAL 模式，直接读取主文件会漏掉 -wal 中尚未合并的
+        新建表/数据（如 users 表）。因此这里用 SQLite online backup API 导出
+        完整快照（自动包含 WAL 内容），保证备份与活库一致。
         """
         g = self._gallery()
         if g is None:
@@ -1418,7 +1422,29 @@ class WebUIApi:
             db_path = getattr(g, "db_path", None)
             if not db_path or not Path(db_path).exists():
                 return error_response("图库数据库文件不存在")
-            raw = await asyncio.to_thread(Path(db_path).read_bytes)
+            import sqlite3
+            import tempfile
+            import os as _os
+
+            def _export_db() -> bytes:
+                _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+                _tmp.close()
+                try:
+                    _src = sqlite3.connect(str(db_path))
+                    _dst = sqlite3.connect(_tmp.name)
+                    try:
+                        _src.backup(_dst)
+                    finally:
+                        _dst.close()
+                        _src.close()
+                    return Path(_tmp.name).read_bytes()
+                finally:
+                    try:
+                        _os.unlink(_tmp.name)
+                    except OSError:
+                        pass
+
+            raw = await asyncio.to_thread(_export_db)
             encoded = base64.b64encode(raw).decode("ascii")
             ts = time.strftime("%Y%m%d-%H%M%S")
             filename = f"gallery_backup_{ts}.db"
