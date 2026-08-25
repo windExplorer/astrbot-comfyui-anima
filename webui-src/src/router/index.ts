@@ -29,6 +29,7 @@ const router = createRouter({
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },
     { path: "/share", name: "share", component: ShareView, meta: { title: "萌绘分享", public: true } },
+    { path: "/share/:token", name: "shareToken", component: ShareView, meta: { title: "萌绘分享", public: true } },
     { path: "/:pathMatch(.*)*", redirect: "/config" },
   ],
 });

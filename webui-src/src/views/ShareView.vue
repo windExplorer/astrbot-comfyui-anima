@@ -159,10 +159,13 @@ const route = useRoute();
 // 分享令牌：优先从 hash 内 query（#/share?token=xxx）取；取不到再从 location.search
 // 兜底（旧格式 ?token=xxx#/share）。以首次加载的 URL 为准，后续路由变化不影响。
 function _extractToken(): string {
+  // 1) 路径参数（推荐格式：#/share/TOKEN，扫码工具最稳）
+  const fromParam = (route.params.token as string) || "";
+  if (fromParam) return fromParam;
+  // 2) hash 内 query（旧格式：#/share?token=xxx）
   const fromHash = route.query.token as string | undefined;
   if (fromHash) return fromHash;
   try {
-    // hash 内 query：/path?token=xxx 在 # 之后
     const hash = window.location.hash || "";
     const qi = hash.indexOf("?");
     if (qi >= 0) {
@@ -171,6 +174,7 @@ function _extractToken(): string {
       if (t) return t;
     }
   } catch { /* ignore */ }
+  // 3) location.search（更旧格式：?token=xxx#/share）
   return new URLSearchParams(window.location.search).get("token") || "";
 }
 const token = computed(_extractToken);

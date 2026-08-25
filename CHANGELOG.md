@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.48
+
+- **分享链接 token 改为路径参数传递（`/#/share/{token}`）**：此前 token 放在 hash 内的 query（`#/share?token=xxx`），扫码工具/浏览器对 hash 内 query 的处理容易把 token 丢弃，导致页面 token 为空、`me` 虽成功却仍显示「链接已失效」。现将 token 放入 hash 内路径（`/share/:token`），路径参数几乎不会被扫码工具改动；前端解析优先 `route.params.token`，并兼容旧格式 query 链接。
+
 ## v4.9.47
 
 - **修复 `/萌绘` 分享链接「扫码即失效」的真正根因**：`create_share_token` 此前把 `ensure_user` 与 `INSERT share_tokens` 放在同一个 try 块，若 `ensure_user` 抛异常则 INSERT 不执行，令牌只写入内存，插件重启后内存清空、SQLite 中也没有该令牌 → 扫码必失效。
