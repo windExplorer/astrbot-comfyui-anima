@@ -267,6 +267,15 @@ onUnmounted(() => {
   clearTimeout(pullTimer);
 });
 
+// 关键：父组件用 list.push(...) 原地追加数据时 items 引用不变，
+// 必须监听长度变化才能触发重建（否则首屏 layout 为空 → 空白，改宽度靠 ResizeObserver 才出图）。
+watch(
+  () => props.items?.length ?? 0,
+  () => {
+    measureTries = 0;
+    ensureLayout();
+  }
+);
 watch(
   () => props.items,
   () => {

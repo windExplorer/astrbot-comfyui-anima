@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.66
+
+- **修复：分享站首屏空白（真正根因）**：父组件用 `list.push(...)` 原地追加数据时 `items` 引用不变，VirtualWaterfall 的 `watch(() => props.items)` 永不触发 → `layout` 保持为空 → 瀑布流空白，只有改宽度触发 ResizeObserver 才出图。改为同时监听 `props.items.length`（push 场景）与 `items` 引用（整体替换场景），数据一到即重建布局。
+
 ## v4.9.65
 
 - **修复：右下角 NSFW 模糊开关无效**：瀑布流各组件的 `nsfw` 此前硬编码为 `true`，未跟随开关状态。改为绑定 `nsfwBlurGlobal`，点击"🔞 模糊/原图"即时切换瀑布流图片的模糊与遮罩。
