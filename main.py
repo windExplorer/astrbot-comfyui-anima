@@ -2198,6 +2198,14 @@ class ComfyUIDrawPlugin(Star):
         return buf.getvalue()
 
     def _make_default_share_logo(self):
+        """默认二维码中心 logo：优先用插件根目录 logo.png，缺失时画「萌」字兜底。"""
+        try:
+            _logo_path = Path(__file__).resolve().parent / "logo.png"
+            if _logo_path.is_file():
+                from PIL import Image as PILImage
+                return PILImage.open(str(_logo_path)).convert("RGBA")
+        except Exception:
+            pass
         from PIL import Image as PILImage, ImageDraw, ImageFont
         size = 240
         img = PILImage.new("RGBA", (size, size), (0, 0, 0, 0))

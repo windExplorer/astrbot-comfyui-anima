@@ -1069,8 +1069,8 @@
       "logo": {
         "type": "string",
         "default": "",
-        "description": "二维码中心 logo 图片路径（留空则用默认萌字 logo）",
-        "hint": "可选。填写本地图片绝对路径；留空则生成默认「萌」字圆角 logo。"
+        "description": "二维码中心 logo 图片路径（留空则用插件内置 logo）",
+        "hint": "可选。填写本地图片绝对路径；留空则使用插件自带的默认 logo（logo.png）。"
       }
     }
   }
