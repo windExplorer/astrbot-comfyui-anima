@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.52
+
+- **修复 `/萌绘` 链接模式下分享令牌被脱敏**：链接模式（`mode=link`）发送纯文本 URL 时，陪伴插件（`astrbot_plugin_private_companion`）的发送前敏感凭据脱敏会把 `?token=xxx` 替换成 `?token=[密钥已隐藏]`，导致用户点击链接必然失效。现将分享链接参数名由 `token` 改为 `share_t`（不含 token/key/secret 等脱敏关键词），前端解析、后端 `_share_token_from`、引导页跳转同步改为 `share_t`（并兼容旧 `token` 参数）。二维码模式为图片不经过文本脱敏，不受影响。
+
 ## v4.9.51
 
 - **修复 `/萌绘` 分享站「接口 200 却始终显示链接已失效」的真正根因**：`ShareView` 的 `getJ/postJ` 用 `!r.ok` 判断请求是否成功，但 `apiGet/apiPost` 成功时返回的已是解包后的 `data`（对象），**该对象没有 `.ok` 字段**，导致 `!r.ok` 恒为真 → 每次请求都被误判为失败 → 页面永远显示「链接已失效」。此 bug 自分享站上线即存在，正是「一路坏过来」的根本原因。已改为直接返回 `apiGet/apiPost` 的结果（成功返回 data，失败抛出 Error）。

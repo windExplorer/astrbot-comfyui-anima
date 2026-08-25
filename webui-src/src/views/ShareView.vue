@@ -165,10 +165,13 @@ const route = useRoute();
 // 分享令牌：优先从 hash 内 query（#/share?token=xxx）取；取不到再从 location.search
 // 兜底（旧格式 ?token=xxx#/share）。以首次加载的 URL 为准，后续路由变化不影响。
 function _extractToken(): string {
-  // 1) 路径参数（推荐格式：#/share/TOKEN，扫码工具最稳）
+  // 1) hash 内 query 优先读 share_t（当前格式：#/share?share_t=xxx，避免陪伴插件脱敏 token）
+  const fromShareT = route.query.share_t as string | undefined;
+  if (fromShareT) return fromShareT;
+  // 2) 路径参数（兼容格式：#/share/TOKEN）
   const fromParam = (route.params.token as string) || "";
   if (fromParam) return fromParam;
-  // 2) hash 内 query（旧格式：#/share?token=xxx）
+  // 3) hash 内 query 旧格式：#/share?token=xxx
   const fromHash = route.query.token as string | undefined;
   if (fromHash) return fromHash;
   try {
@@ -176,12 +179,13 @@ function _extractToken(): string {
     const qi = hash.indexOf("?");
     if (qi >= 0) {
       const qs = new URLSearchParams(hash.slice(qi + 1));
-      const t = qs.get("token");
+      const t = qs.get("share_t") || qs.get("token");
       if (t) return t;
     }
   } catch { /* ignore */ }
-  // 3) location.search（更旧格式：?token=xxx#/share）
-  return new URLSearchParams(window.location.search).get("token") || "";
+  // 4) location.search（更旧格式：?token=xxx#/share）
+  const ss = new URLSearchParams(window.location.search);
+  return ss.get("share_t") || ss.get("token") || "";
 }
 const token = computed(_extractToken);
 // 模块级共享令牌：确保 getJ/postJ/imgUrl 始终拿到同一个 token，
@@ -210,7 +214,7 @@ function toast(m: string) {
 
 function imgUrl(sha: string, thumb = true, size = 0) {
   const tok = token.value || sharedToken || "";
-  let u = `/share/img/${sha}${thumb ? "/thumb" : ""}?token=${encodeURIComponent(tok)}`;
+  let u = `/share/img/${sha}${thumb ? "/thumb" : ""}?share_t=${encodeURIComponent(tok)}`;
   if (thumb && size) u += `&size=${size}`;
   return u;
 }
@@ -220,12 +224,12 @@ async function getJ(path: string, params: any = {}): Promise<any> {
   if (!tok) throw new Error("缺少分享令牌");
   // apiGet 成功时已解包返回 data（对象），失败时抛 Error。注意：返回的 data 没有 .ok 字段，
   // 绝不能再用 !r.ok 判断——此前正是这里把成功的响应误判成失败，导致页面永远显示「链接已失效」。
-  return await apiGet("share/" + path, { token: tok, ...params }, { token: tok });
+  return await apiGet("share/" + path, { share_t: tok, ...params }, { share_t: tok });
 }
 async function postJ(path: string, body: any = {}): Promise<any> {
   const tok = token.value || sharedToken;
   if (!tok) throw new Error("缺少分享令牌");
-  return await apiPost("share/" + path, { token: tok, ...body }, { token: tok });
+  return await apiPost("share/" + path, { share_t: tok, ...body }, { share_t: tok });
 }
 
 function fmt(ts: number) {

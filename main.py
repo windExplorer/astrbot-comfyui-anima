@@ -3611,9 +3611,9 @@ class ComfyUIDrawPlugin(Star):
         ttl = max(1, int(cfg.get("expire_minutes", 60) or 60)) * 60
         token = self.gallery.create_share_token(uid, uname, ttl_sec=ttl)
         base = self._share_base_url()
-        # token 放在 hash 内的路径（/#/share/{token}）：比 hash query（#/share?token=xxx）更稳，
-        # 扫码工具/浏览器对 hash 内 query 的处理容易丢 token，路径参数几乎不会丢。
-        url = f"{base}/#/share/{token}"
+        # 参数名用 share_t 而非 token：避免被陪伴插件（astrbot_plugin_private_companion）的
+        # 发送前敏感凭据脱敏正则（[?&]token=）匹配，导致链接模式的 token 被替换成「密钥已隐藏」。
+        url = f"{base}/#/share?share_t={token}"
         mode = (cfg.get("mode") or "qrcode").strip().lower()
         minutes = max(1, int(ttl // 60))
         if mode == "link":

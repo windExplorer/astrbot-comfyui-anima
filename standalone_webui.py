@@ -361,7 +361,7 @@ class StandaloneWebUI:
     .then(function(j){{
       if(j && j.success){{
         // 由 JS 拼出标准分享站地址并跳转：token 放在 hash 内 query，兼容所有版本前端
-        location.replace("/index.html#/share?token=" + encodeURIComponent(token));
+        location.replace("/index.html#/share?share_t=" + encodeURIComponent(token));
       }} else {{
         fail();
       }}
@@ -966,7 +966,8 @@ class StandaloneWebUI:
         #     即使某次请求漏带 query token 也能兜住）
         #  3) Authorization 头（仅作为最后兜底，正常情况下分享令牌不会走这里，
         #     避免与独立服务管理口令混淆）
-        q = request.query.get("token", "")
+        # 当前格式用 share_t 参数（避免陪伴插件脱敏正则 token= 误伤）；兼容旧 token 参数
+        q = request.query.get("share_t", "") or request.query.get("token", "")
         if q:
             return q.strip()
         try:
