@@ -3,8 +3,10 @@
     <div v-if="show" class="iviewer" @click.self="onClose">
       <button class="iv-close" @click="onClose" aria-label="关闭">✕</button>
       <div class="iv-body" @click.self="onClose">
+        <button v-if="canNav" class="iv-nav iv-nav-prev" :disabled="navPrevDisabled" @click="onNav(-1)" aria-label="上一张">‹</button>
+        <div v-if="canNav" class="iv-counter">{{ navIndex + 1 }} / {{ navTotal }}</div>
         <!-- 图片区：点击图片之外的空白（含图四周留白）关闭 -->
-        <div class="iv-imgs" :data-pair="isPair ? '1' : '0'" @click.self="onClose">
+        <div class="iv-imgs" :data-pair="isPair ? '1' : '0'" @click="onClose">
           <!-- 参考图（图生图源图） -->
           <figure v-if="isPair" class="iv-fig">
             <div class="iv-imgwrap">
@@ -18,11 +20,12 @@
             <div class="iv-imgwrap">
               <img v-if="mainSrc" :src="mainSrc" alt="图片" :class="{ 'iv-nsfw-blur': mainBlurred }" />
               <div v-else class="iv-loading">加载中…</div>
-              <button v-if="mainBlurred" class="iv-nsfw-reveal" @click="revealMain">🔞 点击查看</button>
+              <button v-if="mainBlurred" class="iv-nsfw-reveal" @click.stop="revealMain">🔞 点击查看</button>
             </div>
             <figcaption class="iv-cap">{{ isPair ? "结果图" : typeText }}</figcaption>
           </figure>
         </div>
+        <button v-if="canNav" class="iv-nav iv-nav-next" :disabled="navNextDisabled" @click="onNav(1)" aria-label="下一张">›</button>
 
         <!-- 信息面板 -->
         <aside class="iv-info">
@@ -78,7 +81,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import { NButton, NInput, NSpace, NTag, useDialog, useMessage } from "naive-ui";
 import { apiGet, apiPost, isStandaloneMode, standaloneImgUrl } from "@/api/bridge";
 import { fmtBytes, fmtDuration, fmtDateTime } from "@/utils/format";
@@ -127,6 +130,10 @@ const props = defineProps<{
   isTrash?: boolean;
   /** 全局 NSFW 模糊开关（图库页的「一键模糊」），默认开启。关闭后大图不模糊（单图强制模糊除外） */
   blurGlobal?: boolean;
+  /** 导航列表（同一批图片，用于上一张/下一张）。提供后显示左右箭头与计数 */
+  images?: Array<{ sha?: string; item?: ViewerImage | null; refSha?: string }>;
+  /** 当前在 images 中的索引 */
+  index?: number;
 }>();
 
 const emit = defineEmits<{
@@ -135,6 +142,7 @@ const emit = defineEmits<{
   (e: "delete", item: any): void;
   (e: "restore", item: any): void;
   (e: "purge", item: any): void;
+  (e: "nav", delta: number): void;
 }>();
 
 const mainSrc = ref("");
@@ -210,15 +218,15 @@ async function loadRef(rs: string) {
 // 图生图参考图 + 结果图并排；无参考图时纯单图。
 // 主图与参考图并行加载，避免串行等待放大图加载时长。
 watch(
-  () => props.show,
-  async (v) => {
-    if (!v || !props.sha) return;
+  () => [props.show, props.sha, props.refSha] as const,
+  async ([v, sha, rs]) => {
+    if (!v || !sha) return;
     item.value = props.item || null;
     mainSrc.value = "";
     refSrc.value = "";
-    const tasks: Promise<void>[] = [loadMain(props.sha)];
-    const rs = props.refSha || (item.value && item.value.ref_sha256);
-    if (rs) tasks.push(loadRef(String(rs)));
+    const tasks: Promise<void>[] = [loadMain(sha)];
+    const ref = rs || (item.value && item.value.ref_sha256);
+    if (ref) tasks.push(loadRef(String(ref)));
     await Promise.all(tasks);
   },
   { immediate: true }
@@ -378,6 +386,30 @@ function copySha() {
   }
 }
 
+// ---- 左右切换导航 ----
+const canNav = computed(() => Array.isArray(props.images) && props.images.length > 1);
+const navIndex = computed(() => props.index ?? 0);
+const navTotal = computed(() => (Array.isArray(props.images) ? props.images.length : 0));
+const navPrevDisabled = computed(() => !canNav.value || navIndex.value <= 0);
+const navNextDisabled = computed(() => !canNav.value || navIndex.value >= navTotal.value - 1);
+function onNav(delta: number) {
+  if (!canNav.value) return;
+  const ni = navIndex.value + delta;
+  if (ni < 0 || ni >= navTotal.value) return;
+  emit("nav", delta);
+}
+function onKeyNav(e: KeyboardEvent) {
+  if (!props.show) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+  if (!canNav.value) return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); onNav(-1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); onNav(1); }
+}
+onMounted(() => window.addEventListener("keydown", onKeyNav));
+onUnmounted(() => window.removeEventListener("keydown", onKeyNav));
+
 function onClose() {
   emit("update:show", false);
 }
@@ -418,6 +450,42 @@ function onPurge(it: any) { emit("purge", it); }
   transition: background 0.15s;
 }
 .iv-close:hover { background: rgba(0, 0, 0, 0.8); }
+/* 左右切换箭头 + 计数器 */
+.iv-nav {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 2rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, opacity 0.15s;
+  z-index: 5;
+}
+.iv-nav:hover:not(:disabled) { background: rgba(255, 255, 255, 0.28); }
+.iv-nav:disabled { opacity: 0.25; cursor: not-allowed; }
+.iv-counter {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 4px 14px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
 .iv-body {
   display: flex;
   width: 100%;

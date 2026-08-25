@@ -3,7 +3,7 @@
     <div class="view-head">
       <div>
         <h2>工作流</h2>
-        <p>卡片式查看工作流：名称、别名、底模、服务器、是否 Anima；可编辑、查看可用 LoRA。</p>
+        <p>卡片式查看工作流：名称、别名、底模、服务器、是否 Anima；可编辑、查看封面与 LoRA 详情。</p>
       </div>
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
@@ -28,9 +28,17 @@
       <n-empty v-if="!loading && !filteredWorkflows.length" description="没有符合筛选条件的工作流。" style="padding:60px" />
       <div v-else class="card-grid">
         <div v-for="({ w, i }, _) in filteredWorkflows" :key="i" class="wf-card">
-          <div class="card-cover" @click="openImage(w.image, w.name)">
+          <div
+            class="card-cover"
+            :class="{ 'is-drag': coverDragIdx === i }"
+            @click="openImage(i)"
+            @dragover.prevent="coverDragIdx = i"
+            @dragleave.prevent="coverDragIdx = -1"
+            @drop.prevent="onDropCover(i, $event)"
+          >
             <img v-if="w.image" v-cover-lazy="w.image" alt="" loading="lazy" />
             <div v-else class="cover-empty">无封面</div>
+            <span class="cover-drop-tip">松开设置封面</span>
           </div>
           <div class="card-head">
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
@@ -47,13 +55,12 @@
             <a v-if="w.civitai_url" :href="w.civitai_url" target="_blank" rel="noopener noreferrer" class="civ-link">C站 ↗</a>
           </div>
           <div class="card-loracfg">{{ (w.loras_text || "").trim() ? "已配默认 LoRA" : "未配默认 LoRA" }}</div>
-          <div class="card-avail">可用 LoRA：{{ availLoras(w).join("、") || "无匹配 LoRA" }}</div>
           <div class="card-actions">
             <n-button size="tiny" @click="editWorkflow(i)">编辑</n-button>
             <n-button size="tiny" @click="toggleEnabled(i)">{{ w.enabled === false ? "启用" : "停用" }}</n-button>
             <n-button size="tiny" @click="copyWorkflow(i)">复制</n-button>
             <n-button size="tiny" @click="fetchCover(i)">抓封面</n-button>
-            <n-button size="tiny" @click="uploadCover(i)">传封面</n-button>
+            <n-button size="tiny" @click="openCoverEditor(i)">传封面</n-button>
             <n-button size="tiny" type="error" @click="removeWorkflow(i)">删除</n-button>
           </div>
         </div>
@@ -63,9 +70,10 @@
 
     <!-- 大图预览 -->
     <!-- 大图详情（全屏：左侧封面，右侧字段信息） -->
-    <ItemViewer v-model:show="previewShow" :src="previewSrc" :title="previewTitle" :fields="detailFields" />
+    <ItemViewer v-model:show="previewShow" :images="coverImages" :index="coverIndex" @nav="onCoverNav" />
     <!-- 抓取封面选择（多张候选时弹出） -->
     <CoverPicker v-model:show="coverPickShow" :covers="coverPickCovers" :title="coverPickTitle" @pick="onCoverPick" />
+    <CoverEditor v-model:show="coverEditorShow" :title="coverEditorTitle" @confirm="onCoverConfirm" />
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="wf-modal" :bordered="false">
@@ -215,6 +223,8 @@ import { useRefresh } from "@/composables/useRefresh";
 import { useDevice } from "@/composables/useDevice";
 import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 import CoverPicker from "@/components/CoverPicker.vue";
+import CoverEditor from "@/components/CoverEditor.vue";
+import { useCover } from "@/composables/useCover";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -334,35 +344,44 @@ function availLoras(w: any): string[] {
     .filter(Boolean);
 }
 
-// 大图详情（全屏：左侧封面，右侧字段信息）
+// 大图详情（全屏：左侧封面，右侧字段信息）；封面导航列表
 const previewShow = ref(false);
-const previewSrc = ref("");
-const previewTitle = ref("");
-const detailFields = ref<ItemViewerField[]>([]);
+const coverImages = ref<{ fname: string; title: string; fields: ItemViewerField[] }[]>([]);
+const coverIndex = ref(0);
 
-function openImage(fname: string, name: string) {
-  const w = workflows.value.find((x) => x.image === fname) || {};
-  const realName = name || w.name || fname;
-  previewSrc.value = ""; // 重置后组件显示"封面加载中…"
-  detailFields.value = [
-    { key: "名称", value: realName },
+// 由工作流对象构造封面查看项（导航用）
+function buildCover(w: any): { fname: string; title: string; fields: ItemViewerField[] } {
+  const fields: ItemViewerField[] = [
+    { key: "名称", value: w.name },
     { key: "别名", value: aliasStr(w.aliases || "") },
     { key: "底模", value: w.base_model?.trim() || "通用" },
     { key: "服务器", value: w.server_name?.trim() || "默认" },
     { key: "工作流文件", value: w.workflow_name?.trim() || "—" },
     { key: "Anima 模式", value: w.is_anima ? "是" : "否" },
     { key: "默认尺寸", value: w.default_width && w.default_height ? `${w.default_width} × ${w.default_height}` : "—" },
+    { key: "可用 LoRA", value: availLoras(w).join("、") || "无匹配 LoRA" },
     { key: "预设 LoRA", value: w.loras_text?.trim() || "—" },
-    { key: "封面文件", value: fname },
+    { key: "封面文件", value: w.image || "—" },
   ];
-  if (w.civitai_url) detailFields.value.push({ key: "C 站", value: w.civitai_url, href: w.civitai_url });
-  previewTitle.value = realName;
+  if (w.civitai_url) fields.push({ key: "C 站", value: w.civitai_url, href: w.civitai_url });
+  return { fname: w.image || "", title: w.name || "", fields };
+}
+
+// 打开大图（支持左右箭头在封面列表间导航）
+function openImage(idx: number) {
+  const w = workflows.value[idx];
+  if (!w) return;
+  if (!w.image) { message.warning("该工作流暂无封面"); return; }
+  coverImages.value = workflows.value.map(buildCover);
+  coverIndex.value = idx;
   previewShow.value = true;
-  if (fname) {
-    apiGet("lora/image", { name: fname }).then((d) => {
-      if (d && d.url) previewSrc.value = d.url;
-    }).catch(() => {});
-  }
+}
+
+// 导航：左右切换（边界由 ItemViewer 禁用箭头 + 此处 clamp 双重保护）
+function onCoverNav(delta: number) {
+  const ni = coverIndex.value + delta;
+  if (ni < 0 || ni >= coverImages.value.length) return;
+  coverIndex.value = ni;
 }
 
 // 编辑
@@ -577,31 +596,48 @@ function fetchCover(idx: number) {
   }).catch((e: any) => message.error(e.message || "抓取失败"));
 }
 
-function uploadCover(idx: number) {
+// 封面设置：卡片拖拽 / 弹窗（本地文件或图片直链）统一走 applyCover
+const coverEditorShow = ref(false);
+const coverEditorTitle = ref("");
+let coverEditorTarget = -1;
+const coverDragIdx = ref(-1);
+const { uploadFile } = useCover();
+
+async function applyCover(idx: number, name: string) {
   const w = workflows.value[idx];
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "image/*";
-  input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    message.loading("上传中…", { duration: 10000 });
-    try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        const b64 = String(reader.result || "").split(",")[1] || "";
-        const d = await apiPost("lora/upload_image", { filename: file.name, data: b64 });
-        w.image = d.name;
-        workflows.value = [...workflows.value];
-        await apiPost("config", { config: { workflows: workflows.value } });
-        message.success("封面已上传");
-      };
-    } catch (e: any) {
-      message.error(e.message || "上传失败");
-    }
-  };
-  input.click();
+  if (!w) return;
+  w.image = name;
+  workflows.value = [...workflows.value];
+  try {
+    await apiPost("config", { config: { workflows: workflows.value } });
+    message.success("封面已设置");
+  } catch (e: any) {
+    message.error(e.message || "保存失败");
+  }
+}
+
+function openCoverEditor(idx: number) {
+  const w = workflows.value[idx];
+  if (!w) return;
+  coverEditorTarget = idx;
+  coverEditorTitle.value = `为「${w.name || "工作流"}」设置封面`;
+  coverEditorShow.value = true;
+}
+
+async function onDropCover(idx: number, ev: DragEvent) {
+  coverDragIdx.value = -1;
+  const file = Array.from(ev.dataTransfer?.files || []).find((f: File) => f.type.startsWith("image/"));
+  if (!file) {
+    message.warning("请拖入图片文件");
+    return;
+  }
+  const name = await uploadFile(file);
+  if (name) await applyCover(idx, name);
+}
+
+async function onCoverConfirm(name: string) {
+  if (coverEditorTarget >= 0) await applyCover(coverEditorTarget, name);
+  coverEditorTarget = -1;
 }
 
 useRefresh(load);
@@ -637,9 +673,12 @@ onMounted(load);
   flex-direction: column;
   gap: 8px;
 }
-.card-cover { aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; }
+.card-cover { position: relative; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; }
+.card-cover.is-drag { outline: 2px dashed var(--accent); outline-offset: -2px; background: rgba(0, 122, 255, 0.08); }
 .card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-empty { color: var(--text-sub); font-size: 12px; }
+.cover-drop-tip { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--accent); background: var(--bg-panel); padding: 2px 8px; border-radius: 6px; opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+.card-cover.is-drag .cover-drop-tip { opacity: 1; }
 .card-head { display: flex; align-items: center; justify-content: space-between; }
 .card-title { font-weight: 600; font-size: 15px; }
 .card-alias { color: var(--text-sub); font-size: 12px; }
@@ -647,7 +686,6 @@ onMounted(load);
 .meta-item { color: var(--text-sub); }
 .civ-link { color: var(--accent); text-decoration: none; font-size: 12px; }
 .card-loracfg { font-size: 12px; color: var(--text-sub); }
-.card-avail { font-size: 12px; color: var(--text-main); opacity: 0.85; }
 .card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .edit-form { max-height: 65vh; overflow: auto; padding-right: 4px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

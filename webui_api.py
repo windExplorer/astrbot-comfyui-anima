@@ -744,6 +744,61 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"上传失败: {e}")
 
+    async def lora_fetch_image(self, url: str = ""):
+        """从任意图片直链下载封面图到 lora_assets/（支持 C站 / 魔搭 / HuggingFace 等任意图片 URL）。
+
+        由 lora_fetch 的 direct_image 分支调用；返回 {"name": 本地文件名}
+        """
+        try:
+            import aiohttp
+            from urllib.parse import urlparse
+            if not url:
+                return error_response("缺少 url 参数")
+            p = urlparse(url)
+            if p.scheme not in ("http", "https") or not p.netloc:
+                return error_response("仅支持 http/https 图片直链")
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+                "Referer": f"{p.scheme}://{p.netloc}/",
+            }
+            # 代理：优先插件配置，其次 AstrBot 全局；环境变量由 trust_env 兜底
+            proxy = None
+            try:
+                plugin_proxy = ((self.plugin._cfg("http_proxy", "")) or "").strip()
+            except Exception:
+                plugin_proxy = ""
+            if plugin_proxy:
+                proxy = plugin_proxy
+            else:
+                try:
+                    from astrbot.api import GLOBAL_CONFIG
+                    proxy = (GLOBAL_CONFIG.get("http_proxy") or "").strip() or None
+                except Exception:
+                    proxy = None
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                async with sess.get(url, timeout=timeout, proxy=proxy) as resp:
+                    if resp.status != 200:
+                        return error_response(f"下载失败: HTTP {resp.status}")
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    if not ctype.startswith("image/"):
+                        return error_response(f"链接返回的不是图片（Content-Type: {ctype}）")
+                    data = await resp.read()
+            if len(data) > 20 * 1024 * 1024:
+                return error_response("图片过大（超过 20MB）")
+            ext = os.path.splitext(p.path)[1].lower()
+            if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                ext = ".png"
+            fname = f"cover_{uuid.uuid4().hex}{ext}"
+            out = self._lora_assets_dir() / fname
+            await asyncio.to_thread(out.write_bytes, data)
+            return json_response({"name": fname, "msg": "下载成功"})
+        except Exception as e:
+            return error_response(f"下载失败: {e}")
+
     async def lora_fetch(self):
         """C 站链接抓取：输入 civitai 链接，抓取封面图（下载到本地）+ 触发词 + 描述 + 底模。
 
@@ -755,6 +810,9 @@ class WebUIApi:
             url = (body.get("url") or "").strip()
             if not url:
                 return error_response("缺少 url 参数")
+            # direct_image=true：把任意图片直链当封面下载（不局限于 C站）
+            if body.get("direct_image"):
+                return await self.lora_fetch_image(url)
             import aiohttp
 
             # 从链接解析模型 id / 版本 id
@@ -1549,7 +1607,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/quota/reset", api.quota_reset, ["POST"], "生图次数重置"),
         (f"{prefix}/token/summary", api.token_summary, ["GET"], "LLM token 用量统计"),
         (f"{prefix}/token/reset", api.token_reset, ["POST"], "LLM token 统计重置"),
-        (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取"),
+        (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取 / 任意图片直链下载封面"),
         (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
         (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),
         (f"{prefix}/translate/test", api.translate_test, ["POST"], "翻译调试（测试三种翻译模式）"),

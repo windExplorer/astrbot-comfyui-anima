@@ -42,9 +42,17 @@
       <n-empty v-else-if="!loading && !filteredIndexes.length" description="当前底模分类下暂无 LoRA。" style="padding:60px" />
       <div v-else class="card-grid">
         <div v-for="idx in filteredIndexes" :key="idx" class="lora-card">
-          <div class="card-cover" @click="openImage(loras[idx].image, loras[idx].name)">
+          <div
+            class="card-cover"
+            :class="{ 'is-drag': coverDragIdx === idx }"
+            @click="openImage(idx)"
+            @dragover.prevent="coverDragIdx = idx"
+            @dragleave.prevent="coverDragIdx = -1"
+            @drop.prevent="onDropCover(idx, $event)"
+          >
             <img v-if="loras[idx].image" v-cover-lazy="loras[idx].image" alt="" loading="lazy" />
             <div v-else class="cover-empty">无封面</div>
+            <span class="cover-drop-tip">松开设置封面</span>
           </div>
           <div class="card-body">
             <div class="card-title">{{ loras[idx].name || "(未命名)" }}</div>
@@ -58,7 +66,7 @@
               <n-button size="tiny" @click="showDetail(idx)">详情</n-button>
               <n-button size="tiny" @click="editLora(idx)">编辑</n-button>
               <n-button size="tiny" @click="fetchLora(idx)">抓取</n-button>
-              <n-button size="tiny" @click="uploadCover(idx)">上传封面</n-button>
+              <n-button size="tiny" @click="openCoverEditor(idx)">上传封面</n-button>
               <n-button size="tiny" type="error" @click="removeLora(idx)">删除</n-button>
             </div>
           </div>
@@ -82,9 +90,10 @@
     </n-modal>
 
     <!-- 大图详情（全屏：左侧封面，右侧字段信息） -->
-    <ItemViewer v-model:show="previewShow" :src="previewSrc" :title="previewTitle" :fields="detailFields" />
+    <ItemViewer v-model:show="previewShow" :images="coverImages" :index="coverIndex" @nav="onCoverNav" />
     <!-- 抓取封面选择（多张候选时弹出） -->
     <CoverPicker v-model:show="coverPickShow" :covers="coverPickCovers" :title="coverPickTitle" @pick="onCoverPick" />
+    <CoverEditor v-model:show="coverEditorShow" :title="coverEditorTitle" @confirm="onCoverConfirm" />
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="lora-modal" :bordered="false">
@@ -137,6 +146,8 @@ import { useRefresh } from "@/composables/useRefresh";
 import { useDevice } from "@/composables/useDevice";
 import ItemViewer, { type ItemViewerField } from "@/components/ItemViewer.vue";
 import CoverPicker from "@/components/CoverPicker.vue";
+import CoverEditor from "@/components/CoverEditor.vue";
+import { useCover } from "@/composables/useCover";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -226,18 +237,14 @@ function aliasFirst(raw: string): string {
   return a.length ? a[0] : "—";
 }
 
-// 大图详情（全屏：左侧封面，右侧字段信息）
+// 大图详情（全屏：左侧封面，右侧字段信息）；封面导航列表
 const previewShow = ref(false);
-const previewSrc = ref("");
-const previewTitle = ref("");
-const detailFields = ref<ItemViewerField[]>([]);
+const coverImages = ref<{ fname: string; title: string; fields: ItemViewerField[] }[]>([]);
+const coverIndex = ref(0);
 
-function openImage(fname: string, name: string) {
-  const l = loras.value.find((x) => x.image === fname) || {};
-  const realName = name || l.name || fname;
-  previewSrc.value = ""; // 重置后组件显示"封面加载中…"
-  detailFields.value = [
-    { key: "名称", value: realName },
+function buildCover(l: any): { fname: string; title: string; fields: ItemViewerField[] } {
+  const fields: ItemViewerField[] = [
+    { key: "名称", value: l.name },
     { key: "分类", value: l.category?.trim() || "未分类" },
     { key: "别名", value: parseAliases(l.keywords || "").join(" / ") || "—" },
     { key: "底模", value: l.base_model?.trim() || "通用" },
@@ -246,16 +253,27 @@ function openImage(fname: string, name: string) {
     { key: "触发词", value: l.trigger_words?.trim() || "—" },
     { key: "提示词预设", value: l.presets?.trim() || "—" },
     { key: "描述", value: l.description?.trim() || "", html: true },
-    { key: "封面文件", value: fname },
+    { key: "封面文件", value: l.image || "—" },
   ];
-  if (l.civitai_url) detailFields.value.push({ key: "C 站", value: l.civitai_url, href: l.civitai_url });
-  previewTitle.value = realName;
+  if (l.civitai_url) fields.push({ key: "C 站", value: l.civitai_url, href: l.civitai_url });
+  return { fname: l.image || "", title: l.name || "", fields };
+}
+
+// 打开大图（支持左右箭头在封面列表间导航）
+function openImage(idx: number) {
+  const l = loras.value[idx];
+  if (!l) return;
+  if (!l.image) { message.warning("该 LoRA 暂无封面"); return; }
+  coverImages.value = loras.value.map(buildCover);
+  coverIndex.value = idx;
   previewShow.value = true;
-  if (fname) {
-    apiGet("lora/image", { name: fname }).then((d) => {
-      if (d && d.url) previewSrc.value = d.url;
-    }).catch(() => {});
-  }
+}
+
+// 导航：左右切换（边界由 ItemViewer 禁用箭头 + 此处 clamp 双重保护）
+function onCoverNav(delta: number) {
+  const ni = coverIndex.value + delta;
+  if (ni < 0 || ni >= coverImages.value.length) return;
+  coverIndex.value = ni;
 }
 
 // 详情
@@ -397,31 +415,48 @@ function fetchLora(idx: number) {
   }).catch((e: any) => message.error(e.message || "抓取失败"));
 }
 
-function uploadCover(idx: number) {
+// 封面设置：卡片拖拽 / 弹窗（本地文件或图片直链）统一走 applyCover
+const coverEditorShow = ref(false);
+const coverEditorTitle = ref("");
+let coverEditorTarget = -1;
+const coverDragIdx = ref(-1);
+const { uploadFile } = useCover();
+
+async function applyCover(idx: number, name: string) {
   const l = loras.value[idx];
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "image/*";
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    message.loading("上传中…", { duration: 10000 });
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = async () => {
-      try {
-        const b64 = String(reader.result || "").split(",")[1] || "";
-        const d = await apiPost("lora/upload_image", { filename: file.name, data: b64 });
-        l.image = d.name;
-        loras.value = [...loras.value];
-        await apiPost("config", { config: { loras: loras.value } });
-        message.success("封面已上传");
-      } catch (e: any) {
-        message.error(e.message || "上传失败");
-      }
-    };
-  };
-  input.click();
+  if (!l) return;
+  l.image = name;
+  loras.value = [...loras.value];
+  try {
+    await apiPost("config", { config: { loras: loras.value } });
+    message.success("封面已设置");
+  } catch (e: any) {
+    message.error(e.message || "保存失败");
+  }
+}
+
+function openCoverEditor(idx: number) {
+  const l = loras.value[idx];
+  if (!l) return;
+  coverEditorTarget = idx;
+  coverEditorTitle.value = `为「${l.name || "LoRA"}」设置封面`;
+  coverEditorShow.value = true;
+}
+
+async function onDropCover(idx: number, ev: DragEvent) {
+  coverDragIdx.value = -1;
+  const file = Array.from(ev.dataTransfer?.files || []).find((f: File) => f.type.startsWith("image/"));
+  if (!file) {
+    message.warning("请拖入图片文件");
+    return;
+  }
+  const name = await uploadFile(file);
+  if (name) await applyCover(idx, name);
+}
+
+async function onCoverConfirm(name: string) {
+  if (coverEditorTarget >= 0) await applyCover(coverEditorTarget, name);
+  coverEditorTarget = -1;
 }
 
 useRefresh(load);
@@ -453,7 +488,10 @@ onMounted(load);
   background: var(--bg-panel);
   overflow: hidden;
 }
-.card-cover { aspect-ratio: 3 / 4; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.card-cover { position: relative; aspect-ratio: 3 / 4; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.card-cover.is-drag { outline: 2px dashed var(--accent); outline-offset: -2px; background: rgba(0, 122, 255, 0.08); }
+.cover-drop-tip { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--accent); background: var(--bg-panel); padding: 2px 8px; border-radius: 6px; opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+.card-cover.is-drag .cover-drop-tip { opacity: 1; }
 .card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-empty { color: var(--text-sub); font-size: 12px; }
 .card-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }

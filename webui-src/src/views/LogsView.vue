@@ -114,8 +114,11 @@
       :sha="viewerSha"
       :item="viewerItem"
       :ref-sha="viewerRefSha"
+      :images="viewerImages"
+      :index="viewerIndex"
       @star="onViewerStar"
       @delete="onViewerDelete"
+      @nav="onViewerNav"
     />
   </div>
 </template>
@@ -200,19 +203,37 @@ function isNsfwBlurred(img: any): boolean {
   return true;
 }
 
-// 大图查看器：点击缩略图打开，支持图生图（参考图 + 结果图并排）
+// 大图查看器：点击缩略图打开，支持图生图（参考图 + 结果图并排）；支持左右箭头导航
 const viewerShow = ref(false);
 const viewerSha = ref("");
 const viewerItem = ref<any>(null);
 const viewerRefSha = ref("");
+const viewerIndex = ref(0);
+const viewerImages = computed(() =>
+  records.value
+    .filter((r: any) => r.sha || r.sha256)
+    .map((r: any) => ({ sha: r.sha || r.sha256, item: r, refSha: r.ref_sha256 || "" }))
+);
 
 function openViewer(row: any) {
   const sha = row.sha || row.sha256;
   if (!sha) return;
+  const idx = viewerImages.value.findIndex((it: any) => it.sha === sha);
+  viewerIndex.value = idx >= 0 ? idx : 0;
   viewerSha.value = sha;
   viewerItem.value = { ...row };
   viewerRefSha.value = row.ref_sha256 || "";
   viewerShow.value = true;
+}
+
+// 导航：左右切换（边界由 ImageViewer 禁用箭头 + 此处 clamp 双重保护）
+function onViewerNav(delta: number) {
+  const ni = viewerIndex.value + delta;
+  if (ni < 0 || ni >= viewerImages.value.length) return;
+  const it = viewerImages.value[ni];
+  if (!it || !it.sha) return;
+  viewerIndex.value = ni;
+  openViewer(it.item);
 }
 
 function onViewerStar(img: any) {

@@ -178,16 +178,19 @@
       :ref-sha="viewerRefSha"
       :is-trash="activeTab === 'trash'"
       :blur-global="nsfwBlurGlobal"
+      :images="viewerImages"
+      :index="viewerIndex"
       @star="onStar"
       @delete="onDelete"
       @restore="onRestore"
       @purge="onPurge"
+      @nav="onViewerNav"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from "vue";
+import { onMounted, onUnmounted, reactive, ref, computed } from "vue";
 import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane, NSwitch, NTooltip } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
@@ -455,19 +458,37 @@ function backupDb() {
   }).catch((e: any) => message.error(e.message || "备份失败"));
 }
 
-// 大图查看器：点击缩略图打开原图
+// 大图查看器：点击缩略图打开原图（支持左右箭头在列表间导航）
 const viewerShow = ref(false);
 const viewerSha = ref("");
 const viewerItem = ref<any>(null);
 const viewerRefSha = ref("");
+const viewerIndex = ref(0);
+const viewerImages = computed(() => images.value.map((it: any) => ({
+  sha: it.sha || it.sha256,
+  item: it,
+  refSha: it.ref_sha256 || "",
+})));
 
 function openDetail(img: any) {
   const sha = img.sha || img.sha256;
   if (!sha) return;
+  const idx = images.value.findIndex((it: any) => (it.sha || it.sha256) === sha);
+  viewerIndex.value = idx >= 0 ? idx : 0;
   viewerSha.value = sha;
   viewerItem.value = { ...img };
   viewerRefSha.value = img.ref_sha256 || "";
   viewerShow.value = true;
+}
+
+// 导航：左右切换（边界由 ImageViewer 禁用箭头 + 此处 clamp 双重保护）
+function onViewerNav(delta: number) {
+  const ni = viewerIndex.value + delta;
+  if (ni < 0 || ni >= viewerImages.value.length) return;
+  const it = viewerImages.value[ni];
+  if (!it || !it.sha) return;
+  viewerIndex.value = ni;
+  openDetail(it.item);
 }
 
 function onStar(img: any) {
