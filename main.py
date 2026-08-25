@@ -3,6 +3,7 @@
 import os
 import json
 import random
+import base64
 import re
 import time
 import tempfile
