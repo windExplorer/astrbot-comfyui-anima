@@ -28,7 +28,10 @@
         </div>
       </div>
     </div>
-    <div v-if="loading" class="vf-loading">加载中…</div>
+    <!-- 触底哨兵：进入视口触发加载下一页 -->
+    <div ref="tailRef" class="vf-tail"></div>
+    <div v-if="loading" class="vf-loading"><span class="vf-spin"></span>加载中…</div>
+    <div v-else-if="hasMore === false && items.length > 0" class="vf-end">— 已经到底啦 —</div>
   </div>
 </template>
 
@@ -132,6 +135,7 @@ const CARD_EXTRA = 0;
 
 const boxRef = ref<HTMLElement | null>(null);
 const canvasEl = ref<HTMLElement | null>(null);
+const tailRef = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewH = ref(600);
 const colW = ref(0);
@@ -207,12 +211,13 @@ function onScroll() {
 function maybeLoad() {
   const el = boxRef.value;
   if (!el || !props.hasMore || !props.loadMore || props.loading) return;
-  if (el.scrollTop + el.clientHeight >= totalHeight.value - 300) {
+  if (el.scrollTop + el.clientHeight >= totalHeight.value - 400) {
     props.loadMore();
   }
 }
 
 let ro: ResizeObserver | null = null;
+let io: IntersectionObserver | null = null;
 onMounted(() => {
   measure();
   ro = new ResizeObserver(() => {
@@ -225,10 +230,23 @@ onMounted(() => {
     boxRef.value.addEventListener("touchmove", onTouchMove, { passive: false });
   }
   rebuild();
-  nextTick(() => maybeLoad());
+  nextTick(() => {
+    maybeLoad();
+    // 触底哨兵：进入可视区即加载下一页，比纯 scroll 阈值更可靠
+    if (boxRef.value && tailRef.value && "IntersectionObserver" in window) {
+      io = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((en) => en.isIntersecting)) maybeLoad();
+        },
+        { root: boxRef.value, rootMargin: "400px" }
+      );
+      io.observe(tailRef.value);
+    }
+  });
 });
 onUnmounted(() => {
   ro?.disconnect();
+  io?.disconnect();
   boxRef.value?.removeEventListener("touchmove", onTouchMove as any);
   clearTimeout(pullTimer);
 });
@@ -288,5 +306,12 @@ watch([colW, colCount], () => rebuild());
   pointer-events: none;
 }
 .wf-info .when { opacity: 0.9; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
-.vf-loading { text-align: center; color: var(--text-sub, #9a7a88); padding: 12px; font-size: 12px; }
+.vf-tail { height: 1px; }
+.vf-loading, .vf-end { text-align: center; color: var(--text-sub, #9a7a88); padding: 14px; font-size: 12px; }
+.vf-spin {
+  display: inline-block; width: 14px; height: 14px; vertical-align: -2px; margin-right: 6px;
+  border: 2px solid rgba(255, 143, 179, 0.3); border-top-color: #ff8fb3;
+  border-radius: 50%; animation: vf-spin 0.8s linear infinite;
+}
+@keyframes vf-spin { to { transform: rotate(360deg); } }
 </style>

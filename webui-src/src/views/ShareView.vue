@@ -182,31 +182,35 @@
       </nav>
     </template>
 
-    <!-- 大图查看器 -->
-    <n-modal v-model:show="viewer" :mask-closable="true" class="viewer-modal" :style="{ '--tw': 'min(94vw, 900px)' }">
-      <div class="viewer" @click.self="closeViewer">
+    <!-- 大图查看器（全屏覆盖 + 底部拖拽抽屉） -->
+    <n-modal v-model:show="viewer" :mask-closable="true" class="viewer-full-modal">
+      <div class="vfull" @click.self="closeViewer">
         <div class="vimg">
-          <img :src="viewerSrc" @load="onViewerLoad" @click="viewerFull = !viewerFull" />
-          <div v-if="viewerLoading" class="vloading">加载中…</div>
+          <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="imgFit = imgFit === 'contain' ? 'cover' : 'contain'" />
+          <div v-if="viewerLoading" class="vloading"><span class="vf-spin"></span>加载中…</div>
           <div class="vtools">
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
-            <button class="vtool" @click="viewerFull = true">⛶</button>
             <button class="vtool" @click="closeViewer">✕</button>
           </div>
-          <div class="vswitch">
-            <button class="vs-btn" @click="prevImg">‹</button>
-            <span class="vs-count">{{ viewerIndex + 1 }}/{{ viewerList.length }}</span>
-            <button class="vs-btn" @click="nextImg">›</button>
-          </div>
+          <button v-if="viewerList.length > 1" class="vnav left" @click="prevImg">‹</button>
+          <button v-if="viewerList.length > 1" class="vnav right" @click="nextImg">›</button>
+          <span v-if="viewerList.length > 1" class="vcount">{{ viewerIndex + 1 }}/{{ viewerList.length }}</span>
         </div>
 
-        <!-- 底部半透明抽屉：详情 + 操作 -->
-        <div v-if="viewerM" class="vdrawer" :class="{ open: drawerOpen }">
-          <div class="vdrawer-handle" @click="drawerOpen = !drawerOpen">
-            <div class="vdrawer-grip"></div>
-            <span class="vdrawer-hint">{{ drawerOpen ? "下拉收起信息" : "上拉查看详情" }}</span>
-          </div>
-          <div class="vdrawer-body">
+        <!-- 底部半透明抽屉：上拉覆盖图片、下拉收起，跟手 -->
+        <div
+          v-if="viewerM"
+          ref="drawerEl"
+          class="vdrawer"
+          :class="{ open: drawerOpen }"
+          :style="drawerStyle"
+          @pointerdown="onDrawerStart"
+          @pointermove="onDrawerMove"
+          @pointerup="onDrawerEnd"
+          @pointercancel="onDrawerEnd"
+        >
+          <div class="vdrawer-grip"></div>
+          <div ref="drawerBodyEl" class="vdrawer-body">
             <!-- 发布人 -->
             <div class="vd-user">
               <img :src="viewerAvatar" class="vd-avatar" @error="viewerAvatarFb = true" />
@@ -250,14 +254,6 @@
             </div>
           </div>
         </div>
-      </div>
-    </n-modal>
-
-    <!-- 全屏查看 -->
-    <n-modal v-model:show="viewerFull" :mask-closable="true" class="viewer-full-modal" @update:show="v => (viewerFull = v)">
-      <div class="viewer-full" @click.self="viewerFull = false">
-        <img :src="viewerSrc" />
-        <button class="vfull-close" @click="viewerFull = false">✕</button>
       </div>
     </n-modal>
 
@@ -559,18 +555,57 @@ watch(nsfwBlurGlobal, (val) => {
   try { localStorage.setItem("anima_share_nsfw_blur", val ? "1" : "0"); } catch { /* ignore */ }
 });
 
-// ---- 大图查看器（默认原图，左右切换 + 底部详情抽屉）----
+// ---- 大图查看器（全屏覆盖 + 底部拖拽抽屉）----
 const viewer = ref(false);
-const viewerFull = ref(false);
 const viewerM = ref<any>(null);
 const viewerList = ref<any[]>([]);
 const viewerIndex = ref(0);
 const viewerCtx = ref<"world" | "gallery" | "fav" | "recycle">("world");
-const drawerOpen = ref(true);
 const showRef = ref(false);
 const viewerSrc = ref("");
 const viewerLoading = ref(false);
 const viewerAvatarFb = ref(false);
+const imgFit = ref<"contain" | "cover">("contain");
+const imgFitClass = computed(() => (imgFit.value === "cover" ? "img-cover" : "img-contain"));
+
+// ---- 底部抽屉（覆盖式拖拽，跟手）----
+const DRAWER_HEIGHT_VH = 62; // 抽屉固定高度（vh）
+const drawerCollapsedPx = ref(0); // 收起位移 = 抽屉高 - grip 高
+const drawerOffset = ref(0); // 0=展开；=collapsedPx=收起
+const drawerOpen = computed(() => drawerOffset.value < drawerCollapsedPx.value / 2);
+const drawerStyle = computed(() => ({ transform: `translateY(${drawerOffset.value}px)` }));
+const drawerEl = ref<HTMLElement | null>(null);
+const drawerBodyEl = ref<HTMLElement | null>(null);
+let dragStartY = 0;
+let dragStartOffset = 0;
+let dragging = false;
+
+function measureDrawer() {
+  const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+  drawerCollapsedPx.value = Math.max(90, Math.round((DRAWER_HEIGHT_VH / 100) * vh - 34));
+}
+
+function onDrawerStart(e: PointerEvent) {
+  dragging = true;
+  dragStartY = e.clientY;
+  dragStartOffset = drawerOffset.value;
+  if (drawerEl.value) drawerEl.value.style.transition = "none";
+  try { (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+}
+function onDrawerMove(e: PointerEvent) {
+  if (!dragging) return;
+  const dy = dragStartY - e.clientY; // 上拉 dy>0
+  const body = drawerBodyEl.value;
+  // 完全展开时向下拉：先让内容滚动，滚到顶再收抽屉
+  if (drawerOffset.value <= 0 && dy < 0 && body && body.scrollTop > 0) return;
+  drawerOffset.value = Math.max(0, Math.min(drawerCollapsedPx.value, dragStartOffset - dy));
+}
+function onDrawerEnd() {
+  if (!dragging) return;
+  dragging = false;
+  if (drawerEl.value) drawerEl.value.style.transition = "";
+  drawerOffset.value = drawerOffset.value < drawerCollapsedPx.value / 2 ? 0 : drawerCollapsedPx.value;
+}
 
 const viewerAvatar = computed(() => {
   const m = viewerM.value;
@@ -627,8 +662,10 @@ function openViewer(m: any, list: any[], ctx: "world" | "gallery" | "fav" | "rec
   const idx = (list || []).findIndex((x) => x.sha256 === m.sha256);
   viewerIndex.value = idx >= 0 ? idx : 0;
   viewerCtx.value = ctx;
-  drawerOpen.value = true;
+  measureDrawer();
+  drawerOffset.value = drawerCollapsedPx.value; // 默认收起，只露小白条
   viewerAvatarFb.value = false;
+  imgFit.value = "contain";
   viewer.value = true;
   showRef.value = false;
   loadOriginal();
@@ -646,27 +683,28 @@ function swapRef() {
 }
 function closeViewer() {
   viewer.value = false;
-  viewerFull.value = false;
 }
 function onViewerLoad() {
   viewerLoading.value = false;
 }
 function nextImg() {
   const list = viewerList.value;
-  if (!list.length) return;
+  if (list.length <= 1) return;
   viewerIndex.value = (viewerIndex.value + 1) % list.length;
   viewerM.value = list[viewerIndex.value];
   viewerAvatarFb.value = false;
   showRef.value = false;
+  imgFit.value = "contain";
   loadOriginal();
 }
 function prevImg() {
   const list = viewerList.value;
-  if (!list.length) return;
+  if (list.length <= 1) return;
   viewerIndex.value = (viewerIndex.value - 1 + list.length) % list.length;
   viewerM.value = list[viewerIndex.value];
   viewerAvatarFb.value = false;
   showRef.value = false;
+  imgFit.value = "contain";
   loadOriginal();
 }
 function onKey(e: KeyboardEvent) {
@@ -679,6 +717,8 @@ function onKey(e: KeyboardEvent) {
 // ---- 生命周期 ----
 onMounted(async () => {
   window.addEventListener("keydown", onKey);
+  window.addEventListener("resize", measureDrawer);
+  measureDrawer();
   const cur = token.value || sharedToken || "";
   if (!cur) {
     diag.value = { url: window.location.href, token: "(空)" };
@@ -696,12 +736,18 @@ onMounted(async () => {
     expired.value = true;
   }
 });
-onUnmounted(() => window.removeEventListener("keydown", onKey));
+onUnmounted(() => {
+  window.removeEventListener("keydown", onKey);
+  window.removeEventListener("resize", measureDrawer);
+});
 </script>
 
 <style scoped>
+/* 固定高度 + 锁定页面滚动：滚动只发生在瀑布流容器内，避免双滚动条 */
 .share-root {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   background: var(--bg-body, #fff6f9);
   display: flex;
   flex-direction: column;
@@ -794,69 +840,100 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .tabbar-item.on { color: #ff6b9d; }
 .tabbar-icon { font-size: 20px; line-height: 1; }
 
-/* ---- 大图查看器（图片 + 底部半透明抽屉） ---- */
-.viewer-modal { width: var(--tw); max-width: 94vw; }
-.viewer {
-  display: flex; flex-direction: column;
-  background: #000; border-radius: 12px; overflow: hidden;
-  max-height: 92vh;
+/* ---- 大图查看器（全屏覆盖 + 底部拖拽抽屉） ---- */
+.viewer-full-modal { width: 100vw; height: 100vh; }
+.vfull {
+  width: 100vw; height: 100vh; height: 100dvh;
+  background: #000; position: relative; overflow: hidden;
 }
-.vimg {
-  position: relative; flex: 1 1 auto; min-height: 0;
-  display: flex; align-items: center; justify-content: center;
+.vimg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.img-contain { object-fit: contain; max-width: 100%; max-height: 100%; }
+.img-cover { object-fit: cover; width: 100%; height: 100%; }
+.vimg img { display: block; cursor: zoom-in; }
+.vloading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; background: rgba(0, 0, 0, 0.45); font-size: 13px; gap: 8px;
 }
-.vimg img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; cursor: zoom-in; }
-.vloading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; background: rgba(0,0,0,0.4); }
-.vtools { position: absolute; top: 10px; right: 10px; display: flex; gap: 8px; }
-.vtool { border: none; background: rgba(0,0,0,0.6); color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; backdrop-filter: blur(6px); }
-.vswitch {
-  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 10px;
-  background: rgba(0, 0, 0, 0.5); color: #fff; border-radius: 999px; padding: 4px 6px;
-  backdrop-filter: blur(6px); font-size: 12px;
+.vf-spin {
+  display: inline-block; width: 16px; height: 16px;
+  border: 2px solid rgba(255, 143, 179, 0.3); border-top-color: #ff8fb3;
+  border-radius: 50%; animation: vf-spin 0.8s linear infinite;
 }
-.vs-btn { border: none; background: rgba(255,255,255,0.15); color: #fff; width: 26px; height: 26px; border-radius: 50%; font-size: 15px; cursor: pointer; }
-.vs-count { min-width: 40px; text-align: center; }
+@keyframes vf-spin { to { transform: rotate(360deg); } }
 
-/* ---- 底部半透明抽屉 ---- */
+.vtools {
+  position: absolute; top: calc(env(safe-area-inset-top) + 12px); right: 12px; z-index: 6;
+  display: flex; gap: 8px;
+}
+.vtool {
+  border: none; background: rgba(0, 0, 0, 0.55); color: #fff; border-radius: 999px;
+  padding: 8px 16px; font-size: 13px; cursor: pointer; backdrop-filter: blur(8px);
+}
+.vnav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 6;
+  width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(0, 0, 0, 0.4); color: #fff; font-size: 26px; line-height: 1;
+  backdrop-filter: blur(6px);
+}
+.vnav.left { left: 12px; }
+.vnav.right { right: 12px; }
+.vcount {
+  position: absolute; top: calc(env(safe-area-inset-top) + 16px); left: 50%; transform: translateX(-50%); z-index: 6;
+  color: rgba(255, 255, 255, 0.85); font-size: 12px;
+  background: rgba(0, 0, 0, 0.45); padding: 4px 14px; border-radius: 999px;
+}
+
+/* ---- 底部拖拽抽屉：覆盖在图片上，不挤压图片 ---- */
 .vdrawer {
-  flex: 0 0 auto; color: #fff;
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
+  height: 62vh; max-height: 62vh;
+  display: flex; flex-direction: column;
+  color: #fff;
   background: rgba(20, 16, 18, 0.72);
-  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px 18px 0 0;
+  transition: transform 0.28s cubic-bezier(0.25, 0.8, 0.35, 1);
+  touch-action: pan-y;
+  user-select: none;
 }
-.vdrawer-handle { display: flex; flex-direction: column; align-items: center; padding: 6px 0 8px; cursor: pointer; user-select: none; }
-.vdrawer-grip { width: 36px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.3); margin-bottom: 4px; }
-.vdrawer-hint { font-size: 11px; color: rgba(255, 255, 255, 0.55); }
-.vdrawer-body { max-height: 0; overflow: hidden; transition: max-height 0.28s ease; padding: 0 14px; }
-.vdrawer.open .vdrawer-body { max-height: 46vh; overflow-y: auto; padding: 0 14px 14px; }
+.vdrawer-grip {
+  width: 44px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.35);
+  margin: 10px auto 4px; flex: 0 0 auto; cursor: grab;
+}
+.vdrawer-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: 2px 16px 16px;
+  -webkit-overflow-scrolling: touch;
+}
 
-.vd-user { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.vd-avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(255, 143, 179, 0.6); flex: 0 0 auto; background: #333; }
-.vd-name { font-size: 14px; font-weight: 700; }
+.vd-user { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.vd-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(255, 143, 179, 0.6); flex: 0 0 auto; background: #333; }
+.vd-name { font-size: 15px; font-weight: 700; }
 .vd-me { font-size: 10px; color: #ff9dc4; border: 1px solid rgba(255, 157, 196, 0.5); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
 .vd-time { font-size: 12px; color: rgba(255, 255, 255, 0.55); margin-top: 2px; }
 
-.vd-stats { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.vd-stats { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .vstat {
-  border: none; cursor: pointer; border-radius: 999px; padding: 5px 12px; font-size: 12px;
-  background: rgba(255, 255, 255, 0.1); color: #fff; display: inline-flex; align-items: center; gap: 4px;
+  border: none; cursor: pointer; border-radius: 12px; padding: 9px 18px; font-size: 13px;
+  background: rgba(255, 255, 255, 0.1); color: #fff; display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px;
 }
 .vstat.on { background: linear-gradient(135deg, #ff8fb3, #ff6b9d); }
 .vstat b { font-weight: 700; }
-.vstat-badge { border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; }
+.vstat-badge { border-radius: 12px; padding: 6px 12px; font-size: 12px; font-weight: 600; min-height: 40px; display: inline-flex; align-items: center; }
 .vstat-badge.pub { background: rgba(46, 158, 91, 0.25); color: #7fe0a8; border: 1px solid rgba(46, 158, 91, 0.45); }
 .vstat-badge.priv { background: rgba(255, 180, 90, 0.18); color: #ffc277; border: 1px solid rgba(255, 180, 90, 0.4); }
 
-.vd-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-.vd-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.vd-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.vd-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .vlabel { color: rgba(255, 255, 255, 0.45); width: 64px; flex: 0 0 auto; }
 .vvalue { color: #fff; }
 .vvalue.lv-low { color: #7fe0a8; }
 .vvalue.lv-mid { color: #ffc277; }
 .vvalue.lv-high { color: #ff7b7b; }
 
-.vd-tags { margin-bottom: 12px; }
+.vd-tags { margin-bottom: 14px; }
 .vtag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .vtag {
   --n-color: rgba(255, 143, 179, 0.16);
@@ -866,20 +943,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 }
 .vtag-empty { font-size: 12px; color: rgba(255, 255, 255, 0.4); }
 
-.vd-ops { display: flex; gap: 8px; flex-wrap: wrap; }
+.vd-ops { display: flex; gap: 10px; flex-wrap: wrap; }
 .vop {
-  border: none; cursor: pointer; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600;
+  border: none; cursor: pointer; border-radius: 12px; min-height: 46px;
+  padding: 12px 22px; font-size: 14px; font-weight: 600;
   background: rgba(255, 255, 255, 0.12); color: #fff;
 }
 .vop.op-pub { background: rgba(255, 143, 179, 0.28); color: #ffd3e3; }
 .vop.op-del { background: rgba(214, 69, 65, 0.35); color: #ffb3b3; }
-.vop.op-restore { background: rgba(46, 158, 91, 0.32); color: #b8f0cd; }
-
-/* 全屏查看 */
-.viewer-full-modal { width: 100vw; height: 100vh; }
-.viewer-full { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; background: #000; position: relative; }
-.viewer-full img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.vfull-close { position: fixed; top: 14px; right: 14px; z-index: 70; border: none; background: rgba(0,0,0,0.6); color: #fff; width: 36px; height: 36px; border-radius: 50%; font-size: 16px; cursor: pointer; }
+.vop.op-restore { background: linear-gradient(135deg, #2e9e5b, #1e7a44); color: #d9f7e5; }
 
 /* ---- NSFW 开关 ---- */
 .nsfw-toggle {
@@ -890,7 +962,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .nsfw-toggle.off { background: rgba(120, 120, 120, 0.85); }
 
 /* ---- 失效页 ---- */
-.share-404 { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.share-404 { height: 100%; overflow-y: auto; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .s404-card { width: 380px; max-width: 92vw; background: var(--bg-panel, #fff); border-radius: 16px; padding: 40px 32px; box-shadow: 0 8px 30px rgba(255, 143, 179, 0.18); text-align: center; }
 .s404-emoji { font-size: 42px; }
 .s404-title { font-size: 20px; font-weight: 700; margin: 12px 0 8px; }
