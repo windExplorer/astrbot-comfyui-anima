@@ -899,11 +899,16 @@ class StandaloneWebUI:
     # 分享站（公开，分享令牌鉴权，与独立服务 admin token 解耦）
     # ------------------------------------------------------------------ #
     def _share_token_from(self, request: web.Request) -> str:
+        # 分享站令牌优先从 URL query 取（分享链接把 token 放在 #/share?token=xxx，请求时
+        # 以 query 形式发给后端）。query 没有时才用 Authorization 头（兼容独立服务管理口令）。
+        # 关键：分享站的请求 URL 里必然带 token，绝不能反向让 header 的管理口令顶替它。
+        q = request.query.get("token", "")
+        if q:
+            return q.strip()
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip()
-        q = request.query.get("token", "")
-        return q or ""
+        return ""
 
     async def _handle_share_api(self, request: web.Request) -> web.Response:
         tail = request.match_info.get("tail", "") or ""

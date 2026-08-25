@@ -156,13 +156,28 @@ import { useRoute } from "vue-router";
 import { apiGet, apiPost } from "@/api/bridge";
 
 const route = useRoute();
-// hash 路由下 route.query 只解析 hash 内的 query（#/share?token=xxx）。
-// 兼容旧版链接格式 ?token=xxx#/share（token 在 hash 外，路由解析不到），从 location.search 兜底取。
-const token = computed(() => {
-  const fromRoute = (route.query.token as string) || "";
-  if (fromRoute) return fromRoute;
+// 分享令牌：优先从 hash 内 query（#/share?token=xxx）取；取不到再从 location.search
+// 兜底（旧格式 ?token=xxx#/share）。以首次加载的 URL 为准，后续路由变化不影响。
+function _extractToken(): string {
+  const fromHash = route.query.token as string | undefined;
+  if (fromHash) return fromHash;
+  try {
+    // hash 内 query：/path?token=xxx 在 # 之后
+    const hash = window.location.hash || "";
+    const qi = hash.indexOf("?");
+    if (qi >= 0) {
+      const qs = new URLSearchParams(hash.slice(qi + 1));
+      const t = qs.get("token");
+      if (t) return t;
+    }
+  } catch { /* ignore */ }
   return new URLSearchParams(window.location.search).get("token") || "";
-});
+}
+const token = computed(_extractToken);
+// 模块级共享令牌：确保 getJ/postJ/imgUrl 始终拿到同一个 token，
+// 即使 computed 因路由变化重算也不影响已发出的请求。
+let sharedToken = "";
+try { sharedToken = _extractToken(); } catch { /* ignore */ }
 const expired = ref(false);
 const me = ref<any>(null);
 const tab = ref("world");
@@ -176,20 +191,25 @@ function toast(m: string) {
 }
 
 function imgUrl(sha: string, thumb = true, size = 0) {
-  let u = `/share/img/${sha}${thumb ? "/thumb" : ""}?token=${encodeURIComponent(token.value)}`;
+  const tok = token.value || sharedToken || "";
+  let u = `/share/img/${sha}${thumb ? "/thumb" : ""}?token=${encodeURIComponent(tok)}`;
   if (thumb && size) u += `&size=${size}`;
   return u;
 }
 
 async function getJ(path: string, params: any = {}): Promise<any> {
-  // 分享站请求必须用 URL 里的分享令牌（tokenOverride），绝不能带独立服务的
-  // 访问口令（localStorage），否则后端拿管理口令当分享令牌校验 → 误判链接已失效。
-  const r: any = await apiGet("share/" + path, { token: token.value, ...params }, { token: token.value });
+  const tok = token.value || sharedToken;
+  if (!tok) throw new Error("缺少分享令牌");
+  // 分享站请求必须用 URL 里的分享令牌（token 显式放 query），后端 _share_token_from 优先取
+  // query token，绝不会被独立服务的访问口令（Authorization header）顶替。
+  const r: any = await apiGet("share/" + path, { token: tok, ...params }, { token: tok });
   if (!r || !r.ok) throw new Error((r && r.error) || "请求失败");
   return r.data;
 }
 async function postJ(path: string, body: any = {}): Promise<any> {
-  const r: any = await apiPost("share/" + path, { token: token.value, ...body }, { token: token.value });
+  const tok = token.value || sharedToken;
+  if (!tok) throw new Error("缺少分享令牌");
+  const r: any = await apiPost("share/" + path, { token: tok, ...body }, { token: tok });
   if (!r || !r.ok) throw new Error((r && r.error) || "请求失败");
   return r.data;
 }

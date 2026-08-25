@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.45
+
+- **分享站 token 传递彻底加固**：
+  - 后端 `_share_token_from` 改为**优先取 URL query 的 token**（分享链接的令牌在 query），仅在 query 无 token 时才回退 Authorization 头，确保独立 WebUI 的管理口令绝不会顶替分享令牌；
+  - 前端 `ShareView` 分享令牌解析改为「hash 内 query → hash 内原始 query → location.search」三级兜底，并缓存到模块级 `sharedToken`，`getJ/postJ/imgUrl` 统一使用同一令牌，不再受路由变化影响；
+  - 分享令牌始终按 `expire_minutes` 过期。
+
 ## v4.9.44
 
 - **修复 `/萌绘` 分享站「进入后约 1 秒变链接已失效」**：分享站 API 请求此前会把独立 WebUI 的访问口令（localStorage 中的 `anima_standalone_token`）放进 `Authorization` 头，后端 `_share_token_from` 优先取 header 的 token，拿管理口令去校验分享令牌 → 查不到 → 401 → 前端误判「链接已失效」。实际分享令牌有效，`expire_minutes` 配置也正常。
