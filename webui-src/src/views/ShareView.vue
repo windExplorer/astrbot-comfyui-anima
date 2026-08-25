@@ -182,12 +182,14 @@ function imgUrl(sha: string, thumb = true, size = 0) {
 }
 
 async function getJ(path: string, params: any = {}): Promise<any> {
-  const r: any = await apiGet("share/" + path, { token: token.value, ...params });
+  // 分享站请求必须用 URL 里的分享令牌（tokenOverride），绝不能带独立服务的
+  // 访问口令（localStorage），否则后端拿管理口令当分享令牌校验 → 误判链接已失效。
+  const r: any = await apiGet("share/" + path, { token: token.value, ...params }, { token: token.value });
   if (!r || !r.ok) throw new Error((r && r.error) || "请求失败");
   return r.data;
 }
 async function postJ(path: string, body: any = {}): Promise<any> {
-  const r: any = await apiPost("share/" + path, { token: token.value, ...body });
+  const r: any = await apiPost("share/" + path, { token: token.value, ...body }, { token: token.value });
   if (!r || !r.ok) throw new Error((r && r.error) || "请求失败");
   return r.data;
 }

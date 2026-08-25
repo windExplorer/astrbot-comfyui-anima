@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.44
+
+- **修复 `/萌绘` 分享站「进入后约 1 秒变链接已失效」**：分享站 API 请求此前会把独立 WebUI 的访问口令（localStorage 中的 `anima_standalone_token`）放进 `Authorization` 头，后端 `_share_token_from` 优先取 header 的 token，拿管理口令去校验分享令牌 → 查不到 → 401 → 前端误判「链接已失效」。实际分享令牌有效，`expire_minutes` 配置也正常。
+  - 前端 `apiGet/apiPost/apiRaw/standaloneRequest` 增加 `token` 覆盖参数；
+  - `ShareView` 的 `getJ/postJ` 显式用 URL 中的分享令牌，不再使用 localStorage 管理口令；
+  - 分享令牌按 `expire_minutes` 正常过期，不再被秒级误判。
+
 ## v4.9.43
 
 - **修复 WebUI「备份数据库」导出缺表**：备份此前直接读取主文件 `gallery.db`，在 WAL 模式下会漏掉尚未合并进主文件的新建表/数据（如 `users` 表），导致下载的备份看似"没有 users 表"。改为使用 SQLite online backup API 导出完整快照（自动包含 WAL 内容），备份与活库完全一致。

@@ -265,12 +265,15 @@ export function isStandaloneMode(): boolean {
   return true;
 }
 
-async function standaloneRequest(path: string, method: string, body?: any, timeoutMs?: number): Promise<any> {
+async function standaloneRequest(path: string, method: string, body?: any, timeoutMs?: number, tokenOverride?: string): Promise<any> {
   const clean = path.replace(/^\//, "").replace(/\/+/g, "/");
   const tmo = (timeoutMs && timeoutMs > 0) ? timeoutMs : 15000;
   const url = "/api/" + clean;
   const headers: Record<string, string> = {};
-  const token = standaloneToken();
+  // 若显式指定 token（如分享站的分享令牌），用它，否则用本地口令。
+  // 关键：分享站请求绝不能带独立服务的访问口令（localStorage），否则后端会拿
+  // 管理口令当分享令牌校验 → 查不到 → 误判「链接已失效」。
+  const token = tokenOverride ?? standaloneToken();
   if (token) headers["Authorization"] = "Bearer " + token;
   if (method === "POST" && body !== undefined) headers["Content-Type"] = "application/json";
   const ctrl = new AbortController();
@@ -306,12 +309,12 @@ async function standaloneRequest(path: string, method: string, body?: any, timeo
   }
 }
 
-export async function apiRaw(path: string, options?: { method?: string; body?: any; timeout?: number }): Promise<any> {
+export async function apiRaw(path: string, options?: { method?: string; body?: any; timeout?: number; token?: string }): Promise<any> {
   const opts = options || {};
   const method = (opts.method || "GET").toUpperCase();
   // 独立模式：无 AstrBot 桥接，直接走同源 HTTP API
   if (isStandaloneMode()) {
-    return standaloneRequest(path, method, opts.body, opts.timeout);
+    return standaloneRequest(path, method, opts.body, opts.timeout, opts.token);
   }
   const br = await getPageBridge();
   const payload = await bridgeRequest(br, path, method, opts.body, opts.timeout);
@@ -321,7 +324,7 @@ export async function apiRaw(path: string, options?: { method?: string; body?: a
 }
 
 /** GET 请求，endpoint 形如 "config"、"gallery/search"（不带插件名、不带 /page）。 */
-export function apiGet(endpoint: string, params?: Record<string, any>, options?: { timeout?: number }): Promise<any> {
+export function apiGet(endpoint: string, params?: Record<string, any>, options?: { timeout?: number; token?: string }): Promise<any> {
   let path = endpoint;
   if (params && Object.keys(params).length) {
     const qs = new URLSearchParams();
@@ -335,15 +338,17 @@ export function apiGet(endpoint: string, params?: Record<string, any>, options?:
     const q = qs.toString();
     if (q) path = endpoint + "?" + q;
   }
-  const opts: { method: string; timeout?: number } = { method: "GET" };
+  const opts: { method: string; timeout?: number; token?: string } = { method: "GET" };
   if (options && options.timeout) opts.timeout = options.timeout;
+  if (options && options.token) opts.token = options.token;
   return apiRaw(path, opts);
 }
 
 /** POST 请求，body 直接作为 JSON 负载发送。timeout 可选（毫秒），默认 6000。 */
-export function apiPost(endpoint: string, body?: Record<string, any>, options?: { timeout?: number }): Promise<any> {
-  const opts: { method: string; body?: any; timeout?: number } = { method: "POST", body: body || {} };
+export function apiPost(endpoint: string, body?: Record<string, any>, options?: { timeout?: number; token?: string }): Promise<any> {
+  const opts: { method: string; body?: any; timeout?: number; token?: string } = { method: "POST", body: body || {} };
   if (options && options.timeout) opts.timeout = options.timeout;
+  if (options && options.token) opts.token = options.token;
   return apiRaw(endpoint, opts);
 }
 
