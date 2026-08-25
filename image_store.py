@@ -271,6 +271,29 @@ class ImageStore:
             conn.commit()
         except Exception as e:  # pragma: no cover
             logger.error(f"[图库] 初始化数据库失败: {e}", exc_info=True)
+            # 兜底：上面主建表流程失败时，users 表与用户维度索引可能没建。
+            # 用独立 try 逐条执行，防止单条失败阻断，并打具体错误便于定位。
+            for _sql, _label in (
+                ("""CREATE TABLE IF NOT EXISTS users (
+                    user_id    TEXT PRIMARY KEY,
+                    user_name  TEXT DEFAULT NULL,
+                    platform   TEXT DEFAULT NULL,
+                    first_seen REAL NOT NULL,
+                    last_seen  REAL NOT NULL
+                )""", "users 表"),
+                ("CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id)", "idx_images_user"),
+                ("CREATE INDEX IF NOT EXISTS idx_likes_user ON image_likes(user_id)", "idx_likes_user"),
+                ("CREATE INDEX IF NOT EXISTS idx_fav_user ON image_favorites(user_id)", "idx_fav_user"),
+            ):
+                try:
+                    conn.execute(_sql)
+                    logger.info(f"[图库] 兜底建 {_label} 成功")
+                except Exception as _e2:
+                    logger.warning(f"[图库] 兜底建 {_label} 失败: {_e2}")
+            try:
+                conn.commit()
+            except Exception as _e3:
+                logger.warning(f"[图库] 兜底 commit 失败: {_e3}")
 
     def close(self) -> None:
         if self._conn is not None:
