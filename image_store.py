@@ -1231,9 +1231,12 @@ class ImageStore:
         conn = self._conn_get()
         base = (
             "FROM image_favorites f JOIN images i ON i.sha256=f.sha256 "
-            "WHERE f.user_id=? AND i.deleted=0 AND i.status=0"
+            "WHERE f.user_id=? AND i.deleted=0 AND i.status=0 "
+            # 他人收藏的图必须是公开的才展示；自己收藏的图无论公私都可看。
+            # 否则作者转私有后，收藏列表仍会列出该图，但 img 接口对非 owner 私有图 403 → 破图。
+            "AND (i.is_public=1 OR i.user_id=?)"
         )
-        args = [user_id]
+        args = [user_id, user_id]
         total = 0
         try:
             row = conn.execute(f"SELECT COUNT(*) c {base}", args).fetchone()
