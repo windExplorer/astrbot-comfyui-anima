@@ -261,6 +261,10 @@ class ImageStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
+            # 用户维度索引：用户登记回填（按 user_id 查最早活动）与用户统计使用
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_likes_user ON image_likes(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fav_user ON image_favorites(user_id)")
             conn.commit()
         except Exception as e:  # pragma: no cover
             logger.error(f"[图库] 初始化数据库失败: {e}", exc_info=True)
@@ -1260,21 +1264,47 @@ class ImageStore:
 
         用户第一次使用指令（出图 / 点赞 / 收藏 / 发 /萌绘）时由各业务入口调用，
         集中维护 users 表；业务数据的归属仍由各表自身的 user_id 字段承载。
+
+        first_seen 回填：首次登记该用户时，取其历史出图 / 点赞 / 收藏中的最早时间
+        作为首次使用时间（兼容用户表上线前的存量数据）；无历史则用当前时间。
+        已登记用户若发现更早的历史时间，也一并回填校正。
         """
         if not user_id:
             return
         try:
             conn = self._conn_get()
             now = time.time()
-            conn.execute(
-                "INSERT OR IGNORE INTO users(user_id,user_name,platform,first_seen,last_seen) VALUES(?,?,?,?,?)",
-                (user_id, user_name, platform or "", now, now),
-            )
-            conn.execute(
-                "UPDATE users SET user_name=COALESCE(?,user_name), platform=COALESCE(?,platform), "
-                "last_seen=? WHERE user_id=?",
-                (user_name, platform or "", now, user_id),
-            )
+            existed = conn.execute("SELECT first_seen FROM users WHERE user_id=?", (user_id,)).fetchone()
+            # 历史最早活动时间：出图 / 点赞 / 收藏 三者取最早
+            hist = conn.execute(
+                "SELECT MIN(t) AS t FROM ("
+                " SELECT created_at AS t FROM images WHERE user_id=?"
+                " UNION ALL SELECT created_at FROM image_likes WHERE user_id=?"
+                " UNION ALL SELECT created_at FROM image_favorites WHERE user_id=?"
+                ")",
+                (user_id, user_id, user_id),
+            ).fetchone()
+            hist_ts = hist["t"] if hist and hist["t"] else None
+            if existed is None:
+                first = hist_ts if hist_ts is not None else now
+                conn.execute(
+                    "INSERT OR IGNORE INTO users(user_id,user_name,platform,first_seen,last_seen) VALUES(?,?,?,?,?)",
+                    (user_id, user_name, platform or "", first, now),
+                )
+            else:
+                cur_first = existed["first_seen"] or 0
+                if hist_ts is not None and hist_ts < cur_first:
+                    conn.execute(
+                        "UPDATE users SET user_name=COALESCE(?,user_name), platform=COALESCE(?,platform), "
+                        "last_seen=?, first_seen=? WHERE user_id=?",
+                        (user_name, platform or "", now, hist_ts, user_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE users SET user_name=COALESCE(?,user_name), platform=COALESCE(?,platform), "
+                        "last_seen=? WHERE user_id=?",
+                        (user_name, platform or "", now, user_id),
+                    )
             conn.commit()
         except Exception as e:
             logger.warning(f"[图库] 用户登记失败: {e}")
