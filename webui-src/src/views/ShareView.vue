@@ -27,30 +27,29 @@
         </div>
       </header>
 
-      <!-- 内容区 -->
-      <main class="sh-main" ref="mainRef" @scroll.passive="onMainScroll">
+      <!-- 内容区（每个 tab 内部虚拟滚动） -->
+      <main class="sh-main">
         <!-- 世界 -->
         <section v-if="tab === 'world'" class="sh-pane">
-          <div class="waterfall">
-            <div v-for="m in world.list" :key="m.sha256" class="wf-item" @click="openViewer(m, world.list)">
-              <div class="wf-img" :class="{ 'nsfw-blur': isNsfwBlurred(m) }">
-                <img :src="imgUrl(m.sha256, true, 600)" loading="lazy" :data-sha="m.sha256" />
-              </div>
-              <div v-if="isNsfwBlurred(m)" class="nsfw-mask"><span>🔞</span><span class="nsfw-tip">点击查看</span></div>
-              <div class="wf-meta">
-                <span v-if="m.user_id !== me?.user_id" class="who">{{ m.user_name || m.user_id }}</span>
-                <span class="when">{{ fmtShort(m.created_at) }}</span>
-              </div>
-              <div class="wf-acts">
-                <button class="like" :class="{ on: m.liked }" @click.stop="toggleLike(m)">❤ {{ m.like_count }}</button>
-                <button class="fav" :class="{ on: m.favorited }" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
-              </div>
-            </div>
-          </div>
+          <VirtualWaterfall
+            :items="world.list"
+            :img-src="m => imgUrl(m.sha256, true, 600)"
+            :has-more="world.hasMore"
+            :load-more="loadWorld"
+            :loading="world.loading"
+            :nsfw="true"
+            @item-click="m => openViewer(m, world.list)"
+          >
+            <template #meta="{ item: m }">
+              <span v-if="m.user_id !== me?.user_id" class="who">{{ m.user_name || m.user_id }}</span>
+              <span class="when">{{ fmtShort(m.created_at) }}</span>
+            </template>
+            <template #actions="{ item: m }">
+              <button class="like" :class="{ on: m.liked }" @click.stop="toggleLike(m)">❤ {{ m.like_count }}</button>
+              <button class="fav" :class="{ on: m.favorited }" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
+            </template>
+          </VirtualWaterfall>
           <n-empty v-if="!world.loading && world.list.length === 0" description="还没有公开作品~" class="sh-empty" />
-          <div v-if="world.hasMore" class="sh-more">
-            <n-button size="small" quaternary :loading="world.loading" @click="loadWorld">加载更多</n-button>
-          </div>
         </section>
 
         <!-- 图库 -->
@@ -62,47 +61,69 @@
               <n-radio-button value="private">私有</n-radio-button>
             </n-radio-group>
           </div>
-          <div class="waterfall">
-            <div v-for="m in gallery.list" :key="m.sha256" class="wf-item" @click="openViewer(m, gallery.list)">
-              <div class="wf-img" :class="{ 'nsfw-blur': isNsfwBlurred(m) }">
-                <img :src="imgUrl(m.sha256, true, 600)" loading="lazy" />
-              </div>
-              <div v-if="isNsfwBlurred(m)" class="nsfw-mask"><span>🔞</span><span class="nsfw-tip">点击查看</span></div>
-              <div class="wf-badges">
-                <button v-if="!m.is_public" class="bpub" title="设为公开" @click.stop="setPublic(m, true)">🌐公开</button>
-                <button v-else class="bunpub" title="取消公开" @click.stop="setPublic(m, false)">🔓私有</button>
-                <button class="bdel" title="删除" @click.stop="delImg(m)">🗑️</button>
-              </div>
-              <div class="wf-meta"><span class="when">{{ fmtShort(m.created_at) }}</span></div>
-              <div class="wf-acts">
+          <div class="glist">
+            <VirtualWaterfall
+              :items="gallery.list"
+              :img-src="m => imgUrl(m.sha256, true, 600)"
+              :has-more="gallery.hasMore"
+              :load-more="loadGallery"
+              :loading="gallery.loading"
+              :nsfw="true"
+              @item-click="m => openViewer(m, gallery.list)"
+            >
+              <template #badges="{ item: m }">
+                <div class="wf-badges">
+                  <button v-if="!m.is_public" class="bpub" @click.stop="setPublic(m, true)">🌐公开</button>
+                  <button v-else class="bunpub" @click.stop="setPublic(m, false)">🔓私有</button>
+                  <button class="bdel" @click.stop="delImg(m)">🗑️</button>
+                </div>
+              </template>
+              <template #meta="{ item: m }">
+                <span class="when">{{ fmtShort(m.created_at) }}</span>
+              </template>
+              <template #actions="{ item: m }">
                 <button class="like" :class="{ on: m.liked }" @click.stop="toggleLike(m)">❤ {{ m.like_count }}</button>
                 <button class="fav" :class="{ on: m.favorited }" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
-              </div>
-            </div>
+              </template>
+            </VirtualWaterfall>
           </div>
           <n-empty v-if="!gallery.loading && gallery.list.length === 0" description="还没有作品~" class="sh-empty" />
-          <div v-if="gallery.hasMore" class="sh-more">
-            <n-button size="small" quaternary :loading="gallery.loading" @click="loadGallery">加载更多</n-button>
-          </div>
         </section>
 
         <!-- 收藏 -->
-        <section v-else-if="tab === 'favorites'" class="sh-pane">
-          <h3 class="fsec">自己的收藏</h3>
-          <div class="waterfall">
-            <div v-for="m in fav.mine" :key="m.sha256" class="wf-item" @click="openViewer(m, fav.mine)">
-              <div class="wf-img" :class="{ 'nsfw-blur': isNsfwBlurred(m) }"><img :src="imgUrl(m.sha256, true, 600)" loading="lazy" /></div>
-              <div v-if="isNsfwBlurred(m)" class="nsfw-mask"><span>🔞</span><span class="nsfw-tip">点击查看</span></div>
-              <div class="wf-meta"><span class="when">{{ fmtShort(m.created_at) }}</span></div>
-            </div>
+        <section v-else-if="tab === 'favorites'" class="sh-pane fav-split">
+          <div class="fav-half">
+            <h3 class="fsec">自己的收藏</h3>
+            <VirtualWaterfall
+              :items="fav.mine"
+              :img-src="m => imgUrl(m.sha256, true, 600)"
+              :nsfw="true"
+              @item-click="m => openViewer(m, fav.mine)"
+            >
+              <template #meta="{ item: m }">
+                <span class="when">{{ fmtShort(m.created_at) }}</span>
+              </template>
+              <template #actions="{ item: m }">
+                <button class="fav on" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
+              </template>
+            </VirtualWaterfall>
           </div>
-          <h3 class="fsec">其他人的收藏</h3>
-          <div class="waterfall">
-            <div v-for="m in fav.others" :key="m.sha256" class="wf-item" @click="openViewer(m, fav.others)">
-              <div class="wf-img" :class="{ 'nsfw-blur': isNsfwBlurred(m) }"><img :src="imgUrl(m.sha256, true, 600)" loading="lazy" /></div>
-              <div v-if="isNsfwBlurred(m)" class="nsfw-mask"><span>🔞</span><span class="nsfw-tip">点击查看</span></div>
-              <div class="wf-meta"><span class="who">{{ m.user_name || m.user_id }}</span><span class="when">{{ fmtShort(m.created_at) }}</span></div>
-            </div>
+          <div class="fav-half">
+            <h3 class="fsec">其他人的收藏</h3>
+            <VirtualWaterfall
+              :items="fav.others"
+              :img-src="m => imgUrl(m.sha256, true, 600)"
+              :nsfw="true"
+              @item-click="m => openViewer(m, fav.others)"
+            >
+              <template #meta="{ item: m }">
+                <span class="who">{{ m.user_name || m.user_id }}</span>
+                <span class="when">{{ fmtShort(m.created_at) }}</span>
+              </template>
+              <template #actions="{ item: m }">
+                <button class="fav on" @click.stop="toggleFav(m)">★ {{ m.favorite_count }}</button>
+              </template>
+            </VirtualWaterfall>
           </div>
         </section>
 
@@ -137,18 +158,27 @@
               <n-button size="small" quaternary @click="showRecycle = false">← 返回</n-button>
               <span class="sub-title">回收站</span>
             </div>
-            <div class="waterfall">
-              <div v-for="m in recycle" :key="m.sha256" class="wf-item" @click="openViewer(m, recycle)">
-                <div class="wf-img" :class="{ 'nsfw-blur': isNsfwBlurred(m) }"><img :src="imgUrl(m.sha256, true, 600)" loading="lazy" /></div>
-                <div class="wf-acts"><button class="restore" @click.stop="restoreImg(m.sha256)">恢复</button></div>
-              </div>
+            <div class="glist">
+              <VirtualWaterfall
+                :items="recycle"
+                :img-src="m => imgUrl(m.sha256, true, 600)"
+                :nsfw="true"
+                @item-click="m => openViewer(m, recycle)"
+              >
+                <template #meta="{ item: m }">
+                  <span class="when">{{ fmtShort(m.created_at) }}</span>
+                </template>
+                <template #actions="{ item: m }">
+                  <button class="restore" @click.stop="restoreImg(m.sha256)">恢复</button>
+                </template>
+              </VirtualWaterfall>
             </div>
             <n-empty v-if="recycle.length === 0" description="回收站是空的" class="sh-empty" />
           </template>
         </section>
       </main>
 
-      <!-- 底部悬浮导航（移动端优先） -->
+      <!-- 底部悬浮导航 -->
       <nav class="sh-tabbar">
         <button v-for="t in tabs" :key="t.key" :class="['tabbar-item', tab === t.key && 'on']" @click="switchTab(t.key)">
           <span class="tabbar-icon">{{ t.icon }}</span>
@@ -165,20 +195,22 @@
           <div v-if="viewerLoading" class="vloading">加载中…</div>
           <div class="vtools">
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
-            <button class="vtool" @click="loadOriginal">原图</button>
+            <button class="vtool" @click="viewerFull = true">全屏</button>
             <button class="vtool" @click="closeViewer">✕</button>
           </div>
         </div>
         <div class="vmeta" v-if="viewerM">
-          <span>{{ fmt(viewerM.created_at) }}</span>
+          <button class="nav" @click="prevImg">‹</button>
+          <span class="vmeta-main">{{ viewerIndex + 1 }}/{{ viewerList.length }}</span>
           <span>{{ viewerM.w }}×{{ viewerM.h }}</span>
           <button class="like" :class="{ on: viewerM.liked }" @click="toggleLike(viewerM)">❤ {{ viewerM.like_count }}</button>
           <button class="fav" :class="{ on: viewerM.favorited }" @click="toggleFav(viewerM)">★ {{ viewerM.favorite_count }}</button>
+          <button class="nav" @click="nextImg">›</button>
         </div>
       </div>
     </n-modal>
 
-    <!-- 全屏查看（NSFW 图点击后取消模糊查看） -->
+    <!-- 全屏查看 -->
     <n-modal v-model:show="viewerFull" :mask-closable="true" class="viewer-full-modal" @update:show="v => (viewerFull = v)">
       <div class="viewer-full" @click.self="viewerFull = false">
         <img :src="viewerSrc" />
@@ -189,6 +221,8 @@
     <!-- NSFW 全局开关 -->
     <div v-if="nsfwBlurGlobal" class="nsfw-toggle" @click="nsfwBlurGlobal = false" title="关闭 NSFW 模糊">🔞 模糊</div>
     <div v-else class="nsfw-toggle off" @click="nsfwBlurGlobal = true" title="开启 NSFW 模糊">🔞 原图</div>
+
+    <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
   </div>
 </template>
 
@@ -197,6 +231,7 @@ import { ref, computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useMessage, useDialog, NModal, NEmpty, NButton, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
+import VirtualWaterfall from "@/components/VirtualWaterfall.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -249,7 +284,6 @@ const tabs = [
   { key: "favorites", icon: "⭐", label: "收藏" },
   { key: "profile", icon: "👤", label: "我的" },
 ];
-// tab 与 URL 同步（路由化：刷新保持当前页）
 const tab = ref<string>("world");
 try {
   const q = route.query.tab as string | undefined;
@@ -298,7 +332,7 @@ function fmtShort(ts: number) {
 }
 const expireText = computed(() => (me.value ? fmt(me.value.expire_at) : ""));
 
-// 头像：优先后端 /share/avatar/{uid}，加载失败回退 QQ 头像直链
+// 头像
 const avatarFb = ref(false);
 const avatarSrc = computed(() => {
   if (!me.value) return "";
@@ -443,7 +477,7 @@ function restoreImg(sha: string) {
   });
 }
 
-// ---- NSFW 模糊（参考 WebUI）----
+// ---- NSFW 模糊 ----
 const nsfwBlurGlobal = ref(true);
 try {
   const v = localStorage.getItem("anima_share_nsfw_blur");
@@ -452,14 +486,8 @@ try {
 watch(nsfwBlurGlobal, (val) => {
   try { localStorage.setItem("anima_share_nsfw_blur", val ? "1" : "0"); } catch { /* ignore */ }
 });
-function isNsfwBlurred(img: any): boolean {
-  if (!img || !img.nsfw) return false;
-  if (!nsfwBlurGlobal.value) return false;
-  if (img.nsfw_blur === 0) return false;
-  return true;
-}
 
-// ---- 大图查看器（默认加载原图）----
+// ---- 大图查看器（默认原图，左右切换）----
 const viewer = ref(false);
 const viewerFull = ref(false);
 const viewerM = ref<any>(null);
@@ -471,7 +499,8 @@ const viewerLoading = ref(false);
 function openViewer(m: any, list: any[]) {
   viewerM.value = m;
   viewerList.value = list || [];
-  viewerIndex.value = (list || []).findIndex((x) => x.sha256 === m.sha256) || 0;
+  const idx = (list || []).findIndex((x) => x.sha256 === m.sha256);
+  viewerIndex.value = idx >= 0 ? idx : 0;
   viewer.value = true;
   showRef.value = false;
   loadOriginal();
@@ -494,12 +523,6 @@ function closeViewer() {
 function onViewerLoad() {
   viewerLoading.value = false;
 }
-function onKey(e: KeyboardEvent) {
-  if (e.key === "Escape") { closeViewer(); return; }
-  if (!viewer.value) return;
-  if (e.key === "ArrowRight") nextImg();
-  if (e.key === "ArrowLeft") prevImg();
-}
 function nextImg() {
   const list = viewerList.value;
   if (!list.length) return;
@@ -516,16 +539,11 @@ function prevImg() {
   showRef.value = false;
   loadOriginal();
 }
-
-// ---- 触底加载更多 ----
-const mainRef = ref<any>(null);
-function onMainScroll() {
-  const el = mainRef.value;
-  if (!el) return;
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
-    if (tab.value === "world") loadWorld();
-    if (tab.value === "gallery") loadGallery();
-  }
+function onKey(e: KeyboardEvent) {
+  if (e.key === "Escape") { closeViewer(); return; }
+  if (!viewer.value) return;
+  if (e.key === "ArrowRight") nextImg();
+  if (e.key === "ArrowLeft") prevImg();
 }
 
 // ---- 生命周期 ----
@@ -539,7 +557,6 @@ onMounted(async () => {
   }
   try {
     me.value = await getJ("me");
-    // 按当前 tab 加载（刷新后保持内容）
     if (tab.value === "world") loadWorld();
     else if (tab.value === "gallery") loadGallery();
     else if (tab.value === "favorites") loadFav();
@@ -580,68 +597,41 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .sh-user-exp { font-size: 11px; color: var(--text-sub, #9a7a88); }
 
 /* ---- 内容区 ---- */
-.sh-main {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 12px 12px 76px; /* 底部导航高度留白 */
-}
-.sh-pane { min-height: 100%; }
+.sh-main { flex: 1 1 auto; overflow: hidden; padding: 12px 12px 76px; }
+.sh-pane { height: 100%; min-height: 0; }
 .sh-empty { padding: 50px 0; }
-.sh-more { text-align: center; padding: 14px 0; }
-.fsec { font-size: 13px; color: var(--text-sub, #9a7a88); margin: 16px 0 8px; }
+.fsec { font-size: 13px; color: var(--text-sub, #9a7a88); margin: 0 0 8px; }
+.gfilter { display: flex; justify-content: center; margin-bottom: 12px; flex: 0 0 auto; }
+.glist { height: calc(100% - 40px); }
 
-/* ---- 瀑布流（CSS 自适应列数）---- */
-.waterfall { columns: 2; column-gap: 10px; }
-@media (min-width: 700px) { .waterfall { columns: 3; } }
-@media (min-width: 1000px) { .waterfall { columns: 4; } }
-@media (min-width: 1400px) { .waterfall { columns: 5; } }
-.wf-item {
-  break-inside: avoid;
-  margin-bottom: 10px;
-  background: #fff;
-  border: 1px solid var(--border-color, #ffe3ec);
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(255, 143, 179, 0.1);
+/* 收藏拆分 */
+.fav-split { display: flex; flex-direction: column; gap: 10px; }
+.fav-half { flex: 1 1 50%; min-height: 0; display: flex; flex-direction: column; }
+.fav-half .fsec { flex: 0 0 auto; }
+
+/* ---- 卡片内按钮 ---- */
+.who { color: #ff6b9d; font-weight: 600; }
+.when { opacity: 0.85; }
+.wf-badges { position: absolute; top: 6px; left: 6px; z-index: 3; display: flex; gap: 4px; }
+.wf-badges button {
+  border: none; border-radius: 999px; padding: 2px 8px; font-size: 10px; cursor: pointer;
+  background: rgba(0, 0, 0, 0.55); color: #fff;
 }
-.wf-img { position: relative; width: 100%; }
-.wf-img img { display: block; width: 100%; height: auto; }
-.wf-meta { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 0; font-size: 11px; color: var(--text-sub, #9a7a88); }
-.wf-acts { display: flex; gap: 6px; padding: 4px 8px 8px; }
-.wf-acts button, .wf-badges button {
-  border: none; background: #fff1f4; color: #b05c7a; border-radius: 999px;
-  font-size: 11px; padding: 3px 10px; cursor: pointer;
+.wf-badges .bdel { background: rgba(214, 69, 65, 0.85); }
+.wf-acts button, .vmeta button {
+  border: none; background: var(--bg-body, #fff1f4); color: var(--text-sub, #b05c7a);
+  border-radius: 999px; font-size: 11px; padding: 3px 10px; cursor: pointer;
 }
 .wf-acts button.on { background: #ff8fb3; color: #fff; }
-.wf-badges { display: flex; gap: 6px; padding: 6px 10px 0; }
-.wf-badges button { background: #fff1f4; }
-.wf-badges .bdel { color: #d64541; }
-
-/* ---- NSFW 模糊 ---- */
-.nsfw-blur { filter: blur(14px); transform: scale(1.08); }
-.nsfw-mask {
-  position: absolute; inset: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 4px; color: #fff;
-  background: rgba(0, 0, 0, 0.15); font-size: 22px;
-}
-.nsfw-tip { font-size: 11px; opacity: 0.9; }
-.nsfw-toggle {
-  position: fixed; right: 14px; bottom: 84px; z-index: 60;
-  background: rgba(255, 143, 179, 0.9); color: #fff; border-radius: 999px;
-  padding: 6px 12px; font-size: 12px; cursor: pointer; box-shadow: 0 2px 10px rgba(255, 143, 179, 0.4);
-}
-.nsfw-toggle.off { background: rgba(120, 120, 120, 0.85); }
-
-/* ---- 图库筛选 ---- */
-.gfilter { display: flex; justify-content: center; margin-bottom: 12px; }
+.wf-acts .restore { background: #e8f7ee; color: #2e9e5b; }
 
 /* ---- 个人中心 ---- */
-.user-card { display: flex; align-items: center; gap: 12px; background: #fff; border: 1px solid var(--border-color, #ffe3ec); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+.user-card { display: flex; align-items: center; gap: 12px; background: var(--bg-panel, #fff); border: 1px solid var(--border-color, #ffe3ec); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
 .uc-avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 2px solid #ffb3d1; flex: 0 0 auto; }
 .uc-name { font-size: 15px; font-weight: 700; }
 .uc-sub { font-size: 12px; color: var(--text-sub, #9a7a88); margin-top: 2px; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
-.stat { background: #fff; border: 1px solid var(--border-color, #ffe3ec); border-radius: 12px; padding: 12px 8px; text-align: center; }
+.stat { background: var(--bg-panel, #fff); border: 1px solid var(--border-color, #ffe3ec); border-radius: 12px; padding: 12px 8px; text-align: center; }
 .stat b { display: block; font-size: 20px; color: #e86f9c; }
 .stat span { font-size: 11px; color: var(--text-sub, #9a7a88); }
 .sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -670,8 +660,9 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .vloading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; background: rgba(0,0,0,0.4); }
 .vtools { position: absolute; bottom: 10px; right: 10px; display: flex; gap: 8px; }
 .vtool { border: none; background: rgba(0,0,0,0.6); color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
-.vmeta { display: flex; align-items: center; gap: 10px; padding: 10px 14px; color: #fff; background: #111; font-size: 12px; }
-.vmeta button { border: none; background: rgba(255,255,255,0.15); color: #fff; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.vmeta { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: #fff; background: #111; font-size: 12px; }
+.vmeta .nav { background: rgba(255,255,255,0.12); color: #fff; font-size: 14px; padding: 4px 12px; }
+.vmeta .vmeta-main { min-width: 46px; text-align: center; }
 .vmeta button.on { background: #ff6b9d; }
 
 /* 全屏查看 */
@@ -680,9 +671,17 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 .viewer-full img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .vfull-close { position: fixed; top: 14px; right: 14px; z-index: 70; border: none; background: rgba(0,0,0,0.6); color: #fff; width: 36px; height: 36px; border-radius: 50%; font-size: 16px; cursor: pointer; }
 
+/* ---- NSFW 开关 ---- */
+.nsfw-toggle {
+  position: fixed; right: 14px; bottom: 84px; z-index: 60;
+  background: rgba(255, 143, 179, 0.9); color: #fff; border-radius: 999px;
+  padding: 6px 12px; font-size: 12px; cursor: pointer; box-shadow: 0 2px 10px rgba(255, 143, 179, 0.4);
+}
+.nsfw-toggle.off { background: rgba(120, 120, 120, 0.85); }
+
 /* ---- 失效页 ---- */
 .share-404 { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.s404-card { width: 380px; max-width: 92vw; background: #fff; border-radius: 16px; padding: 40px 32px; box-shadow: 0 8px 30px rgba(255, 143, 179, 0.18); text-align: center; }
+.s404-card { width: 380px; max-width: 92vw; background: var(--bg-panel, #fff); border-radius: 16px; padding: 40px 32px; box-shadow: 0 8px 30px rgba(255, 143, 179, 0.18); text-align: center; }
 .s404-emoji { font-size: 42px; }
 .s404-title { font-size: 20px; font-weight: 700; margin: 12px 0 8px; }
 .s404-sub { font-size: 14px; color: #9a7a88; line-height: 1.7; }
@@ -697,8 +696,5 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 /* 暗色适配 */
 html[data-theme="dark"] .share-root, html.dark .share-root { background: #1a1418; }
 html[data-theme="dark"] .sh-header, html.dark .sh-header { background: rgba(26,20,24,0.92); }
-html[data-theme="dark"] .wf-item, html.dark .wf-item,
-html[data-theme="dark"] .user-card, html.dark .user-card,
-html[data-theme="dark"] .stat, html.dark .stat { background: #241b21; }
 html[data-theme="dark"] .sh-tabbar, html.dark .sh-tabbar { background: rgba(36,27,33,0.95); }
 </style>
