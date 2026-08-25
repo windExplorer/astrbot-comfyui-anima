@@ -1494,14 +1494,20 @@ def _thumb_bytes(path, max_w: int = 300) -> tuple:
                     if w > max_w:
                         nh = max(1, int(h * max_w / w))
                         im = im.resize((max_w, nh), _PILImage.LANCZOS)
+                    # 统一转 WebP：体积远小于 PNG/JPEG，支持透明，浏览器全兼容
+                    if im.mode in ("P", "LA"):
+                        im = im.convert("RGBA")
+                    elif im.mode not in ("RGB", "RGBA"):
+                        im = im.convert("RGB")
                     buf = io.BytesIO()
-                    fmt = "JPEG" if mime in ("image/jpeg", "image/webp") else "PNG"
-                    if fmt == "JPEG":
+                    try:
+                        im.save(buf, format="WEBP", quality=72, method=4)
+                        return (buf.getvalue(), "image/webp")
+                    except Exception:
+                        # 旧 Pillow 不支持 WebP 时降级 JPEG
                         im = im.convert("RGB") if im.mode != "RGB" else im
-                        im.save(buf, format=fmt, optimize=True, quality=88)
-                    else:
-                        im.save(buf, format=fmt, optimize=True)
-                    return (buf.getvalue(), "image/jpeg" if fmt == "JPEG" else "image/png")
+                        im.save(buf, format="JPEG", optimize=True, quality=72)
+                        return (buf.getvalue(), "image/jpeg")
             except Exception:
                 pass
         return (raw, mime)
@@ -1535,18 +1541,20 @@ def _thumb_data_url(path, max_w: int = 300) -> str:
                     if w > max_w:
                         nh = max(1, int(h * max_w / w))
                         im = im.resize((max_w, nh), _PILImage.LANCZOS)
-                    buf = io.BytesIO()
-                    fmt = "JPEG" if mime == "image/jpeg" else "PNG"
-                    if im.mode in ("RGBA", "LA", "P"):
+                    # 统一转 WebP：体积远小于 PNG/JPEG，支持透明，浏览器全兼容
+                    if im.mode in ("P", "LA"):
                         im = im.convert("RGBA")
-                    if fmt == "JPEG":
-                        # quality 提高以减轻压缩噪声，文字/边缘更清晰
-                        im.save(buf, format=fmt, optimize=True, quality=88)
-                    else:
-                        im.save(buf, format=fmt, optimize=True)
-                    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-                    cmime = "image/jpeg" if fmt == "JPEG" else "image/png"
-                    return f"data:{cmime};base64,{encoded}"
+                    elif im.mode not in ("RGB", "RGBA"):
+                        im = im.convert("RGB")
+                    buf = io.BytesIO()
+                    try:
+                        im.save(buf, format="WEBP", quality=72, method=4)
+                        return f"data:image/webp;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+                    except Exception:
+                        # 旧 Pillow 不支持 WebP 时降级 JPEG
+                        im = im.convert("RGB") if im.mode != "RGB" else im
+                        im.save(buf, format="JPEG", optimize=True, quality=72)
+                        return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
             except Exception:
                 pass
         return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"

@@ -331,6 +331,8 @@ function imgUrl(sha: string, thumb = true, size = 0) {
   const tok = token.value || sharedToken || "";
   let u = `/share/img/${sha}${thumb ? "/thumb" : ""}?share_t=${encodeURIComponent(tok)}`;
   if (thumb && size) u += `&size=${size}`;
+  // 缩略图格式版本：内容格式变更（如 PNG→WebP）时递增，强制浏览器刷新旧缓存
+  if (thumb) u += "&v=2";
   return u;
 }
 

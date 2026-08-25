@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.67
+
+- **缩略图全面转 WebP 压缩**：`_thumb_data_url`/`_thumb_bytes` 此前对非 JPEG 原图存成 PNG（无损、体积大），改为统一 WebP（quality=72 + method=4），支持透明、浏览器全兼容，传输体积大幅减小（尤其 PNG 原图场景）。旧 Pillow 无 WebP 时降级 JPEG。分享站缩略图 URL 加 `v=2` 版本参数，强制刷新浏览器旧缓存。
+
 ## v4.9.66
 
 - **修复：分享站首屏空白（真正根因）**：父组件用 `list.push(...)` 原地追加数据时 `items` 引用不变，VirtualWaterfall 的 `watch(() => props.items)` 永不触发 → `layout` 保持为空 → 瀑布流空白，只有改宽度触发 ResizeObserver 才出图。改为同时监听 `props.items.length`（push 场景）与 `items` 引用（整体替换场景），数据一到即重建布局。
