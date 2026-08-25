@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.34
+
+- **修复 `/萌绘` 分享链接打开即「链接已失效」**：生成链接时 token 放在 hash 外（`/?token=xxx#/share`），而分享站使用 Vue Router hash 路由，`route.query` 只解析 hash 内的 query，导致 token 取不到被误判为无效。
+  - 后端链接改为 `/#/share?token=xxx`（token 放入 hash 内）；
+  - 前端 `ShareView` 增加从 `window.location.search` 兜底读取 token，兼容旧格式链接。
+
 ## v4.9.33
 
 - **`/萌绘` 二维码颜色可配置**：新增 `share_webui.qr_fill_color` 配置项（HEX 色值），默认使用插件主题粉 `#ff8fb3`；在配置页「分享 WebUI」分组可改（如 `#000000`）。背景固定为白色，非法色值自动回退主题粉。

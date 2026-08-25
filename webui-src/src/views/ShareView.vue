@@ -147,7 +147,13 @@ import { useRoute } from "vue-router";
 import { apiGet, apiPost } from "@/api/bridge";
 
 const route = useRoute();
-const token = computed(() => (route.query.token as string) || "");
+// hash 路由下 route.query 只解析 hash 内的 query（#/share?token=xxx）。
+// 兼容旧版链接格式 ?token=xxx#/share（token 在 hash 外，路由解析不到），从 location.search 兜底取。
+const token = computed(() => {
+  const fromRoute = (route.query.token as string) || "";
+  if (fromRoute) return fromRoute;
+  return new URLSearchParams(window.location.search).get("token") || "";
+});
 const expired = ref(false);
 const me = ref<any>(null);
 const tab = ref("world");
