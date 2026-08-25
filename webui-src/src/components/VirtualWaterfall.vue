@@ -141,16 +141,34 @@ const viewH = ref(600);
 const colW = ref(0);
 const colCount = ref(2);
 
+let measureTries = 0;
 function measure() {
   const el = boxRef.value;
-  if (!el) return;
+  if (!el) return false;
   const w = el.clientWidth;
-  if (w <= 0) return;
+  if (w <= 0) return false;
   viewH.value = el.clientHeight;
   const cols = w >= 1400 ? 5 : w >= 1000 ? 4 : w >= 700 ? 3 : 2;
   colCount.value = cols;
   const gap = props.gap ?? 10;
   colW.value = (w - gap * (cols - 1)) / cols;
+  return true;
+}
+
+// 首屏测量容错：容器宽度可能尚未就绪（布局未稳定），此时 rebuild 会因 colW=0
+// 直接 return 导致瀑布流空白（但底部"到底了"却显示了）。用 rAF 重试直到成功。
+function ensureLayout() {
+  if (measure()) {
+    rebuild();
+    nextTick(() => maybeLoad());
+    return;
+  }
+  measureTries++;
+  if (measureTries > 10) {
+    measureTries = 0;
+    return;
+  }
+  requestAnimationFrame(ensureLayout);
 }
 
 interface VItem { m: any; col: number; top: number; h: number; cardH: number }
@@ -219,7 +237,7 @@ function maybeLoad() {
 let ro: ResizeObserver | null = null;
 let io: IntersectionObserver | null = null;
 onMounted(() => {
-  measure();
+  ensureLayout();
   ro = new ResizeObserver(() => {
     measure();
     rebuild();
@@ -229,9 +247,7 @@ onMounted(() => {
     // touchmove 需非 passive 才能 preventDefault（禁掉橡皮筋/页面刷新）
     boxRef.value.addEventListener("touchmove", onTouchMove, { passive: false });
   }
-  rebuild();
   nextTick(() => {
-    maybeLoad();
     // 触底哨兵：进入可视区即加载下一页，比纯 scroll 阈值更可靠
     if (boxRef.value && tailRef.value && "IntersectionObserver" in window) {
       io = new IntersectionObserver(
@@ -254,8 +270,8 @@ onUnmounted(() => {
 watch(
   () => props.items,
   () => {
-    rebuild();
-    nextTick(() => maybeLoad());
+    measureTries = 0;
+    ensureLayout();
   }
 );
 watch([colW, colCount], () => rebuild());
