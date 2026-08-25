@@ -259,6 +259,11 @@ class ImageStore:
         _ddl("idx_likes_sha", "CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
         _ddl("idx_fav_sha", "CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
         _ddl("idx_share_user", "CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
+        # 迁移：分享令牌单 IP 绑定列（旧库无此列时 ALTER，已有则跳过）
+        try:
+            conn.execute("ALTER TABLE share_tokens ADD COLUMN bound_ip TEXT DEFAULT NULL")
+        except Exception:
+            pass  # 列已存在
         # 用户维度索引：用户登记回填（按 user_id 查最早活动）与用户统计使用
         _ddl("idx_images_user", "CREATE INDEX IF NOT EXISTS idx_images_user ON images(user_id)")
         _ddl("idx_likes_user", "CREATE INDEX IF NOT EXISTS idx_likes_user ON image_likes(user_id)")
@@ -1061,8 +1066,12 @@ class ImageStore:
         return liked, fav
 
     def create_share_token(self, user_id: str, user_name: str = None, ttl_sec: int = 3600) -> str:
-        token = secrets.token_urlsafe(24)
         now = time.time()
+        # 复用：同一用户有效期内已存在的令牌直接返回，不重复生成（单链接约束）
+        old = self._find_valid_share_token(user_id, now)
+        if old:
+            return old
+        token = secrets.token_urlsafe(24)
         # 内存兜底：同一进程内创建/校验必然一致，规避 SQLite 读写不一致导致的「链接已失效」
         self._share_tokens_mem[token] = {
             "token": token,
@@ -1070,6 +1079,7 @@ class ImageStore:
             "user_name": user_name,
             "created_at": now,
             "expire_at": now + ttl_sec,
+            "bound_ip": None,  # 首次访问时绑定
         }
         # 顺带清理内存中已过期的令牌，避免长期累积
         if len(self._share_tokens_mem) > 500:
@@ -1082,8 +1092,8 @@ class ImageStore:
         try:
             conn = self._conn_get()
             conn.execute(
-                "INSERT OR REPLACE INTO share_tokens(token,user_id,user_name,created_at,expire_at) VALUES(?,?,?,?,?)",
-                (token, user_id, user_name, now, now + ttl_sec),
+                "INSERT OR REPLACE INTO share_tokens(token,user_id,user_name,created_at,expire_at,bound_ip) VALUES(?,?,?,?,?,?)",
+                (token, user_id, user_name, now, now + ttl_sec, None),
             )
             conn.commit()
         except Exception as e:
@@ -1094,6 +1104,51 @@ class ImageStore:
         except Exception:
             pass
         return token
+
+    def _find_valid_share_token(self, user_id: str, now: float) -> str:
+        """同用户有效期内已存在的令牌（内存优先，SQLite 兜底），供单链接复用。"""
+        if not user_id:
+            return ""
+        for _k, v in self._share_tokens_mem.items():
+            if (v.get("user_id") == user_id) and (v.get("expire_at") or 0) > now:
+                return _k
+        try:
+            conn = self._conn_get()
+            row = conn.execute(
+                "SELECT token FROM share_tokens WHERE user_id=? AND expire_at>? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (user_id, now),
+            ).fetchone()
+            if row:
+                return row["token"]
+        except Exception:
+            pass
+        return ""
+
+    def verify_share_token(self, token: str, ip: str = "") -> tuple:
+        """校验分享令牌 + 单 IP 绑定/核对。返回 (info, allowed)。
+        首次访问绑定 IP；之后不同 IP 访问一律拒绝。"""
+        info = self.get_share_token(token)
+        if not info:
+            return None, False
+        bound = info.get("bound_ip")
+        if bound:
+            return info, (bound == ip)
+        if not ip:
+            return info, True  # 无法获取 IP 时放行（如纯内网场景），避免误杀
+        # 首次访问：绑定当前 IP
+        try:
+            self._share_tokens_mem[token]["bound_ip"] = ip
+        except Exception:
+            pass
+        try:
+            conn = self._conn_get()
+            conn.execute("UPDATE share_tokens SET bound_ip=? WHERE token=?", (ip, token))
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[图库] 绑定分享令牌 IP 失败: {e}")
+        info["bound_ip"] = ip
+        return info, True
 
     def get_share_token(self, token: str) -> dict | None:
         if not token:
@@ -1109,7 +1164,7 @@ class ImageStore:
         try:
             conn = self._conn_get()
             row = conn.execute(
-                "SELECT token,user_id,user_name,created_at,expire_at FROM share_tokens WHERE token=?", (token,)
+                "SELECT token,user_id,user_name,created_at,expire_at,bound_ip FROM share_tokens WHERE token=?", (token,)
             ).fetchone()
             if not row:
                 # 诊断：内存未命中 + SQLite 查无此令牌，说明令牌未持久化（或校验方与创建方非同一实例）
@@ -1131,6 +1186,7 @@ class ImageStore:
                 "user_name": row["user_name"],
                 "created_at": row["created_at"],
                 "expire_at": row["expire_at"],
+                "bound_ip": row["bound_ip"] if "bound_ip" in row.keys() else None,
             }
         except Exception as e:
             logger.warning(f"[图库] 读取分享令牌失败: {e}")

@@ -982,19 +982,31 @@ class StandaloneWebUI:
             return auth[7:].strip()
         return ""
 
+    def _client_ip(self, request: web.Request) -> str:
+        """获取客户端 IP：优先 X-Forwarded-For（反代场景），其次 X-Real-IP，最后 peer。"""
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            first = xff.split(",")[0].strip()
+            if first:
+                return first
+        real = request.headers.get("X-Real-IP", "")
+        if real:
+            return real.strip()
+        return request.remote or ""
+
     async def _handle_share_api(self, request: web.Request) -> web.Response:
         tail = request.match_info.get("tail", "") or ""
         path = "/" + tail.strip("/")
         tok = self._share_token_from(request)
         g = self.plugin.gallery
-        info = g.get_share_token(tok) if (g and tok) else None
-        if not info:
+        info, allowed = (g.verify_share_token(tok, self._client_ip(request)) if (g and tok) else (None, False))
+        if not info or not allowed:
             # 诊断：记录收到的令牌与查询条件，便于排查「分享链接已失效」
             _log.warning(
-                f"[独立WebUI] 分享令牌无效 path={path} token_len={len(tok)} "
-                f"token_head={(tok[:8] or '(empty)')} query={str(request.query)}"
+                f"[独立WebUI] 分享令牌拒绝 path={path} token_len={len(tok)} "
+                f"token_head={(tok[:8] or '(empty)')} ip={self._client_ip(request)} query={str(request.query)}"
             )
-            return _err("分享链接无效或已过期，请重新发送 /萌绘 获取新链接", status=401)
+            return _err("分享链接无效或已过期，请重新发送 /萌绘 获取新链接", status=404)
         try:
             return await self._dispatch_share(path, request.method.upper(), request, info)
         except Exception as e:
@@ -1087,9 +1099,9 @@ class StandaloneWebUI:
         """
         tok = self._share_token_from(request)
         g = self.plugin.gallery
-        info = g.get_share_token(tok) if (g and tok) else None
-        if not info:
-            return _err("分享链接无效或已过期", status=401)
+        info, allowed = (g.verify_share_token(tok, self._client_ip(request)) if (g and tok) else (None, False))
+        if not info or not allowed:
+            return _err("分享链接无效或已过期", status=404)
         uid = request.match_info.get("user_id", "") or ""
         if not uid:
             return _err("缺少 user_id", status=400)
@@ -1139,9 +1151,9 @@ class StandaloneWebUI:
     async def _handle_share_img(self, request: web.Request) -> web.Response:
         tok = self._share_token_from(request)
         g = self.plugin.gallery
-        info = g.get_share_token(tok) if (g and tok) else None
-        if not info:
-            return _err("分享链接无效或已过期", status=401)
+        info, allowed = (g.verify_share_token(tok, self._client_ip(request)) if (g and tok) else (None, False))
+        if not info or not allowed:
+            return _err("分享链接无效或已过期", status=404)
         sha = request.match_info.get("sha", "") or ""
         if not sha:
             return _err("缺少 sha", status=400)

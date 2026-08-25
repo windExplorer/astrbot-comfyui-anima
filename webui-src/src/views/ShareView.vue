@@ -6,11 +6,6 @@
         <div class="s404-emoji">🔗⏰</div>
         <div class="s404-title">链接已失效</div>
         <div class="s404-sub">该分享链接已过期或不存在。<br />请重新发送 /萌绘 获取新的临时链接。</div>
-        <div class="s404-diag" v-if="diag">
-          <div><b>URL:</b> {{ diag.url }}</div>
-          <div><b>token:</b> {{ diag.token }}</div>
-          <div v-if="diag.error"><b>error:</b> {{ diag.error }}</div>
-        </div>
       </div>
     </div>
 
