@@ -1096,10 +1096,13 @@ class StandaloneWebUI:
         if not p or not Path(p).exists():
             return _err("图片不存在", status=404)
         m = g.get_by_sha(sha)
-        if m is None or m.get("deleted"):
+        if m is None:
             return _err("图片不存在", status=404)
-        if not m.get("is_public") and m.get("user_id") != info.get("user_id"):
-            return _err("无权限查看该图", status=403)
+        is_owner = (m.get("user_id") or "") == info.get("user_id")
+        if not is_owner:
+            # 非 owner：仅允许查看公开且未删除的图；回收站/私有图只有 owner 可看（回收站可预览）
+            if m.get("deleted") or not m.get("is_public"):
+                return _err("无权限查看该图", status=403)
         want_thumb = "/thumb" in request.path
         size = self._qint(request, "size", 0)
         if want_thumb or (size and size > 0 and size < 200000):
