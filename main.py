@@ -878,6 +878,13 @@ class ComfyUIDrawPlugin(Star):
                 await self.standalone_webui.stop()
         except Exception:
             pass
+        # 关闭图库 SQLite 连接（含 WAL checkpoint 合并回主库），
+        # 避免停止/卸载时残留 -wal 文件导致下次建表/迁移静默失败。
+        try:
+            if getattr(self, "gallery", None) is not None:
+                self.gallery.close()
+        except Exception:
+            pass
         # 移除 WebUI 日志 handler，避免重复安装/内存泄漏
         try:
             import logging

@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.41
+
+- **修复 WAL 残留导致建表静默失败（users 表建不出来的真正根因）**：
+  - `ImageStore.close()` 增加 `PRAGMA wal_checkpoint(TRUNCATE)`，关闭连接前把 WAL 中未合并的数据合并回主库；
+  - 插件 `terminate()` 现在会调用 `self.gallery.close()`（此前从不关闭图库连接，停止/卸载时必然残留 `-wal` 文件）；
+  - 残留的 WAL 会让重装后的 SQLite 打开库状态异常，`_init_db` 建表（users 等）静默失败，本版本根治该问题。
+
 ## v4.9.40
 
 - **修复 `users` 表在真机上无法被建出（`/萌绘` 扫码链接失效的真正根因）**：原 `_init_db` 把所有建表放在一个 try 块中，任何一条语句失败都会阻断后续建表，导致 `users` 表和 3 个用户维度索引（`idx_images_user` 等）永远建不出来，且失败的具体信息被 except 吞掉。改为在 except 块内追加**独立 try 兜底建 users 表 + 三个用户维度索引**，每条逐条执行并打成功/失败日志，下次即可定位是哪条 SQL 在该数据库上失败。

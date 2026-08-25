@@ -297,6 +297,12 @@ class ImageStore:
 
     def close(self) -> None:
         if self._conn is not None:
+            # WAL checkpoint：把 -wal 中未合并的数据合并回主库，避免停止/卸载时
+            # 残留 WAL 文件导致数据库状态异常（建表/迁移被 SQLite 静默失败）。
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
             try:
                 self._conn.close()
             except Exception:
