@@ -852,6 +852,25 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 补 __template_key 失败（可忽略）: {e}")
 
+        # 兜底恢复：draw_ratio（尺寸比例预设）被清空时，自动从 _conf_schema.json 恢复内置默认。
+        # 避免用户误清空后「竖版/横版/9:16」等比例词不再触发，且 UI 里逐条找回困难。
+        try:
+            ratio_items = self.config.get("draw_ratio")
+            if not ratio_items:
+                _sp = Path(__file__).resolve().parent / "_conf_schema.json"
+                if _sp.exists():
+                    _sch = json.loads(_sp.read_text(encoding="utf-8"))
+                    _defaults = (_sch.get("draw_ratio") or {}).get("default") or []
+                    if isinstance(_defaults, list) and _defaults:
+                        self.config["draw_ratio"] = json.loads(json.dumps(_defaults))
+                        try:
+                            self.config.save_config()
+                        except Exception:
+                            pass
+                        logger.info(f"【初始化】 draw_ratio 为空，已恢复 {len(_defaults)} 个内置尺寸比例预设")
+        except Exception as e:
+            logger.warning(f"【初始化】 恢复 draw_ratio 默认预设失败（可忽略）: {e}")
+
     async def terminate(self) -> None:
         # 停止独立 WebUI 服务
         try:

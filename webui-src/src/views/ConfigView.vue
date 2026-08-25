@@ -84,7 +84,7 @@ const saveMsg = ref("");
 const saveMsgType = ref<"success" | "error">("success");
 const schema = ref<any>(null);
 const config = reactive<Record<string, any>>({});
-const expanded = ref<string[]>(["服务器与模型", "工作流列表"]);
+const expanded = ref<string[]>(["服务器与模型", "工作流列表", "分享 WebUI"]);
 const baseConfig: Record<string, any> = {};
 
 // 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）
@@ -98,6 +98,7 @@ const GROUP_META = [
   { name: "出图行为", description: "出图等待、轮询、webp 转换与小报告等行为", icon: "🖼️", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report"] },
   { name: "网络与代理", description: "外部网络访问（如 C 站抓取）的代理设置", icon: "🌍", keys: ["http_proxy", "civitai_api_key"] },
   { name: "权限与图库", description: "发图白名单、生图次数限制、黑名单与图片画廊归档", icon: "🔒", keys: ["allow_draw_users", "draw_limit", "blacklist", "gallery"] },
+  { name: "分享 WebUI", description: "用户级独立分享 WebUI（/萌绘 指令）", icon: "🔗", keys: ["share_webui"] },
 ];
 
 const groups = computed(() => {
