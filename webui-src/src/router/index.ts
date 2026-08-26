@@ -8,6 +8,7 @@ import GalleryView from "@/views/GalleryView.vue";
 import QuotaView from "@/views/QuotaView.vue";
 import TokenView from "@/views/TokenView.vue";
 import ShareView from "@/views/ShareView.vue";
+import ShareManageView from "@/views/ShareManageView.vue";
 import LoginView from "@/views/LoginView.vue";
 import { authState, checkStandaloneAuth } from "@/composables/auth";
 import { isStandaloneMode } from "@/api/bridge";
@@ -28,8 +29,8 @@ const router = createRouter({
     { path: "/gallery", name: "gallery", component: GalleryView, meta: { title: "图库" } },
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },
+    { path: "/share-manage", name: "share-manage", component: ShareManageView, meta: { title: "分享管理" } },
     { path: "/share", name: "share", component: ShareView, meta: { title: "萌绘分享", public: true } },
-    { path: "/share/:token", name: "shareToken", component: ShareView, meta: { title: "萌绘分享", public: true } },
     { path: "/:pathMatch(.*)*", redirect: "/config" },
   ],
 });

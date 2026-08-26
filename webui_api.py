@@ -542,6 +542,37 @@ class WebUIApi:
     def _token_store(self):
         return getattr(self.plugin, "token_store", None)
 
+    # -------------------------------------------------------------- #
+    # 分享链接管理
+    # -------------------------------------------------------------- #
+    async def share_tokens(self):
+        """管理端：分享链接列表（含绑定 IP），按创建时间倒序。
+        query: limit=200 条数上限。"""
+        try:
+            g = getattr(self.plugin, "gallery", None)
+            if g is None:
+                return error_response("图库未启用")
+            limit = int((request.query.get("limit") or 200))
+            records = g.share_token_records(limit=limit)
+            return json_response({"tokens": records})
+        except Exception as e:
+            return error_response(f"读取分享链接失败: {e}")
+
+    async def share_token_invalidate(self):
+        """管理端：作废指定分享令牌（按完整 token 或前 10 位前缀匹配）。"""
+        try:
+            g = getattr(self.plugin, "gallery", None)
+            if g is None:
+                return error_response("图库未启用")
+            body = await _read_json_body()
+            tok = (body.get("token") or "").strip()
+            if not tok:
+                return error_response("缺少 token")
+            g.invalidate_share_token(tok)
+            return json_response({"ok": True})
+        except Exception as e:
+            return error_response(f"作废分享链接失败: {e}")
+
     async def token_summary(self):
         """返回 LLM token 统计：汇总 + 场景分类 + 用户排行 + 明细。
         query: days=30&scope=today|1|...&user_id=可选过滤&merge=1 合并插件记录。
@@ -1646,6 +1677,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),
         (f"{prefix}/translate/test", api.translate_test, ["POST"], "翻译调试（测试三种翻译模式）"),
         (f"{prefix}/workflows/sampler", api.workflow_sampler, ["GET"], "读取工作流采样器参数"),
+        (f"{prefix}/share/tokens", api.share_tokens, ["GET"], "分享链接管理列表"),
+        (f"{prefix}/share/token/invalidate", api.share_token_invalidate, ["POST"], "分享链接作废"),
     ]
     registered = []
     for path, handler, methods, desc in routes:

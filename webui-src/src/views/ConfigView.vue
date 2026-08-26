@@ -84,7 +84,7 @@ const saveMsg = ref("");
 const saveMsgType = ref<"success" | "error">("success");
 const schema = ref<any>(null);
 const config = reactive<Record<string, any>>({});
-const expanded = ref<string[]>(["服务器与模型", "工作流列表", "分享 WebUI"]);
+const expanded = ref<string[]>([]); // 默认全部收起
 const baseConfig: Record<string, any> = {};
 
 // 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）

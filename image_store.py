@@ -1203,6 +1203,34 @@ class ImageStore:
         except Exception:
             pass
 
+    def share_token_records(self, limit: int = 200, offset: int = 0) -> list:
+        """管理端：读取全部分享令牌记录（含绑定 IP），按创建时间倒序。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return []
+        try:
+            conn = self._conn_get()
+            rows = conn.execute(
+                "SELECT token,user_id,user_name,created_at,expire_at,bound_ip "
+                "FROM share_tokens ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (int(limit), int(offset)),
+            ).fetchall()
+            out = []
+            for r in rows:
+                tok = r["token"] or ""
+                out.append({
+                    "token": tok,
+                    "token_short": (tok[:10] + "…") if len(tok) > 10 else tok,
+                    "user_id": r["user_id"],
+                    "user_name": r["user_name"],
+                    "created_at": r["created_at"],
+                    "expire_at": r["expire_at"],
+                    "bound_ip": r["bound_ip"] if "bound_ip" in r.keys() else None,
+                })
+            return out
+        except Exception as e:
+            logger.warning(f"[图库] 读取分享令牌记录失败: {e}")
+            return []
+
     def _share_enrich(self, conn, rows, user_id: str):
         shas = [r["sha256"] for r in rows]
         liked, fav = self._share_flags(conn, user_id, shas)

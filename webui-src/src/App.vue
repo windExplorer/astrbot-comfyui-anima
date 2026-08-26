@@ -160,6 +160,7 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/gallery" }, { default: () => "图库" }), key: "gallery", icon: () => iconSvg("🖼️") },
   { label: () => h(RouterLink, { to: "/quota" }, { default: () => "限额" }), key: "quota", icon: () => iconSvg("🚦") },
   { label: () => h(RouterLink, { to: "/token" }, { default: () => "Token" }), key: "token", icon: () => iconSvg("🔑") },
+  { label: () => h(RouterLink, { to: "/share-manage" }, { default: () => "分享管理" }), key: "share-manage", icon: () => iconSvg("🔗") },
 ];
 
 function iconSvg(text: string) {
