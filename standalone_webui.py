@@ -185,6 +185,12 @@ class StandaloneWebUI:
         app.router.add_get("/s/{token}", self._handle_share_landing)
         app.router.add_get("/api/ping", self._handle_ping)
 
+        # 分享管理（admin 鉴权，与分享站临时令牌链路解耦）：
+        # 必须注册在 /api/share/{tail:.*} 之前，否则会被分享站处理器截获，
+        # 因缺分享令牌而误报「链接无效或已过期」。
+        app.router.add_route("*", "/api/share/tokens", self._handle_api)
+        app.router.add_route("*", "/api/share/token/invalidate", self._handle_api)
+
         # 分享站（公开，分享令牌鉴权，与独立服务 admin token 解耦）
         app.router.add_route("*", "/api/share/{tail:.*}", self._handle_share_api)
         app.router.add_get("/share/img/{sha}", self._handle_share_img)
@@ -507,6 +513,10 @@ class StandaloneWebUI:
             total = op.count(event=event, keyword=kw, user=user)
             return _ok({"records": rows, "total": total, "page": page, "size": size})
 
+        # ---------- 分享管理 ----------
+        if path.startswith("/share/"):
+            return await self._api_share_admin(path, request, g)
+
         # ---------- 图库 ----------
         if path.startswith("/gallery/"):
             return await self._api_gallery(path, request, g)
@@ -549,6 +559,27 @@ class StandaloneWebUI:
         if n > 0:
             lines = lines[-n:]
         return _ok({"lines": lines, "total": len(lines)})
+
+    # ------------------------------------------------------------------ #
+    # 分享管理（admin）
+    # ------------------------------------------------------------------ #
+    async def _api_share_admin(self, path: str, request: web.Request, g):
+        if g is None:
+            return _err("图库未启用或初始化失败")
+        if path == "/share/tokens" and request.method == "GET":
+            limit = min(self._qint(request, "limit", 200), 500)
+            offset = max(0, self._qint(request, "offset", 0))
+            rows = g.share_token_records(limit=limit, offset=offset)
+            return _ok({"tokens": rows, "total": len(rows)})
+        if path == "/share/token/invalidate" and request.method == "POST":
+            body = await request.json() if request.body_exists else {}
+            token = (body.get("token") or "") if isinstance(body, dict) else ""
+            if not token:
+                return _err("缺少 token", status=400)
+            g.invalidate_share_token(token)
+            self._oplog_add("share_token_invalidate", "作废分享链接", ref_sha="")
+            return _ok({"msg": "已作废"})
+        return _err("Not Found: " + path, status=404)
 
     # ------------------------------------------------------------------ #
     # 图库
