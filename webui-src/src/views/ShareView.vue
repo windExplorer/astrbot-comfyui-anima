@@ -176,9 +176,10 @@
           @pointerup="onImgEnd"
           @pointercancel="onImgEnd"
         >
-          <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="onImgClick" />
+          <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="onImgClick" draggable="false" />
           <div v-if="viewerLoading" class="vloading"><span class="vf-spin"></span>加载中…</div>
           <div class="vtools">
+            <span v-if="viewerSizeText" class="vsize">{{ viewerSizeText }}</span>
             <button v-if="!viewerShowOriginal" class="vtool" @click="loadOriginalNow">查看原图</button>
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
             <button class="vtool" @click="closeViewer">✕</button>
@@ -587,6 +588,15 @@ const viewerSrc = ref("");
 const viewerThumb = ref(""); // 缩略图（默认展示，轻量）
 const viewerShowOriginal = ref(false); // 是否加载原图
 const viewerLoading = ref(false);
+// 图片存储大小（来自后端 size_bytes），用于「查看原图」旁展示
+function formatBytes(b: number): string {
+  if (!b || b < 0) return "";
+  const KB = 1024, MB = 1024 * 1024;
+  if (b >= MB) return (b / MB).toFixed(2) + " MB";
+  if (b >= KB) return (b / KB).toFixed(1) + " KB";
+  return b + " B";
+}
+const viewerSizeText = computed(() => formatBytes(viewerM.value?.size_bytes || 0));
 const viewerAvatarFb = ref(false);
 const imgFit = ref<"contain" | "cover">("contain");
 const imgFitClass = computed(() => (imgFit.value === "cover" ? "img-cover" : "img-contain"));
@@ -643,8 +653,9 @@ function onGripTap() {
   drawerOffset.value = drawerOpen.value ? drawerCollapsedPx.value : 0;
 }
 
-// 点击大图空白：抽屉展开时先收起，收起后再点才关闭查看器
+// 点击大图空白：抽屉展开时先收起，收起后再点才关闭查看器（滑动切换图片时不触发）
 function onVfullClick() {
+  if (swipeMoved) return;
   if (drawerOpen.value) {
     drawerOffset.value = drawerCollapsedPx.value;
   } else {
@@ -786,12 +797,11 @@ let swiping = false;
 let swipeMoved = false;
 function onImgStart(e: PointerEvent) {
   if (viewerList.value.length <= 1) return;
-  if (drawerOpen.value) return; // 抽屉展开时由抽屉手势接管
+  // 抽屉展开时仍允许在图片区域横向滑动切换（纵向手势由抽屉自身处理）
   swiping = true;
   swipeMoved = false;
   swipeX = e.clientX;
   swipeY = e.clientY;
-  try { (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
 }
 function onImgMove(e: PointerEvent) {
   if (!swiping) return;
@@ -934,10 +944,15 @@ onUnmounted(() => {
   width: 100vw; height: 100vh; height: 100dvh;
   background: #000; position: relative; overflow: hidden;
 }
-.vimg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.vimg {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  /* 移动端必须禁用浏览器对手势的接管，否则横向滑动会被当成返回手势而切不动图 */
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
 .img-contain { object-fit: contain; max-width: 100%; max-height: 100%; }
 .img-cover { object-fit: cover; width: 100%; height: 100%; }
 .vimg img { display: block; cursor: zoom-in; }
+.vsize { color: rgba(255, 255, 255, 0.85); font-size: 12px; align-self: center; padding: 0 6px; white-space: nowrap; }
 .vloading {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: #fff; background: rgba(0, 0, 0, 0.45); font-size: 13px; gap: 8px;
