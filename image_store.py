@@ -518,6 +518,22 @@ class ImageStore:
             base = self.refs_dir / month
         return base / f"{row['sha256'][:_SHA_PREFIX]}.{row['ext']}"
 
+    def _size_of(self, row) -> int:
+        """返回图片字节数；历史老图 size_bytes 列为 NULL 时，按磁盘真实文件补算。
+
+        文件已被 LRU 清理（不存在）则回退 0，由前端显示「—」。
+        """
+        sb = row.get("size_bytes")
+        if sb:
+            return sb
+        try:
+            p = self._path_of_row(row)
+            if p.exists():
+                return p.stat().st_size
+        except Exception:
+            pass
+        return 0
+
     # ------------------------------------------------------------------ #
     # 归档
     # ------------------------------------------------------------------ #
@@ -934,7 +950,7 @@ class ImageStore:
             "use_count": row["use_count"],
             "starred": bool(row["starred"]),
             "created_at": row["created_at"],
-            "size_bytes": row["size_bytes"],
+            "size_bytes": self._size_of(row),
             "cost_sec": row["cost_sec"],
             "user_id": row["user_id"],
             "user_name": row["user_name"],
