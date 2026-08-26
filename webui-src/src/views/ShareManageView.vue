@@ -24,15 +24,45 @@
           <n-card size="small" class="sm-card"><div class="card-num warn">{{ unboundCount }}</div><div class="card-label">未绑定 IP</div></n-card>
         </div>
 
+        <!-- 筛选工具条 -->
+        <div class="sm-toolbar">
+          <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
+            <div class="sm-filter-block">
+              <n-radio-group v-model:value="fStatus" size="small" @update:value="onFilterChange" class="sm-radios">
+                <n-radio-button value="all">全部状态</n-radio-button>
+                <n-radio-button value="valid">有效</n-radio-button>
+                <n-radio-button value="expired">已过期</n-radio-button>
+              </n-radio-group>
+              <n-radio-group v-model:value="fBind" size="small" @update:value="onFilterChange" class="sm-radios">
+                <n-radio-button value="all">IP 不限</n-radio-button>
+                <n-radio-button value="bound">已绑定</n-radio-button>
+                <n-radio-button value="unbound">未绑定</n-radio-button>
+              </n-radio-group>
+              <n-input
+                v-model:value="fKeyword"
+                size="small"
+                placeholder="搜索 用户 / ID / IP / 令牌"
+                clearable
+                class="sm-search"
+                @update:value="onFilterChange"
+              />
+            </div>
+          </Teleport>
+        </div>
+
         <!-- 链接列表 -->
         <div class="panel">
-          <div class="panel-title"><h3>分享链接列表</h3><span class="count">令牌 / 用户 / 绑定 IP / 有效期 / 状态</span></div>
+          <div class="panel-title">
+            <h3>分享链接列表</h3>
+            <span class="count">{{ filtered.length }} 条{{ filtered.length !== all.length ? ` / 共 ${all.length}` : "" }}</span>
+          </div>
           <div v-if="!all.length" class="empty">暂无分享链接记录。用户发送 /萌绘 生成链接后这里会显示。</div>
+          <div v-else-if="!filtered.length" class="empty">没有符合筛选条件的链接。</div>
           <template v-else>
             <div class="table-scroll-wrap">
               <n-data-table :columns="columns" :data="pageRows" :bordered="false" size="small" :scroll-x="900" />
             </div>
-            <Pager :page="page" :page-size="pageSize" :total="all.length" @update:page="onPage" @update:page-size="onPageSize" />
+            <Pager :page="page" :page-size="pageSize" :total="filtered.length" @update:page="onPage" @update:page-size="onPageSize" />
           </template>
         </div>
       </n-spin>
@@ -42,7 +72,10 @@
 
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
-import { useMessage, useDialog, NButton, NDataTable, NSpin, NTag, NCard, type DataTableColumns } from "naive-ui";
+import {
+  useMessage, useDialog, NButton, NDataTable, NSpin, NTag, NCard,
+  NRadioGroup, NRadioButton, NInput, type DataTableColumns,
+} from "naive-ui";
 import Pager from "@/components/Pager.vue";
 import { apiGet, apiPost } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
@@ -60,14 +93,35 @@ const all = ref<any[]>([]);
 const page = ref(1);
 const pageSize = ref(Number(lsGet("anima_share_page_size") || "") || 20);
 
+// 筛选
+const fStatus = ref<"all" | "valid" | "expired">("all");
+const fBind = ref<"all" | "bound" | "unbound">("all");
+const fKeyword = ref("");
+
 const validCount = computed(() => all.value.filter((t) => statusOf(t) === "valid").length);
 const expiredCount = computed(() => all.value.length - validCount.value);
 const boundCount = computed(() => all.value.filter((t) => t.bound_ip).length);
 const unboundCount = computed(() => all.value.length - boundCount.value);
 
+const filtered = computed(() => {
+  const kw = fKeyword.value.trim().toLowerCase();
+  return all.value.filter((t) => {
+    if (fStatus.value === "valid" && statusOf(t) !== "valid") return false;
+    if (fStatus.value === "expired" && statusOf(t) !== "expired") return false;
+    if (fBind.value === "bound" && !t.bound_ip) return false;
+    if (fBind.value === "unbound" && t.bound_ip) return false;
+    if (kw) {
+      const hay = `${t.user_name || ""} ${t.user_id || ""} ${t.bound_ip || ""} ${t.token || ""} ${t.token_short || ""}`.toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+});
+
+// 分页作用于筛选后的结果
 const pageRows = computed(() => {
   const start = (page.value - 1) * pageSize.value;
-  return all.value.slice(start, start + pageSize.value);
+  return filtered.value.slice(start, start + pageSize.value);
 });
 
 function statusOf(row: any): "valid" | "expired" {
@@ -109,12 +163,21 @@ function makeColumns(): DataTableColumns {
     },
     {
       title: "操作", key: "actions", width: 90,
-      render: (row) =>
-        h(
+      render: (row) => {
+        const expired = statusOf(row) === "expired";
+        return h(
           NButton,
-          { size: "tiny", quaternary: true, type: "error", onClick: () => onInvalidate(row) },
-          { default: () => "作废" }
-        ),
+          {
+            size: "tiny",
+            quaternary: true,
+            type: "error",
+            disabled: expired,
+            title: expired ? "已过期，无需作废" : undefined,
+            onClick: () => onInvalidate(row),
+          },
+          { default: () => (expired ? "已过期" : "作废") }
+        );
+      },
     },
   ];
 }
@@ -126,13 +189,18 @@ async function load() {
     const data = await apiGet("share/tokens", { limit: 500 });
     all.value = (data && Array.isArray(data.tokens)) ? data.tokens : [];
     // 作废后总数变小，若当前页越界则回拉
-    const maxPage = Math.max(1, Math.ceil(all.value.length / pageSize.value));
+    const maxPage = Math.max(1, Math.ceil(filtered.value.length / pageSize.value));
     if (page.value > maxPage) page.value = maxPage;
   } catch (e: any) {
     message.error(e.message || "读取分享链接失败");
   } finally {
     loading.value = false;
   }
+}
+
+// 任一筛选变化 → 回到第 1 页（总数变了）
+function onFilterChange() {
+  page.value = 1;
 }
 
 function onPage(p: number) {
@@ -145,6 +213,8 @@ function onPageSize(s: number) {
 }
 
 function onInvalidate(row: any) {
+  // 过期链接不可作废（后端作废只是把 expire_at 置 0，对已过期无意义）
+  if (statusOf(row) === "expired") return;
   dialog.warning({
     title: "作废分享链接",
     content: `确定作废 ${row.user_name || row.user_id} 的分享链接？作废后该链接立即失效，用户需重新 /萌绘 获取。`,
@@ -183,6 +253,12 @@ onMounted(load);
 .card-num.sub { color: var(--text-sub); }
 .card-label { font-size: 12px; color: var(--text-sub); margin-top: 4px; }
 
+/* 筛选工具条 */
+.sm-toolbar { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+.sm-filter-block { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.sm-radios { display: flex; flex-wrap: wrap; gap: 4px; }
+.sm-search { width: 220px; }
+
 /* 分区块面板：与 Token 用量页一致 */
 .panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
 .panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -198,5 +274,8 @@ onMounted(load);
   .view-actions { flex-wrap: wrap; }
   .view-actions :deep(.n-button) { flex: 1 1 auto; }
   .sm-cards { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .sm-toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
+  .sm-filter-block { flex-direction: column; align-items: stretch; gap: 10px; }
+  .sm-search { width: 100%; }
 }
 </style>
