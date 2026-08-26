@@ -168,15 +168,21 @@
     <!-- 大图查看器（全屏覆盖 + 底部拖拽抽屉） -->
     <n-modal v-model:show="viewer" :mask-closable="true" class="viewer-full-modal">
       <div class="vfull" @click.self="onVfullClick">
-        <div class="vimg" @click.self="onVfullClick">
+        <div
+          class="vimg"
+          @click.self="onVfullClick"
+          @pointerdown="onImgStart"
+          @pointermove="onImgMove"
+          @pointerup="onImgEnd"
+          @pointercancel="onImgEnd"
+        >
           <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="onImgClick" />
           <div v-if="viewerLoading" class="vloading"><span class="vf-spin"></span>加载中…</div>
           <div class="vtools">
+            <button v-if="!viewerShowOriginal" class="vtool" @click="loadOriginalNow">查看原图</button>
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
             <button class="vtool" @click="closeViewer">✕</button>
           </div>
-          <button v-if="viewerList.length > 1" class="vnav left" @click="prevImg">‹</button>
-          <button v-if="viewerList.length > 1" class="vnav right" @click="nextImg">›</button>
           <span v-if="viewerList.length > 1" class="vcount">{{ viewerIndex + 1 }}/{{ viewerList.length }}</span>
         </div>
 
@@ -192,7 +198,7 @@
           @pointerup="onDrawerEnd"
           @pointercancel="onDrawerEnd"
         >
-          <div class="vdrawer-grip" @click="onGripTap"></div>
+          <button type="button" class="vdrawer-grip" :style="gripStyle" @click="onGripTap" aria-label="展开/收起信息"></button>
           <div ref="drawerBodyEl" class="vdrawer-body">
             <!-- 发布人 -->
             <div class="vd-user">
@@ -259,6 +265,7 @@ import VirtualWaterfall from "@/components/VirtualWaterfall.vue";
 import FloatFilter from "@/components/FloatFilter.vue";
 import { useTheme } from "@/composables/useTheme";
 import { PLUGIN_VERSION } from "@/version";
+import { LOGO_DATA_URL } from "@/assets/logo";
 
 const { isDark, toggleDark } = useTheme();
 
@@ -577,6 +584,8 @@ const viewerIndex = ref(0);
 const viewerCtx = ref<"world" | "gallery" | "fav" | "recycle">("world");
 const showRef = ref(false);
 const viewerSrc = ref("");
+const viewerThumb = ref(""); // 缩略图（默认展示，轻量）
+const viewerShowOriginal = ref(false); // 是否加载原图
 const viewerLoading = ref(false);
 const viewerAvatarFb = ref(false);
 const imgFit = ref<"contain" | "cover">("contain");
@@ -588,6 +597,8 @@ const drawerCollapsedPx = ref(0); // 收起位移 = 抽屉高 - grip 高
 const drawerOffset = ref(0); // 0=展开；=collapsedPx=收起
 const drawerOpen = computed(() => drawerOffset.value < drawerCollapsedPx.value / 2);
 const drawerStyle = computed(() => ({ transform: `translateY(${drawerOffset.value}px)` }));
+// 握把圆形 logo 按钮的背景图
+const gripStyle = computed(() => ({ backgroundImage: `url("${LOGO_DATA_URL}")` }));
 const drawerEl = ref<HTMLElement | null>(null);
 const drawerBodyEl = ref<HTMLElement | null>(null);
 let dragStartY = 0;
@@ -615,13 +626,16 @@ function onDrawerMove(e: PointerEvent) {
   const body = drawerBodyEl.value;
   // 完全展开时向下拉：先让内容滚动，滚到顶再收抽屉
   if (drawerOffset.value <= 0 && dy < 0 && body && body.scrollTop > 0) return;
-  drawerOffset.value = Math.max(0, Math.min(drawerCollapsedPx.value, dragStartOffset - dy));
+  // 跟手：只朝「目标方向」移动，避免依赖起始点/中途回弹
+  if (dy > 0) drawerOffset.value = Math.max(0, dragStartOffset - dy);       // 上拉 -> 展开
+  else drawerOffset.value = Math.min(drawerCollapsedPx.value, dragStartOffset - dy); // 下拉 -> 收起
 }
 function onDrawerEnd() {
   if (!dragging) return;
   dragging = false;
   if (drawerEl.value) drawerEl.value.style.transition = "";
-  drawerOffset.value = drawerOffset.value < drawerCollapsedPx.value / 2 ? 0 : drawerCollapsedPx.value;
+  // 完全按拖拽方向落位：上拉停在展开(0)，下拉停在收起(collapsedPx)
+  drawerOffset.value = dragStartOffset > drawerOffset.value ? 0 : drawerCollapsedPx.value;
 }
 // 点击握把：未拖动时切换展开/收起（移动端友好，无需精确拖拽）
 function onGripTap() {
@@ -637,8 +651,9 @@ function onVfullClick() {
     closeViewer();
   }
 }
-// 点击图片：抽屉展开时先收起，收起后再点切换 contain/cover
+// 点击图片：抽屉展开时先收起；收起后轻点切换 contain/cover（滑动切换图片时不触发）
 function onImgClick() {
+  if (swipeMoved) return;
   if (drawerOpen.value) {
     drawerOffset.value = drawerCollapsedPx.value;
     return;
@@ -707,18 +722,31 @@ function openViewer(m: any, list: any[], ctx: "world" | "gallery" | "fav" | "rec
   imgFit.value = "contain";
   viewer.value = true;
   showRef.value = false;
-  loadOriginal();
+  // 默认先看缩略图，原图按需加载
+  viewerShowOriginal.value = false;
+  setThumb();
 }
-function loadOriginal() {
+// 设置当前缩略图（轻量）
+function setThumb() {
   const m = viewerM.value;
   if (!m) return;
+  const sha = showRef.value && m.ref_sha256 ? m.ref_sha256 : m.sha256;
+  viewerThumb.value = imgUrl(sha, true, 1024);
+  viewerSrc.value = viewerThumb.value;
+}
+// 点击「查看原图」后才加载原图
+function loadOriginalNow() {
+  const m = viewerM.value;
+  if (!m) return;
+  viewerShowOriginal.value = true;
   viewerLoading.value = true;
   const sha = showRef.value && m.ref_sha256 ? m.ref_sha256 : m.sha256;
   viewerSrc.value = imgUrl(sha, false);
 }
 function swapRef() {
   showRef.value = !showRef.value;
-  loadOriginal();
+  setThumb();
+  if (viewerShowOriginal.value) loadOriginalNow();
 }
 function closeViewer() {
   viewer.value = false;
@@ -726,31 +754,59 @@ function closeViewer() {
 function onViewerLoad() {
   viewerLoading.value = false;
 }
-function nextImg() {
+function gotoImg(delta: number) {
   const list = viewerList.value;
   if (list.length <= 1) return;
-  viewerIndex.value = (viewerIndex.value + 1) % list.length;
+  viewerIndex.value = (viewerIndex.value + delta + list.length) % list.length;
   viewerM.value = list[viewerIndex.value];
   viewerAvatarFb.value = false;
   showRef.value = false;
   imgFit.value = "contain";
-  loadOriginal();
+  viewerShowOriginal.value = false;
+  setThumb();
+}
+function nextImg() {
+  gotoImg(1);
 }
 function prevImg() {
-  const list = viewerList.value;
-  if (list.length <= 1) return;
-  viewerIndex.value = (viewerIndex.value - 1 + list.length) % list.length;
-  viewerM.value = list[viewerIndex.value];
-  viewerAvatarFb.value = false;
-  showRef.value = false;
-  imgFit.value = "contain";
-  loadOriginal();
+  gotoImg(-1);
 }
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") { closeViewer(); return; }
   if (!viewer.value) return;
   if (e.key === "ArrowRight") nextImg();
   if (e.key === "ArrowLeft") prevImg();
+}
+
+// ---- 大图左右滑动切换（手指/鼠标横向拖拽；展开抽屉时禁用，避免冲突）----
+const SWIPE_THRESHOLD = 50;
+let swipeX = 0;
+let swipeY = 0;
+let swiping = false;
+let swipeMoved = false;
+function onImgStart(e: PointerEvent) {
+  if (viewerList.value.length <= 1) return;
+  if (drawerOpen.value) return; // 抽屉展开时由抽屉手势接管
+  swiping = true;
+  swipeMoved = false;
+  swipeX = e.clientX;
+  swipeY = e.clientY;
+  try { (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+}
+function onImgMove(e: PointerEvent) {
+  if (!swiping) return;
+  if (Math.abs(e.clientX - swipeX) > 8 || Math.abs(e.clientY - swipeY) > 8) swipeMoved = true;
+}
+function onImgEnd(e: PointerEvent) {
+  if (!swiping) return;
+  swiping = false;
+  if (!swipeMoved) return;
+  const dx = e.clientX - swipeX;
+  const dy = e.clientY - swipeY;
+  if (Math.abs(dx) > SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
+    if (dx < 0) nextImg();
+    else prevImg();
+  }
 }
 
 // ---- 生命周期 ----
@@ -930,13 +986,17 @@ onUnmounted(() => {
   user-select: none;
 }
 .vdrawer-grip {
-  width: 44px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.35);
-  margin: 10px auto 4px; flex: 0 0 auto; cursor: grab;
-  /* 移动端必须禁用浏览器对纵向手势的接管，否则上拉会被当作滚动而失效 */
-  touch-action: none;
-  /* 增大可点/可拖的命中区域，方便手指操作 */
-  padding: 16px 0; box-sizing: content-box;
+  width: 40px; height: 40px; border-radius: 50%;
+  margin: 12px auto 8px; flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  background-color: rgba(20, 16, 18, 0.72);
+  background-size: cover; background-position: center; background-repeat: no-repeat;
+  cursor: pointer; touch-action: none; padding: 0;
+  -webkit-appearance: none; appearance: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  transition: transform 0.15s ease;
 }
+.vdrawer-grip:active { transform: scale(0.92); }
 .vdrawer-body {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
   padding: 2px 16px 16px;
