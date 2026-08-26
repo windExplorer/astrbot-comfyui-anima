@@ -656,6 +656,10 @@ function onDrawerEnd() {
   if (!dragging) return;
   dragging = false;
   if (drawerEl.value) drawerEl.value.style.transition = "";
+  // 仅当发生过实际拖动才按方向落位；纯点击（如抽屉内点赞/收藏/操作按钮）
+  // 不应改变抽屉状态，否则会把抽屉内任意点击误判为「收起手势」。
+  // 握把点击由 onGripTap 单独处理，其余按钮点击由各自 @click 处理。
+  if (!dragMoved) return;
   // 完全按拖拽方向落位：上拉停在展开(0)，下拉停在收起(collapsedPx)
   drawerOffset.value = dragStartOffset > drawerOffset.value ? 0 : drawerCollapsedPx.value;
 }
