@@ -192,7 +192,7 @@
           @pointerup="onDrawerEnd"
           @pointercancel="onDrawerEnd"
         >
-          <div class="vdrawer-grip"></div>
+          <div class="vdrawer-grip" @click="onGripTap"></div>
           <div ref="drawerBodyEl" class="vdrawer-body">
             <!-- 发布人 -->
             <div class="vd-user">
@@ -593,6 +593,7 @@ const drawerBodyEl = ref<HTMLElement | null>(null);
 let dragStartY = 0;
 let dragStartOffset = 0;
 let dragging = false;
+let dragMoved = false;
 
 function measureDrawer() {
   const vh = window.innerHeight || document.documentElement.clientHeight || 800;
@@ -601,6 +602,7 @@ function measureDrawer() {
 
 function onDrawerStart(e: PointerEvent) {
   dragging = true;
+  dragMoved = false;
   dragStartY = e.clientY;
   dragStartOffset = drawerOffset.value;
   if (drawerEl.value) drawerEl.value.style.transition = "none";
@@ -609,6 +611,7 @@ function onDrawerStart(e: PointerEvent) {
 function onDrawerMove(e: PointerEvent) {
   if (!dragging) return;
   const dy = dragStartY - e.clientY; // 上拉 dy>0
+  if (Math.abs(dy) > 6) dragMoved = true;
   const body = drawerBodyEl.value;
   // 完全展开时向下拉：先让内容滚动，滚到顶再收抽屉
   if (drawerOffset.value <= 0 && dy < 0 && body && body.scrollTop > 0) return;
@@ -619,6 +622,11 @@ function onDrawerEnd() {
   dragging = false;
   if (drawerEl.value) drawerEl.value.style.transition = "";
   drawerOffset.value = drawerOffset.value < drawerCollapsedPx.value / 2 ? 0 : drawerCollapsedPx.value;
+}
+// 点击握把：未拖动时切换展开/收起（移动端友好，无需精确拖拽）
+function onGripTap() {
+  if (dragMoved) return;
+  drawerOffset.value = drawerOpen.value ? drawerCollapsedPx.value : 0;
 }
 
 // 点击大图空白：抽屉展开时先收起，收起后再点才关闭查看器
@@ -924,6 +932,10 @@ onUnmounted(() => {
 .vdrawer-grip {
   width: 44px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.35);
   margin: 10px auto 4px; flex: 0 0 auto; cursor: grab;
+  /* 移动端必须禁用浏览器对纵向手势的接管，否则上拉会被当作滚动而失效 */
+  touch-action: none;
+  /* 增大可点/可拖的命中区域，方便手指操作 */
+  padding: 16px 0; box-sizing: content-box;
 }
 .vdrawer-body {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
