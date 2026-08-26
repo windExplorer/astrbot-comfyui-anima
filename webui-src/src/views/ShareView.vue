@@ -240,9 +240,11 @@
       </div>
     </n-modal>
 
-    <!-- NSFW 全局开关 -->
-    <div v-if="nsfwBlurGlobal" class="nsfw-toggle" @click="nsfwBlurGlobal = false" title="关闭 NSFW 模糊">🔞 模糊</div>
-    <div v-else class="nsfw-toggle off" @click="nsfwBlurGlobal = true" title="开启 NSFW 模糊">🔞 原图</div>
+    <!-- NSFW 全局开关（失效链接不展示） -->
+    <template v-if="!expired">
+      <div v-if="nsfwBlurGlobal" class="nsfw-toggle" @click="nsfwBlurGlobal = false" title="关闭 NSFW 模糊">🔞 模糊</div>
+      <div v-else class="nsfw-toggle off" @click="nsfwBlurGlobal = true" title="开启 NSFW 模糊">🔞 原图</div>
+    </template>
 
     <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
   </div>
@@ -346,6 +348,11 @@ async function postJ(path: string, body: any = {}): Promise<any> {
   if (!tok) throw new Error("缺少分享令牌");
   return await apiPost("share/" + path, { share_t: tok, ...body }, { share_t: tok });
 }
+// 分享令牌失效/无效：命中该错误应回退到失效页，而不是弹「加载失败」toast
+function isShareExpired(e: any): boolean {
+  const m = (e && e.message) || "";
+  return expired.value || m.includes("分享链接无效或已过期") || m.includes("Not Found");
+}
 
 function fmt(ts: number) {
   if (!ts) return "";
@@ -388,8 +395,9 @@ async function loadWorld() {
     world.offset += items.length;
     world.hasMore = world.offset < (r.total || 0);
   } catch (e: any) {
-    console.warn("[ShareView] world 加载失败", e.message);
-    toast("世界加载失败: " + e.message);
+    console.warn("[ShareView] world 加载失败", e?.message);
+    if (isShareExpired(e)) { expired.value = true; return; }
+    toast("世界加载失败: " + (e?.message || e));
   } finally {
     world.loading = false;
   }
@@ -420,7 +428,8 @@ async function loadGallery() {
     gallery.offset += items.length;
     gallery.hasMore = gallery.offset < (r.total || 0);
   } catch (e: any) {
-    toast("加载失败: " + e.message);
+    if (isShareExpired(e)) { expired.value = true; return; }
+    toast("加载失败: " + (e?.message || e));
   } finally {
     gallery.loading = false;
   }
@@ -462,7 +471,8 @@ async function loadFav() {
     const r = await getJ("favorites", { limit: 100, offset: 0 });
     fav.list = r.images || [];
   } catch (e: any) {
-    toast("加载失败: " + e.message);
+    if (isShareExpired(e)) { expired.value = true; return; }
+    toast("加载失败: " + (e?.message || e));
   } finally {
     fav.loading = false;
   }
@@ -476,7 +486,8 @@ async function loadProfile() {
   try {
     stats.value = await getJ("profile");
   } catch (e: any) {
-    toast("加载失败: " + e.message);
+    if (isShareExpired(e)) { expired.value = true; return; }
+    toast("加载失败: " + (e?.message || e));
   }
   try {
     const r = await getJ("recycle");
@@ -747,10 +758,10 @@ onMounted(async () => {
   }
   try {
     me.value = await getJ("me");
-    if (tab.value === "world") loadWorld();
-    else if (tab.value === "gallery") loadGallery();
-    else if (tab.value === "favorites") loadFav();
-    else if (tab.value === "profile") loadProfile();
+    if (tab.value === "world") await loadWorld();
+    else if (tab.value === "gallery") await loadGallery();
+    else if (tab.value === "favorites") await loadFav();
+    else if (tab.value === "profile") await loadProfile();
   } catch (e: any) {
     diag.value = { url: window.location.href, token: cur, error: (e && e.message) || String(e) };
     expired.value = true;
