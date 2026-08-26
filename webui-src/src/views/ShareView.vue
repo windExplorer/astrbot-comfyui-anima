@@ -179,8 +179,7 @@
           <img :src="viewerSrc" @load="onViewerLoad" :class="imgFitClass" @click="onImgClick" draggable="false" />
           <div v-if="viewerLoading" class="vloading"><span class="vf-spin"></span>加载中…</div>
           <div class="vtools">
-            <span v-if="viewerSizeText" class="vsize">{{ viewerSizeText }}</span>
-            <button v-if="!viewerShowOriginal" class="vtool" @click="loadOriginalNow">查看原图</button>
+            <button v-if="!viewerShowOriginal" class="vtool" @click="loadOriginalNow">查看原图<span v-if="viewerSizeShort">({{ viewerSizeShort }})</span></button>
             <button v-if="viewerM && viewerM.is_img2img && viewerM.ref_sha256" class="vtool" @click="swapRef">{{ showRef ? "查看结果图" : "查看参考图" }}</button>
             <button class="vtool" @click="closeViewer">✕</button>
           </div>
@@ -220,6 +219,10 @@
               <div class="vd-row">
                 <span class="vlabel">尺寸</span>
                 <span class="vvalue">{{ viewerM.w }}×{{ viewerM.h }}</span>
+              </div>
+              <div class="vd-row">
+                <span class="vlabel">文件大小</span>
+                <span class="vvalue">{{ viewerSizeText || "—" }}</span>
               </div>
               <div class="vd-row">
                 <span class="vlabel">工作流</span>
@@ -597,6 +600,15 @@ function formatBytes(b: number): string {
   return b + " B";
 }
 const viewerSizeText = computed(() => formatBytes(viewerM.value?.size_bytes || 0));
+// 紧凑格式（用于「查看原图(3.2M)」这类内联展示）
+function formatBytesShort(b: number): string {
+  if (!b || b < 0) return "";
+  const KB = 1024, MB = 1024 * 1024;
+  if (b >= MB) return (b / MB).toFixed(1).replace(/\.0$/, "") + "M";
+  if (b >= KB) return (b / KB).toFixed(0) + "K";
+  return b + "B";
+}
+const viewerSizeShort = computed(() => formatBytesShort(viewerM.value?.size_bytes || 0));
 const viewerAvatarFb = ref(false);
 const imgFit = ref<"contain" | "cover">("contain");
 const imgFitClass = computed(() => (imgFit.value === "cover" ? "img-cover" : "img-contain"));
@@ -744,6 +756,7 @@ function setThumb() {
   const sha = showRef.value && m.ref_sha256 ? m.ref_sha256 : m.sha256;
   viewerThumb.value = imgUrl(sha, true, 1024);
   viewerSrc.value = viewerThumb.value;
+  viewerLoading.value = true; // 切图/打开时显示加载态，原图 onload 后由 onViewerLoad 关闭
 }
 // 点击「查看原图」后才加载原图
 function loadOriginalNow() {
@@ -952,7 +965,6 @@ onUnmounted(() => {
 .img-contain { object-fit: contain; max-width: 100%; max-height: 100%; }
 .img-cover { object-fit: cover; width: 100%; height: 100%; }
 .vimg img { display: block; cursor: zoom-in; }
-.vsize { color: rgba(255, 255, 255, 0.85); font-size: 12px; align-self: center; padding: 0 6px; white-space: nowrap; }
 .vloading {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: #fff; background: rgba(0, 0, 0, 0.45); font-size: 13px; gap: 8px;
