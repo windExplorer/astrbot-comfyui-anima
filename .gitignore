@@ -239,3 +239,7 @@ webui-src/.vite/
 *.local
 npm-debug.log*
 yarn-error.log*
+
+# 本地备份/辅助文件（仅本地使用，不入库）
+_bak_help_assets/
+_References/_diff_zips.ps1
