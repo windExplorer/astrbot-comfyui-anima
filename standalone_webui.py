@@ -577,7 +577,8 @@ class StandaloneWebUI:
             limit = min(self._qint(request, "limit", 200), 500)
             offset = max(0, self._qint(request, "offset", 0))
             rows = g.share_token_records(limit=limit, offset=offset)
-            return _ok({"tokens": rows, "total": len(rows)})
+            total = g.count_share_tokens()
+            return _ok({"tokens": rows, "total": total})
         if path == "/share/token/invalidate" and request.method == "POST":
             body = await request.json() if request.body_exists else {}
             token = (body.get("token") or "") if isinstance(body, dict) else ""

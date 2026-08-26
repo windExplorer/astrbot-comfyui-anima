@@ -1231,6 +1231,18 @@ class ImageStore:
             logger.warning(f"[图库] 读取分享令牌记录失败: {e}")
             return []
 
+    def count_share_tokens(self) -> int:
+        """管理端：分享令牌记录总数（用于分页）。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return 0
+        try:
+            conn = self._conn_get()
+            row = conn.execute("SELECT COUNT(*) c FROM share_tokens").fetchone()
+            return int(row["c"]) if row else 0
+        except Exception as e:
+            logger.warning(f"[图库] 统计分享令牌失败: {e}")
+            return 0
+
     def _share_enrich(self, conn, rows, user_id: str):
         shas = [r["sha256"] for r in rows]
         liked, fav = self._share_flags(conn, user_id, shas)

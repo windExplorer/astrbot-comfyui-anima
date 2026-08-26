@@ -5,6 +5,7 @@
         <h2>分享管理</h2>
         <p>查看所有 /萌绘 临时分享链接（含首次访问绑定的客户端 IP），可作废无效链接。</p>
       </div>
+      <!-- 刷新 移动端收进底部操作弹窗面板 -->
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
@@ -13,17 +14,26 @@
     </div>
 
     <div class="sm-scroll">
-      <div class="sm-summary" v-if="tokens.length">
-        <span class="sm-total">共 {{ tokens.length }} 条</span>
-        <span class="sm-bind" :class="boundCount === tokens.length ? 'ok' : 'warn'">
-          已绑定 IP：{{ boundCount }}/{{ tokens.length }}
-        </span>
-      </div>
-
       <n-spin :show="loading">
-        <div v-if="!loading && tokens.length === 0" class="empty">暂无分享链接记录。用户发送 /萌绘 生成链接后这里会显示。</div>
-        <div v-else class="table-scroll-wrap">
-          <n-data-table :columns="columns" :data="tokens" :bordered="false" size="small" :scroll-x="860" />
+        <!-- 汇总卡片 -->
+        <div v-if="all.length" class="sm-cards">
+          <n-card size="small" class="sm-card"><div class="card-num">{{ all.length }}</div><div class="card-label">分享链接总数</div></n-card>
+          <n-card size="small" class="sm-card"><div class="card-num ok">{{ validCount }}</div><div class="card-label">有效</div></n-card>
+          <n-card size="small" class="sm-card"><div class="card-num sub">{{ expiredCount }}</div><div class="card-label">已过期</div></n-card>
+          <n-card size="small" class="sm-card"><div class="card-num ok">{{ boundCount }}</div><div class="card-label">已绑定 IP</div></n-card>
+          <n-card size="small" class="sm-card"><div class="card-num warn">{{ unboundCount }}</div><div class="card-label">未绑定 IP</div></n-card>
+        </div>
+
+        <!-- 链接列表 -->
+        <div class="panel">
+          <div class="panel-title"><h3>分享链接列表</h3><span class="count">令牌 / 用户 / 绑定 IP / 有效期 / 状态</span></div>
+          <div v-if="!all.length" class="empty">暂无分享链接记录。用户发送 /萌绘 生成链接后这里会显示。</div>
+          <template v-else>
+            <div class="table-scroll-wrap">
+              <n-data-table :columns="columns" :data="pageRows" :bordered="false" size="small" :scroll-x="900" />
+            </div>
+            <Pager :page="page" :page-size="pageSize" :total="all.length" @update:page="onPage" @update:page-size="onPageSize" />
+          </template>
         </div>
       </n-spin>
     </div>
@@ -32,8 +42,10 @@
 
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
-import { useMessage, useDialog, NButton, NDataTable, NSpin, NTag, type DataTableColumns } from "naive-ui";
+import { useMessage, useDialog, NButton, NDataTable, NSpin, NTag, NCard, type DataTableColumns } from "naive-ui";
+import Pager from "@/components/Pager.vue";
 import { apiGet, apiPost } from "@/api/bridge";
+import { lsGet, lsSet } from "@/api/storage";
 import { fmtDateTime } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import { useDevice } from "@/composables/useDevice";
@@ -42,9 +54,21 @@ const message = useMessage();
 const dialog = useDialog();
 const { isMobile } = useDevice();
 const loading = ref(false);
-const tokens = ref<any[]>([]);
+const all = ref<any[]>([]);
 
-const boundCount = computed(() => tokens.value.filter((t) => t.bound_ip).length);
+// 分页（客户端切片；分享链接数量有限，一次拉取后分页，保证汇总卡统计真实）
+const page = ref(1);
+const pageSize = ref(Number(lsGet("anima_share_page_size") || "") || 20);
+
+const validCount = computed(() => all.value.filter((t) => statusOf(t) === "valid").length);
+const expiredCount = computed(() => all.value.length - validCount.value);
+const boundCount = computed(() => all.value.filter((t) => t.bound_ip).length);
+const unboundCount = computed(() => all.value.length - boundCount.value);
+
+const pageRows = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  return all.value.slice(start, start + pageSize.value);
+});
 
 function statusOf(row: any): "valid" | "expired" {
   const now = Date.now() / 1000;
@@ -100,12 +124,24 @@ async function load() {
   loading.value = true;
   try {
     const data = await apiGet("share/tokens", { limit: 500 });
-    tokens.value = (data && Array.isArray(data.tokens)) ? data.tokens : [];
+    all.value = (data && Array.isArray(data.tokens)) ? data.tokens : [];
+    // 作废后总数变小，若当前页越界则回拉
+    const maxPage = Math.max(1, Math.ceil(all.value.length / pageSize.value));
+    if (page.value > maxPage) page.value = maxPage;
   } catch (e: any) {
     message.error(e.message || "读取分享链接失败");
   } finally {
     loading.value = false;
   }
+}
+
+function onPage(p: number) {
+  page.value = p;
+}
+function onPageSize(s: number) {
+  pageSize.value = s;
+  lsSet("anima_share_page_size", String(s));
+  page.value = 1;
 }
 
 function onInvalidate(row: any) {
@@ -117,7 +153,7 @@ function onInvalidate(row: any) {
     onPositiveClick: async () => {
       try {
         await apiPost("share/token/invalidate", { token: row.token });
-        tokens.value = tokens.value.filter((t) => t.token !== row.token);
+        all.value = all.value.filter((t) => t.token !== row.token);
         message.success("已作废");
       } catch (e: any) {
         message.error(e.message || "作废失败");
@@ -137,18 +173,30 @@ onMounted(load);
 .view-head p { margin: 0; color: var(--text-sub); font-size: 13px; }
 .view-actions { display: flex; gap: 8px; }
 .sm-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
-.sm-summary { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; font-size: 13px; }
-.sm-total { color: var(--text-sub); }
-.sm-bind { font-weight: 600; }
-.sm-bind.ok { color: #2e9e5b; }
-.sm-bind.warn { color: #e6a23c; }
+
+/* 汇总卡片：与 Token 用量页一致 */
+.sm-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.sm-card { text-align: center; }
+.card-num { font-size: 22px; font-weight: 700; color: var(--accent); }
+.card-num.ok { color: #2e9e5b; }
+.card-num.warn { color: #e6a23c; }
+.card-num.sub { color: var(--text-sub); }
+.card-label { font-size: 12px; color: var(--text-sub); margin-top: 4px; }
+
+/* 分区块面板：与 Token 用量页一致 */
+.panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.panel-title h3 { margin: 0; }
+.count { color: var(--text-sub); font-size: 12px; }
+.empty { color: var(--text-sub); text-align: center; padding: 30px; }
 .table-scroll-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.empty { color: var(--text-sub); text-align: center; padding: 50px 0; }
+.table-scroll-wrap :deep(.n-data-table) { min-width: 640px; }
 
 @media (max-width: 768px) {
   .share-manage-view { padding: 0; }
   .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
   .view-actions { flex-wrap: wrap; }
   .view-actions :deep(.n-button) { flex: 1 1 auto; }
+  .sm-cards { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
 }
 </style>
