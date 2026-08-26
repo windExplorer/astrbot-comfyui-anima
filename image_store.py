@@ -523,7 +523,11 @@ class ImageStore:
 
         文件已被 LRU 清理（不存在）则回退 0，由前端显示「—」。
         """
-        sb = row.get("size_bytes")
+        # 注意 row 可能是 sqlite3.Row（无 .get() 方法），必须用下标访问 + 兜底
+        try:
+            sb = row["size_bytes"]
+        except (KeyError, IndexError):
+            sb = None
         if sb:
             return sb
         try:

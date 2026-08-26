@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.82
+
+- **修复：分享端 / 图库列表因 `sqlite3.Row` 无 `.get()` 报错**：v4.9.81 新增的 `_size_of` 用 `row.get("size_bytes")` 取列值，但 `_row_to_dict` 传入的是 `sqlite3.Row` 对象（`sqlite3.Row` 仅支持下标访问与 `.keys()`，没有 `dict.get()`），导致分享站世界/图库/收藏/回收站等列表接口抛出 `Row object has no attribute 'get'` 而整页失败。现改为 try 下标访问 + `KeyError/IndexError` 兜底，对 `sqlite3.Row` 与 `dict` 两种类型均兼容。
+
 ## v4.9.81
 
 - **修复：历史老图文件大小显示「—」**：`size_bytes` 列是后加的，迁移只加列不回填，导致建库前生成的图该列为 NULL。现序列化时若该列为空，按磁盘真实图片文件（`_path_of_row`）补算字节数返回；文件已被 LRU 清理（不存在）才回退 0（前端显示「—」）。新图仍由生成完成时 `os.path.getsize` 直接写入。
