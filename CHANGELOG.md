@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.83
+
+- **修复：分享端图片查看器「点抽屉内也收起」**：原先 `.vfull` / `.viewer-stage` 上的 `@click.self="onVfullClick"` 在点击查看器内部空白时会直接 `closeViewer()`，导致点查看器内部（图片周围区域）也收起查看器。现移除该关闭分支，查看器关闭统一由遮罩点击（`mask-closable`）处理；底部信息抽屉展开时「点大图空白先收起抽屉」的手势仍保留。
+
 ## v4.9.82
 
 - **修复：分享端 / 图库列表因 `sqlite3.Row` 无 `.get()` 报错**：v4.9.81 新增的 `_size_of` 用 `row.get("size_bytes")` 取列值，但 `_row_to_dict` 传入的是 `sqlite3.Row` 对象（`sqlite3.Row` 仅支持下标访问与 `.keys()`，没有 `dict.get()`），导致分享站世界/图库/收藏/回收站等列表接口抛出 `Row object has no attribute 'get'` 而整页失败。现改为 try 下标访问 + `KeyError/IndexError` 兜底，对 `sqlite3.Row` 与 `dict` 两种类型均兼容。

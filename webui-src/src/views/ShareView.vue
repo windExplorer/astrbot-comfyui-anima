@@ -665,13 +665,13 @@ function onGripTap() {
   drawerOffset.value = drawerOpen.value ? drawerCollapsedPx.value : 0;
 }
 
-// 点击大图空白：抽屉展开时先收起，收起后再点才关闭查看器（滑动切换图片时不触发）
+// 点击大图空白：仅当信息抽屉展开时先收起抽屉；
+// 不再点击查看器内部空白就关闭查看器（关闭统一由遮罩点击 mask-closable 处理，
+// 避免“点抽屉内也收起查看器”）。滑动切换图片时不触发。
 function onVfullClick() {
   if (swipeMoved) return;
   if (drawerOpen.value) {
     drawerOffset.value = drawerCollapsedPx.value;
-  } else {
-    closeViewer();
   }
 }
 // 点击图片：抽屉展开时先收起；收起后轻点切换 contain/cover（滑动切换图片时不触发）
