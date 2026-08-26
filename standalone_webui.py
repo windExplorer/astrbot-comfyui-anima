@@ -360,7 +360,7 @@ class StandaloneWebUI:
   var sub = document.getElementById("s");
   function fail(){{
     title.textContent = "链接已失效";
-    sub.innerHTML = "该分享链接已过期或不存在。<br>请重新发送 /萌绘 获取新的临时链接。";
+    sub.innerHTML = "该分享链接已过期或不存在，请联系分享者重新分享。";
   }}
   if(!token){{ fail(); return; }}
   fetch("/api/share/me?token=" + encodeURIComponent(token))
@@ -1045,7 +1045,7 @@ class StandaloneWebUI:
                 f"[独立WebUI] 分享令牌拒绝 path={path} token_len={len(tok)} "
                 f"token_head={(tok[:8] or '(empty)')} ip={self._client_ip(request)} query={str(request.query)}"
             )
-            return _err("分享链接无效或已过期，请重新发送 /萌绘 获取新链接", status=404)
+            return _err("分享链接无效或已过期", status=404)
         try:
             return await self._dispatch_share(path, request.method.upper(), request, info)
         except Exception as e:
