@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.71
+
+- **修复 v4.9.70 分享管理后端仍报 `Not Found: /`**：上版新注册的管理端点是字面量路由（无 `{tail}` 捕获组），而 `_handle_api` 用 `match_info["tail"]` 取路径导致退化成 `/`。现当路由无 `tail` 分组时从 `request.rel_url.path` 反推，路径正确解析为 `/share/tokens`、`/share/token/invalidate`。
+
 ## v4.9.70
 
 - **修复：分享管理页一进入就弹「分享链接无效或已过期」**：管理端 `share/tokens`、`share/token/invalidate` 两个接口此前被分享站的 `/api/share/{tail:.*}` 路由优先截获，而分享站处理器要求 `/萌绘` 临时令牌（管理页只有 admin 口令）→ 校验失败误报失效。现把这两个管理端点注册在分享站 catch-all 之前、走 admin 鉴权，并在后端 `_dispatch` 实现对应处理（复用 `share_token_records` / `invalidate_share_token`），管理页可正常列出与作废分享链接。

@@ -413,8 +413,15 @@ class StandaloneWebUI:
         denied = self._authed(request)
         if denied is not None:
             return denied
-        tail = request.match_info.get("tail", "") or ""
-        path = "/" + tail.strip("/")
+        # 优先取 {tail} 分组（/api/{tail:.*}）；字面量路由（如显式注册的
+        # /api/share/tokens）无该分组时，从真实路径反推，避免 path 退化成 "/"
+        match_tail = request.match_info.get("tail", None)
+        if match_tail is None:
+            full = request.rel_url.path
+            if full.startswith("/api"):
+                full = full[4:]
+            match_tail = full
+        path = "/" + match_tail.strip("/")
         method = request.method.upper()
         try:
             return await self._dispatch(path, method, request)
