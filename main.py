@@ -6392,6 +6392,36 @@ class ComfyUIDrawPlugin(Star):
             if not arg:
                 return "send 模式需要 keyword 参数传序号（如「3」，可多张用逗号或空格隔开「1,2,3」）或 sha 前几位。"
             targets = plugin._parse_gallery_targets([arg])
+
+            def _is_sha_like(s: str) -> bool:
+                # 疑似完整/前缀 sha256：纯十六进制且长度足够
+                return bool(s) and all(c in "0123456789abcdefABCDEF" for c in s) and len(s) >= 8
+
+            # 语义召回兜底：当目标全是非编号、非 sha 前缀的语义词（典型场景是 LLM 直接把
+            # 标签「小叽睡裙」当 keyword 传给 send 模式），不要再拿它去匹配 sha256 前缀
+            # （必然查不到 → 工具反复失败 → LLM 误判未完成任务而重试刷屏），而是按标签/关键词
+            # 召回后发最相关的一张。
+            if targets and all((not t.isdigit() and not _is_sha_like(t)) for t in targets):
+                acc = []
+                for t in targets:
+                    rs = g.recall_by_tag(t, limit=limit, owner=owner)
+                    if not rs:
+                        rs = g.search(keyword=t, limit=limit, session=session, owner=owner)
+                    acc.extend(rs)
+                seen = set(); uniq = []
+                for r in acc:
+                    s = r.get("sha256")
+                    if s and s not in seen:
+                        seen.add(s); uniq.append(r)
+                if not uniq:
+                    return f"没找到带「{arg}」标签或含「{arg}」的图。"
+                ok = await plugin._gallery_send_image(event, uniq[0]["sha256"], owner=owner)
+                if len(uniq) == 1:
+                    return ("已发送该图。" if ok else "找到图但发送失败。")
+                _gno0 = uniq[0].get("gidx", 1)
+                return (f"带「{arg}」的图有 {len(uniq)} 张，先发最相关的一张（编号 {_gno0}）。"
+                        "若不是你要的那张，可回复其他编号直接发对应那张。") if ok else f"找到「{arg}」的图但发送失败。"
+
             sent_ok, sent_fail = 0, 0
             for t in targets:
                 if t.isdigit():
@@ -6402,10 +6432,11 @@ class ComfyUIDrawPlugin(Star):
                         sent_fail += 0 if ok else 1
                     else:
                         sent_fail += 1
-                else:
+                elif _is_sha_like(t):
                     ok = await plugin._gallery_send_image(event, t, owner=owner)
                     sent_ok += 1 if ok else 0
                     sent_fail += 0 if ok else 1
+                # 其余语义 token 已在上面的语义召回兜底分支处理，这里跳过避免当 sha 误查
             if len(targets) > 1:
                 return f"已发送 {sent_ok} 张，失败/跳过 {sent_fail} 张。"
             return ("已发送。" if sent_ok else "没找到这张图/发送失败。")
