@@ -232,6 +232,10 @@
                 <span class="vlabel">NSFW 评分</span>
                 <span class="vvalue" :class="nsfwLevelClass">{{ nsfwScoreText }}</span>
               </div>
+              <div class="vd-row" v-if="sessionInfo">
+                <span class="vlabel">{{ sessionInfo.k }}</span>
+                <span class="vvalue">{{ sessionInfo.v }}</span>
+              </div>
             </div>
             <!-- 标签 -->
             <div class="vd-tags">
@@ -718,6 +722,23 @@ const nsfwLevelClass = computed(() => {
   if (s >= 0.6) return "lv-high";
   if (s >= 0.3) return "lv-mid";
   return "lv-low";
+});
+
+// 从 session_id 解析会话来源：群聊提取群号，私聊标「私聊」，其他带数字的标「会话 <号>」。
+// 群聊 session_id 形如 OneBot_v11_Group_123456789 / group_123456；私聊形如 private:xxx。
+const sessionInfo = computed(() => {
+  const m = viewerM.value;
+  const sid = m ? m.session_id : "";
+  if (!sid) return null;
+  const s = String(sid);
+  const lower = s.toLowerCase();
+  const num = s.match(/(\d{4,})/);
+  if (lower.includes("private")) return { k: "会话", v: "私聊" };
+  if (lower.includes("group") || lower.includes("guild")) {
+    return num ? { k: "群号", v: num[1] } : { k: "会话", v: "群聊" };
+  }
+  if (num) return { k: "会话", v: num[1] };
+  return { k: "会话", v: s };
 });
 
 // 按打开上下文展示操作按钮
