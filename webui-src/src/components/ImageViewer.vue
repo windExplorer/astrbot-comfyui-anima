@@ -69,6 +69,7 @@
             <div v-if="item.user_name" class="iv-row"><span class="k">用户名</span><span class="v">{{ item.user_name }}</span></div>
             <div v-if="item.user_id" class="iv-row"><span class="k">用户ID</span><span class="v">{{ item.user_id }}</span></div>
             <div v-if="item.group_id" class="iv-row"><span class="k">群号</span><span class="v">{{ item.group_id }}</span></div>
+            <div v-if="item.group_name" class="iv-row"><span class="k">群名</span><span class="v">{{ item.group_name }}</span></div>
             <div v-if="item.seed != null" class="iv-row"><span class="k">Seed</span><span class="v">{{ item.seed }}</span></div>
             <div v-if="item.denoise != null" class="iv-row"><span class="k">Denoise</span><span class="v">{{ item.denoise }}</span></div>
             <div v-if="item.use_count != null" class="iv-row"><span class="k">使用次数</span><span class="v">{{ item.use_count }}</span></div>
@@ -108,6 +109,7 @@ interface ViewerImage {
   user_name?: string;
   user_id?: string;
   group_id?: string;
+  group_name?: string;
   seed?: number | string;
   denoise?: number;
   use_count?: number;

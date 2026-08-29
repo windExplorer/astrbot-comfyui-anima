@@ -3271,6 +3271,18 @@ class ComfyUIDrawPlugin(Star):
                                         _real_w, _real_h = _im.width, _im.height
                                 except Exception:
                                     pass
+                            # 群名：AstrBot 未提供同步的 get_group_name，需异步查平台群信息
+                            # （aiocqhttp 下走 get_group_info）。查询失败或超时一律留空，
+                            # 绝不因此中断归档与出图。
+                            _group_name = ""
+                            try:
+                                _gid = str(getattr(event, "get_group_id", lambda: "")() or "")
+                                _get_group = getattr(event, "get_group", None)
+                                if _gid and callable(_get_group):
+                                    _grp = await asyncio.wait_for(_get_group(_gid), timeout=3)
+                                    _group_name = str(getattr(_grp, "group_name", "") or "")
+                            except Exception:
+                                _group_name = ""
                             _final = self.gallery.archive_image(
                                 img_path,
                                 source=SRC_GEN,
@@ -3290,6 +3302,7 @@ class ComfyUIDrawPlugin(Star):
                                 user_name=user_name,
                                 session_id=(getattr(event, "session_id", "") or ""),
                                 group_id=(getattr(event, "get_group_id", lambda: "")() or ""),
+                                group_name=_group_name,
                                 trigger_msg=(getattr(event, "message_str", "") or ""),
                                 status=0,
                                 on_dedup=lambda _sha, _uc: self._oplog_dedup(
