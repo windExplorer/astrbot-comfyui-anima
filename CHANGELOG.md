@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.95
+
+- **新增：已读回执表情支持直接填 emoji 字符**：此前 `emoji_id` 会被强制转成整数，导致配置里填 `👀` 这类 emoji 字符时转换失败、根本贴不出表情。现 `draw_ack_emoji_id` 两种填法都支持——①纯数字 = QQ 表情编号（如 `289`，自动走 `emoji_type=1`）；②emoji 字符（如 `👀`，自动走 `emoji_type=2`）。默认仍是 `289`。
+- **新增：`draw_ack_emoji_type` 支持 `auto`（默认值）**：按上一项自动判定类型（数字编号用 `1`，emoji 字符用 `2`）；仍可手动填 `1` / `2` 强制指定。
+- **优化：排障指令 `/绘图表情` 同步支持 emoji 字符**：可 `/绘图表情 289` 试编号，也可 `/绘图表情 👀` 直接试 emoji 效果。
+
 ## v4.9.94
 
 - **修复：QQ 表情回应调用与参考实现并不一致**：此前与 `astrbot_plugin_parser` 的 `EmojiLikeArbiter` 存在三处差异——走 `bot.call_action(...)` 而非 `bot.set_msg_emoji_like(...)`、`emoji_id` 传字符串而非整数、群聊时额外多传了 `group_id`。现抽出统一的 `_set_msg_emoji_like()`，调用参数与参考实现逐项一致（仅 `message_id` / `emoji_id(int)` / `emoji_type` / `set`）。

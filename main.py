@@ -249,6 +249,19 @@ g_session_i2i_ref: dict[str, list[str]] = {}
 SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
 
 
+def _resolve_emoji_type(emoji_type: str, emoji_id) -> str:
+    """解析表情回应要使用的 emoji_type。
+
+    auto（默认）：纯数字编号 -> "1"（QQ 经典表情）；
+    非数字（例如 emoji 字符 👀）-> "2"（Unicode 表情类）。
+    也可以直接填 "1" / "2" 来强制覆盖自动判定。
+    """
+    t = str(emoji_type or "").strip().lower()
+    if t and t != "auto":
+        return t
+    return "1" if str(emoji_id).strip().isdigit() else "2"
+
+
 async def _set_msg_emoji_like(
     bot,
     msg_id,
@@ -263,7 +276,12 @@ async def _set_msg_emoji_like(
     以规避不同 OneBot 实现之间的行为差异。
     """
     mid = int(str(msg_id).strip())
-    eid = int(str(emoji_id).strip())
+    raw_eid = str(emoji_id).strip()
+    try:
+        # 纯数字按「QQ 表情编号」以整数传；非数字（如 emoji 字符）原样传给协议端
+        eid = int(raw_eid)
+    except (TypeError, ValueError):
+        eid = raw_eid
     etype = str(emoji_type).strip() or "1"
     setter = getattr(bot, "set_msg_emoji_like", None)
     if callable(setter):
@@ -6291,11 +6309,14 @@ class ComfyUIDrawPlugin(Star):
 
         if pname == "aiocqhttp" and bot is not None and msg_id is not None:
             try:
-                emoji_id = int(str(self._cfg("draw_ack_emoji_id", 289) or 289).strip() or 289)
+                emoji_id = str(self._cfg("draw_ack_emoji_id", 289) or 289).strip()
                 # emoji_type 必须显式传入：部分 OneBot 实现（如 LLOneBot）在缺少该参数时
-                # 会按 emoji_id 长度猜测表情类型，从而贴错表情。"1" = QQ 经典表情。
-                emoji_type = str(self._cfg("draw_ack_emoji_type", "1") or "1").strip() or "1"
-                # 与 astrbot_plugin_parser.EmojiLikeArbiter 逐参数一致（不传 group_id）
+                # 会按 emoji_id 长度猜测表情类型，从而贴错表情。
+                # 默认 auto：纯数字 -> "1"（QQ 表情编号），emoji 字符 -> "2"。
+                emoji_type = _resolve_emoji_type(
+                    self._cfg("draw_ack_emoji_type", "auto"), emoji_id
+                )
+                # 与 astrbot_plugin_parser.EmojiLikeArbiter 参数一致（不传 group_id）
                 await _set_msg_emoji_like(bot, msg_id, emoji_id, emoji_type, True)
                 logger.info(
                     f"【绘图·已读】 已贴表情回应: emoji_id={emoji_id} "
@@ -6329,12 +6350,19 @@ class ComfyUIDrawPlugin(Star):
         if bot is None or msg_id is None:
             yield event.plain_result("当前平台不支持表情回应（需要 aiocqhttp / OneBot）。")
             return
-        try:
-            eid = int(str(emoji_id).strip())
-        except Exception:
-            yield event.plain_result("用法：/绘图表情 <表情编号> [表情类型]，例如 /绘图表情 289")
+        eid_raw = str(emoji_id or "").strip()
+        if not eid_raw:
+            yield event.plain_result(
+                "用法：/绘图表情 <编号或emoji> [类型]，例如 /绘图表情 289 或 /绘图表情 👀"
+            )
             return
-        etype = str(emoji_type or "1").strip() or "1"
+        # 纯数字按「QQ 表情编号」（整数）传；非数字（emoji 字符）原样传
+        try:
+            eid = int(eid_raw)
+        except ValueError:
+            eid = eid_raw
+        # 类型同样支持 auto：数字编号 -> "1"，emoji 字符 -> "2"
+        etype = _resolve_emoji_type(emoji_type or "auto", eid_raw)
         try:
             await _set_msg_emoji_like(bot, msg_id, eid, etype, True)
         except Exception as _e:

@@ -657,15 +657,15 @@
   },
   "draw_ack_emoji_id": {
     "type": "string",
-    "description": "QQ 已读回执表情 ID",
-    "hint": "QQ/OneBot 平台「表情回应」要贴的表情 ID（emoji_id），需 draw_ack_enabled 开启。在 emoji_type=1（QQ 经典表情）下填 1~3 位的 QQ 表情编号。默认 289，与 astrbot_plugin_parser 仲裁机制贴出的表情完全一致（已在 aiocqhttp + LLOneBot 环境验证可稳定贴上）。想换别的表情改这里的编号即可。贴表情失败只会记日志，不会退化成发送表情消息。",
+    "description": "QQ 已读回执表情",
+    "hint": "已读回执要贴的表情，需 draw_ack_enabled 开启。两种填法二选一：①填 QQ 表情编号（纯数字，如 289，自动走 emoji_type=1）；②直接填 emoji 字符（如 👀，自动走 emoji_type=2）。默认 289，与 astrbot_plugin_parser 仲裁机制贴出的表情一致。可用 /绘图表情 <编号或emoji> 先试贴确认效果。贴表情失败只会记日志，不会退化成发送表情消息。",
     "default": "289"
   },
   "draw_ack_emoji_type": {
     "type": "string",
     "description": "QQ 已读回执表情类型",
-    "hint": "表情回应API的 emoji_type 参数，需 draw_ack_enabled 开启。1 = QQ 经典表情（配 1~3 位编号），2 = Unicode 表情类。必须显式传入——部分 OneBot 实现（如 LLOneBot）在缺失时会按 emoji_id 长度猜测，导致贴错表情。默认 1。",
-    "default": "1"
+    "hint": "表情回应 API 的 emoji_type，需 draw_ack_enabled 开启。auto（默认）= 按上一项自动判定：纯数字编号用 1（QQ 经典表情），emoji 字符用 2（Unicode 表情类）；也可手动填 1 或 2 强制指定。必须显式传入——部分 OneBot 实现（如 LLOneBot）在缺失时会按 emoji_id 长度猜测，导致贴错表情。",
+    "default": "auto"
   },
   "convert_webp_to_png": {
     "type": "bool",
