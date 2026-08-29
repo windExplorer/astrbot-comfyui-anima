@@ -6253,6 +6253,7 @@ class ComfyUIDrawPlugin(Star):
                 params = {
                     "message_id": int(str(msg_id).strip()),
                     "emoji_id": emoji_id,
+                    "set": True,
                 }
                 gid = None
                 try:
@@ -6262,6 +6263,11 @@ class ComfyUIDrawPlugin(Star):
                 if gid:
                     params["group_id"] = int(gid)
                 await bot.call_action("set_msg_emoji_like", **params)
+                logger.info(
+                    f"【绘图·已读】 已贴表情回应: emoji_id={emoji_id} "
+                    f"message_id={params.get('message_id')} "
+                    f"group_id={params.get('group_id') or '-'}"
+                )
                 return
             except Exception as _e:
                 # 原生回应不可用：只记日志，绝不回退成发一条表情消息

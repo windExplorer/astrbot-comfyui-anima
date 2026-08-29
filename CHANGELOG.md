@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.90
+
+- **修复：QQ 表情回应缺少 `set` 参数**：按 NapCat 官方 `set_msg_emoji_like` 接口定义补齐 `set: true`（此前只传了 `message_id` 与 `emoji_id`）。
+- **优化：贴表情后记录实际使用的 `emoji_id`**：回执贴成功后以 info 级输出 `【绘图·已读】 已贴表情回应: emoji_id=... message_id=... group_id=...`，便于核对到底贴了哪个表情。注意 QQ 的 `emoji_id` 是内部表情 ID 体系而非 Unicode 码点，因此填 `128064` 并不会贴出 👀，需要填目标表情在 QQ 内的真实 ID（可在插件配置 `draw_ack_emoji_id` 中指定）。
+
 ## v4.9.89
 
 - **修复：QQ 已读回执「贴表情」实际是发了一条表情消息**：根因是 AstrBot 的 `AstrMessageEvent.react()` 默认实现就是「发送一条包含该表情的消息」（`astr_message_event.py`），而重写该方法的平台只有 Telegram / Lark / Discord，**aiocqhttp（QQ）并未重写**，于是回执变成往聊天里发一条 👀，而不是在原消息下方贴表情。现对已读回执做统一处理：QQ/OneBot 平台改调 OneBot 扩展 API `set_msg_emoji_like`（Lagrange / NapCat 等实现支持）做真正的原生表情回应；该 API 不可用时只记日志并跳过，**不再退化成发送表情消息**。其余平台仍走 AstrBot 的 `react()`（它们已是原生回应）。影响范围：指令触发与 AI 对话触发（`comfyui_draw` / `comfyui_img2img`）三处回执。
