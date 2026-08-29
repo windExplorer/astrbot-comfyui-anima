@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+﻿# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
@@ -206,7 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# 参��项盄1�7��仅本地�1�7照用，不入库＄1�7
+# 参考资料（仅本地使用，不入库）
 astrbot_plugin_GPT_SoVITS-main/
 AstrBot/
 AstrBot-master/
@@ -218,11 +218,11 @@ astrbot_plugin_stealer/
 astrbot_plugin_comfyui_anima.zip
 build_log.txt
 
-# 参��项盄1�7��仅本地�1�7照用，不入库＄1�7
+# 参考资料（仅本地使用，不入库）
 References/
 UI参考图/
 
-# Reasonix ����Ԫ���ݣ��Ự����ȣ�����⣩
+Reasonix 缓存（会话隔，不入库）
 .reasonix/
 
 # 临时验证脚本（仅本地用，不入库）
@@ -243,3 +243,4 @@ yarn-error.log*
 # 本地备份/辅助文件（仅本地使用，不入库）
 _bak_help_assets/
 _References/_diff_zips.ps1
+_References/
