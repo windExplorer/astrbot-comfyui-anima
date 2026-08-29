@@ -5709,10 +5709,7 @@ class ComfyUIDrawPlugin(Star):
         # 已读回执：用户用自然语言触发生图（comfyui_draw）时，给原消息贴表情表示「已读」。
         # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            try:
-                await event.react(self._cfg("draw_ack_emoji", "👀") or "👀")
-            except Exception as _e:
-                logger.debug(f"【绘图·已读】 发送已读表情失败（可忽略）: {_e}")
+            await self._react_ack(event)
 
         # 单张保护：同一会话短时间内的重复调用视为模型死循环/误触发，
         # 直接收尾不重复生图（除非带 source 的第三方插件主动调用）。
@@ -6219,6 +6216,64 @@ class ComfyUIDrawPlugin(Star):
     # 在指令 handler 执行之前先给原消息贴个表情，让用户知道「收到了、在处理」。
     # 统一在这里做而不是每个 handler 各写一遍：新增指令自动生效，也不会漏掉中文指令。
     # priority 需高于指令 handler（默认 0），保证在指令执行前贴表情。
+    async def _react_ack(self, event: AstrMessageEvent) -> None:
+        """已读回执：优先贴平台原生「表情回应」，绝不下发一条新消息。
+
+        AstrBot 的 `AstrMessageEvent.react()` 默认实现是「发送一条包含该表情的
+        消息」（见 astr_message_event.py），而 aiocqhttp/QQ 平台并未重写它，
+        因此在 QQ 上会变成往聊天里发一条 👀 消息，而不是在原消息下方贴表情。
+        这里对 aiocqhttp 直接调用 OneBot 扩展 API `set_msg_emoji_like`
+        （Lagrange / NapCat 等实现支持）做真正的表情回应；
+        该 API 不可用时只记日志并跳过，绝不回退成发送表情消息。
+        """
+        try:
+            if not self._cfg("draw_ack_enabled", True):
+                return
+        except Exception:
+            return
+
+        emoji = self._cfg("draw_ack_emoji", "👀") or "👀"
+
+        # 仅 aiocqhttp（QQ / OneBot）具备可直接调用 OneBot API 的 bot 客户端，走原生回应
+        pname = ""
+        try:
+            pname = str(getattr(getattr(event, "platform_meta", None), "name", "") or "").lower()
+        except Exception:
+            pname = ""
+        bot = getattr(event, "bot", None)
+        msg_id = None
+        try:
+            msg_id = getattr(getattr(event, "message_obj", None), "message_id", None)
+        except Exception:
+            msg_id = None
+
+        if pname == "aiocqhttp" and bot is not None and msg_id is not None:
+            try:
+                emoji_id = str(self._cfg("draw_ack_emoji_id", 128064) or 128064).strip()
+                params = {
+                    "message_id": int(str(msg_id).strip()),
+                    "emoji_id": emoji_id,
+                }
+                gid = None
+                try:
+                    gid = event.get_group_id()
+                except Exception:
+                    gid = None
+                if gid:
+                    params["group_id"] = int(gid)
+                await bot.call_action("set_msg_emoji_like", **params)
+                return
+            except Exception as _e:
+                # 原生回应不可用：只记日志，绝不回退成发一条表情消息
+                logger.debug(f"【绘图·已读】 QQ 原生表情回应不可用，已跳过: {_e}")
+                return
+
+        # 其它平台交给 AstrBot 的 react（Telegram / Lark / Discord 已实现原生回应）
+        try:
+            await event.react(emoji)
+        except Exception as _e:
+            logger.debug(f"【绘图·已读】 已读回执失败（可忽略）: {_e}")
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=25)
     async def _ack_command_received(self, event: AstrMessageEvent):
         try:
@@ -6243,7 +6298,7 @@ class ComfyUIDrawPlugin(Star):
                 hit = any(p.search(raw) for p in pats)
             if not hit:
                 return
-            await event.react(self._cfg("draw_ack_emoji", "👀") or "👀")
+            await self._react_ack(event)
         except Exception as _e:
             logger.debug(f"【绘图·已读】 指令已读回执失败（可忽略）: {_e}")
 
@@ -6833,10 +6888,7 @@ class ComfyUIDrawPlugin(Star):
         # 已读回执：用户用自然语言触发生图（comfyui_img2img）时，给原消息贴表情表示「已读」。
         # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            try:
-                await event.react(self._cfg("draw_ack_emoji", "👀") or "👀")
-            except Exception as _e:
-                logger.debug(f"【绘图·已读】 发送已读表情失败（可忽略）: {_e}")
+            await self._react_ack(event)
 
         # 单张保护：同 llm_draw，同一会话短时间重复调用（模型死循环）直接收尾
         try:

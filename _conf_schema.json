@@ -652,8 +652,14 @@
   "draw_ack_emoji": {
     "type": "string",
     "description": "已读回执表情",
-    "hint": "已读回执使用的表情，需 draw_ack_enabled 开启。Telegram/Lark/Discord 等支持原生回应的平台是「贴表情回应」；QQ/OneBot 未实现原生回应时会回退成发送一条带该表情的消息。",
+    "hint": "已读回执使用的表情，需 draw_ack_enabled 开启。Telegram/Lark/Discord 等平台用它做原生表情回应；QQ/OneBot 原生回应不使用本项，改由 draw_ack_emoji_id 指定要贴的 QQ 表情。",
     "default": "👀"
+  },
+  "draw_ack_emoji_id": {
+    "type": "string",
+    "description": "QQ 已读回执表情 ID",
+    "hint": "QQ/OneBot 平台「表情回应」要贴的表情 ID（emoji_id），需 draw_ack_enabled 开启，且需要 Lagrange / NapCat 等支持 set_msg_emoji_like 的 OneBot 实现。默认 128064 是 👀（眼睛）。贴表情失败只会记日志，不会退化成发送表情消息。",
+    "default": "128064"
   },
   "convert_webp_to_png": {
     "type": "bool",
