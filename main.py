@@ -6262,10 +6262,17 @@ class ComfyUIDrawPlugin(Star):
 
         if pname == "aiocqhttp" and bot is not None and msg_id is not None:
             try:
-                emoji_id = str(self._cfg("draw_ack_emoji_id", 128064) or 128064).strip()
+                emoji_id = str(self._cfg("draw_ack_emoji_id", 124) or 124).strip()
+                # emoji_type 必须显式传入：部分 OneBot 实现（如 LLOneBot）在缺少该参数时
+                # 会按 emoji_id 字符串长度猜测类型（长度 > 3 判为 "2"），从而贴错表情。
+                # "1" 表示 QQ 经典表情，配合 1~3 位的 face id 使用。
+                # 该协议用法参考 astrbot_plugin_parser 的 EmojiLikeArbiter 实现
+                # （其仲裁表情 emoji_id=289、反馈表情 emoji_id=124，均为 emoji_type="1"）。
+                emoji_type = str(self._cfg("draw_ack_emoji_type", "1") or "1").strip()
                 params = {
                     "message_id": int(str(msg_id).strip()),
                     "emoji_id": emoji_id,
+                    "emoji_type": emoji_type,
                     "set": True,
                 }
                 gid = None
@@ -6278,6 +6285,7 @@ class ComfyUIDrawPlugin(Star):
                 await bot.call_action("set_msg_emoji_like", **params)
                 logger.info(
                     f"【绘图·已读】 已贴表情回应: emoji_id={emoji_id} "
+                    f"emoji_type={emoji_type} "
                     f"message_id={params.get('message_id')} "
                     f"group_id={params.get('group_id') or '-'}"
                 )

@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.92
+
+- **修复：QQ 已读回执贴错表情（关键修复）**：`set_msg_emoji_like` 缺少 `emoji_type` 参数。部分 OneBot 实现（LLOneBot）在缺少该参数时会按 `emoji_id` 字符串长度猜测表情类型（`emojiId.length > 3 ? '2' : '1'`），此前默认的 `128064` 长度 6 被判成 type `"2"`，于是贴出了错误的表情。现显式传入 `emoji_type`（默认 `"1"` = QQ 经典表情，配 1~3 位编号），默认 `emoji_id` 改为 `124`（反馈/确认类表情）。协议用法参考 `astrbot_plugin_parser` 的 `EmojiLikeArbiter`（其仲裁表情 `emoji_id=289`、反馈表情 `emoji_id=124`，均为 `emoji_type="1"`）。
+- **新增：配置项「QQ 已读回执表情类型」（`draw_ack_emoji_type`）**：表情回应 API 的 `emoji_type`，默认 `1`（QQ 经典表情）。想贴 Unicode 表情类时改为 `2`。
+
 ## v4.9.91
 
 - **新增：图库大图详情展示「群名」**：`images` 表新增 `group_name` 列（旧库启动时自动 ALTER 补列），出图归档时通过 AstrBot 的 `event.get_group()` 查询并写入群名，详情面板在「群号」下方新增一行「群名」（取不到时自动隐藏）。群名需要异步查询平台群信息（aiocqhttp 走 `get_group_info`），已加 3 秒超时保护，查询失败或超时一律留空，**不会中断归档与出图**。注：与群号一样，只有新归档的图才有群名，历史图不会追溯填充。

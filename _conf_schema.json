@@ -658,8 +658,14 @@
   "draw_ack_emoji_id": {
     "type": "string",
     "description": "QQ 已读回执表情 ID",
-    "hint": "QQ/OneBot 平台「表情回应」要贴的表情 ID（emoji_id），需 draw_ack_enabled 开启，且需要 Lagrange / NapCat 等支持 set_msg_emoji_like 的 OneBot 实现。默认 128064 是 👀（眼睛）。贴表情失败只会记日志，不会退化成发送表情消息。",
-    "default": "128064"
+    "hint": "QQ/OneBot 平台「表情回应」要贴的表情 ID（emoji_id），需 draw_ack_enabled 开启。在 emoji_type=1（QQ 经典表情）下填 1~3 位的 QQ 表情编号；默认 124 是「反馈/确认」类表情（取自 astrbot_plugin_parser 的仲裁协议，已在 aiocqhttp + LLOneBot 环境验证可贴）。想要别的表情（如睁眼）改这里的编号即可。贴表情失败只会记日志，不会退化成发送表情消息。",
+    "default": "124"
+  },
+  "draw_ack_emoji_type": {
+    "type": "string",
+    "description": "QQ 已读回执表情类型",
+    "hint": "表情回应API的 emoji_type 参数，需 draw_ack_enabled 开启。1 = QQ 经典表情（配 1~3 位编号），2 = Unicode 表情类。必须显式传入——部分 OneBot 实现（如 LLOneBot）在缺失时会按 emoji_id 长度猜测，导致贴错表情。默认 1。",
+    "default": "1"
   },
   "convert_webp_to_png": {
     "type": "bool",
