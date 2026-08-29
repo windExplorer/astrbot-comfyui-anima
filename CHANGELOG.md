@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.94
+
+- **修复：QQ 表情回应调用与参考实现并不一致**：此前与 `astrbot_plugin_parser` 的 `EmojiLikeArbiter` 存在三处差异——走 `bot.call_action(...)` 而非 `bot.set_msg_emoji_like(...)`、`emoji_id` 传字符串而非整数、群聊时额外多传了 `group_id`。现抽出统一的 `_set_msg_emoji_like()`，调用参数与参考实现逐项一致（仅 `message_id` / `emoji_id(int)` / `emoji_type` / `set`）。
+- **新增：排障指令 `/绘图表情 <编号> [类型]`**：对当前这条消息贴指定编号的表情回应，用来快速确认「某个编号对应哪个表情」。例如 `/绘图表情 289`（类型默认 1 = QQ 经典表情）。该指令自身不会再叠加已读回执，避免干扰判断。
+- **说明**：默认回执表情 `emoji_id=289` 沿用的是参考插件仲裁机制所用的表情，它本身就是个「眼睛」类表情。想换成别的表情（如睁眼），用 `/绘图表情 <编号>` 试出目标编号后填进 `draw_ack_emoji_id` 即可。
+
 ## v4.9.93
 
 - **调整：QQ 已读回执默认表情与 `astrbot_plugin_parser` 仲裁机制保持一致**：默认 `emoji_id` 由 `124` 改为 `289`（即 parser 插件仲裁时贴出的那个表情，已在 aiocqhttp + LLOneBot 环境验证可稳定贴上）。想换其它表情直接改 `draw_ack_emoji_id` 即可。

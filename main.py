@@ -248,6 +248,35 @@ g_session_i2i_ref: dict[str, list[str]] = {}
 # 事实与元指令、清除 [section compacted] 等标记）。
 SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
 
+
+async def _set_msg_emoji_like(
+    bot,
+    msg_id,
+    emoji_id,
+    emoji_type: str = "1",
+    set_on: bool = True,
+) -> None:
+    """给指定消息贴（或取消）QQ 原生表情回应。
+
+    调用参数与 astrbot_plugin_parser 的 EmojiLikeArbiter 逐项保持一致：
+    只传 message_id / emoji_id(int) / emoji_type / set，不额外传 group_id，
+    以规避不同 OneBot 实现之间的行为差异。
+    """
+    mid = int(str(msg_id).strip())
+    eid = int(str(emoji_id).strip())
+    etype = str(emoji_type).strip() or "1"
+    setter = getattr(bot, "set_msg_emoji_like", None)
+    if callable(setter):
+        await setter(message_id=mid, emoji_id=eid, emoji_type=etype, set=bool(set_on))
+    else:
+        await bot.call_action(
+            "set_msg_emoji_like",
+            message_id=mid,
+            emoji_id=eid,
+            emoji_type=etype,
+            set=bool(set_on),
+        )
+
 # 本插件的画图/图库类 LLM 工具名集合。用于判定「用户是否通过 LLM 对话触发了画图」：
 # 当 on_llm_response 里 LLM 返回的工具调用命中这些名字时，认为本次主对话是「画图流程」，
 # 把该次 LLM 调用（以及画图收尾总结那次）的 token 消耗计入 token 统计（scene=agent_draw）。
@@ -6262,32 +6291,15 @@ class ComfyUIDrawPlugin(Star):
 
         if pname == "aiocqhttp" and bot is not None and msg_id is not None:
             try:
-                emoji_id = str(self._cfg("draw_ack_emoji_id", 289) or 289).strip()
+                emoji_id = int(str(self._cfg("draw_ack_emoji_id", 289) or 289).strip() or 289)
                 # emoji_type 必须显式传入：部分 OneBot 实现（如 LLOneBot）在缺少该参数时
-                # 会按 emoji_id 字符串长度猜测类型（长度 > 3 判为 "2"），从而贴错表情。
-                # "1" 表示 QQ 经典表情，配合 1~3 位的 face id 使用。
-                # 该协议用法参考 astrbot_plugin_parser 的 EmojiLikeArbiter 实现
-                # （其仲裁表情 emoji_id=289、反馈表情 emoji_id=124，均为 emoji_type="1"）。
-                emoji_type = str(self._cfg("draw_ack_emoji_type", "1") or "1").strip()
-                params = {
-                    "message_id": int(str(msg_id).strip()),
-                    "emoji_id": emoji_id,
-                    "emoji_type": emoji_type,
-                    "set": True,
-                }
-                gid = None
-                try:
-                    gid = event.get_group_id()
-                except Exception:
-                    gid = None
-                if gid:
-                    params["group_id"] = int(gid)
-                await bot.call_action("set_msg_emoji_like", **params)
+                # 会按 emoji_id 长度猜测表情类型，从而贴错表情。"1" = QQ 经典表情。
+                emoji_type = str(self._cfg("draw_ack_emoji_type", "1") or "1").strip() or "1"
+                # 与 astrbot_plugin_parser.EmojiLikeArbiter 逐参数一致（不传 group_id）
+                await _set_msg_emoji_like(bot, msg_id, emoji_id, emoji_type, True)
                 logger.info(
                     f"【绘图·已读】 已贴表情回应: emoji_id={emoji_id} "
-                    f"emoji_type={emoji_type} "
-                    f"message_id={params.get('message_id')} "
-                    f"group_id={params.get('group_id') or '-'}"
+                    f"emoji_type={emoji_type} message_id={msg_id}"
                 )
                 return
             except Exception as _e:
@@ -6300,6 +6312,36 @@ class ComfyUIDrawPlugin(Star):
             await event.react(emoji)
         except Exception as _e:
             logger.debug(f"【绘图·已读】 已读回执失败（可忽略）: {_e}")
+
+    @filter.command("绘图表情")
+    async def _cmd_try_emoji(
+        self,
+        event: AstrMessageEvent,
+        emoji_id: str = "",
+        emoji_type: str = "1",
+    ):
+        """【排障用】对当前这条消息贴指定编号的 QQ 原生表情回应，用来确认某个编号对应哪个表情。
+
+        用法：/绘图表情 <编号> [类型]，例如 /绘图表情 289（类型默认 1 = QQ 经典表情）。
+        """
+        bot = getattr(event, "bot", None)
+        msg_id = getattr(getattr(event, "message_obj", None), "message_id", None)
+        if bot is None or msg_id is None:
+            yield event.plain_result("当前平台不支持表情回应（需要 aiocqhttp / OneBot）。")
+            return
+        try:
+            eid = int(str(emoji_id).strip())
+        except Exception:
+            yield event.plain_result("用法：/绘图表情 <表情编号> [表情类型]，例如 /绘图表情 289")
+            return
+        etype = str(emoji_type or "1").strip() or "1"
+        try:
+            await _set_msg_emoji_like(bot, msg_id, eid, etype, True)
+        except Exception as _e:
+            logger.warning(f"【绘图表情】 贴表情失败: {_e}")
+            yield event.plain_result(f"贴表情失败：{_e}")
+            return
+        yield event.plain_result(f"已对这条消息贴表情：emoji_id={eid} emoji_type={etype}")
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=25)
     async def _ack_command_received(self, event: AstrMessageEvent):
@@ -6318,7 +6360,12 @@ class ComfyUIDrawPlugin(Star):
             # 普通闲聊里出现同名文字不误触。此时 WakingCheckStage 已剥掉唤醒前缀（如 /）。
             if cmds and getattr(event, "is_at_or_wake_command", False):
                 msg = re.sub(r"\s+", " ", raw)
-                hit = any(msg == c or msg.startswith(f"{c} ") for c in cmds)
+                # 「绘图表情」是排障指令，本身就是试贴表情，不要再叠加已读回执
+                hit = any(
+                    msg == c or msg.startswith(f"{c} ")
+                    for c in cmds
+                    if c != "绘图表情"
+                )
             # 正则触发（RegexFilter，如「画 / 绘图 / 生图」系）：不受唤醒前缀制约，
             # 与 AstrBot 的 RegexFilter 一样对整条消息做 search。
             if not hit and pats:
