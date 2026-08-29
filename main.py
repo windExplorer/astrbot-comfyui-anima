@@ -3518,6 +3518,7 @@ class ComfyUIDrawPlugin(Star):
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
             )
             return
+        # 已读回执由 _ack_command_received 统一处理（覆盖本插件所有指令，含 /draw）
         # 若消息或引用(回复)里带了图片，则按图生图处理
         images = await self._extract_images(event)
         async for m, _p in self._do_draw(
@@ -3566,6 +3567,7 @@ class ComfyUIDrawPlugin(Star):
             )
             event.stop_event()
             return
+        # 已读回执由 _ack_command_received 统一处理（覆盖本插件所有指令，含 /img2img）
         async for m, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
@@ -5703,6 +5705,14 @@ class ComfyUIDrawPlugin(Star):
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
+        # 已读回执：用户用自然语言触发生图（comfyui_draw）时，给原消息贴表情表示「已读」。
+        # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
+        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            try:
+                await event.react(self._cfg("draw_ack_emoji", "👀") or "👀")
+            except Exception as _e:
+                logger.debug(f"【绘图·已读】 发送已读表情失败（可忽略）: {_e}")
+
         # 单张保护：同一会话短时间内的重复调用视为模型死循环/误触发，
         # 直接收尾不重复生图（除非带 source 的第三方插件主动调用）。
         try:
@@ -6139,6 +6149,99 @@ class ComfyUIDrawPlugin(Star):
                 logger.debug(f"【取图】 消息前置缓存 {len(imgs)} 张: {imgs}")
         except Exception as e:
             logger.debug(f"【取图】 消息前置捕获图片失败（忽略）: {e}")
+
+    def _own_command_names(self) -> list[str]:
+        """本插件注册的所有指令名与别名（含中文，如 绘图状态 / 图库 / 萌绘）。"""
+        self._collect_own_triggers()
+        return self._ack_cmd_names_cache
+
+    def _own_regex_patterns(self) -> list:
+        """本插件注册的正则触发条件，如「画 / 绘图 / 生图」系指令的 RegexFilter。"""
+        self._collect_own_triggers()
+        return self._ack_regex_cache
+
+    def _collect_own_triggers(self) -> None:
+        """从 AstrBot 的 handler 注册表里读出本插件注册的全部触发条件：
+        CommandFilter 的指令名+别名，以及 RegexFilter 的正则。
+
+        动态读取而不是手写一份名单：以后新增或改名指令会自动纳入已读回执，
+        不会再漏掉中文指令，也不需要给每个 handler 各写一遍回执代码。
+        """
+        if (
+            getattr(self, "_ack_cmd_names_cache", None) is not None
+            and getattr(self, "_ack_regex_cache", None) is not None
+        ):
+            return
+        names: list[str] = []
+        pats: list = []
+        try:
+            from astrbot.core.star.filter.command import CommandFilter
+            from astrbot.core.star.filter.regex import RegexFilter
+            from astrbot.core.star.star_handler import star_handlers_registry
+
+            my_module = type(self).__module__
+            cls_prefix = f"{type(self).__name__}."
+            for md in list(star_handlers_registry):
+                try:
+                    h = getattr(md, "handler", None)
+                    if h is None:
+                        continue
+                    # 只认本插件注册的 handler：同模块，或本插件类的方法
+                    same_module = getattr(md, "handler_module_path", "") == my_module
+                    if not same_module and not str(
+                        getattr(h, "__qualname__", "")
+                    ).startswith(cls_prefix):
+                        continue
+                    for f in getattr(md, "event_filters", []) or []:
+                        if isinstance(f, CommandFilter):
+                            names.extend(f.get_complete_command_names())
+                        elif isinstance(f, RegexFilter):
+                            if getattr(f, "regex", None) is not None:
+                                pats.append(f.regex)
+                except Exception:
+                    continue
+        except Exception as _e:
+            logger.debug(f"【绘图·已读】 收集本插件触发条件失败（可忽略）: {_e}")
+        # 长名优先匹配，避免短指令抢先（如「绘图」与「绘图统计」）
+        names = sorted({n for n in names if n}, key=len, reverse=True)
+        self._ack_cmd_names_cache = names
+        self._ack_regex_cache = pats
+        if names or pats:
+            logger.info(
+                f"【绘图·已读】 已读回执覆盖 {len(names)} 个指令、{len(pats)} 个正则触发"
+            )
+
+    # 已读回执：本插件任意指令（含中文，如 /绘图状态 /图库 /萌绘 /图生图 /绘图统计）到达时，
+    # 在指令 handler 执行之前先给原消息贴个表情，让用户知道「收到了、在处理」。
+    # 统一在这里做而不是每个 handler 各写一遍：新增指令自动生效，也不会漏掉中文指令。
+    # priority 需高于指令 handler（默认 0），保证在指令执行前贴表情。
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=25)
+    async def _ack_command_received(self, event: AstrMessageEvent):
+        try:
+            if not self._cfg("draw_ack_enabled", True):
+                return
+            cmds = self._own_command_names()
+            pats = self._own_regex_patterns()
+            if not cmds and not pats:
+                return
+            raw = (event.get_message_str() or "").strip()
+            if not raw:
+                return
+            hit = False
+            # 指令（CommandFilter）：与 AstrBot 一致，只认「@机器人 / 唤醒词 / 私聊」触发的，
+            # 普通闲聊里出现同名文字不误触。此时 WakingCheckStage 已剥掉唤醒前缀（如 /）。
+            if cmds and getattr(event, "is_at_or_wake_command", False):
+                msg = re.sub(r"\s+", " ", raw)
+                hit = any(msg == c or msg.startswith(f"{c} ") for c in cmds)
+            # 正则触发（RegexFilter，如「画 / 绘图 / 生图」系）：不受唤醒前缀制约，
+            # 与 AstrBot 的 RegexFilter 一样对整条消息做 search。
+            if not hit and pats:
+                hit = any(p.search(raw) for p in pats)
+            if not hit:
+                return
+            await event.react(self._cfg("draw_ack_emoji", "👀") or "👀")
+        except Exception as _e:
+            logger.debug(f"【绘图·已读】 指令已读回执失败（可忽略）: {_e}")
 
     # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时也捕获一次图片，
     # 写入 g_recent_user_images（按会话滚动），供 LLM 工具兜底使用。
@@ -6722,6 +6825,14 @@ class ComfyUIDrawPlugin(Star):
             plugin = self
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
+
+        # 已读回执：用户用自然语言触发生图（comfyui_img2img）时，给原消息贴表情表示「已读」。
+        # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
+        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            try:
+                await event.react(self._cfg("draw_ack_emoji", "👀") or "👀")
+            except Exception as _e:
+                logger.debug(f"【绘图·已读】 发送已读表情失败（可忽略）: {_e}")
 
         # 单张保护：同 llm_draw，同一会话短时间重复调用（模型死循环）直接收尾
         try:

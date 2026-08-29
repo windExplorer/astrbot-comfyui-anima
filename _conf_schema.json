@@ -643,6 +643,18 @@
     "hint": "开启后：只有前面有生图任务（排队中）才发送「前面还有 N 个」提示；前面没有排队时不发提示（静默等待出图）。关闭后则保持原行为：无排队时也发「稍等，马上来」。需 return_queue_position 开启才生效。",
     "default": true
   },
+  "draw_ack_enabled": {
+    "type": "bool",
+    "description": "指令已读回执",
+    "hint": "开启后，收到本插件任意指令（含中文指令，如 /draw /图生图 /绘图状态 /图库 /萌绘）时，先给那条消息贴一个表情表示「已读、在处理」，再执行指令。表情贴不上不影响指令正常执行。",
+    "default": true
+  },
+  "draw_ack_emoji": {
+    "type": "string",
+    "description": "已读回执表情",
+    "hint": "已读回执使用的表情，需 draw_ack_enabled 开启。Telegram/Lark/Discord 等支持原生回应的平台是「贴表情回应」；QQ/OneBot 未实现原生回应时会回退成发送一条带该表情的消息。",
+    "default": "👀"
+  },
   "convert_webp_to_png": {
     "type": "bool",
     "description": "发送前把 webp 图片转成 png",
