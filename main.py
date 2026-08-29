@@ -6262,7 +6262,7 @@ class ComfyUIDrawPlugin(Star):
 
         if pname == "aiocqhttp" and bot is not None and msg_id is not None:
             try:
-                emoji_id = str(self._cfg("draw_ack_emoji_id", 124) or 124).strip()
+                emoji_id = str(self._cfg("draw_ack_emoji_id", 289) or 289).strip()
                 # emoji_type 必须显式传入：部分 OneBot 实现（如 LLOneBot）在缺少该参数时
                 # 会按 emoji_id 字符串长度猜测类型（长度 > 3 判为 "2"），从而贴错表情。
                 # "1" 表示 QQ 经典表情，配合 1~3 位的 face id 使用。

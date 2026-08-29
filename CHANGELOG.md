@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.93
+
+- **调整：QQ 已读回执默认表情与 `astrbot_plugin_parser` 仲裁机制保持一致**：默认 `emoji_id` 由 `124` 改为 `289`（即 parser 插件仲裁时贴出的那个表情，已在 aiocqhttp + LLOneBot 环境验证可稳定贴上）。想换其它表情直接改 `draw_ack_emoji_id` 即可。
+
 ## v4.9.92
 
 - **修复：QQ 已读回执贴错表情（关键修复）**：`set_msg_emoji_like` 缺少 `emoji_type` 参数。部分 OneBot 实现（LLOneBot）在缺少该参数时会按 `emoji_id` 字符串长度猜测表情类型（`emojiId.length > 3 ? '2' : '1'`），此前默认的 `128064` 长度 6 被判成 type `"2"`，于是贴出了错误的表情。现显式传入 `emoji_type`（默认 `"1"` = QQ 经典表情，配 1~3 位编号），默认 `emoji_id` 改为 `124`（反馈/确认类表情）。协议用法参考 `astrbot_plugin_parser` 的 `EmojiLikeArbiter`（其仲裁表情 `emoji_id=289`、反馈表情 `emoji_id=124`，均为 `emoji_type="1"`）。
