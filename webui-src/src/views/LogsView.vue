@@ -210,7 +210,7 @@ const viewerItem = ref<any>(null);
 const viewerRefSha = ref("");
 const viewerIndex = ref(0);
 const viewerImages = computed(() =>
-  records.value
+  (recRows.value || [])
     .filter((r: any) => r.sha || r.sha256)
     .map((r: any) => ({ sha: r.sha || r.sha256, item: r, refSha: r.ref_sha256 || "" }))
 );
@@ -218,7 +218,7 @@ const viewerImages = computed(() =>
 function openViewer(row: any) {
   const sha = row.sha || row.sha256;
   if (!sha) return;
-  const idx = viewerImages.value.findIndex((it: any) => it.sha === sha);
+  const idx = (viewerImages.value || []).findIndex((it: any) => it.sha === sha);
   viewerIndex.value = idx >= 0 ? idx : 0;
   viewerSha.value = sha;
   viewerItem.value = { ...row };

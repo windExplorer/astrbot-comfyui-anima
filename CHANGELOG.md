@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v4.9.88
+
+- **修复：出图记录页点击缩略图报错 `ReferenceError: records is not defined`**：`LogsView.vue` 的 `viewerImages` computed 里引用了并不存在的变量 `records`，而出图记录的实际响应式变量是 `recRows`，导致该 computed 每次求值即抛异常。
+- **修复：出图记录页点击缩略图报错 `TypeError: Cannot read properties of undefined (reading 'findIndex')`**：这是上一条的次生错误——Vue 的 computed 在 getter 抛异常时会先把 `_dirty` 置为 `false`，异常抛出后 `_value` 仍为 `undefined`，之后点击缩略图触发 `openViewer` 再访问 `viewerImages.value` 时因 `_dirty=false` 直接返回 `undefined`，于是 `undefined.findIndex(...)` 崩溃。修好 `records` 后本项错误随之消失，并额外给 `findIndex` 加了空值兜底。
+- **修复：多张出图时第 2 张起的种子被固定成 1、2、3**：`llm_draw` / `llm_img2img` 对多张图的种子递增写成 `(seed or 0) + _i`，当调用方**未指定** seed（默认 0）时会算出 1、2、3，再经 `_seed or None` 传参后被当作真实种子固定使用，于是图库里出现种子为 1、2 的图（本应是随机大数）。现改为仅在调用方明确指定 seed 时才递增，未指定时保持随机。
+- **新增：图库大图详情展示「群号」**：`images` 表新增 `group_id` 列（旧库启动时自动 ALTER 补列，无需手工迁移），出图归档时从事件写入所属群号，详情面板在「用户ID」下方新增一行「群号」（私聊或取不到群号时自动隐藏）。注：v4.9.86 的群号是分享端从 `session_id` 解析出来的展示值，本次是真实入库的 `group_id` 字段。
+
 ## v4.9.87
 
 - **新增：指令「已读回执」**：收到本插件任意指令时，先给那条消息贴一个表情（默认 👀）表示「已读、在处理」，再执行指令。覆盖范围是从 AstrBot handler 注册表**动态收集**的本插件全部触发条件：所有 `@filter.command` 指令及其别名（含中文，如 `/绘图统计` `/绘图排行` `/绘图状态` `/图库` `/萌绘` `/图生图` `/绘图帮助`），以及 `@filter.regex` 正则指令（`/画` `/绘图` `/绘画` `/生图` `/画图` `/作画` `/画画`，与 AstrBot 一致、不受唤醒前缀制约）。以后新增或改名指令自动纳入，不再需要逐个 handler 补回执代码，也不会再漏掉中文指令。可用 `draw_ack_enabled` 开关、`draw_ack_emoji` 自定义表情；贴表情失败不影响指令正常执行。

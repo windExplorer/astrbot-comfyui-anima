@@ -3289,6 +3289,7 @@ class ComfyUIDrawPlugin(Star):
                                 user_id=user_id,
                                 user_name=user_name,
                                 session_id=(getattr(event, "session_id", "") or ""),
+                                group_id=(getattr(event, "get_group_id", lambda: "")() or ""),
                                 trigger_msg=(getattr(event, "message_str", "") or ""),
                                 status=0,
                                 on_dedup=lambda _sha, _uc: self._oplog_dedup(
@@ -6043,7 +6044,10 @@ class ComfyUIDrawPlugin(Star):
         # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
         _draw_n = max(1, int(count or 1))
         for _i in range(_draw_n):
-            _seed_i = ((seed or 0) + _i) if _draw_n > 1 else seed
+            # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
+            # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
+            # 若仍用 (0 + _i) 会让多张出图的第 2 张起被固定成 1、2、3 这类退化种子。
+            _seed_i = (int(seed) + _i) if (_draw_n > 1 and seed) else seed
             async for node, p in plugin._do_draw(
                 event,
                 resolved_wf,
@@ -7013,7 +7017,9 @@ class ComfyUIDrawPlugin(Star):
         # 用户逐张收到，而不是等全部画完一次性连发。伴侣插件仍收集全部路径后返回 JSON。
         _draw_n2 = max(1, int(count or 1))
         for _j in range(_draw_n2):
-            _seed_j = ((seed or 0) + _j) if _draw_n2 > 1 else seed
+            # 同 llm_draw：仅在明确指定 seed 时递增，未指定时保持 0 走随机，
+            # 避免多张图生图的第 2 张起被固定成 1、2、3 这类退化种子。
+            _seed_j = (int(seed) + _j) if (_draw_n2 > 1 and seed) else seed
             async for node, p in plugin._do_draw(
                 event,
                 resolved_wf,

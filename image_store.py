@@ -174,7 +174,8 @@ class ImageStore:
                 deleted_at REAL DEFAULT NULL,
                 is_public  INTEGER NOT NULL DEFAULT 0,
                 is_global  INTEGER NOT NULL DEFAULT 0,
-                session_id TEXT DEFAULT ''
+                session_id TEXT DEFAULT '',
+                group_id   TEXT DEFAULT ''
             )""",
         )
         # 兼容已存在的旧库：缺列则补上
@@ -194,6 +195,7 @@ class ImageStore:
             ("nsfw_score", "REAL DEFAULT NULL"),
             ("nsfw_blur", "INTEGER DEFAULT NULL"),
             ("nsfw_checked", "INTEGER NOT NULL DEFAULT 0"),
+            ("group_id", "TEXT DEFAULT ''"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -561,6 +563,7 @@ class ImageStore:
         user_id: str = "",
         user_name: str = "",
         session_id: str = "",
+        group_id: str = "",
         trigger_msg: str = "",
         status: int = 0,
         on_dedup=None,
@@ -698,9 +701,9 @@ class ImageStore:
                 (sha256, ext, month, prompt, prompt_raw, workflow, loras,
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
                  use_count, starred, created_at, size_bytes, cost_sec,
-                 user_id, user_name, session_id, trigger_msg, status,
+                 user_id, user_name, session_id, group_id, trigger_msg, status,
                  nsfw, nsfw_score, nsfw_blur, nsfw_checked)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?,?,
                         ?,?,?,?)
                 """,
                 (
@@ -709,7 +712,7 @@ class ImageStore:
                     seed, w, h, denoise,
                     1 if is_img2img else 0, ref_sha256 or "", source,
                     time.time(), size_bytes, cost_sec,
-                    user_id or "", user_name or "", session_id or "", trigger_msg or "", status,
+                    user_id or "", user_name or "", session_id or "", group_id or "", trigger_msg or "", status,
                     _nsfw, _nsfw_score, None, _nsfw_checked,
                 ),
             )
@@ -959,6 +962,7 @@ class ImageStore:
             "user_id": row["user_id"],
             "user_name": row["user_name"],
             "session_id": row["session_id"] if "session_id" in row.keys() else "",
+            "group_id": row["group_id"] if "group_id" in row.keys() else "",
             "trigger_msg": row["trigger_msg"],
             "status": row["status"],
             "deleted": bool(row["deleted"]),
