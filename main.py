@@ -4933,6 +4933,44 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
+    def _draw_run_has_drawn(self, event) -> bool:
+        """本轮 agent run 内是否已经成功出过图（calls >= 1）。"""
+        try:
+            sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+            state = getattr(self, "_draw_run_state", None)
+            if isinstance(state, dict):
+                st = state.get(sid)
+                if isinstance(st, dict) and int(st.get("calls", 0) or 0) >= 1:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _draw_run_empty_arg_block(self, event, source: str = "", tool_name: str = "") -> str | None:
+        """空参数 + 本轮已出图 → 返回拦截提示（不必再兜底提取去画）。
+
+        专门针对日志里那种死循环：模型画完收到「收尾指令」后，又用空参数 {} 调
+        comfyui_draw，插件原先会"好心"地从对话里兜底提取文本当 prompt 再画一张，
+        于是把历史对话内容（如 "Describe the scene by yourself..."）反复当提示词，
+        陷入「成功→收尾→空参再调→兜底又画」的无限循环。
+        本轮只要已经成功出过图，后续任何空参数调用一律直接收尾，不再出图。
+        """
+        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+            return None
+        if self._draw_run_has_drawn(event):
+            logger.info(
+                f"【工具·{tool_name or 'draw'}】 本轮已出图，又收到空参数调用，"
+                f"判定为「收尾后空参重复调用」死循环，直接收尾拦截（不再兜底提取文本生图）"
+            )
+            return (
+                "本次画图任务已经完成，图片已发送给用户。"
+                "你这次调用没有传入任何参数（空参数），说明你【不需要再画】——"
+                "这不是(想再画一张)，而是你已经结束了。请直接用一句话自然收尾并结束回复，"
+                "【绝对不要】再调用任何画图工具，也不要用空参数或相同参数重试。"
+                "只有当用户下一条新消息明确要求再画时才继续。"
+            )
+        return None
+
     @staticmethod
     def _is_private_event(event) -> bool:
         """判断当前事件是否为私聊。
@@ -5929,6 +5967,15 @@ class ComfyUIDrawPlugin(Star):
         # 此时优先用「指定模型」(llm_model) 重新从用户原话提取参数；再退回从原始消息文本取描述，
         # 避免「空参数→报错→重试→空参数」死循环。
         if not prompt or not prompt.strip():
+            # 空参数 + 本轮已成功出图 → 直接收尾，不再兜底提取对话文本当 prompt 去画。
+            # 这是「收尾指令」后 LLM 又空参 {} 重复调用的死循环专用拦截（v4.9.96 补丁）：
+            # 否则会把历史对话内容反复当提示词，一张接一张画不停。
+            _empty_block = plugin._draw_run_empty_arg_block(
+                event, source=source, tool_name="comfyui_draw"
+            )
+            if _empty_block is not None:
+                return _empty_block
+
             user_text = ""
             try:
                 user_text = (getattr(event, "message_str", "") or "").strip()
@@ -7223,6 +7270,14 @@ class ComfyUIDrawPlugin(Star):
         # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
         # 优先用「指定模型」(llm_model) 重新提取；再退回原始消息文本，避免死循环。
         if not prompt or not prompt.strip():
+            # 空参数 + 本轮已成功出图 → 直接收尾，不再兜底提取对话文本当 prompt 去画。
+            # 同 comfyui_draw 的死循环专用拦截（v4.9.96 补丁）。
+            _empty_block2 = plugin._draw_run_empty_arg_block(
+                event, source=source, tool_name="comfyui_img2img"
+            )
+            if _empty_block2 is not None:
+                return _empty_block2
+
             user_text = ""
             try:
                 user_text = (getattr(event, "message_str", "") or "").strip()
