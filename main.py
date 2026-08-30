@@ -4827,6 +4827,12 @@ class ComfyUIDrawPlugin(Star):
         "之前生成的图已经发给用户，请用一句话简短、自然地收尾即可。"
     )
     _DRAW_RUN_FAIL_HINT = "画图连续遇到问题，本次没能出图。请用一句话简短向用户说明情况即可。"
+    # 重复调用超过容忍次数后才用的终止信号。实测模型被拦后会换个 seed 继续调，
+    # 若一直回 DONE_HINT 它会一直调（日志里 17 次、空转 51 秒才停），
+    # 不出图但白白烧 token、让用户干等。这里才需要一句明确的「停」。
+    _DRAW_RUN_STOP_HINT = (
+        "已经没有新的图片要生成了。请直接结束回复，不要再调用任何画图工具。"
+    )
 
     def _draw_run_msg_fp(self, event) -> str:
         """生成「触发本轮 agent run 的用户消息」指纹，用于判定是否为同一次请求。"""
@@ -4860,7 +4866,7 @@ class ComfyUIDrawPlugin(Star):
             or st.get("msg_fp") != msg_fp
             or (now - float(st.get("ts", 0.0) or 0.0)) > self._DRAW_RUN_TTL
         ):
-            st = {"msg_fp": msg_fp, "ok": 0, "fail": 0, "ts": now}
+            st = {"msg_fp": msg_fp, "ok": 0, "fail": 0, "blocked": 0, "ts": now}
             state[sid] = st
         st["ts"] = now
         return st
@@ -4887,6 +4893,18 @@ class ComfyUIDrawPlugin(Star):
         fail = int(st.get("fail", 0) or 0)
         sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
         if max_calls > 0 and ok >= max_calls:
+            # 本轮已出过图 → 拦回。同时记一次「重复调用」：
+            # 不记数的话模型会换个 seed 接着调、再被拦、再调……（实测 17 次、
+            # 空转 51 秒才停）一张新图都不出，却白白烧 token 并让用户干等。
+            # 超过容忍次数后改用明确的终止信号，让它别再调了。
+            blocked = int(st.get("blocked", 0) or 0) + 1
+            st["blocked"] = blocked
+            if max_retry >= 0 and blocked > max_retry:
+                logger.info(
+                    f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮出图后仍重复调用 {blocked} 次，"
+                    f"超过容忍次数 {max_retry}，硬终止（防空转烧 token）"
+                )
+                return False, self._DRAW_RUN_STOP_HINT
             logger.info(
                 f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮已成功出图 {ok} 次，"
                 f"达到单轮上限 {max_calls}，拦截本次调用（一次对话出完即关门）"
@@ -6876,8 +6894,25 @@ class ComfyUIDrawPlugin(Star):
                 return "画廊还是空的～先画点图或收藏点图吧。"
             lines = ["最近的图片（回复编号即可发图）："]
             for i, r in enumerate(rows, 1):
-                t = (" #" + " #".join(r["tags"])) if r["tags"] else ""
-                lines.append(f"{r.get('gidx', i)}. {'★' if r['starred'] else ''} {r['source']}{t}")
+                _tags = (" #" + " #".join(r["tags"])) if r["tags"] else ""
+                # 用「提示词摘要 + 时间」标识图片。原先只显示 source（值恒为 gen/ref/user
+                # 之一），列表会变成一串毫无区分度的 "gen"，模型认不出哪张是哪张，
+                # 只能盲选编号、把不相干的旧图发给用户。
+                _desc = (r.get("prompt") or "").strip().replace("\n", " ")
+                if len(_desc) > 40:
+                    _desc = _desc[:40] + "…"
+                if not _desc:
+                    _desc = r.get("source") or "（无描述）"
+                _when = ""
+                try:
+                    _ca = float(r.get("created_at") or 0)
+                    if _ca > 0:
+                        _when = " [" + time.strftime("%m-%d %H:%M", time.localtime(_ca)) + "]"
+                except (TypeError, ValueError):
+                    _when = ""
+                lines.append(
+                    f"{r.get('gidx', i)}. {'★' if r['starred'] else ''}{_desc}{_tags}{_when}"
+                )
             return "\n".join(lines)
 
         elif mode == "stats":
