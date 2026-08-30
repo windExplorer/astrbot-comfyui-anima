@@ -4819,6 +4819,120 @@ class ComfyUIDrawPlugin(Star):
         bucket[sid] = ts_list
         return actual, ""
 
+    # ── 单轮请求出图闸门（防「图都发完了模型还在一直画」）────────────────────
+    # 背景（v4.9.96）：AstrBot 的 tool loop 只会给模型一句「你已重复调用 N 次」的软提示，
+    # 不会强制终止循环；而本插件原有三道防线在真实场景下全部失效：
+    #   ①「4 秒内重复调用」拦截（llm_draw / llm_img2img）——一张图要画十几秒到几十秒，
+    #      两次调用的间隔必然 > 4 秒，形同虚设；
+    #   ②出图预算 _llm_draw_budget——draw_auto.admin_exempt 默认 true，管理员直接豁免；
+    #   ③「同参去重」只在 llm_img2img 里有（且窗口仅 30 秒），llm_draw 根本没写。
+    # 于是模型可以一遍遍用相同参数调 comfyui_draw，每调一次就真出一张图。
+    #
+    # 这里补一道硬闸门，按「同一次用户请求（一轮 agent run）」封顶：
+    #   · 同一轮内成功出图次数达到 draw_auto.per_run_max_calls → 一律拦截；
+    #   · 同一轮内用完全相同的参数重复调用（无论是否管理员）→ 一律拦截；
+    #   · 轮次边界 = 触发本轮 run 的用户消息指纹，用户发新消息即自动重置；
+    #     on_agent_done 时也会清除，不影响用户下一条消息继续画。
+    # 伴侣插件等第三方主动调用（带 source）不参与此闸门。
+    _DRAW_RUN_TTL = 900.0  # 同一轮状态最长保留 15 分钟，超时兜底重置，避免状态残留锁死
+
+    def _draw_run_msg_fp(self, event) -> str:
+        """生成「触发本轮 agent run 的用户消息」指纹，用于判定是否为同一次请求。"""
+        try:
+            mo = getattr(event, "message_obj", None)
+            mid = str(getattr(mo, "message_id", "") or "") if mo is not None else ""
+            ts = getattr(mo, "timestamp", None) if mo is not None else None
+            text = (getattr(event, "message_str", "") or "").strip()
+            if not (mid or ts):
+                ts = int(time.time())
+            return f"{mid}|{ts}|{text[:120]}"
+        except Exception:
+            return "unknown"
+
+    def _draw_run_check(
+        self, event, args_fp: str = "", source: str = "", tool_name: str = ""
+    ) -> tuple[bool, str]:
+        """同一次用户请求内的画图工具闸门，返回 (是否放行, 拦截提示)。
+
+        args_fp 为本次调用的参数指纹；空串表示不参与同参去重（仅受次数限制）。
+        """
+        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+            return True, ""
+        cfg = self._cfg("draw_auto", {}) or {}
+        try:
+            max_calls = int(cfg.get("per_run_max_calls", 2) or 2)
+        except (TypeError, ValueError):
+            max_calls = 2
+        sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+        msg_fp = self._draw_run_msg_fp(event)
+        now = time.time()
+        state = getattr(self, "_draw_run_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            self._draw_run_state = state
+        st = state.get(sid)
+        # 新的一轮用户消息（或超时残留状态）→ 重置闸门
+        if (
+            not isinstance(st, dict)
+            or st.get("msg_fp") != msg_fp
+            or (now - float(st.get("ts", 0.0) or 0.0)) > self._DRAW_RUN_TTL
+        ):
+            st = {"msg_fp": msg_fp, "calls": 0, "arg_fps": [], "ts": now}
+            state[sid] = st
+        st["ts"] = now
+
+        if max_calls > 0 and int(st.get("calls", 0) or 0) >= max_calls:
+            logger.info(
+                f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮已成功出图 {st.get('calls')} 次，"
+                f"达到单轮上限 {max_calls}，拦截本次调用（防模型画完不停）"
+            )
+            return False, (
+                "本次画图任务已经完成，图片已全部发送给用户。"
+                "现在【禁止】再次调用任何画图工具（comfyui_draw / comfyui_img2img），"
+                "也不要再为这一条请求生图。请直接输出一句话自然收尾（例如「画好啦」）并结束回复。"
+                "只有当用户下一条新消息明确要求再画时，才允许再次画图"
+                "（届时若要多张，应在一次调用里传 count=N，不要分多次调用）。"
+            )
+        if args_fp and args_fp in (st.get("arg_fps") or []):
+            logger.info(
+                f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮相同参数重复调用画图工具，"
+                f"判定为模型死循环，拦截（防重复生图）"
+            )
+            return False, (
+                "你已经用完全相同的参数画过一次了，图片已发送给用户。"
+                "请用一句话自然收尾并结束回复；【绝对不要】再用相同参数重复调用画图工具，"
+                "也不要靠改一两个无关参数继续生图。等用户下一条新消息的明确指示。"
+            )
+        return True, ""
+
+    def _draw_run_hit(self, event, args_fp: str = "") -> None:
+        """本轮成功出图一次，记入闸门（次数 +1 并记录本次参数指纹）。"""
+        try:
+            sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+            state = getattr(self, "_draw_run_state", None)
+            if not isinstance(state, dict):
+                return
+            st = state.get(sid)
+            if not isinstance(st, dict):
+                return
+            st["calls"] = int(st.get("calls", 0) or 0) + 1
+            if args_fp:
+                fps = list(st.get("arg_fps") or [])
+                fps.append(args_fp)
+                st["arg_fps"] = fps[-5:]
+            st["ts"] = time.time()
+        except Exception:
+            pass
+
+    def _draw_run_reset(self, sid: str) -> None:
+        """清除某会话的单轮出图闸门状态（一轮 agent run 结束时调用）。"""
+        try:
+            state = getattr(self, "_draw_run_state", None)
+            if isinstance(state, dict) and sid:
+                state.pop(sid, None)
+        except Exception:
+            pass
+
     @staticmethod
     def _is_private_event(event) -> bool:
         """判断当前事件是否为私聊。
@@ -5734,6 +5848,10 @@ class ComfyUIDrawPlugin(Star):
         3. 都不匹配就**留空** img2img_workflow，让插件自动用图生图默认工作流，不要硬猜工作流名。
         
         重要：不要依赖历史记忆复用旧图。用户再次要图就重新生成。画完就自然收尾，不要不停追问或重复画。
+        ★★一条用户请求只调一次本工具（最重要）：用户要 N 张就在这一次调用里传 count=N，
+        画完立刻收尾；【绝对禁止】在同一条请求里反复调用本工具（换参数再画一次也不行）。
+        插件对「同一条用户消息」有硬性出图闸门：重复调用会被直接拦截并返回「不要重复生图」，
+        你再调也出不了图，只会浪费一轮。只有用户发来【下一条新消息】明确要求再画时才可再次调用。
         
         Args:
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
@@ -5854,6 +5972,31 @@ class ComfyUIDrawPlugin(Star):
                     prompt = self._strip_command(user_text, "draw")
                 if not prompt or not prompt.strip():
                     return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
+
+        # ── 单轮请求闸门（v4.9.96）───────────────────────────────────
+        # 这是「图都发完了模型还在一直画」的主防线：同一条用户消息引发的一轮里，
+        # 成功出图次数封顶 + 完全相同参数直接拦（不受 admin_exempt 影响）。
+        # 放在 prompt 兜底之后，保证指纹用的是真正拿去生图的参数。
+        _draw_args_fp = "|".join(
+            [
+                str(prompt or "").strip(),
+                str(negative_prompt or "").strip(),
+                str(workflow or "").strip(),
+                str(img2img_workflow or "").strip(),
+                str(width or 0),
+                str(height or 0),
+                str(seed or 0),
+                str(count or 0),
+                str(denoise),
+                str(image or "").strip(),
+                json.dumps(loras or [], ensure_ascii=False, sort_keys=True),
+            ]
+        )
+        _gate_ok, _gate_hint = plugin._draw_run_check(
+            event, _draw_args_fp, source=source, tool_name="comfyui_draw"
+        )
+        if not _gate_ok:
+            return _gate_hint
 
         lora_map = self._parse_llm_loras(loras)
 
@@ -6142,9 +6285,13 @@ class ComfyUIDrawPlugin(Star):
             # 给 LLM，让它对所有图发完后做一句话自然收尾。
             # 防死循环说明：返回文本会被 AstrBot 喂回 LLM，LLM 理论上可能再次调用画图工具。
             # 因此文本必须【极其明确地】宣告「本次生图任务已完成、禁止重复生图」；
-            # 且外层已有 4 秒连续调用拦截 + 同参（prompt+seed）去重 + 出图预算兜底。
+            # 且外层已有单轮闸门（次数封顶 + 同参去重）+ 4 秒拦截 + 出图预算兜底。
             # 注意：不要 return None——None 会让 AstrBot 直接置 DONE 结束循环，LLM 不再说话，
             # 用户会看到「图发完就哑了」。这里需要 LLM 收尾，故返回文本。
+            try:
+                plugin._draw_run_hit(event, _draw_args_fp)
+            except Exception:
+                pass
             return (
                 "本次生图任务已全部完成，所有图片都已生成并发送给用户。"
                 "请用一句话简短、自然地收尾即可（例如「画好啦」）。"
@@ -6523,6 +6670,9 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if sid:
                 g_draw_agent_sessions.pop(sid, None)
+                # 一轮 agent run 结束：清除单轮出图闸门状态，确保用户下一条新消息
+                # 可以正常继续画图（不会被上一轮的计数/同参记录误拦）。
+                self._draw_run_reset(sid)
         except Exception:
             pass
 
@@ -6978,6 +7128,10 @@ class ComfyUIDrawPlugin(Star):
         补充说明：
         - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
         - 参考图通常附在用户消息里即可，插件会自动提取；无需强求大模型传 image 参数。
+        - ★★一条用户请求只调一次本工具：要 N 张就在这一次调用里传 count=N，画完立刻收尾。
+          【绝对禁止】在同一条请求里反复调用本工具（换参数再改一次也不行）——插件对同一条
+          用户消息有硬性出图闸门，重复调用会被直接拦截，再调也出不了图。
+          只有用户发来【下一条新消息】明确要求再改时才可再次调用。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
@@ -7026,6 +7180,30 @@ class ComfyUIDrawPlugin(Star):
                     return "你已经用同样的参数画过了，图片已发送。本次请求到此结束，【绝对不要】再用相同 prompt+seed 重复调用画图工具；等待用户下一条新消息的明确指示。"
             except Exception:
                 pass
+
+        # ── 单轮请求闸门（v4.9.96）───────────────────────────────────
+        # 与 comfyui_draw 同一套闸门：同一条用户消息引发的一轮里成功出图次数封顶，
+        # 且完全相同参数直接拦（不受 admin_exempt 影响，也不受 30 秒窗口限制）。
+        _i2i_args_fp = "|".join(
+            [
+                str(prompt or "").strip(),
+                str(negative_prompt or "").strip(),
+                str(img2img_workflow or "").strip(),
+                str(seed or 0),
+                str(count or 0),
+                str(denoise),
+                str(image or "").strip(),
+                json.dumps(loras or [], ensure_ascii=False, sort_keys=True),
+            ]
+        )
+        try:
+            _gate_ok2, _gate_hint2 = plugin._draw_run_check(
+                event, _i2i_args_fp, source=source, tool_name="comfyui_img2img"
+            )
+            if not _gate_ok2:
+                return _gate_hint2
+        except Exception:
+            pass
 
         # 会话级出图预算：同 llm_draw，限制「同一次用户请求」内连续画图最大张数（防无脑连发）
         # 同 llm_draw：模型没传 count（=0/空）时固定出 1 张（用户没提数量）；填了具体数则按具体数。
@@ -7206,7 +7384,11 @@ class ComfyUIDrawPlugin(Star):
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
             # 原生 / Agent 调用：图片已在循环内「画一张发一张」。这里返回一句「收尾指令」
             # 给 LLM，让它对所有图发完后做一句话自然收尾（同 comfyui_draw，不 return None，
-            # 否则 Agent Loop 直接结束、LLM 不再说话；靠外层 4 秒拦截 + 同参去重 + 出图预算兜底）。
+            # 否则 Agent Loop 直接结束、LLM 不再说话；靠单轮闸门 + 4 秒拦截 + 同参去重 + 出图预算兜底）。
+            try:
+                plugin._draw_run_hit(event, _i2i_args_fp)
+            except Exception:
+                pass
             return (
                 "本次生图任务已全部完成，所有图片都已生成并发送给用户。"
                 "请用一句话简短、自然地收尾即可（例如「画好啦」）。"
