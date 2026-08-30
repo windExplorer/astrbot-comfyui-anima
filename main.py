@@ -4822,8 +4822,9 @@ class ComfyUIDrawPlugin(Star):
     # 注意：必须返回文本而非 None——None 会让 AstrBot 直接判定 DONE 结束循环，
     # 模型一句话不说，用户会看到「图发完就哑了」。
     _DRAW_RUN_DONE_HINT = (
-        "本次调用没有产生新的图片，之前生成的图已经发给用户了。"
-        "请用一句话简短、自然地收尾即可。"
+        "同一条用户消息里已经出过图了，本次调用没有产生新的图片"
+        "（要继续画需要等用户发下一条新消息）。"
+        "之前生成的图已经发给用户，请用一句话简短、自然地收尾即可。"
     )
     _DRAW_RUN_FAIL_HINT = "画图连续遇到问题，本次没能出图。请用一句话简短向用户说明情况即可。"
 
@@ -5875,8 +5876,8 @@ class ComfyUIDrawPlugin(Star):
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
-            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。总张数受插件配置的单次上限约束（默认 3 张），超出部分会自动截断、不会出图。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
-            prompts(array[string]): 多条提示词（可选），用于一次画【多个不同画面】，例如用户说"分别画猫、狗和兔子"就传 ["cat, ...", "dog, ...", "rabbit, ..."]。★用户说「各来 X 张 / 每个 X 张」时，把每个分组写成一项并配合 count=X（总张数 = 条数 × X），例如"白天、晚上、深夜各来两张"→ prompts 传三条 + count=2 = 6 张。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个画面请用它一次传完，不要拆成多次调用本工具。
+            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。★同时传了 prompts 时，count 表示【本次总共要出几张】，会被平均摊到各条提示词（如 3 条 + count=6 → 每条 2 张）。总张数受插件配置的单次上限约束（默认 3 张），超出部分会自动截断、不会出图。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            prompts(array[string]): 多条提示词（可选），用于一次画【多个不同画面】，例如用户说"分别画猫、狗和兔子"就传 ["cat, ...", "dog, ...", "rabbit, ..."]。★用户说「各来 2 张」时：把每个分组写成一项（白天/晚上/深夜 3 条），再把【总张数】填进 count（3 组 × 2 张 = 6）→ prompts 3 条 + count=6；也可以把每个画面单独写成一项（6 条）+ count=6，则每条出 1 张。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个画面请用它一次传完，不要拆成多次调用本工具。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
@@ -5923,13 +5924,20 @@ class ComfyUIDrawPlugin(Star):
         #     报错文案会要求模型把画面描述填进 prompt 后再调一次（配合失败重试额度生效）。
         #   · 带 source（伴侣插件等第三方主动调用）：它们本就不填 prompt、依赖插件兜底，
         #     保留原有的「指定模型提取 → 原始消息文本」链路，不破坏既有集成。
-        if not prompt or not prompt.strip():
+        # 判定"有没有画面描述"：prompt 单条 或 prompts 数组，任一非空即算有。
+        # ★必须同时看 prompts——早期版本只判断 prompt，导致模型只传 prompts 数组
+        #   （多条不同画面、不传 prompt）时被误判成空参数、直接报错退回，
+        #   白白浪费一次调用，还逼得模型改成分多次调用。
+        _has_any_prompt = bool(prompt and prompt.strip()) or bool(
+            [x for x in (prompts or []) if str(x).strip()]
+        )
+        if not _has_any_prompt:
             if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
                 plugin._draw_run_fail(event, kind="empty")
-                logger.info("【工具·llm_draw】 空参数调用（未传 prompt），拒绝兜底提取，要求模型补齐后重试")
+                logger.info("【工具·llm_draw】 空参数调用（prompt 与 prompts 均为空），拒绝兜底提取，要求模型补齐后重试")
                 return (
-                    "调用失败：缺少必填参数 prompt（图像的正向提示词描述）。"
-                    "请把本次要画的画面描述完整填进 prompt 参数，再重新调用本工具一次。"
+                    "调用失败：缺少画面描述。请把本次要画的画面描述填进 prompt 参数"
+                    "（若是多个不同画面，改用 prompts 数组逐条列出），再重新调用本工具一次。"
                 )
 
             user_text = ""
@@ -5981,19 +5989,27 @@ class ComfyUIDrawPlugin(Star):
         # 提示词各出几张。总张数受插件配置的单次上限（draw_auto.max）约束，超出自动截断
         # （上限 9、要 10 张 → 只出 9 张）；伴侣插件等带 source 的调用不受此上限限制。
         _p_list = [str(x).strip() for x in (prompts or []) if str(x).strip()]
-        if not _p_list:
-            _p_list = [(prompt or "").strip()]
         _per = max(1, int(count or 1))
-        _wanted = len(_p_list) * _per
+        if _p_list:
+            # 传了 prompts：count 表示【本次总共要出几张】，平均摊到各条提示词。
+            #   6 条 + count=6 → 每条 1 张；3 条 + count=6 → 每条 2 张。
+            # 不传 count 时按每条 1 张。
+            # ★早期版本这里按「条数 × count」算，实测模型把 count 当总张数传
+            #   （如 6 条 + count=6 本意是 6 张，旧算法会算出 36 张），故改为总张数语义。
+            _wanted = _per if (count and int(count) > 0) else len(_p_list)
+        else:
+            # 没传 prompts：单条 prompt 出 count 张
+            _p_list = [(prompt or "").strip()]
+            _wanted = _per
         _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source)
+        # 把 _allowed 张平均摊到各条提示词上（余数分给前几条）
+        _groups = len(_p_list) or 1
+        _base, _rest = divmod(max(1, _allowed), _groups)
         _plan: list[tuple[str, int]] = []
-        _remain = max(1, _allowed)
-        for _pt in _p_list:
-            if _remain <= 0:
-                break
-            _n = min(_per, _remain)
-            _plan.append((_pt, _n))
-            _remain -= _n
+        for _idx, _pt in enumerate(_p_list):
+            _n = _base + (1 if _idx < _rest else 0)
+            if _n > 0:
+                _plan.append((_pt, _n))
         if not _plan:
             _plan = [(_p_list[0], 1)]
         logger.info(
@@ -7123,8 +7139,8 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
-            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量 → 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。总张数受插件配置的单次上限约束（默认 3 张），超出部分会自动截断、不会出图。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
-            prompts(array[string]): 多条提示词（可选），用于一次做【多个不同变换】，例如用户说"分别转成水彩和油画"就传 ["watercolor style, ...", "oil painting style, ..."]。★用户说「各来 X 张 / 每个效果 X 张」时，把每个效果写成一项并配合 count=X（总张数 = 条数 × X）。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个效果请用它一次传完，不要拆成多次调用本工具。
+            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量 → 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。★同时传了 prompts 时，count 表示【本次总共要出几张】，会被平均摊到各条提示词（如 3 条 + count=6 → 每条 2 张）。总张数受插件配置的单次上限约束（默认 3 张），超出部分会自动截断、不会出图。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            prompts(array[string]): 多条提示词（可选），用于一次做【多个不同变换】，例如用户说"分别转成水彩和油画"就传 ["watercolor style, ...", "oil painting style, ..."]。★用户说「各来 2 张 / 每个效果 2 张」时，把每个效果写成一项，再把【总张数】填进 count（如 3 个效果各 2 张 → prompts 3 条 + count=6）。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个效果请用它一次传完，不要拆成多次调用本工具。
 
         补充说明：
         - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -7165,13 +7181,17 @@ class ComfyUIDrawPlugin(Star):
         # prompt 兜底：与 comfyui_draw 同一套规则——
         #   · 不带 source：空参数【直接报错】，绝不去对话历史兜底抓文本当 prompt；
         #   · 带 source（伴侣插件等）：保留原有的「指定模型提取 → 原始消息文本」链路。
-        if not prompt or not prompt.strip():
+        # 同 comfyui_draw：prompt 单条 或 prompts 数组，任一非空即算有画面描述。
+        _has_any_prompt2 = bool(prompt and prompt.strip()) or bool(
+            [x for x in (prompts or []) if str(x).strip()]
+        )
+        if not _has_any_prompt2:
             if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
                 plugin._draw_run_fail(event, kind="empty")
-                logger.info("【工具·llm_img2img】 空参数调用（未传 prompt），拒绝兜底提取，要求模型补齐后重试")
+                logger.info("【工具·llm_img2img】 空参数调用（prompt 与 prompts 均为空），拒绝兜底提取，要求模型补齐后重试")
                 return (
-                    "调用失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。"
-                    "请把本次要做的变换描述完整填进 prompt 参数，再重新调用本工具一次。"
+                    "调用失败：缺少变换描述。请把本次要做的变换描述填进 prompt 参数"
+                    "（若是多个不同效果，改用 prompts 数组逐条列出），再重新调用本工具一次。"
                 )
 
             user_text = ""
@@ -7213,19 +7233,21 @@ class ComfyUIDrawPlugin(Star):
         # 与 comfyui_draw 同一套：prompts 数组用于一次做多个不同变换，count 表示每条各出几张，
         # 总张数受插件配置的单次上限（draw_auto.max）约束，超出自动截断；带 source 不受限。
         _p_list2 = [str(x).strip() for x in (prompts or []) if str(x).strip()]
-        if not _p_list2:
-            _p_list2 = [(prompt or "").strip()]
         _per2 = max(1, int(count or 1))
-        _wanted2 = len(_p_list2) * _per2
+        if _p_list2:
+            # 同 comfyui_draw：传了 prompts 时 count = 本次总共出几张，平均摊到各条。
+            _wanted2 = _per2 if (count and int(count) > 0) else len(_p_list2)
+        else:
+            _p_list2 = [(prompt or "").strip()]
+            _wanted2 = _per2
         _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source)
+        _groups2 = len(_p_list2) or 1
+        _base2, _rest2 = divmod(max(1, _allowed2), _groups2)
         _plan2: list[tuple[str, int]] = []
-        _remain2 = max(1, _allowed2)
-        for _pt2 in _p_list2:
-            if _remain2 <= 0:
-                break
-            _n2 = min(_per2, _remain2)
-            _plan2.append((_pt2, _n2))
-            _remain2 -= _n2
+        for _idx2, _pt2 in enumerate(_p_list2):
+            _n2 = _base2 + (1 if _idx2 < _rest2 else 0)
+            if _n2 > 0:
+                _plan2.append((_pt2, _n2))
         if not _plan2:
             _plan2 = [(_p_list2[0], 1)]
         logger.info(
