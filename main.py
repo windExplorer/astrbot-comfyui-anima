@@ -5839,6 +5839,11 @@ class ComfyUIDrawPlugin(Star):
         2. 【要 N 张 = prompts 数组写 N 条不同画面】，每条各出 1 张。
            绝不要用「单条 prompt + count=N」——那只会得到同一画面的 N 个近似副本，会被拦回。
         3. count 是预留参数（将来用于同一提示词跑不同种子），当前恒为 1，一般不用传。
+        4. 【出 N 张总耗时 ≈ N × 单张耗时（实测约 20~25 秒/张）】：一次调用是串行出图的，
+           6 张约需 2~3 分钟。请确保 AstrBot 的「工具调用超时」足够大（建议直接设 300 秒，
+           可覆盖约 9 张）；否则时间到会被框架硬取消、最后几张丢失。若被中途取消也无需重试——
+           本轮已出的图已发给用户，重复调用只会被拦回。若插件提示「还差几张、请发消息续画」，
+           照做即可（用户发新消息会开新一轮继续画）。
 
         什么时候不要用本工具（改用 comfyui_gallery）：
         - 用户要的是「以前画过的图 / 收藏的图 / 之前发过的某张照片」，而不是要新画一张。
@@ -6298,11 +6303,31 @@ class ComfyUIDrawPlugin(Star):
         # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
         _total_n = sum(n for _, n in _plan)
         _seq = 0
+        # 软预算：单次工具调用的总生成耗时上限（秒）。默认 0 = 不限制，完全交给
+        # AstrBot 框架的工具超时（建议把框架工具超时调到 ≥ N×30 秒，否则多张会被截断）。
+        # 设为大于 0 时，一旦已用时间超过预算就主动停止剩余张数，并提示用户「发任意
+        # 消息继续画剩下的」——新消息会重置单轮闸门，从而能续画完，而不是被框架硬超时砍断。
+        try:
+            _budget = float((plugin._cfg("draw_auto", {}) or {}).get("per_draw_time_budget_sec", 0) or 0)
+        except (TypeError, ValueError):
+            _budget = 0.0
+        _t0 = time.monotonic()
+        _incomplete = False
+        _outer_stop = False
         for _p_text, _n in _plan:
+            if _outer_stop:
+                break
             _positive = (_p_text or "").strip()
             if not _positive:
                 continue
             for _i in range(_n):
+                # 软预算守卫：已用时间超过预算就主动停下，转交「用户发消息续画」，
+                # 避免被框架硬超时（默认 120 秒）在半途取消——那样已出的图虽发出、但未出的
+                # 会被丢弃，且取消后本轮闸门状态没提交，模型会误判失败重复调用。
+                if _budget > 0 and (time.monotonic() - _t0) > _budget:
+                    _incomplete = True
+                    _outer_stop = True
+                    break
                 # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
                 # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
                 # 若仍用 (0 + _i) 会让多张出图的第 2 张起被固定成 1、2、3 这类退化种子。
@@ -6332,23 +6357,41 @@ class ComfyUIDrawPlugin(Star):
                     # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
                     # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
                     if node is not None and not is_companion:
+                        # 一旦本次成功生成出图，立即标记「本轮已出图」——
+                        # 关键修复：此前标记放在整个工具返回后才做，一旦工具被框架超时
+                        # 取消（CancelledError），标记没提交，模型误以为失败又调一次、
+                        # 因闸门未关门而重复出图。现在每张生成成功即标记，超时取消后
+                        # 重调也会被单轮闸门拦回，不会重复出图。
+                        plugin._draw_run_hit(event)
                         try:
                             await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                         except Exception as _e:
                             logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
+            if _outer_stop:
+                break
 
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里记一次成功并让模型收尾。
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里让模型收尾。
             # 注意：不要 return None——None 会让 AstrBot 直接判定 DONE 结束循环，
             # 模型一句话不说，用户会看到「图发完就哑了」。
-            plugin._draw_run_hit(event)
+            if _incomplete:
+                # 因软预算（或耗时）只出了部分：明确告诉模型还差几张、让用户发消息续画。
+                _remain = _total_n - len(img_paths)
+                return (
+                    f"本轮先生成并发送了 {len(img_paths)} 张（计划共 {_total_n} 张），"
+                    f"剩下的 {_remain} 张因单次生成耗时较长未在一轮内画完。"
+                    f"请用一句话告诉用户：已生成 {len(img_paths)} 张，剩下的 {_remain} 张"
+                    f"请他发任意一条消息、你会接着画完（用户发新消息即开启新一轮，可继续出图）。"
+                )
             # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
             return plugin._DRAW_RUN_DONE_HINT + (_max_hint or "")
-        # 一张都没出：记一次后端失败（受失败重试额度约束），仍返回文本让模型收尾。
-        plugin._draw_run_fail(event, kind="backend")
+        # 一张都没出：软预算触发（预算过小导致一张都来不及出）时不记后端失败，
+        # 避免误导模型无意义的重试空转；其余情况记一次后端失败（受失败重试额度约束）。
+        if not _incomplete:
+            plugin._draw_run_fail(event, kind="backend")
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
