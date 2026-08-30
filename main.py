@@ -4778,63 +4778,48 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
-    def _llm_draw_budget(self, event, count: int, source: str = "") -> tuple[int, str]:
-        """AI 对话（LLM 工具调用）的会话级出图预算控制，返回 (本次允许张数, 拦截提示)。
+    def _draw_single_max(self, count: int, source: str = "") -> tuple[int, str]:
+        """单次调用的出图张数上限，返回 (本次允许张数, 截断提示)。
 
-        作用：防止模型在「同一次用户请求」里无脑连续画图停不下来。
-        - 伴侣插件主动调用（带 source）不限制（未来「目标模式」同样可用 source 标记豁免）；
-        - 管理员豁免开启时管理员不受限；
-        - 否则在 draw_auto.window 秒内，同一会话累计出图 ≤ draw_auto.max。
-        返回的 allowed ≤ count；allowed 为 0 表示本次被拦截。
+        只看「这一次调用要出多少张」，与轮次、与时间窗都无关：
+        超过 draw_auto.max 就截断（如上限 9、用户要 10 张 → 只出 9 张），
+        截断时返回一句中性的事实说明，由模型自行告诉用户。
+        伴侣插件等第三方主动调用（带 source）不受此限制。
         """
         cfg = self._cfg("draw_auto", {}) or {}
-        # 伴侣插件/主动来源不限制
         if source and source.strip() == SOURCE_COMPANION_PLUGIN:
             return count, ""
-        # 管理员豁免
-        if cfg.get("admin_exempt", True) and self._is_admin(event):
+        try:
+            dmax = int(cfg.get("max", 3) or 3)
+        except (TypeError, ValueError):
+            dmax = 3
+        if dmax <= 0 or count <= dmax:
             return count, ""
-        dmax = int(cfg.get("max", 3) or 3)
-        if dmax <= 0:
-            return count, ""
-        window = int(cfg.get("window", 90) or 90)
-        sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-        _now = time.time()
-        bucket = getattr(self, "_llm_draw_ts", None)
-        if not isinstance(bucket, dict):
-            bucket = {}
-            self._llm_draw_ts = bucket
-        # 清理窗口外的时间戳
-        ts_list = [t for t in bucket.get(sid, []) if _now - t < window]
-        used = len(ts_list)
-        allowed = max(0, dmax - used)
-        if allowed <= 0:
-            return 0, "本次出图张数已达到单次请求上限，画图已完成。请用一句话简短收尾（如「发你了」），【绝对不要】再次调用任何画图工具、也不要用相同参数重试；只有当用户下一条新消息明确要求再画时才继续。"
-        # 本次实际出图张数 = min(count, allowed)，只按「实际出的张数」记入时间戳，
-        # 而不是按 allowed（剩余配额）记。否则单次只出 1 张也会把配额全占满，
-        # 导致后续想画第二张时预算被误判为用尽（表现为「说发了但第二张出不来」）。
-        actual = min(count, allowed)
-        for _ in range(actual):
-            ts_list.append(_now)
-        bucket[sid] = ts_list
-        return actual, ""
+        logger.info(f"【出图·上限】 单次请求 {count} 张超过配置上限 {dmax} 张，截断为 {dmax} 张")
+        return dmax, f"本次成功生成 {dmax} 张（受单次上限 {dmax} 张限制，已自动截断超出部分）。"
 
-    # ── 单轮请求出图闸门（防「图都发完了模型还在一直画」）────────────────────
-    # 背景（v4.9.96）：AstrBot 的 tool loop 只会给模型一句「你已重复调用 N 次」的软提示，
-    # 不会强制终止循环；而本插件原有三道防线在真实场景下全部失效：
-    #   ①「4 秒内重复调用」拦截（llm_draw / llm_img2img）——一张图要画十几秒到几十秒，
-    #      两次调用的间隔必然 > 4 秒，形同虚设；
-    #   ②出图预算 _llm_draw_budget——draw_auto.admin_exempt 默认 true，管理员直接豁免；
-    #   ③「同参去重」只在 llm_img2img 里有（且窗口仅 30 秒），llm_draw 根本没写。
-    # 于是模型可以一遍遍用相同参数调 comfyui_draw，每调一次就真出一张图。
+    # ── 单轮请求出图闸门（防「一次对话里模型无限次画图」）────────────────────
+    # 设计（v5.0）：不再去猜模型的意图。此前的三道防线（4 秒内重复调用 / 同参去重 /
+    # 时间窗出图预算）本质上都在判断「模型是不是在重复调用」，而模型的行为猜不准——
+    # 它换个参数、或隔十几秒（一张图的正常耗时）再调，就全部绕过去了。
     #
-    # 这里补一道硬闸门，按「同一次用户请求（一轮 agent run）」封顶：
-    #   · 同一轮内成功出图次数达到 draw_auto.per_run_max_calls → 一律拦截；
-    #   · 同一轮内用完全相同的参数重复调用（无论是否管理员）→ 一律拦截；
+    # 改为结构性保证：同一条用户消息引发的一轮 agent run 内，成功次数与失败次数
+    # 分别封顶，达到上限后本轮再也出不了图——与模型传什么参数、想什么完全无关。
+    #   · 成功封顶 draw_auto.per_run_max_calls（默认 1）→ 一次对话出完就关门；
+    #   · 失败封顶 draw_auto.max_retry_per_run（默认 1）→ 允许失败重试 1 次，
+    #     避免 ComfyUI 偶发报错就废掉用户整轮对话，同时防「失败→重试→失败」空转；
+    #   · 计入失败的类别可配（空参数 / ComfyUI 后端失败）；
     #   · 轮次边界 = 触发本轮 run 的用户消息指纹，用户发新消息即自动重置；
     #     on_agent_done 时也会清除，不影响用户下一条消息继续画。
     # 伴侣插件等第三方主动调用（带 source）不参与此闸门。
     _DRAW_RUN_TTL = 900.0  # 同一轮状态最长保留 15 分钟，超时兜底重置，避免状态残留锁死
+
+    # 拦截时返回给模型的收尾话术：只陈述事实、让模型自然收尾，不提「上限/禁止/闸门」。
+    # 事实已经证明堆「绝对不要 / 禁止」这类警告没用，只会白烧 token。
+    # 注意：必须返回文本而非 None——None 会让 AstrBot 直接判定 DONE 结束循环，
+    # 模型一句话不说，用户会看到「图发完就哑了」。
+    _DRAW_RUN_DONE_HINT = "图片已经生成并发送给用户了。请用一句话简短、自然地收尾即可。"
+    _DRAW_RUN_FAIL_HINT = "画图连续遇到问题，本次没能出图。请用一句话简短向用户说明情况即可。"
 
     def _draw_run_msg_fp(self, event) -> str:
         """生成「触发本轮 agent run 的用户消息」指纹，用于判定是否为同一次请求。"""
@@ -4849,20 +4834,12 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             return "unknown"
 
-    def _draw_run_check(
-        self, event, args_fp: str = "", source: str = "", tool_name: str = ""
-    ) -> tuple[bool, str]:
-        """同一次用户请求内的画图工具闸门，返回 (是否放行, 拦截提示)。
+    def _draw_run_state_of(self, event) -> dict:
+        """取（必要时新建）本轮 agent run 的出图计数状态。
 
-        args_fp 为本次调用的参数指纹；空串表示不参与同参去重（仅受次数限制）。
+        轮次边界 = 触发本轮 run 的用户消息指纹：用户发一条新消息即自动重置计数，
+        状态超过 _DRAW_RUN_TTL 也兜底重置，避免残留状态把会话锁死。
         """
-        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
-            return True, ""
-        cfg = self._cfg("draw_auto", {}) or {}
-        try:
-            max_calls = int(cfg.get("per_run_max_calls", 2) or 2)
-        except (TypeError, ValueError):
-            max_calls = 2
         sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
         msg_fp = self._draw_run_msg_fp(event)
         now = time.time()
@@ -4871,58 +4848,80 @@ class ComfyUIDrawPlugin(Star):
             state = {}
             self._draw_run_state = state
         st = state.get(sid)
-        # 新的一轮用户消息（或超时残留状态）→ 重置闸门
         if (
             not isinstance(st, dict)
             or st.get("msg_fp") != msg_fp
             or (now - float(st.get("ts", 0.0) or 0.0)) > self._DRAW_RUN_TTL
         ):
-            st = {"msg_fp": msg_fp, "calls": 0, "arg_fps": [], "ts": now}
+            st = {"msg_fp": msg_fp, "ok": 0, "fail": 0, "ts": now}
             state[sid] = st
         st["ts"] = now
+        return st
 
-        if max_calls > 0 and int(st.get("calls", 0) or 0) >= max_calls:
+    def _draw_run_check(self, event, source: str = "", tool_name: str = "") -> tuple[bool, str]:
+        """单轮出图闸门，返回 (是否放行, 拦截提示)。
+
+        只看本轮「已经成功出图几次 / 已经失败几次」，不看参数、不看时间间隔。
+        达到任一上限即本轮关门，模型无论再传什么都出不了图。
+        """
+        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+            return True, ""
+        cfg = self._cfg("draw_auto", {}) or {}
+        try:
+            max_calls = int(cfg.get("per_run_max_calls", 1))
+        except (TypeError, ValueError):
+            max_calls = 1
+        try:
+            max_retry = int(cfg.get("max_retry_per_run", 1))
+        except (TypeError, ValueError):
+            max_retry = 1
+        st = self._draw_run_state_of(event)
+        ok = int(st.get("ok", 0) or 0)
+        fail = int(st.get("fail", 0) or 0)
+        sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+        if max_calls > 0 and ok >= max_calls:
             logger.info(
-                f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮已成功出图 {st.get('calls')} 次，"
-                f"达到单轮上限 {max_calls}，拦截本次调用（防模型画完不停）"
+                f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮已成功出图 {ok} 次，"
+                f"达到单轮上限 {max_calls}，拦截本次调用（一次对话出完即关门）"
             )
-            return False, (
-                "本次画图任务已经完成，图片已全部发送给用户。"
-                "现在【禁止】再次调用任何画图工具（comfyui_draw / comfyui_img2img），"
-                "也不要再为这一条请求生图。请直接输出一句话自然收尾（例如「画好啦」）并结束回复。"
-                "只有当用户下一条新消息明确要求再画时，才允许再次画图"
-                "（届时若要多张，应在一次调用里传 count=N，不要分多次调用）。"
-            )
-        if args_fp and args_fp in (st.get("arg_fps") or []):
+            return False, self._DRAW_RUN_DONE_HINT
+        # max_retry = 允许的失败重试次数：失败 1 次仍可再试一次，超过才关门。
+        # 取 -1（或任何负数）表示失败不封顶，完全交给单轮成功闸门兜底。
+        if max_retry >= 0 and fail > max_retry:
             logger.info(
-                f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮相同参数重复调用画图工具，"
-                f"判定为模型死循环，拦截（防重复生图）"
+                f"【工具·{tool_name or 'draw'}】 会话 {sid} 本轮已失败 {fail} 次，"
+                f"超过允许的重试次数 {max_retry}，拦截（防「失败→重试→失败」空转）"
             )
-            return False, (
-                "你已经用完全相同的参数画过一次了，图片已发送给用户。"
-                "请用一句话自然收尾并结束回复；【绝对不要】再用相同参数重复调用画图工具，"
-                "也不要靠改一两个无关参数继续生图。等用户下一条新消息的明确指示。"
-            )
+            return False, self._DRAW_RUN_FAIL_HINT
         return True, ""
 
-    def _draw_run_hit(self, event, args_fp: str = "") -> None:
-        """本轮成功出图一次，记入闸门（次数 +1 并记录本次参数指纹）。"""
+    def _draw_run_hit(self, event) -> None:
+        """本轮成功出图一次，成功计数 +1（关门的主依据）。"""
         try:
-            sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-            state = getattr(self, "_draw_run_state", None)
-            if not isinstance(state, dict):
-                return
-            st = state.get(sid)
-            if not isinstance(st, dict):
-                return
-            st["calls"] = int(st.get("calls", 0) or 0) + 1
-            if args_fp:
-                fps = list(st.get("arg_fps") or [])
-                fps.append(args_fp)
-                st["arg_fps"] = fps[-5:]
+            st = self._draw_run_state_of(event)
+            st["ok"] = int(st.get("ok", 0) or 0) + 1
             st["ts"] = time.time()
         except Exception:
             pass
+
+    def _draw_run_fail(self, event, kind: str = "backend") -> bool:
+        """本轮出图失败一次，按配置决定是否计入失败计数，返回是否计入。
+
+        kind="empty"   ：空参数调用（模型没把画面描述填进 prompt）；
+        kind="backend" ：ComfyUI 后端出图失败（队列满 / 工作流报错 / 一张都没出）。
+        关闭对应开关时该类别不计数（允许无限重试），此时仍由单轮成功闸门兜底。
+        """
+        try:
+            cfg = self._cfg("draw_auto", {}) or {}
+            key = "fail_count_empty_prompt" if kind == "empty" else "fail_count_backend"
+            if not bool(cfg.get(key, True)):
+                return False
+            st = self._draw_run_state_of(event)
+            st["fail"] = int(st.get("fail", 0) or 0) + 1
+            st["ts"] = time.time()
+            return True
+        except Exception:
+            return False
 
     def _draw_run_reset(self, sid: str) -> None:
         """清除某会话的单轮出图闸门状态（一轮 agent run 结束时调用）。"""
@@ -4932,44 +4931,6 @@ class ComfyUIDrawPlugin(Star):
                 state.pop(sid, None)
         except Exception:
             pass
-
-    def _draw_run_has_drawn(self, event) -> bool:
-        """本轮 agent run 内是否已经成功出过图（calls >= 1）。"""
-        try:
-            sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-            state = getattr(self, "_draw_run_state", None)
-            if isinstance(state, dict):
-                st = state.get(sid)
-                if isinstance(st, dict) and int(st.get("calls", 0) or 0) >= 1:
-                    return True
-        except Exception:
-            pass
-        return False
-
-    def _draw_run_empty_arg_block(self, event, source: str = "", tool_name: str = "") -> str | None:
-        """空参数 + 本轮已出图 → 返回拦截提示（不必再兜底提取去画）。
-
-        专门针对日志里那种死循环：模型画完收到「收尾指令」后，又用空参数 {} 调
-        comfyui_draw，插件原先会"好心"地从对话里兜底提取文本当 prompt 再画一张，
-        于是把历史对话内容（如 "Describe the scene by yourself..."）反复当提示词，
-        陷入「成功→收尾→空参再调→兜底又画」的无限循环。
-        本轮只要已经成功出过图，后续任何空参数调用一律直接收尾，不再出图。
-        """
-        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
-            return None
-        if self._draw_run_has_drawn(event):
-            logger.info(
-                f"【工具·{tool_name or 'draw'}】 本轮已出图，又收到空参数调用，"
-                f"判定为「收尾后空参重复调用」死循环，直接收尾拦截（不再兜底提取文本生图）"
-            )
-            return (
-                "本次画图任务已经完成，图片已发送给用户。"
-                "你这次调用没有传入任何参数（空参数），说明你【不需要再画】——"
-                "这不是(想再画一张)，而是你已经结束了。请直接用一句话自然收尾并结束回复，"
-                "【绝对不要】再调用任何画图工具，也不要用空参数或相同参数重试。"
-                "只有当用户下一条新消息明确要求再画时才继续。"
-            )
-        return None
 
     @staticmethod
     def _is_private_event(event) -> bool:
@@ -5835,6 +5796,7 @@ class ComfyUIDrawPlugin(Star):
         loras: list = None,
         seed: int = 0,
         count: int = 0,
+        prompts: list = None,
         source: str = "",
         image: str = "",
         denoise: float = -1,
@@ -5865,7 +5827,10 @@ class ComfyUIDrawPlugin(Star):
         - 用户完全没提数量（如「画张图」「画个女孩」）→ 默认只出 1 张，不要传 count。
         - 用户说了具体数字（如「来 3 张」「来 5 张」「各来一版」「所有姿势」）→ 把数字填进 count。
         - 用户说了「来几张 / 再来几张 / 发点图 / 一些 / 多画几张」这类泛化多张表达（没有具体数字）→ 把 count 填 3。
-        一次不要超发太多，受插件单次上限约束（默认最多 3 张）。
+        - 用户要的是【多个不同画面】（如「分别画猫、狗和兔子」「每个姿势各来一张」）→ 用 prompts 一次传多条，
+          每项写一个画面；同时传 count 则表示每条提示词各出 count 张。
+        ★不要把「多个画面」拆成多次调用本工具：一条用户请求只会成功出图一次，拆开调用第二次会被直接拦回。
+        一次调用的总张数受插件配置的单次上限约束（默认 3 张），超出会自动截断，超出部分不会出图。
         
         图生图判定（重要）：只有当用户**当前消息里附带了参考图**（或明确说"把这张图/参考这张图/这张照片变成XX"）时，才按图生图处理（传 image 或依赖插件自动提取）。**普通文字请求一律文生图**，不要因为群里/历史里有图就当作图生图。
         
@@ -5887,9 +5852,9 @@ class ComfyUIDrawPlugin(Star):
         
         重要：不要依赖历史记忆复用旧图。用户再次要图就重新生成。画完就自然收尾，不要不停追问或重复画。
         ★★一条用户请求只调一次本工具（最重要）：用户要 N 张就在这一次调用里传 count=N，
-        画完立刻收尾；【绝对禁止】在同一条请求里反复调用本工具（换参数再画一次也不行）。
-        插件对「同一条用户消息」有硬性出图闸门：重复调用会被直接拦截并返回「不要重复生图」，
-        你再调也出不了图，只会浪费一轮。只有用户发来【下一条新消息】明确要求再画时才可再次调用。
+        要多个不同画面就用 prompts 一次传多条，画完立刻自然收尾。
+        插件对「同一条用户消息」有硬性出图闸门：本轮出过图后再调用会被直接拦回、出不了图，
+        只会白费一轮。只有用户发来【下一条新消息】明确要求再画时才可再次调用。
         
         Args:
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
@@ -5901,7 +5866,8 @@ class ComfyUIDrawPlugin(Star):
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
-            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。一次不要超过 9 张，受插件单次上限约束（默认最多 3 张）。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。总张数受插件配置的单次上限约束（默认 3 张），超出部分会自动截断、不会出图。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            prompts(array[string]): 多条提示词（可选），用于一次画【多个不同画面】，例如用户说"分别画猫、狗和兔子"就传 ["cat, ...", "dog, ...", "rabbit, ..."]。与 count 同时传时表示每条提示词各出 count 张。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个画面请用它一次传完，不要拆成多次调用本工具。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
@@ -5927,35 +5893,6 @@ class ComfyUIDrawPlugin(Star):
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             await self._react_ack(event)
 
-        # 单张保护：同一会话短时间内的重复调用视为模型死循环/误触发，
-        # 直接收尾不重复生图（除非带 source 的第三方插件主动调用）。
-        try:
-            _now = time.time()
-            _sid_key = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-            _ts_map = getattr(plugin, "_last_llm_draw_ts", None)
-            if not isinstance(_ts_map, dict):
-                _ts_map = {}
-                plugin._last_llm_draw_ts = _ts_map
-            _prev = _ts_map.get(_sid_key, 0.0)
-            _ts_map[_sid_key] = _now
-            _is_companion_call = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
-            if not _is_companion_call and _prev and (_now - _prev) < 4.0:
-                logger.info(f"【工具·llm_draw】 会话 {_sid_key} 4 秒内重复调用画图工具，已拦截至一张（防止连发多张）")
-                return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
-        except Exception:
-            pass
-
-
-        # 会话级出图预算：限制「同一次用户请求」内模型连续画图的最大张数（防无脑连发）。
-        # count 多张（用户明确要 N 张 / 模型识别「来几张」填 3）也在预算内受限（非管理员）；
-        # 伴侣/主动来源不受限。模型没传 count（=0/空）时固定出 1 张（用户没提数量）。
-        _count = max(1, int(count or 1))
-        _allowed, _budget_hint = plugin._llm_draw_budget(event, _count, source=source)
-        if _allowed <= 0:
-            logger.info(f"【工具·llm_draw】 会话出图预算已用尽，拦截本次调用")
-            return _budget_hint
-        count = _allowed
-
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
         if not isinstance(event, AstrMessageEvent):
@@ -5963,18 +5900,28 @@ class ComfyUIDrawPlugin(Star):
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
-        # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
-        # 此时优先用「指定模型」(llm_model) 重新从用户原话提取参数；再退回从原始消息文本取描述，
-        # 避免「空参数→报错→重试→空参数」死循环。
+        # ── 单轮出图闸门（v5.0）───────────────────────────────────────
+        # 「一次对话出完就关门」的唯一保证：本轮已成功出图 / 已失败重试达到上限就收尾。
+        # 不看参数、不看时间间隔，因此不存在被绕过的可能。
+        _gate_ok, _gate_hint = plugin._draw_run_check(event, source=source, tool_name="comfyui_draw")
+        if not _gate_ok:
+            return _gate_hint
+
+        # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞 / 空 JSON {}）。分两种处理：
+        #   · 不带 source（LLM 直接调本工具）：空参数一律【直接报错】，绝不去对话历史里兜底
+        #     抓文本当 prompt —— 历史反复证明那样会把上一轮的指令、系统提示之类的话当成
+        #     画面描述，画出莫名其妙的图，并陷入「空参→兜底→再空参」的死循环。
+        #     报错文案会要求模型把画面描述填进 prompt 后再调一次（配合失败重试额度生效）。
+        #   · 带 source（伴侣插件等第三方主动调用）：它们本就不填 prompt、依赖插件兜底，
+        #     保留原有的「指定模型提取 → 原始消息文本」链路，不破坏既有集成。
         if not prompt or not prompt.strip():
-            # 空参数 + 本轮已成功出图 → 直接收尾，不再兜底提取对话文本当 prompt 去画。
-            # 这是「收尾指令」后 LLM 又空参 {} 重复调用的死循环专用拦截（v4.9.96 补丁）：
-            # 否则会把历史对话内容反复当提示词，一张接一张画不停。
-            _empty_block = plugin._draw_run_empty_arg_block(
-                event, source=source, tool_name="comfyui_draw"
-            )
-            if _empty_block is not None:
-                return _empty_block
+            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+                plugin._draw_run_fail(event, kind="empty")
+                logger.info("【工具·llm_draw】 空参数调用（未传 prompt），拒绝兜底提取，要求模型补齐后重试")
+                return (
+                    "调用失败：缺少必填参数 prompt（图像的正向提示词描述）。"
+                    "请把本次要画的画面描述完整填进 prompt 参数，再重新调用本工具一次。"
+                )
 
             user_text = ""
             try:
@@ -6020,30 +5967,30 @@ class ComfyUIDrawPlugin(Star):
                 if not prompt or not prompt.strip():
                     return "⚠️ 调用 comfyui_draw 失败：缺少必填参数 prompt（图像的正向提示词描述）。请补充画面描述后再试。"
 
-        # ── 单轮请求闸门（v4.9.96）───────────────────────────────────
-        # 这是「图都发完了模型还在一直画」的主防线：同一条用户消息引发的一轮里，
-        # 成功出图次数封顶 + 完全相同参数直接拦（不受 admin_exempt 影响）。
-        # 放在 prompt 兜底之后，保证指纹用的是真正拿去生图的参数。
-        _draw_args_fp = "|".join(
-            [
-                str(prompt or "").strip(),
-                str(negative_prompt or "").strip(),
-                str(workflow or "").strip(),
-                str(img2img_workflow or "").strip(),
-                str(width or 0),
-                str(height or 0),
-                str(seed or 0),
-                str(count or 0),
-                str(denoise),
-                str(image or "").strip(),
-                json.dumps(loras or [], ensure_ascii=False, sort_keys=True),
-            ]
+        # ── 出图计划：把「多条提示词 × 每条几张」摊平成 (提示词, 张数) 列表 ──────
+        # prompts 数组用于一次画多个不同画面（如「分别画猫、狗和兔子」）；count 表示每条
+        # 提示词各出几张。总张数受插件配置的单次上限（draw_auto.max）约束，超出自动截断
+        # （上限 9、要 10 张 → 只出 9 张）；伴侣插件等带 source 的调用不受此上限限制。
+        _p_list = [str(x).strip() for x in (prompts or []) if str(x).strip()]
+        if not _p_list:
+            _p_list = [(prompt or "").strip()]
+        _per = max(1, int(count or 1))
+        _wanted = len(_p_list) * _per
+        _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source)
+        _plan: list[tuple[str, int]] = []
+        _remain = max(1, _allowed)
+        for _pt in _p_list:
+            if _remain <= 0:
+                break
+            _n = min(_per, _remain)
+            _plan.append((_pt, _n))
+            _remain -= _n
+        if not _plan:
+            _plan = [(_p_list[0], 1)]
+        logger.info(
+            f"【工具·llm_draw】 出图计划：{len(_plan)} 组、共 {sum(n for _, n in _plan)} 张"
+            + (f"（请求 {_wanted} 张，已按单次上限截断）" if _max_hint else "")
         )
-        _gate_ok, _gate_hint = plugin._draw_run_check(
-            event, _draw_args_fp, source=source, tool_name="comfyui_draw"
-        )
-        if not _gate_ok:
-            return _gate_hint
 
         lora_map = self._parse_llm_loras(loras)
 
@@ -6267,9 +6214,9 @@ class ComfyUIDrawPlugin(Star):
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
 
-        # 提示词原样透传（已移除「伴侣插件提示词过滤」功能）：原始提示词不做过多的
-        # 拆分/改写，直接传给 ComfyUI 出图。
-        positive = prompt.strip()
+        # 提示词原样透传（已移除「伴侣插件提示词过滤」功能）：不做过多的拆分/改写，
+        # 直接传给 ComfyUI 出图。实际使用的正向提示词取自出图计划 _plan 的每一组
+        # （支持 prompts 多画面，每组自带一条提示词）。
         negative = negative_prompt or ""
 
         # 改为普通协程（不再用 yield），以兼容用 `await` 调用本工具的第三方插件
@@ -6284,67 +6231,63 @@ class ComfyUIDrawPlugin(Star):
         is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
 
         img_paths: list[str] = []
-        # count 张：循环出图（每次用不同 seed 避免重复）。
-        # 注意：_do_draw 每次调用会完整等待一次出图，count 次串行；这是「来 N 张」的预期成本。
+        # 按出图计划逐张生成：_do_draw 每次调用会完整等待一次出图，串行是「来 N 张」的预期成本。
         # 原生 / AI 对话调用改为「画一张发一张」：每张图出来立即 event.send，
         # 用户先收到第 1 张、再第 2 张、再第 3 张，而不是等全部画完一次性连发。
         # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
-        _draw_n = max(1, int(count or 1))
-        for _i in range(_draw_n):
-            # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
-            # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
-            # 若仍用 (0 + _i) 会让多张出图的第 2 张起被固定成 1、2、3 这类退化种子。
-            _seed_i = (int(seed) + _i) if (_draw_n > 1 and seed) else seed
-            async for node, p in plugin._do_draw(
-                event,
-                resolved_wf,
-                positive,
-                negative,
-                width or None,
-                height or None,
-                lora_map,
-                None,
-                _seed_i or None,
-                init_images=init_images or None,
-                is_img2img=is_img2img,
-                denoise=denoise if denoise >= 0 else None,
-                # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
-                # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
-                notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
-                source=source,
-            ):
-                if p:
-                    img_paths.append(p)
-                # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
-                # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
-                # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
-                if node is not None and not is_companion:
-                    try:
-                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
-                    except Exception as _e:
-                        logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
+        _total_n = sum(n for _, n in _plan)
+        _seq = 0
+        for _p_text, _n in _plan:
+            _positive = (_p_text or "").strip()
+            if not _positive:
+                continue
+            for _i in range(_n):
+                # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
+                # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
+                # 若仍用 (0 + _i) 会让多张出图的第 2 张起被固定成 1、2、3 这类退化种子。
+                _seed_i = (int(seed) + _seq) if (_total_n > 1 and seed) else seed
+                _seq += 1
+                async for node, p in plugin._do_draw(
+                    event,
+                    resolved_wf,
+                    _positive,
+                    negative,
+                    width or None,
+                    height or None,
+                    lora_map,
+                    None,
+                    _seed_i or None,
+                    init_images=init_images or None,
+                    is_img2img=is_img2img,
+                    denoise=denoise if denoise >= 0 else None,
+                    # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
+                    # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
+                    notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
+                    source=source,
+                ):
+                    if p:
+                        img_paths.append(p)
+                    # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
+                    # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
+                    # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
+                    if node is not None and not is_companion:
+                        try:
+                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                        except Exception as _e:
+                            logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
 
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。这里返回一句「收尾指令」
-            # 给 LLM，让它对所有图发完后做一句话自然收尾。
-            # 防死循环说明：返回文本会被 AstrBot 喂回 LLM，LLM 理论上可能再次调用画图工具。
-            # 因此文本必须【极其明确地】宣告「本次生图任务已完成、禁止重复生图」；
-            # 且外层已有单轮闸门（次数封顶 + 同参去重）+ 4 秒拦截 + 出图预算兜底。
-            # 注意：不要 return None——None 会让 AstrBot 直接置 DONE 结束循环，LLM 不再说话，
-            # 用户会看到「图发完就哑了」。这里需要 LLM 收尾，故返回文本。
-            try:
-                plugin._draw_run_hit(event, _draw_args_fp)
-            except Exception:
-                pass
-            return (
-                "本次生图任务已全部完成，所有图片都已生成并发送给用户。"
-                "请用一句话简短、自然地收尾即可（例如「画好啦」）。"
-                "【重要】本次生图任务已完成，绝对不要再次调用任何画图工具，也不要重复生图；"
-                "只有当用户下一条新消息明确要求再画时才继续。"
-            )
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里记一次成功并让模型收尾。
+            # 注意：不要 return None——None 会让 AstrBot 直接判定 DONE 结束循环，
+            # 模型一句话不说，用户会看到「图发完就哑了」。
+            plugin._draw_run_hit(event)
+            # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
+            return plugin._DRAW_RUN_DONE_HINT + (_max_hint or "")
+        # 一张都没出：记一次后端失败（受失败重试额度约束），仍返回文本让模型收尾。
+        plugin._draw_run_fail(event, kind="backend")
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
@@ -7097,6 +7040,7 @@ class ComfyUIDrawPlugin(Star):
         image: str = "",
         denoise: float = -1,
         count: int = 0,
+        prompts: list = None,
         source: str = "",
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
@@ -7170,15 +7114,16 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
-            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量 → 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。一次不要超过 9 张，受插件单次上限约束（默认最多 3 张）。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量 → 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/再来几张/发点图/一些/多画几张"）且没给具体数字时 → 才传 3。总张数受插件配置的单次上限约束（默认 3 张），超出部分会自动截断、不会出图。注意：即使 count 大于 1，也只对「用户当前这条消息的明确要求」生效，不要自己擅自连续多张。
+            prompts(array[string]): 多条提示词（可选），用于一次做【多个不同变换】，例如用户说"分别转成水彩和油画"就传 ["watercolor style, ...", "oil painting style, ..."]。与 count 同时传时表示每条提示词各出 count 张。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个效果请用它一次传完，不要拆成多次调用本工具。
 
         补充说明：
         - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
         - 参考图通常附在用户消息里即可，插件会自动提取；无需强求大模型传 image 参数。
-        - ★★一条用户请求只调一次本工具：要 N 张就在这一次调用里传 count=N，画完立刻收尾。
-          【绝对禁止】在同一条请求里反复调用本工具（换参数再改一次也不行）——插件对同一条
-          用户消息有硬性出图闸门，重复调用会被直接拦截，再调也出不了图。
-          只有用户发来【下一条新消息】明确要求再改时才可再次调用。
+        - ★★一条用户请求只调一次本工具：要 N 张就在这一次调用里传 count=N，
+          要多个不同变换就用 prompts 一次传多条，画完立刻自然收尾。
+          插件对同一条用户消息有硬性出图闸门：本轮出过图后再调用会被直接拦回、出不了图，
+          只会白费一轮。只有用户发来【下一条新消息】明确要求再改时才可再次调用。
         """
         # LLM 工具开关：关闭时拒绝本插件 LLM 的自动调用，
         # 但伴侣插件等第三方主动调用（带 source 标记）不受影响。
@@ -7193,90 +7138,32 @@ class ComfyUIDrawPlugin(Star):
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             await self._react_ack(event)
 
-        # 单张保护：同 llm_draw，同一会话短时间重复调用（模型死循环）直接收尾
-        try:
-            _now2 = time.time()
-            _sid_key2 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-            _ts_map2 = getattr(plugin, "_last_llm_draw_ts", None)
-            if not isinstance(_ts_map2, dict):
-                _ts_map2 = {}
-                plugin._last_llm_draw_ts = _ts_map2
-            _prev2 = _ts_map2.get(_sid_key2, 0.0)
-            _ts_map2[_sid_key2] = _now2
-            _is_companion_call2 = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
-            if not _is_companion_call2 and _prev2 and (_now2 - _prev2) < 4.0:
-                logger.info(f"【工具·llm_img2img】 会话 {_sid_key2} 4 秒内重复调用，已拦截（防止连发多张）")
-                return "图片已生成并发送给用户。请用一句话简短、自然地收尾即可；用户没有明确要求多张，不要再重复调用画图工具。"
-        except Exception:
-            pass
-
-        # 同参去重：同 llm_draw，相同 prompt+seed 短时间重复调用判定为死循环，直接拒绝
-        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            try:
-                _now3 = time.time()
-                _sid_key3 = (getattr(event, "session_id", "") or "global") if event is not None else "global"
-                _fp2 = f"{str(prompt or '').strip()}|{int(seed or 0)}"
-                _fp_map2 = getattr(plugin, "_llm_img2img_fp", None)
-                if not isinstance(_fp_map2, dict):
-                    _fp_map2 = {}
-                    plugin._llm_img2img_fp = _fp_map2
-                _prev_fp2, _prev_fp_t2 = _fp_map2.get(_sid_key3, (None, 0.0))
-                _fp_map2[_sid_key3] = (_fp2, _now3)
-                if _prev_fp2 == _fp2 and (_now3 - _prev_fp_t2) < 30.0:
-                    logger.info(f"【工具·llm_img2img】 会话 {_sid_key3} 相同 prompt+seed 重复调用，判定为死循环，拦截")
-                    return "你已经用同样的参数画过了，图片已发送。本次请求到此结束，【绝对不要】再用相同 prompt+seed 重复调用画图工具；等待用户下一条新消息的明确指示。"
-            except Exception:
-                pass
-
-        # ── 单轮请求闸门（v4.9.96）───────────────────────────────────
-        # 与 comfyui_draw 同一套闸门：同一条用户消息引发的一轮里成功出图次数封顶，
-        # 且完全相同参数直接拦（不受 admin_exempt 影响，也不受 30 秒窗口限制）。
-        _i2i_args_fp = "|".join(
-            [
-                str(prompt or "").strip(),
-                str(negative_prompt or "").strip(),
-                str(img2img_workflow or "").strip(),
-                str(seed or 0),
-                str(count or 0),
-                str(denoise),
-                str(image or "").strip(),
-                json.dumps(loras or [], ensure_ascii=False, sort_keys=True),
-            ]
-        )
-        try:
-            _gate_ok2, _gate_hint2 = plugin._draw_run_check(
-                event, _i2i_args_fp, source=source, tool_name="comfyui_img2img"
-            )
-            if not _gate_ok2:
-                return _gate_hint2
-        except Exception:
-            pass
-
-        # 会话级出图预算：同 llm_draw，限制「同一次用户请求」内连续画图最大张数（防无脑连发）
-        # 同 llm_draw：模型没传 count（=0/空）时固定出 1 张（用户没提数量）；填了具体数则按具体数。
-        _count2 = max(1, int(count or 1))
-        _allowed2, _budget_hint2 = plugin._llm_draw_budget(event, _count2, source=source)
-        if _allowed2 <= 0:
-            logger.info(f"【工具·llm_img2img】 会话出图预算已用尽，拦截本次调用")
-            return _budget_hint2
-        count = _allowed2
-
         # 与 llm_draw 同样的兜底处理
         if not isinstance(event, AstrMessageEvent):
             event = getattr(plugin, "_last_event", None)
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
-        # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞/空 JSON），
-        # 优先用「指定模型」(llm_model) 重新提取；再退回原始消息文本，避免死循环。
+        # ── 单轮出图闸门（v5.0）───────────────────────────────────────
+        # 与 comfyui_draw 同一套：本轮已成功出图 / 已失败重试达到上限就收尾。
+        # 不看参数、不看时间间隔，因此不存在被绕过的可能。
+        _gate_ok2, _gate_hint2 = plugin._draw_run_check(
+            event, source=source, tool_name="comfyui_img2img"
+        )
+        if not _gate_ok2:
+            return _gate_hint2
+
+        # prompt 兜底：与 comfyui_draw 同一套规则——
+        #   · 不带 source：空参数【直接报错】，绝不去对话历史兜底抓文本当 prompt；
+        #   · 带 source（伴侣插件等）：保留原有的「指定模型提取 → 原始消息文本」链路。
         if not prompt or not prompt.strip():
-            # 空参数 + 本轮已成功出图 → 直接收尾，不再兜底提取对话文本当 prompt 去画。
-            # 同 comfyui_draw 的死循环专用拦截（v4.9.96 补丁）。
-            _empty_block2 = plugin._draw_run_empty_arg_block(
-                event, source=source, tool_name="comfyui_img2img"
-            )
-            if _empty_block2 is not None:
-                return _empty_block2
+            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+                plugin._draw_run_fail(event, kind="empty")
+                logger.info("【工具·llm_img2img】 空参数调用（未传 prompt），拒绝兜底提取，要求模型补齐后重试")
+                return (
+                    "调用失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。"
+                    "请把本次要做的变换描述完整填进 prompt 参数，再重新调用本工具一次。"
+                )
 
             user_text = ""
             try:
@@ -7312,6 +7199,30 @@ class ComfyUIDrawPlugin(Star):
                     prompt = self._strip_command(user_text, "img2img")
                 if not prompt or not prompt.strip():
                     return "⚠️ 调用 comfyui_img2img 失败：缺少必填参数 prompt（基于参考图的变换 / 生成描述）。请补充画面描述后再试。"
+
+        # ── 出图计划：把「多条提示词 × 每条几张」摊平成 (提示词, 张数) 列表 ──────
+        # 与 comfyui_draw 同一套：prompts 数组用于一次做多个不同变换，count 表示每条各出几张，
+        # 总张数受插件配置的单次上限（draw_auto.max）约束，超出自动截断；带 source 不受限。
+        _p_list2 = [str(x).strip() for x in (prompts or []) if str(x).strip()]
+        if not _p_list2:
+            _p_list2 = [(prompt or "").strip()]
+        _per2 = max(1, int(count or 1))
+        _wanted2 = len(_p_list2) * _per2
+        _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source)
+        _plan2: list[tuple[str, int]] = []
+        _remain2 = max(1, _allowed2)
+        for _pt2 in _p_list2:
+            if _remain2 <= 0:
+                break
+            _n2 = min(_per2, _remain2)
+            _plan2.append((_pt2, _n2))
+            _remain2 -= _n2
+        if not _plan2:
+            _plan2 = [(_p_list2[0], 1)]
+        logger.info(
+            f"【工具·llm_img2img】 出图计划：{len(_plan2)} 组、共 {sum(n for _, n in _plan2)} 张"
+            + (f"（请求 {_wanted2} 张，已按单次上限截断）" if _max_hint2 else "")
+        )
 
         # ── 收集图片（与 llm_draw 共用同一逻辑）─────────────────────
         init_images: list[str] = []
@@ -7392,62 +7303,64 @@ class ComfyUIDrawPlugin(Star):
 
         lora_map = self._parse_llm_loras(loras)
 
-        # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记
-        positive, parsed_neg = plugin._split_external_prompt(prompt)
+        # 与 llm_draw 一致：先按通用规则拆分正/负向并清洗标记。
+        # 负向取首条拆分结果（多条提示词的负向通常一致）；正向在循环里按每组提示词各自拆分。
+        _, parsed_neg = plugin._split_external_prompt(prompt)
         negative = parsed_neg or (negative_prompt or "")
 
         is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
 
         img_paths: list[str] = []
-        # count 张：循环出图（每次用不同 seed 避免重复）。
-        # 原生 / AI 对话调用改为「画一张发一张」：每张图出来立即 event.send，
-        # 用户逐张收到，而不是等全部画完一次性连发。伴侣插件仍收集全部路径后返回 JSON。
-        _draw_n2 = max(1, int(count or 1))
-        for _j in range(_draw_n2):
-            # 同 llm_draw：仅在明确指定 seed 时递增，未指定时保持 0 走随机，
-            # 避免多张图生图的第 2 张起被固定成 1、2、3 这类退化种子。
-            _seed_j = (int(seed) + _j) if (_draw_n2 > 1 and seed) else seed
-            async for node, p in plugin._do_draw(
-                event,
-                resolved_wf,
-                positive,
-                negative,
-                None,
-                None,
-                lora_map,
-                None,
-                _seed_j or None,
-                init_images=init_images,
-                is_img2img=True,
-                denoise=denoise if denoise >= 0 else None,
-                source=source,
-            ):
-                if p:
-                    img_paths.append(p)
-                # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
-                # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
-                # 自动渲染图片，必须主动 event.send 把图发到聊天里。
-                if node is not None and not is_companion:
-                    try:
-                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
-                    except Exception as _e:
-                        logger.warning(f"【出图·成功】 comfyui_img2img 主动发送图片失败: {_e}")
+        # 按出图计划逐张生成：原生 / AI 对话调用「画一张发一张」，用户逐张收到；
+        # 伴侣插件仍收集全部路径后返回 JSON。
+        _total_n2 = sum(n for _, n in _plan2)
+        _seq2 = 0
+        for _p_text2, _n2 in _plan2:
+            _positive2, _parsed_neg2 = plugin._split_external_prompt(_p_text2)
+            if not (_positive2 or "").strip():
+                continue
+            if _parsed_neg2 and not negative:
+                negative = _parsed_neg2
+            for _j in range(_n2):
+                # 同 llm_draw：仅在明确指定 seed 时递增，未指定时保持 0 走随机，
+                # 避免多张图生图的第 2 张起被固定成 1、2、3 这类退化种子。
+                _seed_j = (int(seed) + _seq2) if (_total_n2 > 1 and seed) else seed
+                _seq2 += 1
+                async for node, p in plugin._do_draw(
+                    event,
+                    resolved_wf,
+                    _positive2,
+                    negative,
+                    None,
+                    None,
+                    lora_map,
+                    None,
+                    _seed_j or None,
+                    init_images=init_images,
+                    is_img2img=True,
+                    denoise=denoise if denoise >= 0 else None,
+                    source=source,
+                ):
+                    if p:
+                        img_paths.append(p)
+                    # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
+                    # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
+                    # 自动渲染图片，必须主动 event.send 把图发到聊天里。
+                    if node is not None and not is_companion:
+                        try:
+                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                        except Exception as _e:
+                            logger.warning(f"【出图·成功】 comfyui_img2img 主动发送图片失败: {_e}")
 
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
                 return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
-            # 原生 / Agent 调用：图片已在循环内「画一张发一张」。这里返回一句「收尾指令」
-            # 给 LLM，让它对所有图发完后做一句话自然收尾（同 comfyui_draw，不 return None，
-            # 否则 Agent Loop 直接结束、LLM 不再说话；靠单轮闸门 + 4 秒拦截 + 同参去重 + 出图预算兜底）。
-            try:
-                plugin._draw_run_hit(event, _i2i_args_fp)
-            except Exception:
-                pass
-            return (
-                "本次生图任务已全部完成，所有图片都已生成并发送给用户。"
-                "请用一句话简短、自然地收尾即可（例如「画好啦」）。"
-                "【重要】本次生图任务已完成，绝对不要再次调用任何画图工具，也不要重复生图；"
-                "只有当用户下一条新消息明确要求再画时才继续。"
-            )
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里记一次成功并让模型收尾。
+            # 不 return None——否则 Agent Loop 直接结束、LLM 不再说话。
+            plugin._draw_run_hit(event)
+            # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
+            return plugin._DRAW_RUN_DONE_HINT + (_max_hint2 or "")
+        # 一张都没出：记一次后端失败（受失败重试额度约束），仍返回文本让模型收尾。
+        plugin._draw_run_fail(event, kind="backend")
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
