@@ -3259,7 +3259,10 @@ class ComfyUIDrawPlugin(Star):
                 # 每个前面排队任务额外累加的秒数；默认按"每个任务都要完整基础超时"保守估算
                 per_extra = int(self._cfg("queue_extra_timeout", 0)) or base_timeout
                 max_timeout = int(self._cfg("max_draw_timeout", 0)) or (base_timeout + 30 * base_timeout)
-                timeout = min(max_timeout, base_timeout + ahead * per_extra)
+                # 单张等待硬上限：必须 < AstrBot 框架工具超时（默认 120 秒），
+                # 确保 ComfyUI 层先超时报错返回、工具正常 return，框架永不 wait_for
+                # 取消我们（否则会打断正在 await 的 event.send、破坏 bot WS 连接致卡死）。
+                timeout = min(max_timeout, base_timeout + ahead * per_extra, 100)
                 interval = max(1, int(self._cfg("queue_poll_interval", 2)))
                 history = await client.wait_for_result(prompt_id, timeout, interval)
                 if not history:
@@ -6302,31 +6305,44 @@ class ComfyUIDrawPlugin(Star):
         # 用户先收到第 1 张、再第 2 张、再第 3 张，而不是等全部画完一次性连发。
         # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
         _total_n = sum(n for _, n in _plan)
-        _seq = 0
-        # 软预算：单次工具调用的总生成耗时上限（秒）。默认 0 = 不限制，完全交给
-        # AstrBot 框架的工具超时（建议把框架工具超时调到 ≥ N×30 秒，否则多张会被截断）。
-        # 设为大于 0 时，一旦已用时间超过预算就主动停止剩余张数，并提示用户「发任意
-        # 消息继续画剩下的」——新消息会重置单轮闸门，从而能续画完，而不是被框架硬超时砍断。
+        # 单批上限 max_images_per_batch：单次工具调用最多连续生成几张就收尾返回，
+        # 剩余张数转入「后台续画」任务自动补发。核心目的——确保单批总耗时 < AstrBot
+        # 框架工具超时（默认 120 秒），工具能在超时前正常 return，从而不会被框架
+        # wait_for 取消。一旦被框架取消，正在 await 的 event.send（发 QQ 图）会被打断，
+        # 破坏 aiocqhttp 的 bot WebSocket 连接，导致之后所有发图永久卡死（实测十几分钟无回复）。
+        # 所以每批出图必须在 120 秒内收尾返回，框架永不取消我们。
+        try:
+            _max_batch = max(1, int((plugin._cfg("draw_auto", {}) or {}).get("max_images_per_batch", 4) or 4))
+        except (TypeError, ValueError):
+            _max_batch = 4
+        # 可选软耗时预算（秒）：>0 时在单批内再叠加时间上限，提前收尾转后台续画
         try:
             _budget = float((plugin._cfg("draw_auto", {}) or {}).get("per_draw_time_budget_sec", 0) or 0)
         except (TypeError, ValueError):
             _budget = 0.0
         _t0 = time.monotonic()
-        _incomplete = False
-        _outer_stop = False
+        _seq = 0
+        _remain_prompts: list[str] = []
         for _p_text, _n in _plan:
-            if _outer_stop:
-                break
+            if _remain_prompts:
+                # 已达单批上限，后续计划全部转入后台续画，避免触发框架超时取消
+                _remain_prompts.append(_p_text)
+                continue
             _positive = (_p_text or "").strip()
             if not _positive:
                 continue
             for _i in range(_n):
-                # 软预算守卫：已用时间超过预算就主动停下，转交「用户发消息续画」，
-                # 避免被框架硬超时（默认 120 秒）在半途取消——那样已出的图虽发出、但未出的
-                # 会被丢弃，且取消后本轮闸门状态没提交，模型会误判失败重复调用。
-                if _budget > 0 and (time.monotonic() - _t0) > _budget:
-                    _incomplete = True
-                    _outer_stop = True
+                # 单批张数达上限，或软耗时预算耗尽：当前组已出 _i 张，剩余 (_n - _i) 张转入后台续画。
+                # 这样工具在 120 秒内收尾返回，框架绝不取消我们，发图连接永不坏。
+                # 硬性时间兜底：单批已用时间超过安全阈值（默认 100s，< 框架默认 120s
+                # 工具超时）就收尾转续画，避免慢服务器上单批总耗时逼近/超过框架超时而被
+                # 取消、破坏发图连接卡死。用户配置的 per_draw_time_budget_sec（>0）可进一步收紧。
+                _time_stop = 100.0
+                if _budget > 0:
+                    _time_stop = min(_time_stop, _budget)
+                if len(img_paths) >= _max_batch or (time.monotonic() - _t0) > _time_stop:
+                    for _k in range(_n - _i):
+                        _remain_prompts.append(_p_text)
                     break
                 # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
                 # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
@@ -6357,18 +6373,12 @@ class ComfyUIDrawPlugin(Star):
                     # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
                     # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
                     if node is not None and not is_companion:
-                        # 一旦本次成功生成出图，立即标记「本轮已出图」——
-                        # 关键修复：此前标记放在整个工具返回后才做，一旦工具被框架超时
-                        # 取消（CancelledError），标记没提交，模型误以为失败又调一次、
-                        # 因闸门未关门而重复出图。现在每张生成成功即标记，超时取消后
-                        # 重调也会被单轮闸门拦回，不会重复出图。
+                        # 每张生成成功即标记「本轮已出图」——超时取消后重调会被单轮闸门拦回，不会重复出图。
                         plugin._draw_run_hit(event)
                         try:
                             await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                         except Exception as _e:
                             logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
-            if _outer_stop:
-                break
 
         if img_paths:
             if is_companion:
@@ -6377,22 +6387,94 @@ class ComfyUIDrawPlugin(Star):
             # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里让模型收尾。
             # 注意：不要 return None——None 会让 AstrBot 直接判定 DONE 结束循环，
             # 模型一句话不说，用户会看到「图发完就哑了」。
-            if _incomplete:
-                # 因软预算（或耗时）只出了部分：明确告诉模型还差几张、让用户发消息续画。
-                _remain = _total_n - len(img_paths)
+            if _remain_prompts:
+                # 单批已达上限，剩余张数转入后台续画任务（工具已正常返回，QQ 连接健康，
+                # 后台任务独立把剩余图生成并自动发来，一次消息即可收齐全部 N 张）。
+                try:
+                    asyncio.create_task(self._draw_continue(
+                        event, _remain_prompts, resolved_wf, lora_map, negative,
+                        init_images, is_img2img, denoise, width, height, source,
+                        seq_start=len(img_paths), seed=seed,
+                    ))
+                except Exception as _e:
+                    logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
                 return (
-                    f"本轮先生成并发送了 {len(img_paths)} 张（计划共 {_total_n} 张），"
-                    f"剩下的 {_remain} 张因单次生成耗时较长未在一轮内画完。"
-                    f"请用一句话告诉用户：已生成 {len(img_paths)} 张，剩下的 {_remain} 张"
-                    f"请他发任意一条消息、你会接着画完（用户发新消息即开启新一轮，可继续出图）。"
+                    f"本轮先生成并发送了 {len(img_paths)} 张（计划共 {_total_n} 张）。"
+                    f"剩下的 {len(_remain_prompts)} 张我会在后台继续生成，稍后自动发给你，"
+                    f"你无需再发任何消息。"
                 )
-            # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
+            # 一次调用内已画完：返回中性收尾提示，由模型自行告诉用户。
             return plugin._DRAW_RUN_DONE_HINT + (_max_hint or "")
-        # 一张都没出：软预算触发（预算过小导致一张都来不及出）时不记后端失败，
-        # 避免误导模型无意义的重试空转；其余情况记一次后端失败（受失败重试额度约束）。
-        if not _incomplete:
-            plugin._draw_run_fail(event, kind="backend")
+        # 一张都没出：若仍有剩余要画（极少见，如软耗时预算设得过小导致一张都来不及出），
+        # 仍转后台续画，不记后端失败以免模型空转重试；其余情况记一次后端失败。
+        if _remain_prompts:
+            try:
+                asyncio.create_task(self._draw_continue(
+                    event, _remain_prompts, resolved_wf, lora_map, negative,
+                    init_images, is_img2img, denoise, width, height, source,
+                    seq_start=0, seed=seed,
+                ))
+            except Exception as _e:
+                logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
+            return (
+                f"马上为你生成（计划共 {_total_n} 张），我先去后台画，稍后自动发给你，无需发消息。"
+            )
+        plugin._draw_run_fail(event, kind="backend")
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
+
+    async def _draw_continue(
+        self, event, remaining: list[str], resolved_wf, lora_map, negative,
+        init_images, is_img2img, denoise, width, height, source,
+        seq_start: int = 0, seed=0,
+    ):
+        """后台续画：工具调用按单批上限（max_images_per_batch）先发完前几张并正常 return
+        后，由本独立任务把剩余张数继续生成并主动发给用户。
+
+        之所以用后台任务而非「让用户再发消息续调」：
+        - 工具已正常返回（单次调用 < 框架超时），QQ 发图连接健康，后台任务 send 安全；
+        - 一次用户消息即可收齐全部 N 张，不依赖模型是否听话续调，也不会重复出图；
+        - 全程 try/except + CancelledError 兜底，中途某张失败只跳过该张，绝不卡死事件循环。
+        """
+        total = len(remaining)
+        sid = (getattr(event, "session_id", "") or "global") if event is not None else "global"
+        if total <= 0:
+            return
+        logger.info(f"【续画·开始】 会话 {sid} 后台补画 {total} 张（seq_start={seq_start}）")
+        try:
+            try:
+                await event.send(MessageChain([Plain(text=f"🎨 正在生成剩下的 {total} 张，稍后自动发来～")]))
+            except Exception:
+                pass
+            _seq = seq_start
+            for _p_text in remaining:
+                _positive = (_p_text or "").strip()
+                if not _positive:
+                    continue
+                _seed_i = (int(seed) + _seq) if seed else seed
+                _seq += 1
+                async for node, p in self._do_draw(
+                    event, resolved_wf, _positive, negative,
+                    width or None, height or None, lora_map, None,
+                    _seed_i or None,
+                    init_images=init_images or None, is_img2img=is_img2img,
+                    denoise=denoise if denoise >= 0 else None,
+                    notify_pending=False, source=source,
+                ):
+                    if node is not None:
+                        self._draw_run_hit(event)
+                        try:
+                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                        except Exception as _e:
+                            logger.warning(f"【续画·发送】 失败: {_e}")
+            try:
+                await event.send(MessageChain([Plain(text=f"✅ 剩下的 {total} 张已经画好发给你啦～")]))
+            except Exception:
+                pass
+            logger.info(f"【续画·完成】 会话 {sid} 后台补画 {total} 张完成")
+        except asyncio.CancelledError:
+            logger.warning(f"【续画·取消】 会话 {sid} 后台续画被取消（剩余图可能未发，用户可重发请求补画）")
+        except Exception as _e:
+            logger.exception(f"【续画·异常】 会话 {sid} 后台续画失败: {_e}")
 
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
     # 覆盖：消息内图、引用消息内嵌图、引用 API 回退；已过滤不存在路径。
