@@ -7355,7 +7355,7 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"[剧情] LLM 摘要调用失败: {e}")
             return ""
 
-    @filter.on_message()
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=25)
     async def _on_story_message(self, event: AstrMessageEvent):
         """剧情推演入口：仅私聊。进行中把消息交给推演循环（打断/改向/停），
         未进入时缓存最近对话供「上下文进入」使用。"""

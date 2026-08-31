@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.2
+
+- **修复 v4.27.4 加载失败**：剧情模式入口装饰器 `filter.on_message()` 在 AStrBot v4.27.4 已移除，改为 `filter.event_message_type(filter.EventMessageType.ALL, priority=25)`（与既有用户图片捕获钩子同款 API），恢复插件可加载。
+
 ## v5.2.1
 
 - **剧情模板内置示例**：`story_mode.templates` 默认值预置 5 个可直接试的模板（末日 / 校园 / 古风 / 星际 / 奇幻），进入时说「进入剧情模式 末日」等即可套用其世界观设定；用户仍可在配置里增删自定义模板（每行 `模板名::世界观/开场设定`）。
