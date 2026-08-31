@@ -3639,28 +3639,65 @@ class ComfyUIDrawPlugin(Star):
 
     @filter.command("无限发图", alias={"持续发图", "unlimited_draw", "连发图"})
     async def cmd_unlimited_draw(self, event: AstrMessageEvent):
-        """按当前用户开启/关闭「不限轮次持续发图」。用法：/无限发图 开|关（缺省查看状态）。仅对本人生效。"""
-        _unl = getattr(self, "_unlimited_users", None)
-        if _unl is None:
-            _unl = self._unlimited_users = set()
+        """按当前用户开启/关闭「不限轮次持续发图」。用法：/无限发图 开|关（缺省查看状态）。仅对本人生效，状态持久保存。"""
         uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
         arg = self._strip_command(
             event.message_str, "无限发图", ("持续发图", "unlimited_draw", "连发图")
         ).strip().lower()
         if not arg:
-            await self._send(event, f"你当前{'已开启' if uid in _unl else '未开启'}不限轮次发图。用 /无限发图 开 或 关 切换（仅对你本人生效）。")
+            await self._send(event, f"你当前{'已开启' if uid in self._unl_users() else '未开启'}不限轮次发图。用 /无限发图 开 或 关 切换（仅对你本人生效，重启/重载后仍保留）。")
             event.stop_event()
             return
         if arg in ("开", "on", "1", "true", "开启", "打开"):
-            _unl.add(uid)
+            self._set_unlimited_user(uid, True)
         elif arg in ("关", "off", "0", "false", "关闭", "关掉"):
-            _unl.discard(uid)
+            self._set_unlimited_user(uid, False)
         else:
             await self._send(event, "参数用「开」或「关」（on/off）。")
             event.stop_event()
             return
-        await self._send(event, f"已{'开启' if uid in _unl else '关闭'}你的不限轮次发图（仅对你本人生效）——LLM 可{'连续多次发图、一次多张不截断' if uid in _unl else '按默认闸门控制'}。")
+        on = uid in self._unl_users()
+        await self._send(event, f"已{'开启' if on else '关闭'}你的不限轮次发图（仅对你本人生效，重启/重载后仍保留）——LLM 可{'连续多次发图、一次多张不截断' if on else '按默认闸门控制'}。")
         event.stop_event()
+
+    def _unlimited_users_path(self):
+        """「不限轮次发图」用户开关的持久化文件路径。"""
+        return self.data_dir / "unlimited_draw.json"
+
+    def _unl_users(self):
+        """「不限轮次发图」用户集合：内存缓存 + data_dir/unlimited_draw.json 持久化。
+
+        解决「动不动自动关」：纯内存 set 在插件热更新/重启后会清零，这里改为
+        首次访问从磁盘加载、后续走内存缓存，指令修改时写盘。
+        """
+        _unl = getattr(self, "_unl_users_set", None)
+        if _unl is None:
+            _unl = set()
+            try:
+                import json
+                _p = self._unlimited_users_path()
+                if _p.exists():
+                    _data = json.loads(_p.read_text("utf-8"))
+                    if isinstance(_data, dict):
+                        _unl = {k for k, v in _data.items() if v}
+            except Exception:
+                _unl = set()
+            self._unl_users_set = _unl
+        return _unl
+
+    def _set_unlimited_user(self, uid: str, on: bool) -> None:
+        _unl = self._unl_users()
+        if on:
+            _unl.add(uid)
+        else:
+            _unl.discard(uid)
+        try:
+            import json
+            _p = self._unlimited_users_path()
+            _p.parent.mkdir(parents=True, exist_ok=True)
+            _p.write_text(json.dumps({u: True for u in sorted(_unl)}, ensure_ascii=False), "utf-8")
+        except Exception:
+            pass
 
     @filter.command("img2img", alias={"图生图", "图转图"})
     async def cmd_img2img(self, event: AstrMessageEvent):
@@ -4926,7 +4963,7 @@ class ComfyUIDrawPlugin(Star):
         if cfg.get("unlimited_draw"):
             return count, ""
         # 按用户开关：该用户开启「不限轮次持续发图」时放行
-        _unl = getattr(self, "_unlimited_users", None)
+        _unl = self._unl_users()
         if _unl and event is not None:
             _uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
             if _uid in _unl:
@@ -5033,7 +5070,7 @@ class ComfyUIDrawPlugin(Star):
         if cfg.get("unlimited_draw"):
             return True, ""
         # 按用户开关：该用户开启「不限轮次持续发图」时放行
-        _unl = getattr(self, "_unlimited_users", None)
+        _unl = self._unl_users()
         if _unl and event is not None:
             _uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
             if _uid in _unl:
