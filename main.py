@@ -7518,6 +7518,11 @@ class ComfyUIDrawPlugin(Star):
                 if draw_now:
                     dprompt = parsed.get("prompt") or self._story_infer_prompt(narr)
                     if dprompt:
+                        # 每步（bot 的一条推演消息）作为单轮出图闸门的新一轮：
+                        # 剧情自动推演时 event 始终是最初「进入剧情」的那条，msg_fp 不变，
+                        # 若不在此重置，整段推演会被算作一轮、per_run_max_calls 出第一张就关门
+                        #（表现为「一下就没了」）。按 bot 消息条数计轮次，bot 每推进一步都能继续出图。
+                        self._draw_run_reset(sid)
                         await self._story_draw_in_loop(event, sid, dprompt)
                         ctrl["last_drew_step"] = ctrl["total_step"]
                 if ctrl["ask"] and parsed.get("options"):
