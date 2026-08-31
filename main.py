@@ -2675,17 +2675,21 @@ class ComfyUIDrawPlugin(Star):
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
-        # 绘图黑名单：被拉黑的用户/群直接拒绝（覆盖指令、AI 对话、伴侣插件等所有画图方式）。
-        _bl_ok, _bl_reason = self._check_blacklist(event)
-        if not _bl_ok:
-            logger.info(f"【绘图·解析】 黑名单拦截：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
-            await self._send(event, _bl_reason)
-            return
-        # 发图白名单：allow_draw_users 非空时，非白名单用户直接拒绝，不进入生图流程。
-        # 空名单 = 所有用户都允许（含未识别到 user_id 的情况）。
+        # 发图白名单优先：allow_draw_users 非空时，只有白名单内用户能绘图，
+        # 此时黑名单冗余（非白名单用户已被白名单拦下），直接跳过黑名单检查。
+        # 空名单 = 所有用户都允许，此时才走黑名单检查（两者互斥，白名单优先）。
+        _wl_enabled = bool((self._cfg("allow_draw_users", "") or "").strip())
+        if not _wl_enabled:
+            # 绘图黑名单：被拉黑的用户/群直接拒绝（覆盖指令、AI 对话、伴侣插件等所有画图方式）。
+            _bl_ok, _bl_reason = self._check_blacklist(event)
+            if not _bl_ok:
+                logger.info(f"【绘图·解析】 黑名单拦截：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
+                await self._send(event, _bl_reason)
+                return
+        # 发图白名单校验：allow_draw_users 非空时仅列表内用户可绘图；空名单所有用户允许。
         if not self._is_draw_allowed(user_id):
             logger.info(f"【绘图·解析】 用户 {user_id or '(unknown)'} 不在发图白名单，拒绝绘图")
-            await self._send(event, "抱歉，你没有发图权限哦～ 如需使用绘图功能请联系管理员。")
+            await self._send(event, "你暂无绘图权限～")
             return
         # 生图次数限制：全局/按用户配额校验（管理员可豁免）
         _ok, _reason = self._check_draw_limit(event)
@@ -3667,7 +3671,7 @@ class ComfyUIDrawPlugin(Star):
         if wl and not self._is_admin(event):
             allowed = [x.strip() for x in re.split(r"[\s,，;；\n]+", wl) if x.strip()]
             if uid not in allowed:
-                yield event.plain_result("🔒 你不在分享功能白名单中，暂不可使用 /萌绘。")
+                yield event.plain_result("你暂无权限使用 /萌绘 分享功能～")
                 event.stop_event()
                 return
         if self.gallery is None:
@@ -4652,9 +4656,9 @@ class ComfyUIDrawPlugin(Star):
         users = self._parse_id_list(bl.get("users", ""))
         groups = self._parse_id_list(bl.get("groups", ""))
         if user_id and user_id in users:
-            return False, "你已被加入绘图黑名单，无法使用绘图功能。"
+            return False, "你暂无绘图权限～"
         if group_id and group_id in groups:
-            return False, "本群已被加入绘图黑名单，无法使用绘图功能。"
+            return False, "你暂无绘图权限～"
         return True, ""
 
     # ------------------------------------------------------------------ #
@@ -4825,10 +4829,10 @@ class ComfyUIDrawPlugin(Star):
     # 注意：必须返回文本而非 None——None 会让 AstrBot 直接判定 DONE 结束循环，
     # 模型一句话不说，用户会看到「图发完就哑了」。
     _DRAW_RUN_DONE_HINT = (
-        "同一条用户消息里已经出过图了，本次调用没有产生新的图片"
-        "（要继续画需要等用户发下一条新消息）。"
+        "刚才那条消息里已经成功出过图了，所以本次调用没有再产出新图"
+        "（注意：这不是系统限制你「一轮只能画一张」，而是这一条消息的图已经给过了）。"
         "之前生成的图已经发给用户，请用一句话简短、自然地收尾即可，"
-        "不要用图库里的旧图来凑数。"
+        "不要对用户说「限制一张 / 同一轮只能出一张」之类的话，也不要用图库旧图来凑数。"
     )
     _DRAW_RUN_FAIL_HINT = (
         "画图连续遇到问题，本次没能出图。"
