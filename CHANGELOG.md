@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.23
+
+- **剧情模式新增「最短推演步数」（`story_mode.min_steps`，默认 3）**：进入后至少自动推进这么多步才允许自然收尾/暂停，修复「刚开启就结束」的问题。LLM 中途返回空内容（`[NARRATIVE]` 为空）时不再直接结束，而是自动重试（prompt 明确要求必须写出叙事正文，最多重试 4 次），重试仍失败才提示暂停；同时「单次步数上限」（`auto_steps_per_run`）在未达到最短步数前不生效。设 0 表示不限制。
+
 ## v5.2.22
 
 - **修复 llm_draw 后台续画报 NameError（`_remain_prompts` 未定义）**：出图计划的剩余项变量定义处为 `_remain_items`，但触发「后台续画」分支时的判断与提示文本误用了 `_remain_prompts`，LLM 让画多张且单批达到上限（转后台续画）时抛 `NameError: name '_remain_prompts' is not defined`。已统一为 `_remain_items`，后台自动补发剩余张数恢复正常。

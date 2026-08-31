@@ -7302,6 +7302,7 @@ class ComfyUIDrawPlugin(Star):
             "no_partner": bool(parsed.get("no_partner") or cfg.get("no_partner", False)),
             "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
+            "min_steps": int(cfg.get("min_steps", 3) or 3),
             "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
             "image_every": int(cfg.get("image_every", 3) or 3),
             "image_strategy": (cfg.get("image_strategy") or "大模型自判").strip(),
@@ -7428,11 +7429,23 @@ class ComfyUIDrawPlugin(Star):
                 parsed = self._story_parse_step(resp)
                 narr = parsed.get("narrative", "").strip()
                 if not narr:
+                    # 未达最短步数前不允许自然收尾：重试继续推进（防「刚开启就结束」）
+                    if ctrl["total_step"] < ctrl.get("min_steps", 3):
+                        ctrl["retry_empty_narr"] = True
+                        ctrl["empty_retries"] = ctrl.get("empty_retries", 0) + 1
+                        if ctrl.get("empty_retries", 0) >= 4:
+                            await self._send(event, f"（AI 连续未能生成剧情内容，本次只推进了 {ctrl['total_step']} 步。说「继续」再试或「停」结束）")
+                            ctrl["paused"] = True
+                            break
+                        await asyncio.sleep(0.5)
+                        continue
                     # LLM 无新内容：开场失败直接结束；进行中则视为自然收束并暂停
                     if not first:
                         await self._send(event, "（剧情到这里暂时告一段落～说「继续」让我再展开，或「停」结束）")
                         ctrl["paused"] = True
                     break
+                ctrl.pop("retry_empty_narr", None)
+                ctrl["empty_retries"] = 0
                 await self._story_send_as_bot(event, narr)
                 ctrl["history"].append(("assistant", narr))
                 ctrl["last_narr"] = narr
@@ -7464,7 +7477,9 @@ class ComfyUIDrawPlugin(Star):
                     await self._send(event, f"你可以选择：{opts}（随时回复选项或发新指令都能改方向）")
                     if ctrl.get("pause_on_options"):
                         ctrl["paused"] = True
-                if ctrl["auto_max"] and ctrl["auto_max"] > 0 and ctrl["total_step"] >= ctrl["auto_max"]:
+                _min_steps = ctrl.get("min_steps", 0) or 0
+                if (ctrl["auto_max"] and ctrl["auto_max"] > 0 and ctrl["total_step"] >= ctrl["auto_max"]
+                        and ctrl["total_step"] >= _min_steps):
                     await self._send(event, "（本次自动推演已达步数上限，说「继续」让我接着推，或「停」结束）")
                     ctrl["paused"] = True
                 await asyncio.sleep(ctrl["interval"])
@@ -7549,6 +7564,8 @@ class ComfyUIDrawPlugin(Star):
         hist = "\n".join(f"{'用户' if r == 'user' else '助手'}: {t}" for r, t in ctrl["history"][-30:])
         if first:
             stage = "这是剧情开场，请写出第一段场景与画面（头尾必发，第一步必须给 [DRAW]）。"
+        elif ctrl.get("retry_empty_narr"):
+            stage = "上一步你没有输出有效的剧情正文（[NARRATIVE] 为空）。现在必须推进剧情：写出新的一段 80-160 字的叙事正文，不要留空、不要重复已有内容。"
         elif ctrl["paused"]:
             stage = "刚才用户给了新指令/选项，请基于最近输入继续推进下一步。"
         else:
