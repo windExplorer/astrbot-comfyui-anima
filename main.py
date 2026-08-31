@@ -7196,6 +7196,19 @@ class ComfyUIDrawPlugin(Star):
             source="trigger",
             title=(theme or "自由剧情")[:60], scene=theme or "",
         )
+        # 角色绑定：男主 = 用户（优先取昵称），女主默认 = bot 本体（用 bot 的人格名与人格 prompt 作人设）
+        _user_name = (parsed.get("user_name") or (cfg.get("user_name") or "")).strip()
+        if not _user_name:
+            _user_name = (getattr(event, "get_sender_name", lambda: "")() or "").strip()
+        _bot_name, _bot_prompt = self._story_bot_identity()
+        _partner_names = parsed.get("partner_names") or [
+            x.strip() for x in str(cfg.get("partner_name") or "").split(",") if x.strip()
+        ]
+        if not _partner_names:
+            _partner_names = [_bot_name or (cfg.get("partner_name") or "机器人")]
+        _partner_profiles = self._story_parse_partner_profiles(cfg.get("partner_profile") or "")
+        if _bot_name and _bot_prompt and _bot_name not in _partner_profiles:
+            _partner_profiles[_bot_name] = _bot_prompt
         ctrl = {
             "sid": sid,
             "event": event,
@@ -7203,11 +7216,9 @@ class ComfyUIDrawPlugin(Star):
             "ask": parsed["ask"],
             "pause_on_options": bool(cfg.get("pause_on_options", False)),
             "theme": theme,
-            "user_name": (parsed.get("user_name") or (cfg.get("user_name") or "")).strip(),
-            "partner_names": parsed.get("partner_names") or [
-                x.strip() for x in str(cfg.get("partner_name") or "机器人").split(",") if x.strip()
-            ] or ["机器人"],
-            "partner_profiles": self._story_parse_partner_profiles(cfg.get("partner_profile") or ""),
+            "user_name": _user_name,
+            "partner_names": _partner_names,
+            "partner_profiles": _partner_profiles,
             "no_partner": bool(parsed.get("no_partner") or cfg.get("no_partner", False)),
             "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
@@ -7287,6 +7298,24 @@ class ComfyUIDrawPlugin(Star):
             if nm:
                 out[nm] = prof.strip()
         return out
+
+    def _story_bot_identity(self):
+        """尽力获取 bot 自己的名字与人格 prompt（用作默认女主）。返回 (name, prompt)。"""
+        name, prompt = "", ""
+        try:
+            pm = getattr(self.context, "persona_manager", None)
+            if pm is None:
+                pm = getattr(getattr(self.context, "provider_manager", None), "persona_manager", None)
+            if pm is not None:
+                ps = pm.get_default_persona()
+                if isinstance(ps, dict):
+                    name = (ps.get("name") or "").strip()
+                    prompt = (ps.get("prompt") or "").strip()
+                    if name in ("", "default"):
+                        name = ""
+        except Exception:
+            pass
+        return name, prompt
 
     def _story_match_template(self, name, cfg):
         txt = (cfg.get("templates") or "").strip()
