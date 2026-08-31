@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.8
+
+- **修复剧情档案接口报错（WebUIApi 缺少 story_sessions / story_stats）**：`register_web_api` 在注册路由前自保 `reload` 本模块，确保使用磁盘上最新代码定义的 `WebUIApi` 类（AStrBot 热更新只重载 main.py，依赖模块可能残留旧版）。同时 routes 列表构建改用 `getattr` 安全获取 handler，缺方法时仅跳过该路由而非整体抛 `AttributeError`，避免主控制台全部路由注册失败（否则 schema/config/gallery 等也全挂）。
+
 ## v5.2.7
 
 - **剧情配置表单体验优化**：`中间步骤出图策略`(image_strategy)改为中文下拉框（大模型自判 / 固定步数间隔 / 概率随机），不再手填英文值；后端判断同步改为中文值。预设剧情模板(templates)在 WebUI 配置页改为可增删的「模板名 :: 世界观设定」列表编辑器（底层仍为文本，数据格式不变）。

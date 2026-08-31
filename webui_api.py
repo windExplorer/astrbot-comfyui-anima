@@ -1714,6 +1714,14 @@ def _log_request(handler, route_desc: str):
 def register_web_api(plugin) -> None:
     """在插件 initialize 时调用，注册所有控制台路由。"""
     from astrbot.api import logger as _log
+    # 自保：AStrBot 热更新只重载 main.py，webui_api 可能仍是 sys.modules 里的旧版
+    # （没有新增的剧情接口 story_sessions 等），导致 api 是旧 WebUIApi 类而报
+    # AttributeError。这里 reload 本模块，确保使用磁盘上最新代码定义的 WebUIApi 类。
+    try:
+        import importlib
+        importlib.reload(importlib.import_module(__name__))
+    except Exception as _re:
+        _log.warning(f"[WebUI] 重载 webui_api 模块失败（沿用已加载类）: {_re}")
     api = WebUIApi(plugin)
     ctx = plugin.context
     # 路由必须含插件名：/<plugin_name>/<endpoint>。
@@ -1722,52 +1730,62 @@ def register_web_api(plugin) -> None:
     # 由 Dashboard 自动转发到 /api/v1/plugins/extensions/<plugin_name>/<endpoint>。
     prefix = f"/{PLUGIN_NAME}"
 
+    # 安全获取 handler：AStrBot 热更新若仍残留旧版 WebUIApi 类（缺某些新增方法，
+    # 例如剧情接口 story_sessions / story_stats），用 getattr 取不到就返回 None，
+    # 仅跳过该路由，避免整个 routes 列表构建抛出 AttributeError 导致主控制台全部
+    # 路由注册失败（那样 schema/config/gallery 等也全挂掉）。
+    def _h(name: str):
+        return getattr(api, name, None)
+
     routes = [
-        (f"{prefix}/schema", api.get_schema, ["GET"], "读取配置 schema"),
-        (f"{prefix}/config", api.get_config, ["GET"], "读取控制台配置"),
-        (f"{prefix}/config", api.save_config, ["POST"], "保存控制台配置"),
-        (f"{prefix}/logs", api.get_logs, ["GET"], "读取控制台日志"),
-        (f"{prefix}/records", api.get_records, ["GET"], "读取出图记录"),
-        (f"{prefix}/oplog", api.get_oplog, ["GET"], "独立操作日志"),
-        (f"{prefix}/gallery/stats", api.gallery_stats, ["GET"], "图库统计"),
-        (f"{prefix}/gallery/search", api.gallery_search, ["GET"], "图库检索"),
-        (f"{prefix}/gallery/thumb", api.gallery_thumb, ["GET"], "图库缩略图"),
-        (f"{prefix}/gallery/image", api.gallery_image, ["GET"], "图库图片"),
-        (f"{prefix}/gallery/star", api.gallery_star, ["POST"], "图库收藏"),
-        (f"{prefix}/gallery/set_blur", api.gallery_set_blur, ["POST"], "图库单图NSFW模糊"),
-        (f"{prefix}/gallery/set_nsfw", api.gallery_set_nsfw, ["POST"], "图库单图人工标记/取消NSFW"),
-        (f"{prefix}/gallery/scan_nsfw", api.gallery_scan_nsfw, ["GET"], "图库NSFW一键扫描"),
-        (f"{prefix}/gallery/scan_nsfw_progress", api.gallery_scan_nsfw_progress, ["GET"], "图库NSFW扫描进度"),
-        (f"{prefix}/gallery/check_nsfw", api.gallery_check_nsfw, ["GET"], "图库单图NSFW检测"),
-        (f"{prefix}/gallery/delete", api.gallery_delete, ["POST"], "图库删除(移入回收站)"),
-        (f"{prefix}/gallery/trash", api.gallery_trash, ["GET"], "图库回收站"),
-        (f"{prefix}/gallery/restore", api.gallery_restore, ["POST"], "图库恢复"),
-        (f"{prefix}/gallery/purge", api.gallery_purge, ["POST"], "图库彻底删除"),
-        (f"{prefix}/gallery/tags", api.gallery_tags, ["POST"], "图库打标签"),
-        (f"{prefix}/gallery/backup", api.backup_db, ["GET"], "备份图库数据库"),
-        (f"{prefix}/stats/ranking", api.stats_ranking, ["GET"], "用户生图排行"),
-        (f"{prefix}/stats/trend", api.stats_trend, ["GET"], "生图小时趋势"),
-        (f"{prefix}/quota/users", api.quota_users, ["GET"], "生图限额用户列表"),
-        (f"{prefix}/quota/config", api.quota_save_config, ["POST"], "生图限额配置保存"),
-        (f"{prefix}/quota/save_global", api.quota_save_global, ["POST"], "生图全局限额保存"),
-        (f"{prefix}/quota/reset", api.quota_reset, ["POST"], "生图次数重置"),
-        (f"{prefix}/token/summary", api.token_summary, ["GET"], "LLM token 用量统计"),
-        (f"{prefix}/token/reset", api.token_reset, ["POST"], "LLM token 统计重置"),
-        (f"{prefix}/lora/fetch", api.lora_fetch, ["POST"], "C站 LoRA 抓取 / 任意图片直链下载封面"),
-        (f"{prefix}/lora/upload_image", api.lora_upload_image, ["POST"], "LoRA 封面图上传"),
-        (f"{prefix}/lora/image", api.lora_image, ["GET"], "LoRA 封面图读取"),
-        (f"{prefix}/translate/test", api.translate_test, ["POST"], "翻译调试（测试三种翻译模式）"),
-        (f"{prefix}/workflows/sampler", api.workflow_sampler, ["GET"], "读取工作流采样器参数"),
-        (f"{prefix}/share/tokens", api.share_tokens, ["GET"], "分享链接管理列表"),
-        (f"{prefix}/share/token/invalidate", api.share_token_invalidate, ["POST"], "分享链接作废"),
-        (f"{prefix}/story/sessions", api.story_sessions, ["GET"], "剧情档案列表"),
-        (f"{prefix}/story/session", api.story_session_detail, ["GET"], "剧情档案详情"),
-        (f"{prefix}/story/session", api.story_session_update, ["POST"], "剧情档案更新"),
-        (f"{prefix}/story/session/delete", api.story_session_delete, ["POST"], "剧情档案删除"),
-        (f"{prefix}/story/stats", api.story_stats, ["GET"], "剧情档案统计"),
+        (f"{prefix}/schema", _h("get_schema"), ["GET"], "读取配置 schema"),
+        (f"{prefix}/config", _h("get_config"), ["GET"], "读取控制台配置"),
+        (f"{prefix}/config", _h("save_config"), ["POST"], "保存控制台配置"),
+        (f"{prefix}/logs", _h("get_logs"), ["GET"], "读取控制台日志"),
+        (f"{prefix}/records", _h("get_records"), ["GET"], "读取出图记录"),
+        (f"{prefix}/oplog", _h("get_oplog"), ["GET"], "独立操作日志"),
+        (f"{prefix}/gallery/stats", _h("gallery_stats"), ["GET"], "图库统计"),
+        (f"{prefix}/gallery/search", _h("gallery_search"), ["GET"], "图库检索"),
+        (f"{prefix}/gallery/thumb", _h("gallery_thumb"), ["GET"], "图库缩略图"),
+        (f"{prefix}/gallery/image", _h("gallery_image"), ["GET"], "图库图片"),
+        (f"{prefix}/gallery/star", _h("gallery_star"), ["POST"], "图库收藏"),
+        (f"{prefix}/gallery/set_blur", _h("gallery_set_blur"), ["POST"], "图库单图NSFW模糊"),
+        (f"{prefix}/gallery/set_nsfw", _h("gallery_set_nsfw"), ["POST"], "图库单图人工标记/取消NSFW"),
+        (f"{prefix}/gallery/scan_nsfw", _h("gallery_scan_nsfw"), ["GET"], "图库NSFW一键扫描"),
+        (f"{prefix}/gallery/scan_nsfw_progress", _h("gallery_scan_nsfw_progress"), ["GET"], "图库NSFW扫描进度"),
+        (f"{prefix}/gallery/check_nsfw", _h("gallery_check_nsfw"), ["GET"], "图库单图NSFW检测"),
+        (f"{prefix}/gallery/delete", _h("gallery_delete"), ["POST"], "图库删除(移入回收站)"),
+        (f"{prefix}/gallery/trash", _h("gallery_trash"), ["GET"], "图库回收站"),
+        (f"{prefix}/gallery/restore", _h("gallery_restore"), ["POST"], "图库恢复"),
+        (f"{prefix}/gallery/purge", _h("gallery_purge"), ["POST"], "图库彻底删除"),
+        (f"{prefix}/gallery/tags", _h("gallery_tags"), ["POST"], "图库打标签"),
+        (f"{prefix}/gallery/backup", _h("backup_db"), ["GET"], "备份图库数据库"),
+        (f"{prefix}/stats/ranking", _h("stats_ranking"), ["GET"], "用户生图排行"),
+        (f"{prefix}/stats/trend", _h("stats_trend"), ["GET"], "生图小时趋势"),
+        (f"{prefix}/quota/users", _h("quota_users"), ["GET"], "生图限额用户列表"),
+        (f"{prefix}/quota/config", _h("quota_save_config"), ["POST"], "生图限额配置保存"),
+        (f"{prefix}/quota/save_global", _h("quota_save_global"), ["POST"], "生图全局限额保存"),
+        (f"{prefix}/quota/reset", _h("quota_reset"), ["POST"], "生图次数重置"),
+        (f"{prefix}/token/summary", _h("token_summary"), ["GET"], "LLM token 用量统计"),
+        (f"{prefix}/token/reset", _h("token_reset"), ["POST"], "LLM token 统计重置"),
+        (f"{prefix}/lora/fetch", _h("lora_fetch"), ["POST"], "C站 LoRA 抓取 / 任意图片直链下载封面"),
+        (f"{prefix}/lora/upload_image", _h("lora_upload_image"), ["POST"], "LoRA 封面图上传"),
+        (f"{prefix}/lora/image", _h("lora_image"), ["GET"], "LoRA 封面图读取"),
+        (f"{prefix}/translate/test", _h("translate_test"), ["POST"], "翻译调试（测试三种翻译模式）"),
+        (f"{prefix}/workflows/sampler", _h("workflow_sampler"), ["GET"], "读取工作流采样器参数"),
+        (f"{prefix}/share/tokens", _h("share_tokens"), ["GET"], "分享链接管理列表"),
+        (f"{prefix}/share/token/invalidate", _h("share_token_invalidate"), ["POST"], "分享链接作废"),
+        (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),
+        (f"{prefix}/story/session", _h("story_session_detail"), ["GET"], "剧情档案详情"),
+        (f"{prefix}/story/session", _h("story_session_update"), ["POST"], "剧情档案更新"),
+        (f"{prefix}/story/session/delete", _h("story_session_delete"), ["POST"], "剧情档案删除"),
+        (f"{prefix}/story/stats", _h("story_stats"), ["GET"], "剧情档案统计"),
     ]
     registered = []
     for path, handler, methods, desc in routes:
+        if handler is None:
+            _log.warning(f"[WebUI] 跳过未实现路由（WebUIApi 缺少方法）: {path}")
+            continue
         try:
             ctx.register_web_api(path, _log_request(handler, desc), methods, desc)
             registered.append(path)
