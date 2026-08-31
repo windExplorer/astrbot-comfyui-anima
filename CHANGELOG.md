@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.3
+
+- **修复 v4.27.4 配置 schema 加载失败**：`story_mode.loop_interval_sec` 的 `number` 类型在 AStrBot v4.27.4 不受支持，改为 `float`（支持类型白名单：int/float/bool/string/text/list/file/object/template_list/dict）。
+
 ## v5.2.2
 
 - **修复 v4.27.4 加载失败**：剧情模式入口装饰器 `filter.on_message()` 在 AStrBot v4.27.4 已移除，改为 `filter.event_message_type(filter.EventMessageType.ALL, priority=25)`（与既有用户图片捕获钩子同款 API），恢复插件可加载。

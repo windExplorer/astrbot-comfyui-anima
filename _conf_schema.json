@@ -1239,7 +1239,7 @@
         "hint": "防止剧情无限刷屏。到达上限会暂停，等你「继续」或「停」。-1 不限制。"
       },
       "loop_interval_sec": {
-        "type": "number",
+        "type": "float",
         "default": 1.5,
         "description": "推演每步之间的间隔（秒）",
         "hint": "每推一步、发一段文本/图后稍作停顿，避免消息刷得太快。"
