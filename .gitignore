@@ -244,3 +244,6 @@ yarn-error.log*
 _bak_help_assets/
 _References/_diff_zips.ps1
 _References/
+
+# 含密钥的本地配置（含真实 API key，绝不入库）
+docs/astrbot_plugin_private_companion_config.json
