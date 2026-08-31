@@ -6698,7 +6698,7 @@ class ComfyUIDrawPlugin(Star):
             # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里让模型收尾。
             # 注意：不要 return None——None 会让 AstrBot 直接判定 DONE 结束循环，
             # 模型一句话不说，用户会看到「图发完就哑了」。
-            if _remain_prompts:
+            if _remain_items:
                 # 单批已达上限，剩余张数转入后台续画任务（工具已正常返回，QQ 连接健康，
                 # 后台任务独立把剩余图生成并自动发来，一次消息即可收齐全部 N 张）。
                 try:
@@ -6711,7 +6711,7 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
                 return (
                     f"本轮先生成并发送了 {len(img_paths)} 张（计划共 {_total_n} 张），图片已发到聊天窗口。"
-                    f"剩下的 {len(_remain_prompts)} 张我会在后台继续生成，稍后自动发给你，"
+                    f"剩下的 {len(_remain_items)} 张我会在后台继续生成，稍后自动发给你，"
                     f"你无需再发任何消息，也不要用 pc_send_current_media 重复发送已发的图。"
                 )
             # 一次调用内已画完：返回明确「已发送 + 路径」提示，由模型自然收尾。
@@ -6728,7 +6728,7 @@ class ComfyUIDrawPlugin(Star):
             )
         # 一张都没出：若仍有剩余要画（极少见，如软耗时预算设得过小导致一张都来不及出），
         # 仍转后台续画，不记后端失败以免模型空转重试；其余情况记一次后端失败。
-        if _remain_prompts:
+        if _remain_items:
             try:
                 asyncio.create_task(self._draw_continue(
                     event, _remain_items, negative,

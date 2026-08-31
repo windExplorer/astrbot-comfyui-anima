@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.22
+
+- **修复 llm_draw 后台续画报 NameError（`_remain_prompts` 未定义）**：出图计划的剩余项变量定义处为 `_remain_items`，但触发「后台续画」分支时的判断与提示文本误用了 `_remain_prompts`，LLM 让画多张且单批达到上限（转后台续画）时抛 `NameError: name '_remain_prompts' is not defined`。已统一为 `_remain_items`，后台自动补发剩余张数恢复正常。
+
 ## v5.2.21
 
 - **修复 comfyui_draw 工具调用报错**（`TypeError: ComfyUIDrawPlugin._normalize_prompts() got an unexpected keyword argument 'prompt'`）：`@filter.llm_tool(name="comfyui_draw")` 与 `@_safe_llm_tool` 装饰器被错误地挂在辅助函数 `_normalize_prompts`（签名只有 `raw`）上，导致 AStrBot 把这个辅助函数注册成了 LLM 工具 `comfyui_draw`，LLM 调用时按 `prompt`/`prompts`/`count` 等参数传入而签名不匹配、报 TypeError。已将装饰器移回真正的工具函数 `llm_draw`，`comfyui_draw` 工具恢复正常（`comfyui_gallery`/`comfyui_loras`/`comfyui_workflows`/`comfyui_img2img` 不受影响）。
