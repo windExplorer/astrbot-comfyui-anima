@@ -683,6 +683,22 @@ class ComfyUIDrawPlugin(Star):
                 f"(gallery={self.gallery.gallery_dir}, refs={self.gallery.refs_dir}, "
                 f"db={self.gallery.db_path})"
             )
+
+            # 剧情模式档案（被动记录，仅私聊）
+            self.story = None
+            self._story_active: dict = {}
+            try:
+                from . import story_store
+            except ImportError:
+                import story_store
+            try:
+                self.story = story_store.StoryStore(
+                    self.data_dir,
+                    cfg_provider=lambda: self.config.get("story_mode", {}),
+                )
+                logger.info(f"【初始化】 剧情档案已就绪: {self.story.db_path}")
+            except Exception as e:
+                logger.warning(f"【初始化】 剧情档案初始化失败: {e}")
         except Exception as e:
             logger.warning(f"【初始化】 图库初始化失败（功能不可用）: {e}", exc_info=True)
 
@@ -3471,6 +3487,14 @@ class ComfyUIDrawPlugin(Star):
                                     (img_path or "").split("/")[-1].split("\\")[-1],
                                 )
                             )
+                            if _sha and self.story is not None:
+                                try:
+                                    _p = positive
+                                except NameError:
+                                    _p = ""
+                                self._story_maybe_link_image(
+                                    event, _sha, _p, _real_w, _real_h, wf.get("name")
+                                )
                         except Exception:
                             _sha = None
                     else:
@@ -6902,6 +6926,217 @@ class ComfyUIDrawPlugin(Star):
     #   - 若 on_llm_response 时 LLM 返回的工具调用命中画图工具（response.tools_call_name，
     #     覆盖个别 runner 在工具调用时也广播该事件的情况），同样记入。
     # 用 scene=agent_draw 区分，model 主对话取不到统一记空串。
+    # ------------------------------------------------------------------ #
+    # 剧情模式（被动记录，仅私聊）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _story_plain(content):
+        """从 AstrBot 消息 content（str / 组件列表 / 对象）中提取纯文本。"""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for it in content:
+                if isinstance(it, str):
+                    parts.append(it)
+                elif isinstance(it, dict):
+                    t = it.get("text")
+                    if not t and isinstance(it.get("data"), dict):
+                        t = it.get("data", {}).get("text")
+                    if t:
+                        parts.append(str(t))
+                else:
+                    t = getattr(it, "text", None)
+                    if t is None:
+                        d = getattr(it, "data", None)
+                        t = d.get("text") if isinstance(d, dict) else None
+                    if t:
+                        parts.append(str(t))
+            return "\n".join(p for p in parts if p)
+        return str(content)
+
+    def _story_session_key(self, event) -> str:
+        try:
+            return event.get_sender_id() or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _story_norm(s: str) -> str:
+        import re
+        s = (s or "").strip()
+        s = re.sub(r"\s+", "", s)
+        return s.strip("。.!！?？…~～，,：:；;”\"')）(（“'")
+
+    @staticmethod
+    def _story_match(norm: str, kw: str) -> bool:
+        kw = (kw or "").strip()
+        if not kw:
+            return False
+        return norm == kw or norm.startswith(kw)
+
+    def _story_maybe_link_image(self, event, sha, prompt, w, h, workflow):
+        """若当前会话处于剧情模式，把生成的图关联到档案。"""
+        if self.story is None or not sha:
+            return
+        key = self._story_session_key(event)
+        sid = self._story_active.get(key)
+        if not sid:
+            return
+        try:
+            cap = self._cfg("story_mode", {}) or {}
+            if not (cap.get("capture_images", True) if isinstance(cap, dict) else True):
+                return
+            self.story.link_image(
+                sid, sha, prompt=prompt or "", width=w or 0, height=h or 0,
+                workflow=workflow or "", user_id=key,
+            )
+        except Exception as e:
+            logger.warning(f"[剧情] 关联图片失败: {e}")
+
+    async def _story_enter(self, event, key, cfg):
+        wl = [x.strip() for x in (cfg.get("whitelist_users") or "")
+              .replace("\n", ",").split(",") if x.strip()]
+        if wl and key not in wl:
+            await self._send(event, "你暂无剧情模式权限～")
+            return
+        try:
+            sid = self.story.create_session(
+                session_key=key, user_id=key,
+                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                platform=(getattr(event, "get_platform", lambda: "")() or ""),
+                source="trigger",
+            )
+            self._story_active[key] = sid
+            await self._send(
+                event,
+                "已进入剧情推演模式：我会按步骤推进场景并配图，说「停」即可结束。"
+                "这段时间我们的对话与配图都会被悄悄存档哦～",
+            )
+        except Exception as e:
+            logger.warning(f"[剧情] 进入失败: {e}")
+            await self._send(event, "进入剧情模式失败，请稍后再试。")
+
+    async def _story_exit(self, event, key, cfg):
+        sid = self._story_active.pop(key, None)
+        if sid is None:
+            return
+        summary = ""
+        try:
+            if cfg.get("auto_summary", True):
+                summary = await self._story_make_summary(sid)
+        except Exception as e:
+            logger.warning(f"[剧情] 摘要生成失败: {e}")
+        try:
+            self.story.finish_session(sid, summary=summary)
+        except Exception as e:
+            logger.warning(f"[剧情] 结束会话失败: {e}")
+        msg = "已退出剧情模式。"
+        if summary:
+            msg += f"\n\n📝 本次剧情摘要：\n{summary}"
+        await self._send(event, msg)
+
+    async def _story_make_summary(self, sid: int) -> str:
+        sess = self.story.get_session(sid)
+        if not sess:
+            return ""
+        turns = sess.get("turns", [])
+        conv = "\n".join(
+            f"{'用户' if t['role'] == 'user' else '助手'}: {t['content']}"
+            for t in turns if t.get("content")
+        )
+        if not conv:
+            return ""
+        prompt = (
+            "请用 100 字以内，把下面这段角色扮演/剧情对话浓缩成一段客观摘要"
+            "（只复述发生了什么，不要评价、不要使用 Markdown）：\n\n" + conv
+        )
+        try:
+            prov = self.context.get_using_provider()
+        except Exception:
+            prov = None
+        if prov is None:
+            return ""
+        try:
+            resp = await prov.text_chat(prompt=prompt, session_id="")
+            return (getattr(resp, "completion_text", "") or "").strip()
+        except Exception as e:
+            logger.warning(f"[剧情] LLM 摘要调用失败: {e}")
+            return ""
+
+    @filter.on_message()
+    async def _on_story_message(self, event: AstrMessageEvent):
+        """剧情模式入口钩子：仅私聊，被动记录对话与配图。"""
+        if self.story is None:
+            return
+        cfg = self._cfg("story_mode", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return
+        # 仅私聊可用
+        try:
+            gid = event.get_group_id()
+        except Exception:
+            gid = None
+        if gid:
+            return
+        raw = (getattr(event, "message_str", "") or "").strip()
+        if not raw:
+            return
+        key = self._story_session_key(event)
+        if not key:
+            return
+        norm = self._story_norm(raw)
+        exit_kw = [k.strip() for k in (cfg.get("exit_keywords") or "").split(",") if k.strip()]
+        enter_kw = [k.strip() for k in (cfg.get("trigger_keywords") or "").split(",") if k.strip()]
+        # 退出优先
+        if key in self._story_active:
+            for kw in exit_kw:
+                if self._story_match(norm, kw):
+                    await self._story_exit(event, key, cfg)
+                    event.stop_event()
+                    return
+        # 进入
+        if key not in self._story_active:
+            for kw in enter_kw:
+                if self._story_match(norm, kw):
+                    await self._story_enter(event, key, cfg)
+                    event.stop_event()
+                    return
+        # 进行中：记录用户消息（放行给正常对话流程，由 bot 回复）
+        if key in self._story_active:
+            try:
+                self.story.append_turn(self._story_active[key], "user", raw)
+            except Exception as e:
+                logger.warning(f"[剧情] 记录用户消息失败: {e}")
+
+    @filter.on_llm_response()
+    async def _on_story_llm_response(self, event: AstrMessageEvent, response=None) -> None:
+        """剧情进行中，捕获 bot 的回复追加到档案。"""
+        if self.story is None or not self._story_active:
+            return
+        key = self._story_session_key(event)
+        sid = self._story_active.get(key)
+        if not sid:
+            return
+        try:
+            msgs = list(event.get_messages())
+            text = ""
+            for m in reversed(msgs):
+                role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
+                if role == "assistant":
+                    content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+                    text = self._story_plain(content)
+                    break
+            if not text:
+                return
+            if self.story.last_assistant_turn(sid) == text:
+                return
+            self.story.append_turn(sid, "assistant", text)
+        except Exception as e:
+            logger.warning(f"[剧情] 记录助手消息失败: {e}")
+
     @filter.on_llm_response()
     async def _record_agent_draw_tokens(self, event: AstrMessageEvent, response=None) -> None:
         if self.token_store is None or not self._cfg("llm_token_stats", True):

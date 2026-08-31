@@ -1161,5 +1161,58 @@
         "hint": "可选。填写本地图片绝对路径；留空则使用插件自带的默认 logo（logo.png）。"
       }
     }
+  },
+  "story_mode": {
+    "type": "object",
+    "description": "剧情模式（仅私聊，被动记录）",
+    "hint": "开启后，用户在私聊发送「进入剧情模式」即可开始一段剧情：期间与 bot 的对话、生成的图片会被自动归档成「剧情档案」；说「退出 / 停」结束并由 LLM 生成摘要。群聊与未授权用户不可用。档案可在 WebUI「剧情档案」页查看与管理。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用剧情模式"
+      },
+      "whitelist_users": {
+        "type": "text",
+        "default": "",
+        "description": "允许进入剧情模式的用户 ID（QQ 号）",
+        "hint": "每行一个或逗号分隔。留空 = 所有用户均可进入（仅由 enabled 控制）；填写后仅名单内可进入，其他用户会收到「无权限」提示。"
+      },
+      "trigger_keywords": {
+        "type": "text",
+        "default": "进入剧情模式,开启剧情模式,开始剧情模式,剧情开始",
+        "description": "进入触发词（逗号分隔）",
+        "hint": "用户私聊发送整句等于或以这些词开头时进入剧情模式。"
+      },
+      "exit_keywords": {
+        "type": "text",
+        "default": "退出剧情模式,结束剧情模式,退出剧情,结束剧情,停",
+        "description": "退出触发词（逗号分隔）",
+        "hint": "剧情进行中，用户私聊发送整句等于或以这些词开头时结束并生成摘要。「停」仅认整句，避免日常误退。"
+      },
+      "auto_summary": {
+        "type": "bool",
+        "default": true,
+        "description": "退出时 LLM 自动生成摘要",
+        "hint": "开启后，用户说退出时调用对话模型把这段对话浓缩成一段摘要写入档案；关闭则摘要留空，由用户在 WebUI 手动补。"
+      },
+      "capture_images": {
+        "type": "bool",
+        "default": true,
+        "description": "自动关联剧情期间生成的图片",
+        "hint": "开启后，剧情模式私聊中产生的生图会自动关联到该档案（按图库 sha 关联，WebUI 可预览）。"
+      },
+      "max_keep": {
+        "type": "int",
+        "default": 200,
+        "description": "本地最多保留的剧情档案数",
+        "hint": "超过后按开始时间从最早开始删除（LRU）。-1 表示不限制。仅影响本地存档，不影响已导出的内容。",
+        "slider": {
+          "min": -1,
+          "max": 2000,
+          "step": 50
+        }
+      }
+    }
   }
 }

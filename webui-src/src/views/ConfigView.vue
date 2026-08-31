@@ -99,6 +99,7 @@ const GROUP_META = [
   { name: "网络与代理", description: "外部网络访问（如 C 站抓取）的代理设置", icon: "🌍", keys: ["http_proxy", "civitai_api_key"] },
   { name: "权限与图库", description: "发图白名单、绘图黑名单、生图次数限制与图片画廊归档", icon: "🔒", keys: ["allow_draw_users", "blacklist", "draw_limit", "gallery"] },
   { name: "分享 WebUI", description: "用户级独立分享 WebUI（/萌绘 指令）", icon: "🔗", keys: ["share_webui"] },
+  { name: "剧情模式", description: "剧情模式（仅私聊被动记录）的开关、触发词、白名单与摘要设置", icon: "🎬", keys: ["story_mode"] },
 ];
 
 const groups = computed(() => {
