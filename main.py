@@ -776,7 +776,10 @@ class ComfyUIDrawPlugin(Star):
                 _wa = _il.import_module(
                     f"{__package__}.webui_api" if __package__ else "webui_api"
                 )
-                self.standalone_webui._api = _wa.WebUIApi(self)
+                # 用 get_webui_api_class 从磁盘兜底拿最新类，避免 reload 失败 / sys.modules
+                # 污染时仍拿到缺 story_sessions 等方法的旧类，导致独立 WebUI 剧情接口不可用。
+                _rebuild_cls = getattr(_wa, "get_webui_api_class", None)
+                self.standalone_webui._api = (_rebuild_cls() if _rebuild_cls else _wa.WebUIApi)(self)
         except Exception as _re2:
             logger.warning(f"【初始化】 独立 WebUI 的 WebUIApi 实例重建失败（剧情接口可能不可用）: {_re2}")
 

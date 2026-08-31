@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.12
+
+- **修复独立 WebUI 剧情档案接口不可用（根因与内嵌页同源）**：独立 WebUI 复用的 `WebUIApi` 实例 `self._api` 由 main.py 初始化时用 `import_module` 返回模块的**全局类**重建，在 reload 失败 / `sys.modules` 缓存被污染时拿到的仍是旧类（缺 `story_sessions` / `story_session_*` / `story_stats`），导致独立 WebUI 的 `/story/*` 接口不可用。修复：抽出公共函数 `get_webui_api_class()`（reload 优先 + 从磁盘 `__file__` 强制重新执行源码兜底），内嵌路由注册与 main.py 重建 `_api` 统一复用，确保独立 WebUI 剧情档案接口稳定可用。
+
 ## v5.2.11
 
 - **修复 WebUI 剧情档案接口路由被整体跳过（`[WebUI] 跳过未实现路由（WebUIApi 缺少方法）: /story/...`）**：AStrBot 热更新只重载 main.py，`webui_api` 模块可能残留旧版；而 `register_web_api` 原实现 reload 后仍用「函数所在模块的全局名 `WebUIApi`」创建实例——在非标准加载 / `sys.modules` 缓存被污染时，该全局名指向的仍是旧类（缺 `story_sessions` / `story_session_*` / `story_stats`），导致全部剧情档案路由被 `_h` 判为「缺少方法」而跳过（仅内嵌页剧情档案不可用，其余路由正常）。修复：改为从 reload 返回的模块对象上取 `WebUIApi` 类，并增加兜底——reload 失效时从磁盘 `__file__` 强制重新执行模块源码拿最新类，确保剧情路由一定可注册。独立 WebUI 剧情接口同步加方法存在性防御，缺方法时返回友好提示而非报错。
