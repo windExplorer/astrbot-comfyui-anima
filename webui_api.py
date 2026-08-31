@@ -1671,7 +1671,7 @@ def _log_request(handler, route_desc: str):
             store = getattr(self.plugin, "story", None)
             if store is None:
                 return error_response("剧情模块未启用")
-            body = await request.json() if request.body_exists else {}
+            body = await request.json(default={}) or {}
             if not isinstance(body, dict):
                 body = {}
             sid = int(body.get("id") or 0)
@@ -1691,7 +1691,7 @@ def _log_request(handler, route_desc: str):
             store = getattr(self.plugin, "story", None)
             if store is None:
                 return error_response("剧情模块未启用")
-            body = await request.json() if request.body_exists else {}
+            body = await request.json(default={}) or {}
             ids = body.get("ids") or []
             if not isinstance(ids, list):
                 ids = [ids]

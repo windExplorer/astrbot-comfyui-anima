@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.1.1
+
+- **修复：剧情档案「更新 / 删除」接口在内嵌 WebUI 与独立 WebUI 均失效**：根因是两个 POST 接口误用了 `request.body_exists` 属性读取请求体，而 AStrBot 内嵌页的 `request` 与独立通道复用的 `WebUIApi` 适配器（`_AioReqAdapter`）都没有 `body_exists` 属性，访问即抛 `AttributeError`，被 `try/except` 捕获后返回「更新失败 / 删除失败」。已统一改为与现有接口一致的 `await request.json(default={}) or {}`（`webui_api.py` 的 `story_session_update` / `story_session_delete`），内嵌页与独立 WebUI 的编辑、删除恢复可用。
+
 ## v5.1.0
 
 - **新增「剧情模式」（被动记录，仅私聊）**：用户在私聊发送「进入剧情模式」即开始一段剧情，期间与 bot 的对话（用户/助手轮次）、生成的图片会被自动归档成「剧情档案」；说「退出 / 停」结束并由 LLM 自动生成摘要（可在配置关闭）。群聊与未授权用户不可用。配套能力：
