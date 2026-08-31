@@ -5951,6 +5951,23 @@ class ComfyUIDrawPlugin(Star):
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
+        # ── 绘图黑名单（工具入口）─────────────────────────────────────────
+        # 命中黑名单时必须「明确告知 LLM 这是权限拦截、禁止重试」，而不能让它走到 _do_draw
+        # 后被当成「生图失败」——否则 LLM 会把拦截误判成后端故障反复重试，刷出一堆消息
+        # （实测：被拉黑用户让画图，LLM 连调 3 次 comfyui_draw，每次都回话+语音）。
+        # 白名单优先：allow_draw_users 非空时跳过黑名单（与 _do_draw 的判定一致）。
+        # 伴侣插件（带 source）走原 _do_draw 路径，这里不拦；且工具上下文不 _send，
+        # 直接 return 文本让 LLM 如实转述给用户，避免多出来一条消息。
+        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            _wl_on = bool((plugin._cfg("allow_draw_users", "") or "").strip())
+            if not _wl_on:
+                _bl_ok, _bl_reason = plugin._check_blacklist(event)
+                if not _bl_ok:
+                    return (
+                        "⚠️ 当前用户/群已被加入绘图黑名单，无法出图。"
+                        "请直接、简短地告诉用户「你暂无绘图权限」，不要重试、也不要改 prompt 再调一次。"
+                    )
+
         # ── 单轮出图闸门（v5.0）───────────────────────────────────────
         # 「一次对话出完就关门」的唯一保证：本轮已成功出图 / 已失败重试达到上限就收尾。
         # 不看参数、不看时间间隔，因此不存在被绕过的可能。
