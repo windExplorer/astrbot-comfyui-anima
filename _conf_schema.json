@@ -1212,6 +1212,43 @@
           "max": 2000,
           "step": 50
         }
+      },
+      "context_turns": {
+        "type": "int",
+        "default": 10,
+        "description": "进入剧情时抓取的最近对话轮数（作为推演起点上下文）",
+        "hint": "进入「剧情模式」会自动读取进入前最近这么多轮私聊对话当开场背景。0 = 不抓取。"
+      },
+      "ask_default": {
+        "type": "bool",
+        "default": true,
+        "description": "剧情推演中是否默认偶尔抛出少量互动选项",
+        "hint": "开启后 bot 会在关键节点给 A/B/C 分支选项；进入时说「别问 / 你推进」可关闭。"
+      },
+      "chapter_steps": {
+        "type": "int",
+        "default": 0,
+        "description": "每章推演步数（0 = 自由发挥，由 AI 判断章节完整性）",
+        "default_note": "0 表示单章步数不设限，由 AI 自行决定何时一个章节完整。",
+        "hint": "每章推到该步数即视为章节结束并开新章（步数重置）。0 表示不限制单章步数。"
+      },
+      "auto_steps_per_run": {
+        "type": "int",
+        "default": 12,
+        "description": "单次自动连续推演的步数上限",
+        "hint": "防止剧情无限刷屏。到达上限会暂停，等你「继续」或「停」。-1 不限制。"
+      },
+      "loop_interval_sec": {
+        "type": "number",
+        "default": 1.5,
+        "description": "推演每步之间的间隔（秒）",
+        "hint": "每推一步、发一段文本/图后稍作停顿，避免消息刷得太快。"
+      },
+      "templates": {
+        "type": "text",
+        "default": "",
+        "description": "预设剧情模板（每行一个：模板名::世界观/开场设定）",
+        "hint": "进入时说「进入剧情模式 模板名」即套用该设定；不匹配则整段当主题自由发挥。"
       }
     }
   }

@@ -684,9 +684,11 @@ class ComfyUIDrawPlugin(Star):
                 f"db={self.gallery.db_path})"
             )
 
-            # 剧情模式档案（被动记录，仅私聊）
+            # 剧情模式档案（主动推演引擎，仅私聊）
             self.story = None
             self._story_active: dict = {}
+            self._story_control: dict = {}   # key -> 推演循环控制态（含 asyncio 任务/队列/步数）
+            self._recent_chat: dict = {}     # key -> list[(role,text)] 最近对话缓存（上下文进入用）
             try:
                 from . import story_store
             except ImportError:
@@ -7017,46 +7019,313 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"[剧情] 关联图片失败: {e}")
 
     async def _story_enter(self, event, key, cfg):
+        # 白名单
         wl = [x.strip() for x in (cfg.get("whitelist_users") or "")
               .replace("\n", ",").split(",") if x.strip()]
         if wl and key not in wl:
             await self._send(event, "你暂无剧情模式权限～")
             return
-        try:
-            sid = self.story.create_session(
-                session_key=key, user_id=key,
-                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
-                platform=(getattr(event, "get_platform", lambda: "")() or ""),
-                source="trigger",
-            )
-            self._story_active[key] = sid
-            await self._send(
-                event,
-                "已进入剧情推演模式：我会按步骤推进场景并配图，说「停」即可结束。"
-                "这段时间我们的对话与配图都会被悄悄存档哦～",
-            )
-        except Exception as e:
-            logger.warning(f"[剧情] 进入失败: {e}")
-            await self._send(event, "进入剧情模式失败，请稍后再试。")
+        raw = (getattr(event, "message_str", "") or "").strip()
+        parsed = self._story_parse_enter(raw, cfg)
+        # 续写旧档案
+        history = []
+        theme = parsed["theme"]
+        if parsed["resume_id"]:
+            sess = self.story.get_session(parsed["resume_id"])
+            if sess:
+                for t in sess.get("turns", []):
+                    if t.get("content"):
+                        history.append((t["role"], t["content"]))
+                theme = theme or sess.get("scene") or sess.get("characters") or sess.get("summary") or "续写之前的剧情"
+            else:
+                await self._send(event, f"没找到编号 {parsed['resume_id']} 的剧情档案，改为新开一段～")
+        # 上下文进入：抓进入前最近对话
+        if not history:
+            ctx_n = max(0, int(cfg.get("context_turns", 10) or 10))
+            history = list(self._recent_chat.get(key, []))[-ctx_n:] if ctx_n else []
+        sid = self.story.create_session(
+            session_key=key, user_id=key,
+            user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+            platform=(getattr(event, "get_platform", lambda: "")() or ""),
+            source="trigger",
+            title=(theme or "自由剧情")[:60], scene=theme or "",
+        )
+        ctrl = {
+            "sid": sid,
+            "event": event,
+            "cfg": cfg,
+            "ask": parsed["ask"],
+            "theme": theme,
+            "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
+            "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
+            "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
+            "history": history,
+            "chapter": 1,
+            "step_in_chapter": 0,
+            "total_step": 0,
+            "paused": False,
+            "stop": asyncio.Event(),
+            "interrupt": asyncio.Queue(),
+        }
+        self._story_active[key] = sid
+        self._story_control[key] = ctrl
+        hint = "已进入剧情推演模式：我会自动按步骤推进剧情、每步发文本并根据情景配图（头尾必发）"
+        if ctrl["ask"]:
+            hint += "，关键节点会给你几个选项"
+        hint += "。你可以随时发消息打断/改变方向，说「停」结束，说「继续」让我接着推。"
+        if not ctrl["ask"]:
+            hint += "（本次已设为「你推进别问我」）"
+        hint += " 这段时间对话与配图都会悄悄存档哦～"
+        await self._send(event, hint)
+        ctrl["task"] = asyncio.create_task(self._story_run_loop(key))
 
-    async def _story_exit(self, event, key, cfg):
-        sid = self._story_active.pop(key, None)
-        if sid is None:
+    def _story_parse_enter(self, raw, cfg):
+        """解析进入指令：提取主题/模板/续写/是否询问。"""
+        import re
+        rest = raw
+        for kw in [k.strip() for k in (cfg.get("trigger_keywords") or "").split(",") if k.strip()]:
+            if rest.startswith(kw):
+                rest = rest[len(kw):].strip()
+                break
+        out = {"theme": "", "ask": True, "resume_id": 0}
+        if any(x in rest for x in ("别问", "不用问", "你推进", "你决定", "别问我", "自己推")):
+            out["ask"] = False
+        m = re.search(r"(续写|继续)\s*(\d+)", rest)
+        if m:
+            out["resume_id"] = int(m.group(2))
+            rest = rest.replace(m.group(0), "").strip()
+        theme = rest.strip("：: ，,。.　 ").strip()
+        if theme:
+            tmpl = self._story_match_template(theme, cfg)
+            out["theme"] = tmpl if tmpl else theme
+        return out
+
+    def _story_match_template(self, name, cfg):
+        txt = (cfg.get("templates") or "").strip()
+        if not txt:
+            return ""
+        for line in txt.splitlines():
+            line = line.strip()
+            if not line or "::" not in line:
+                continue
+            nm, premise = line.split("::", 1)
+            if nm.strip() == name or name in nm or nm in name:
+                return premise.strip()
+        return ""
+
+    async def _story_run_loop(self, key):
+        ctrl = self._story_control.get(key)
+        if ctrl is None:
             return
+        event = ctrl["event"]
+        sid = ctrl["sid"]
+        try:
+            while not ctrl["stop"].is_set():
+                instr = await self._story_next_instruction(ctrl)
+                if instr == "STOP":
+                    break
+                if isinstance(instr, str):
+                    # 用户新方向：注入并开新章（步数重置，Z 方案）
+                    ctrl["history"].append(("user", instr))
+                    try:
+                        self.story.append_turn(sid, "user", instr)
+                    except Exception:
+                        pass
+                    ctrl["chapter"] += 1
+                    ctrl["step_in_chapter"] = 0
+                    ctrl["paused"] = False
+                if ctrl["chapter_steps"] and ctrl["step_in_chapter"] >= ctrl["chapter_steps"]:
+                    ctrl["chapter"] += 1
+                    ctrl["step_in_chapter"] = 0
+                first = (ctrl["total_step"] == 0)
+                prompt = self._story_build_prompt(ctrl, first=first)
+                try:
+                    resp = await self._story_call_llm(prompt)
+                except Exception as e:
+                    logger.warning(f"[剧情] LLM 调用失败: {e}")
+                    await self._send(event, "（推演时 AI 调用出错，剧情暂停。说「继续」重试或「停」结束）")
+                    ctrl["paused"] = True
+                    continue
+                parsed = self._story_parse_step(resp)
+                narr = parsed.get("narrative", "").strip()
+                if narr:
+                    await self._send(event, narr)
+                    ctrl["history"].append(("assistant", narr))
+                    try:
+                        self.story.append_turn(sid, "assistant", narr)
+                    except Exception:
+                        pass
+                    ctrl["total_step"] += 1
+                    ctrl["step_in_chapter"] += 1
+                last = (parsed.get("chapter_end") or
+                        (ctrl["chapter_steps"] and ctrl["step_in_chapter"] >= ctrl["chapter_steps"]))
+                if (parsed.get("draw") and parsed.get("prompt")) or (first or last):
+                    dprompt = parsed.get("prompt") or self._story_infer_prompt(narr)
+                    if dprompt:
+                        await self._story_draw_in_loop(event, sid, dprompt)
+                if ctrl["ask"] and parsed.get("options"):
+                    opts = " / ".join(parsed["options"])
+                    await self._send(event, f"你可以选择：{opts}（回复选项或发新指令都行）")
+                    ctrl["paused"] = True
+                if ctrl["auto_max"] and ctrl["auto_max"] > 0 and ctrl["total_step"] >= ctrl["auto_max"]:
+                    await self._send(event, "（本次自动推演已达步数上限，说「继续」让我接着推，或「停」结束）")
+                    ctrl["paused"] = True
+                await asyncio.sleep(ctrl["interval"])
+        finally:
+            try:
+                await self._story_finish(key)
+            except Exception as e:
+                logger.warning(f"[剧情] 收尾失败: {e}")
+
+    async def _story_next_instruction(self, ctrl):
+        """取一条用户指令：暂停态阻塞等待，自动态非阻塞取最近一条。"""
+        if ctrl["paused"]:
+            msg = await ctrl["interrupt"].get()
+        else:
+            try:
+                msg = ctrl["interrupt"].get_nowait()
+            except asyncio.QueueEmpty:
+                return None
+        return self._story_classify(msg)
+
+    def _story_classify(self, msg):
+        if not msg:
+            return None
+        norm = self._story_norm(msg)
+        exit_kw = [k.strip() for k in (self._cfg("story_mode", {}) or {}).get("exit_keywords", "").split(",") if k.strip()]
+        if any(self._story_match(norm, k) for k in exit_kw):
+            return "STOP"
+        if norm in ("继续", "接着", "continue", "go", "继续推"):
+            return "CONTINUE"
+        return msg.strip()
+
+    async def _story_call_llm(self, prompt):
+        prov = self.context.get_using_provider()
+        if prov is None:
+            return ""
+        try:
+            resp = await prov.text_chat(prompt=prompt, session_id="")
+            return (getattr(resp, "completion_text", "") or "").strip()
+        except Exception as e:
+            logger.warning(f"[剧情] LLM 调用异常: {e}")
+            return ""
+
+    def _story_build_prompt(self, ctrl, first=False):
+        theme = ctrl["theme"] or "自由发挥的剧情"
+        ask = ctrl["ask"]
+        lines = [
+            "你是剧情推演引擎。用户进入「剧情模式」后，由你自动、连续地推进一段角色扮演/剧情，不需要等用户每句催促。",
+            f"当前剧情设定/主题：{theme}",
+            f"当前进度：第 {ctrl['chapter']} 章，本章已推 {ctrl['step_in_chapter']} 步。",
+            "输出格式（严格按此，不要多余解释）：",
+            "[NARRATIVE] 本步的叙事文本（生动、贴合设定）。",
+            "[DRAW] 本步对应的画面描述（动漫用英文 Danbooru 标签；写实用中文）。头一章第一步与每章结尾必须出图；中间步骤若情景需要也写 [DRAW]，不需要则写 [DRAW] 无。",
+            "[OPTIONS] 关键节点给出 2-3 个简短后续分支（仅当用户可选择时）；不需要则写 [OPTIONS] 无。",
+            "[CHAPTER_END] true 表示本章到此应告一段落，否则 false。",
+        ]
+        if not ask:
+            lines.append("本次为「你推进别问我」模式：不要输出 [OPTIONS]。")
+        lines.append("收到用户新指令即视为改变剧情方向，顺势改写后续。")
+        sys_prompt = "\n".join(lines)
+        hist = "\n".join(f"{'用户' if r == 'user' else '助手'}: {t}" for r, t in ctrl["history"][-30:])
+        if first:
+            stage = "这是剧情开场，请写出第一段场景与画面（头尾必发，第一步必须给 [DRAW]）。"
+        elif ctrl["paused"]:
+            stage = "刚才用户给了新指令/选项，请基于最近输入继续推进下一步。"
+        else:
+            stage = "请推进下一步剧情。"
+        return f"{sys_prompt}\n\n已有剧情（最近）：\n{hist}\n\n[指令] {stage}\n\n请按格式输出："
+
+    @staticmethod
+    def _story_parse_step(text):
+        import re
+        out = {"narrative": "", "draw": False, "prompt": "", "options": [], "chapter_end": False}
+        if not text:
+            return out
+
+        def grab(tag):
+            m = re.search(rf"\[{tag}\]\s*(.*?)(?=\n\[[A-Z_]+\]|$)", text, re.S)
+            return m.group(1).strip() if m else ""
+        out["narrative"] = grab("NARRATIVE")
+        draw = grab("DRAW")
+        if draw and draw.lower() not in ("无", "no", "none", "false", ""):
+            out["draw"] = True
+            out["prompt"] = draw
+        opts = grab("OPTIONS")
+        if opts and opts.lower() not in ("无", "no", "none", "false"):
+            for line in opts.splitlines():
+                line = line.strip().lstrip("ABCDEF.、-)").strip()
+                if line:
+                    out["options"].append(line)
+        ce = grab("CHAPTER_END").lower()
+        out["chapter_end"] = ce in ("true", "1", "是", "yes")
+        return out
+
+    @staticmethod
+    def _story_infer_prompt(narr):
+        if not narr:
+            return ""
+        return narr[:200]
+
+    async def _story_draw_in_loop(self, event, sid, prompt):
+        try:
+            async for node, p in self._do_draw(
+                event, None, prompt, "", None, None, None, None, None,
+                is_img2img=False, notify_pending=True, source="story",
+            ):
+                if node is not None:
+                    try:
+                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                    except Exception as e:
+                        logger.warning(f"[剧情] 出图发送失败: {e}")
+        except Exception as e:
+            logger.warning(f"[剧情] 推演出图失败: {e}")
+        # 关联档案由 _do_draw 内部 _story_maybe_link_image（active 时）自动完成
+
+    async def _story_finish(self, key):
+        ctrl = self._story_control.pop(key, None)
+        if ctrl is None:
+            return
+        sid = ctrl["sid"]
+        cfg = ctrl["cfg"]
+        event = ctrl["event"]
         summary = ""
         try:
             if cfg.get("auto_summary", True):
                 summary = await self._story_make_summary(sid)
-        except Exception as e:
-            logger.warning(f"[剧情] 摘要生成失败: {e}")
+        except Exception:
+            pass
         try:
             self.story.finish_session(sid, summary=summary)
-        except Exception as e:
-            logger.warning(f"[剧情] 结束会话失败: {e}")
+        except Exception:
+            pass
+        self._story_active.pop(key, None)
         msg = "已退出剧情模式。"
         if summary:
             msg += f"\n\n📝 本次剧情摘要：\n{summary}"
-        await self._send(event, msg)
+        try:
+            await self._send(event, msg)
+        except Exception:
+            pass
+
+    async def _story_exit(self, event, key, cfg):
+        # 兼容旧调用：直接结束推演循环
+        ctrl = self._story_control.get(key)
+        if ctrl is not None:
+            ctrl["stop"].set()
+            try:
+                ctrl["interrupt"].put_nowait("")
+            except Exception:
+                pass
+            return
+        sid = self._story_active.pop(key, None)
+        if sid is None:
+            return
+        try:
+            self.story.finish_session(sid)
+        except Exception:
+            pass
+        await self._send(event, "已退出剧情模式。")
 
     async def _story_make_summary(self, sid: int) -> str:
         sess = self.story.get_session(sid)
@@ -7088,13 +7357,13 @@ class ComfyUIDrawPlugin(Star):
 
     @filter.on_message()
     async def _on_story_message(self, event: AstrMessageEvent):
-        """剧情模式入口钩子：仅私聊，被动记录对话与配图。"""
+        """剧情推演入口：仅私聊。进行中把消息交给推演循环（打断/改向/停），
+        未进入时缓存最近对话供「上下文进入」使用。"""
         if self.story is None:
             return
         cfg = self._cfg("story_mode", {}) or {}
         if not isinstance(cfg, dict) or not cfg.get("enabled", False):
             return
-        # 仅私聊可用
         try:
             gid = event.get_group_id()
         except Exception:
@@ -7110,35 +7379,46 @@ class ComfyUIDrawPlugin(Star):
         norm = self._story_norm(raw)
         exit_kw = [k.strip() for k in (cfg.get("exit_keywords") or "").split(",") if k.strip()]
         enter_kw = [k.strip() for k in (cfg.get("trigger_keywords") or "").split(",") if k.strip()]
-        # 退出优先
-        if key in self._story_active:
-            for kw in exit_kw:
-                if self._story_match(norm, kw):
-                    await self._story_exit(event, key, cfg)
-                    event.stop_event()
-                    return
-        # 进入
-        if key not in self._story_active:
-            for kw in enter_kw:
-                if self._story_match(norm, kw):
-                    await self._story_enter(event, key, cfg)
-                    event.stop_event()
-                    return
-        # 进行中：记录用户消息（放行给正常对话流程，由 bot 回复）
-        if key in self._story_active:
+        ctrl = self._story_control.get(key)
+        if ctrl is not None:
+            # 剧情进行中：消息交给推演循环处理
+            if any(self._story_match(norm, k) for k in exit_kw):
+                ctrl["stop"].set()
             try:
-                self.story.append_turn(self._story_active[key], "user", raw)
-            except Exception as e:
-                logger.warning(f"[剧情] 记录用户消息失败: {e}")
+                ctrl["interrupt"].put_nowait(raw)
+            except Exception:
+                pass
+            event.stop_event()
+            return
+        # 进入
+        for kw in enter_kw:
+            if self._story_match(norm, kw):
+                await self._story_enter(event, key, cfg)
+                event.stop_event()
+                return
+        # 未进入：缓存最近对话（上下文进入用）
+        buf = self._recent_chat.get(key)
+        if buf is None:
+            buf = []
+            self._recent_chat[key] = buf
+        buf.append(("user", raw))
+        ctx_n = max(2, int(cfg.get("context_turns", 10) or 10) * 2)
+        if len(buf) > ctx_n:
+            del buf[:len(buf) - ctx_n]
 
     @filter.on_llm_response()
     async def _on_story_llm_response(self, event: AstrMessageEvent, response=None) -> None:
-        """剧情进行中，捕获 bot 的回复追加到档案。"""
-        if self.story is None or not self._story_active:
+        """剧情 active 时助手回复由推演循环自行记录；非 active 时把助手回复
+        缓存进最近对话，供「上下文进入」使用。"""
+        if self.story is None:
             return
         key = self._story_session_key(event)
-        sid = self._story_active.get(key)
-        if not sid:
+        if not key:
+            return
+        if key in self._story_active:
+            return
+        buf = self._recent_chat.get(key)
+        if buf is None:
             return
         try:
             msgs = list(event.get_messages())
@@ -7149,13 +7429,13 @@ class ComfyUIDrawPlugin(Star):
                     content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
                     text = self._story_plain(content)
                     break
-            if not text:
-                return
-            if self.story.last_assistant_turn(sid) == text:
-                return
-            self.story.append_turn(sid, "assistant", text)
-        except Exception as e:
-            logger.warning(f"[剧情] 记录助手消息失败: {e}")
+            if text:
+                buf.append(("assistant", text))
+                ctx_n = max(2, int((self._cfg("story_mode", {}) or {}).get("context_turns", 10) or 10) * 2)
+                if len(buf) > ctx_n:
+                    del buf[:len(buf) - ctx_n]
+        except Exception:
+            pass
 
     @filter.on_llm_response()
     async def _record_agent_draw_tokens(self, event: AstrMessageEvent, response=None) -> None:
