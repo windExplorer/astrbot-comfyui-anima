@@ -3637,15 +3637,26 @@ class ComfyUIDrawPlugin(Star):
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
         event.stop_event()
 
-    @filter.command("无限发图", alias={"持续发图", "unlimited_draw", "连发图"})
+    @filter.command("无限绘图", alias={"无限发图", "持续发图", "unlimited_draw", "连发图"})
     async def cmd_unlimited_draw(self, event: AstrMessageEvent):
-        """按当前用户开启/关闭「不限轮次持续发图」。用法：/无限发图 开|关（缺省查看状态）。仅对本人生效，状态持久保存。"""
+        """按当前用户开启/关闭「不限轮次持续发图」。用法：/无限绘图 开|关（缺省查看状态）。仅对本人生效，状态持久保存；白名单外的普通用户不可用。"""
         uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
+        # 白名单控制：默认（开关关）管理员不受限随时可用；普通用户须白名单内
+        _dm = self._cfg("draw_auto", {}) or {}
+        _wl_raw = _dm.get("unlimited_draw_whitelist", "") or ""
+        _wl = {x.strip() for x in str(_wl_raw).replace(",", "\n").splitlines() if x.strip()}
+        _admin_bypass = not bool(_dm.get("unlimited_draw_whitelist_admin", False))
+        _is_admin = bool(self._is_admin(event))
+        _need_wl = (not _is_admin) or (not _admin_bypass)
+        if _need_wl and uid not in _wl:
+            await self._send(event, "该指令仅白名单用户可用。请联系管理员把你加入「无限绘图白名单」后再使用。")
+            event.stop_event()
+            return
         arg = self._strip_command(
-            event.message_str, "无限发图", ("持续发图", "unlimited_draw", "连发图")
+            event.message_str, "无限绘图", ("无限发图", "持续发图", "unlimited_draw", "连发图")
         ).strip().lower()
         if not arg:
-            await self._send(event, f"你当前{'已开启' if uid in self._unl_users() else '未开启'}不限轮次发图。用 /无限发图 开 或 关 切换（仅对你本人生效，重启/重载后仍保留）。")
+            await self._send(event, f"你当前{'已开启' if uid in self._unl_users() else '未开启'}不限轮次持续发图。用 /无限绘图 开 或 关 切换（仅对你本人生效，重启/重载后仍保留）。")
             event.stop_event()
             return
         if arg in ("开", "on", "1", "true", "开启", "打开"):
@@ -3657,7 +3668,7 @@ class ComfyUIDrawPlugin(Star):
             event.stop_event()
             return
         on = uid in self._unl_users()
-        await self._send(event, f"已{'开启' if on else '关闭'}你的不限轮次发图（仅对你本人生效，重启/重载后仍保留）——LLM 可{'连续多次发图、一次多张不截断' if on else '按默认闸门控制'}。")
+        await self._send(event, f"已{'开启' if on else '关闭'}你的不限轮次持续发图（仅对你本人生效，重启/重载后仍保留）——LLM 可{'连续多次发图、一次多张不截断' if on else '按默认闸门控制'}。")
         event.stop_event()
 
     def _unlimited_users_path(self):

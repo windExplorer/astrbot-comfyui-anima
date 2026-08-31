@@ -735,6 +735,18 @@
         "description": "不限轮次持续发图（LLM 可一直发）",
         "hint": "开启后，画图工具（comfyui_draw / comfyui_img2img）不再受「单轮最多成功出图次数」与「单次最多出图张数」限制：LLM 可以在对话里连续多次发图、一次要更多张也不再截断。适合剧情推演/自动连续配图等需要一直出图的场景。★有刷屏风险，仅在你需要「LLM 自己持续发图」时开启。"
       },
+      "unlimited_draw_whitelist": {
+        "type": "text",
+        "default": "",
+        "description": "无限绘图指令白名单（用户 ID）",
+        "hint": "允许使用 /无限绘图 指令的用户 ID 列表，每行一个或逗号分隔。留空=无人（配合下方「管理员受白名单限制」默认关，则仅管理员可用）；普通用户不在名单内会被拒绝。"
+      },
+      "unlimited_draw_whitelist_admin": {
+        "type": "bool",
+        "default": false,
+        "description": "管理员是否受白名单限制",
+        "hint": "默认关（管理员不受白名单限制，随时可用 /无限绘图）。开启后管理员也必须在白名单内才能使用。"
+      },
       "max_images_per_batch": {
         "type": "int",
         "description": "单批生成张数上限（防超时卡死）",
