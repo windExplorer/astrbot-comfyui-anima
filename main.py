@@ -7203,6 +7203,9 @@ class ComfyUIDrawPlugin(Star):
             "ask": parsed["ask"],
             "pause_on_options": bool(cfg.get("pause_on_options", False)),
             "theme": theme,
+            "user_name": (parsed.get("user_name") or (cfg.get("user_name") or "")).strip(),
+            "partner_name": (parsed.get("partner_name") or (cfg.get("partner_name") or "机器人")).strip(),
+            "partner_profile": (cfg.get("partner_profile") or "").strip(),
             "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
             "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
@@ -7242,6 +7245,15 @@ class ComfyUIDrawPlugin(Star):
         out = {"theme": "", "ask": bool((cfg or {}).get("ask_default", True)), "resume_id": 0}
         if any(x in rest for x in ("别问", "不用问", "你推进", "你决定", "别问我", "自己推")):
             out["ask"] = False
+        # 可选指定主角/女主：如「进入剧情模式 女主:林晚晴 主角:阿明」
+        _m = re.search(r"(女主|女角|伴侣)\s*[：:是=]\s*([^\s，,。！？!?]{1,20})", rest)
+        if _m:
+            out["partner_name"] = _m.group(2).strip()
+            rest = rest.replace(_m.group(0), "", 1).strip()
+        _m = re.search(r"(主角|男主|自己)\s*[：:是=]\s*([^\s，,。！？!?]{1,20})", rest)
+        if _m:
+            out["user_name"] = _m.group(2).strip()
+            rest = rest.replace(_m.group(0), "", 1).strip()
         m = re.search(r"(续写|继续)\s*(\d+)", rest)
         if m:
             out["resume_id"] = int(m.group(2))
@@ -7386,10 +7398,12 @@ class ComfyUIDrawPlugin(Star):
         lines = [
             "你是专业的小说剧情推演引擎。用户进入「剧情模式」后，由你自动、连续地推进一段沉浸式角色扮演剧情，全程不需要用户每句催促。",
             f"【世界观/主题】{theme}",
+            f"【角色设定】主角 = 用户本人（称呼：{ctrl.get('user_name') or '你'}），你就是主角，剧情始终围绕「你」与女主的互动展开，绝不把用户写成路人或另造主角；女主 = {ctrl.get('partner_name') or '机器人'}，人设：{ctrl.get('partner_profile') or '由你按主题合理塑造，活泼自然、与主角互动亲密'}。",
             f"【进度】第 {ctrl['chapter']} 章，本章第 {ctrl['step_in_chapter']} 步。",
             "【输出格式，严格按此，不要输出标签以外的内容、不要写解释或点评】：",
             "[NARRATIVE] 本步的叙事。硬性要求：①只推进「一个具体场景 / 一个动作 / 一段对话」，严禁在一步之内把整段剧情写完或草草收尾；"
             "②描写具体生动——写清环境、人物动作神态、心理活动与对话，避免流水账与概括性语言；③约 80-160 字、3-6 句；④结尾留悬念或钩子，为下一步铺垫。",
+            "叙事采用「第二人称交互式」：以主角（你）的视角推进场景、描写女主言行与心理，把用户发来的消息视为主角的言行/选择，不要另起第三人称上帝视角。",
             "[DRAW] 本步对应的画面描述（动漫风，用英文 Danbooru 标签逗号分隔，如 1girl,solo,smile,outdoors；写实用中文场景）。"
             "头图（第一步）与每章结尾一定会出图；中间步骤由你判断——若本步情景值得配图就写 [DRAW] 并给出描述，不需要则写 [DRAW] 无（依剧情节奏而定，不要每步都出）。",
             "[OPTIONS] 仅在本次允许互动、且处于关键节点（章节结束或剧情重大抉择）时，给出 2-3 个简短后续分支；普通推进步骤写 [OPTIONS] 无，不要每步都给。",

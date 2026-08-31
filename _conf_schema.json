@@ -1269,6 +1269,24 @@
         "description": "probability 模式下每步出图的概率",
         "hint": "取值范围 0-1。仅在「中间步骤出图策略 = 概率随机」时生效。"
       },
+      "user_name": {
+        "type": "text",
+        "default": "",
+        "description": "剧情主角称呼（留空默认用「你」）",
+        "hint": "剧情以主角视角推进、主角即用户本人。留空则用「你」称呼；进入时说「主角:阿明」可临时指定。"
+      },
+      "partner_name": {
+        "type": "text",
+        "default": "机器人",
+        "description": "剧情女主名字（默认「机器人」）",
+        "hint": "默认女主即机器人本体。进入时说「女主:林晚晴」可临时指定名字。"
+      },
+      "partner_profile": {
+        "type": "text",
+        "default": "",
+        "description": "剧情女主人设/形象（可空）",
+        "hint": "例如「黑长直学姐，温柔腹黑」。留空则由 AI 按主题塑造。"
+      },
       "templates": {
         "type": "text",
         "editor": "kvlines",
