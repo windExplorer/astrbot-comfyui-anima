@@ -45,12 +45,13 @@
 
 <script setup lang="ts">
 import { h, onMounted, reactive, ref } from "vue";
-import { useMessage, NButton, NDataTable, NCheckbox, NFormItem, NInputNumber, NInput, NSpace, NTag, type DataTableColumns } from "naive-ui";
+import { useMessage, useDialog, NButton, NDataTable, NCheckbox, NFormItem, NInputNumber, NInput, NSpace, NTag, type DataTableColumns } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { useRefresh } from "@/composables/useRefresh";
 import { useDevice } from "@/composables/useDevice";
 
 const message = useMessage();
+const dialog = useDialog();
 const { isMobile } = useDevice();
 const loading = ref(false);
 const global = reactive({ enabled: false, max_total: -1, max_hour: -1, max_day: -1, admin_exempt: true });

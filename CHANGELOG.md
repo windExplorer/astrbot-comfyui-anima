@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.0.8
+
+- **修复：WebUI 生图限额页点击「配置 / 重置」报错 `ReferenceError: dialog is not defined`**：根因是 `webui-src/src/views/QuotaView.vue` 的 `<script setup>` 调用了 `dialog.info()` / `dialog.warning()` 却漏掉 `useDialog` 的导入与 `const dialog = useDialog()` 声明（其余 view 均已正确引入）。已补上导入与声明并重新构建 WebUI，限额编辑与重置确认对话框恢复正常。
+
 ## v5.0.7
 
 - **根治「超时后卡死十几分钟不回消息」**：根因是 AstrBot 框架 120 秒工具超时取消了正在 `await event.send`（发 QQ 图）的协程，把 aiocqhttp 的 bot WebSocket 连接打断成半死状态，导致之后所有发图永久挂起（实测日志里超时取消后重试、后续发图卡了十几分钟才靠用户主动发消息触发重连恢复）。现改为**分批 + 后台续画**：单次工具调用最多连续出 `draw_auto.max_images_per_batch`（默认 4）张，并受 100 秒硬性时间兜底约束，确保单批总耗时 < 框架超时、工具能正常 `return`——框架绝不取消我们，发图连接永不坏，绝不卡死。
