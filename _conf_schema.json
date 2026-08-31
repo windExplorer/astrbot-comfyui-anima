@@ -876,10 +876,60 @@
     ]
   },
   "allow_draw_users": {
-    "type": "text",
-    "description": "发图白名单（允许绘图/发图的用户）",
-    "hint": "填写允许使用绘图功能（指令绘图、AI 对话发图）的用户 ID，每行一个（也支持逗号分隔）。留空则所有用户都能发图。非白名单用户触发绘图时会收到无权提示且不会真正生图。\n注意：与 blacklist（绘图黑名单）互斥，请勿同时启用；若同时配置，本白名单优先。",
-    "default": ""
+    "type": "object",
+    "description": "发图白名单（按群 / 按人）",
+    "hint": "开启后，只有白名单内的用户 / 群可以使用绘图功能（指令绘图、AI 对话发图、伴侣插件等）。在 _do_draw 统一入口拦截。users 填用户 ID（QQ 号），groups 填群号，每行一个（也支持逗号分隔）。\n注意：与 blacklist（绘图黑名单）互斥，请勿同时启用；若同时配置，本白名单优先。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用发图白名单",
+        "hint": "总开关。关闭后白名单不生效（列表保留），所有用户都能绘图。",
+        "default": false
+      },
+      "users": {
+        "type": "text",
+        "description": "白名单用户 ID（QQ 号）",
+        "hint": "填写允许使用绘图功能的用户 ID，每行一个（也支持逗号分隔）。命中的用户可以使用任何画图方式。",
+        "default": ""
+      },
+      "groups": {
+        "type": "text",
+        "description": "白名单群号",
+        "hint": "填写允许使用绘图功能的群号，每行一个（也支持逗号分隔）。命中群内的所有人都可以使用任何画图方式。",
+        "default": ""
+      }
+    }
+  },
+  "blacklist": {
+    "type": "object",
+    "description": "绘图黑名单（按群 / 按人）",
+    "hint": "拉黑后，被拉黑的用户（QQ 号）或群无法使用任何画图方式（指令绘图、AI 对话画图、伴侣插件等）。在 _do_draw 统一入口拦截。users 填用户 ID（QQ 号），groups 填群号，每行一个（也支持逗号分隔）。可配合 /拉黑、/解黑、/黑名单 指令管理。\n注意：与 allow_draw_users（发图白名单）互斥，请勿同时启用；若同时配置，白名单优先。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用绘图黑名单",
+        "hint": "总开关。关闭后黑名单不生效（列表保留）。",
+        "default": false
+      },
+      "users": {
+        "type": "text",
+        "description": "黑名单用户 ID（QQ 号）",
+        "hint": "填写被拉黑的用户 ID，每行一个（也支持逗号分隔）。命中的用户无法使用任何画图方式。",
+        "default": ""
+      },
+      "groups": {
+        "type": "text",
+        "description": "黑名单群号",
+        "hint": "填写被拉黑的群号，每行一个（也支持逗号分隔）。命中群内的所有人都无法使用任何画图方式。",
+        "default": ""
+      },
+      "admin_exempt": {
+        "type": "bool",
+        "description": "管理员豁免黑名单",
+        "hint": "开启后管理员（event.is_admin 判定）不受黑名单限制，避免误把自己锁死。",
+        "default": true
+      }
+    }
   },
   "draw_limit": {
     "type": "object",
@@ -929,37 +979,6 @@
         "type": "bool",
         "description": "管理员不受限制",
         "hint": "开启后管理员（event.is_admin 判定）不参与次数限制，可无限生图。",
-        "default": true
-      }
-    }
-  },
-  "blacklist": {
-    "type": "object",
-    "description": "绘图黑名单（按群 / 按人）",
-    "hint": "拉黑后，被拉黑的用户（QQ 号）或群无法使用任何画图方式（指令绘图、AI 对话画图、伴侣插件等）。在 _do_draw 统一入口拦截。users 填用户 ID（QQ 号），groups 填群号，每行一个（也支持逗号分隔）。可配合 /拉黑、/解黑、/黑名单 指令管理。\n注意：与 allow_draw_users（发图白名单）互斥，请勿同时启用；若同时配置，白名单优先。",
-    "items": {
-      "enabled": {
-        "type": "bool",
-        "description": "启用绘图黑名单",
-        "hint": "总开关。关闭后黑名单不生效（列表保留）。",
-        "default": false
-      },
-      "users": {
-        "type": "text",
-        "description": "黑名单用户 ID（QQ 号）",
-        "hint": "填写被拉黑的用户 ID，每行一个（也支持逗号分隔）。命中的用户无法使用任何画图方式。",
-        "default": ""
-      },
-      "groups": {
-        "type": "text",
-        "description": "黑名单群号",
-        "hint": "填写被拉黑的群号，每行一个（也支持逗号分隔）。命中群内的所有人都无法使用任何画图方式。",
-        "default": ""
-      },
-      "admin_exempt": {
-        "type": "bool",
-        "description": "管理员豁免黑名单",
-        "hint": "开启后管理员（event.is_admin 判定）不受黑名单限制，避免误把自己锁死。",
         "default": true
       }
     }

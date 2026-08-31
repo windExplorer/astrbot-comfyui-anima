@@ -2675,21 +2675,15 @@ class ComfyUIDrawPlugin(Star):
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
         user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
-        # 发图白名单优先：allow_draw_users 非空时，只有白名单内用户能绘图，
-        # 此时黑名单冗余（非白名单用户已被白名单拦下），直接跳过黑名单检查。
-        # 空名单 = 所有用户都允许，此时才走黑名单检查（两者互斥，白名单优先）。
-        _wl_enabled = bool((self._cfg("allow_draw_users", "") or "").strip())
-        if not _wl_enabled:
-            # 绘图黑名单：被拉黑的用户/群直接拒绝（覆盖指令、AI 对话、伴侣插件等所有画图方式）。
-            _bl_ok, _bl_reason = self._check_blacklist(event)
-            if not _bl_ok:
-                logger.info(f"【绘图·解析】 黑名单拦截：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
-                await self._send(event, _bl_reason)
-                return
-        # 发图白名单校验：allow_draw_users 非空时仅列表内用户可绘图；空名单所有用户允许。
-        if not self._is_draw_allowed(user_id):
-            logger.info(f"【绘图·解析】 用户 {user_id or '(unknown)'} 不在发图白名单，拒绝绘图")
-            await self._send(event, "你暂无绘图权限～")
+        # 绘图权限总闸（白名单优先，再黑名单）。白名单启用时只看白名单，
+        # 未启用/空则走黑名单。两者互斥：白名单内用户即便在黑名单也放行。
+        if self._is_whitelist_active():
+            _perm_ok, _perm_reason = self._check_whitelist(event)
+        else:
+            _perm_ok, _perm_reason = self._check_blacklist(event)
+        if not _perm_ok:
+            logger.info(f"【绘图·解析】 权限拦截（白名单={self._is_whitelist_active()}）：user={user_id or '(unknown)'} group={getattr(event, 'get_group_id', lambda: '')() or ''}")
+            await self._send(event, _perm_reason)
             return
         # 生图次数限制：全局/按用户配额校验（管理员可豁免）
         _ok, _reason = self._check_draw_limit(event)
@@ -4604,23 +4598,50 @@ class ComfyUIDrawPlugin(Star):
     def _is_admin(self, event) -> bool:
         return bool(getattr(event, "is_admin", lambda: False)())
 
-    def _is_draw_allowed(self, user_id: str) -> bool:
-        """发图白名单校验：allow_draw_users 配置非空时，仅列表内的用户可绘图/发图。
+    def _whitelist_cfg(self) -> dict:
+        """发图白名单配置块（allow_draw_users）。
 
-        配置为逗号或换行分隔的用户 ID 列表，留空表示所有用户都允许
-        （包括未识别到 user_id 的情况，避免误伤）。
+        兼容旧版：v5.0.12 之前为纯文本用户 ID 列表，升级后改为对象结构；
+        若读到的是字符串（旧配置），按旧语义转成 {enabled, users, groups=""}。
         """
-        if not user_id:
-            return True
-        whitelist = (self._cfg("allow_draw_users", "") or "").strip()
-        if not whitelist:
-            return True
-        allowed = {
-            x.strip()
-            for x in re.split(r"[,，\n\r]+", whitelist)
-            if x.strip()
-        }
-        return user_id in allowed
+        raw = self._cfg("allow_draw_users", {}) or {}
+        if isinstance(raw, str):
+            return {"enabled": bool(raw.strip()), "users": raw, "groups": ""}
+        return raw
+
+    def _is_whitelist_active(self) -> bool:
+        """白名单是否生效：enabled 且 users/groups 至少其一非空。"""
+        wl = self._whitelist_cfg()
+        if not wl.get("enabled", False):
+            return False
+        return bool(
+            self._parse_id_list(wl.get("users", ""))
+            or self._parse_id_list(wl.get("groups", ""))
+        )
+
+    def _check_whitelist(self, event) -> tuple[bool, str]:
+        """发图白名单校验。返回 (是否允许, 拒绝原因)。
+
+        白名单启用时，仅白名单内的用户/群可绘图（命中群内的所有人允许）；
+        未命中白名单一律拒绝。本方法仅在 _is_whitelist_active() 为 True 时调用，
+        白名单未启用时由调用方改走 _check_blacklist（两者互斥、白名单优先）。
+        """
+        wl = self._whitelist_cfg()
+        users = self._parse_id_list(wl.get("users", ""))
+        groups = self._parse_id_list(wl.get("groups", ""))
+        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        group_id = ""
+        try:
+            get_g = getattr(event, "get_group_id", None)
+            if callable(get_g):
+                group_id = str(get_g() or "").strip()
+        except Exception:
+            group_id = ""
+        if user_id and user_id in users:
+            return True, ""
+        if group_id and group_id in groups:
+            return True, ""
+        return False, "你暂无绘图权限～"
 
     def _blacklist_cfg(self) -> dict:
         """绘图黑名单配置块（blacklist）。"""
@@ -5959,8 +5980,14 @@ class ComfyUIDrawPlugin(Star):
         # 伴侣插件（带 source）走原 _do_draw 路径，这里不拦；且工具上下文不 _send，
         # 直接 return 文本让 LLM 如实转述给用户，避免多出来一条消息。
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            _wl_on = bool((plugin._cfg("allow_draw_users", "") or "").strip())
-            if not _wl_on:
+            if plugin._is_whitelist_active():
+                _wl_ok, _wl_reason = plugin._check_whitelist(event)
+                if not _wl_ok:
+                    return (
+                        "⚠️ 当前用户/群不在发图白名单内，无法出图。"
+                        "请直接、简短地告诉用户「你暂无绘图权限」，不要重试、也不要改 prompt 再调一次。"
+                    )
+            else:
                 _bl_ok, _bl_reason = plugin._check_blacklist(event)
                 if not _bl_ok:
                     return (
