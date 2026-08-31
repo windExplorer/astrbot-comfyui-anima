@@ -7204,8 +7204,11 @@ class ComfyUIDrawPlugin(Star):
             "pause_on_options": bool(cfg.get("pause_on_options", False)),
             "theme": theme,
             "user_name": (parsed.get("user_name") or (cfg.get("user_name") or "")).strip(),
-            "partner_name": (parsed.get("partner_name") or (cfg.get("partner_name") or "机器人")).strip(),
-            "partner_profile": (cfg.get("partner_profile") or "").strip(),
+            "partner_names": parsed.get("partner_names") or [
+                x.strip() for x in str(cfg.get("partner_name") or "机器人").split(",") if x.strip()
+            ] or ["机器人"],
+            "partner_profiles": self._story_parse_partner_profiles(cfg.get("partner_profile") or ""),
+            "no_partner": bool(parsed.get("no_partner") or cfg.get("no_partner", False)),
             "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
             "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
@@ -7245,11 +7248,16 @@ class ComfyUIDrawPlugin(Star):
         out = {"theme": "", "ask": bool((cfg or {}).get("ask_default", True)), "resume_id": 0}
         if any(x in rest for x in ("别问", "不用问", "你推进", "你决定", "别问我", "自己推")):
             out["ask"] = False
-        # 可选指定主角/女主：如「进入剧情模式 女主:林晚晴 主角:阿明」
-        _m = re.search(r"(女主|女角|伴侣)\s*[：:是=]\s*([^\s，,。！？!?]{1,20})", rest)
+        # 无女主模式：进入剧情模式 无女主（不设恋爱线，专注主线）
+        if re.search(r"无女主|不要女主|无女角|不谈恋爱|纯剧情", rest):
+            out["no_partner"] = True
+            rest = re.sub(r"无女主|不要女主|无女角|不谈恋爱|纯剧情", "", rest).strip()
+        # 可选指定女主（可多个，逗号/顿号分隔）：女主:林晚晴、苏月
+        _m = re.search(r"(女主|女角|伴侣)\s*[：:是=]\s*([^\s。！？!?]{1,40})", rest)
         if _m:
-            out["partner_name"] = _m.group(2).strip()
+            out["partner_names"] = [x.strip() for x in re.split(r"[,，、/;；]", _m.group(2).strip()) if x.strip()]
             rest = rest.replace(_m.group(0), "", 1).strip()
+        # 可选指定主角：主角:阿明（默认用户本人为男主）
         _m = re.search(r"(主角|男主|自己)\s*[：:是=]\s*([^\s，,。！？!?]{1,20})", rest)
         if _m:
             out["user_name"] = _m.group(2).strip()
@@ -7262,6 +7270,22 @@ class ComfyUIDrawPlugin(Star):
         if theme:
             tmpl = self._story_match_template(theme, cfg)
             out["theme"] = tmpl if tmpl else theme
+        return out
+
+    @staticmethod
+    def _story_parse_partner_profiles(text):
+        """解析女主人设配置（每行 名::人设）为字典 {名字: 人设}。"""
+        out = {}
+        if not text:
+            return out
+        for line in str(text).splitlines():
+            line = line.strip()
+            if not line or "::" not in line:
+                continue
+            nm, prof = line.split("::", 1)
+            nm = nm.strip()
+            if nm:
+                out[nm] = prof.strip()
         return out
 
     def _story_match_template(self, name, cfg):
@@ -7395,10 +7419,25 @@ class ComfyUIDrawPlugin(Star):
     def _story_build_prompt(self, ctrl, first=False):
         theme = ctrl["theme"] or "自由发挥的剧情"
         ask = ctrl["ask"]
+        _uname = ctrl.get("user_name") or "你"
+        if ctrl.get("no_partner"):
+            role_line = (f"【角色设定】男主 = 用户本人（称呼：{_uname}），本段剧情【无女主】、不设恋爱线，"
+                         "专注主线推进/冒险/成长，绝不把用户写成路人或另造主角，也不要塑造女主或恋爱桥段。")
+        else:
+            _names = ctrl.get("partner_names") or ["机器人"]
+            _profiles = ctrl.get("partner_profiles") or {}
+            _parts = []
+            for _n in _names:
+                _p = _profiles.get(_n) or "由你按主题合理塑造，活泼自然、与男主互动亲密"
+                _parts.append(f"{_n}（{_p}）")
+            _label = "女主（多个）" if len(_names) > 1 else "女主"
+            role_line = (f"【角色设定】男主 = 用户本人（称呼：{_uname}），你就是男主，剧情始终围绕你与女主的互动展开，"
+                         f"绝不把用户写成路人或另造男主；{_label} = {'、'.join(_parts)}，"
+                         "多女主时可发展各自支线，注意保持各角色人设一致。")
         lines = [
             "你是专业的小说剧情推演引擎。用户进入「剧情模式」后，由你自动、连续地推进一段沉浸式角色扮演剧情，全程不需要用户每句催促。",
             f"【世界观/主题】{theme}",
-            f"【角色设定】主角 = 用户本人（称呼：{ctrl.get('user_name') or '你'}），你就是主角，剧情始终围绕「你」与女主的互动展开，绝不把用户写成路人或另造主角；女主 = {ctrl.get('partner_name') or '机器人'}，人设：{ctrl.get('partner_profile') or '由你按主题合理塑造，活泼自然、与主角互动亲密'}。",
+            role_line,
             f"【进度】第 {ctrl['chapter']} 章，本章第 {ctrl['step_in_chapter']} 步。",
             "【输出格式，严格按此，不要输出标签以外的内容、不要写解释或点评】：",
             "[NARRATIVE] 本步的叙事。硬性要求：①只推进「一个具体场景 / 一个动作 / 一段对话」，严禁在一步之内把整段剧情写完或草草收尾；"

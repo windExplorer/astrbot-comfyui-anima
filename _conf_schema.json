@@ -1278,14 +1278,20 @@
       "partner_name": {
         "type": "text",
         "default": "机器人",
-        "description": "剧情女主名字（默认「机器人」）",
-        "hint": "默认女主即机器人本体。进入时说「女主:林晚晴」可临时指定名字。"
+        "description": "剧情女主名字（默认机器人本体）",
+        "hint": "默认女主即与你对话的机器人本体。支持逗号分隔多个女主，如「林晚晴,苏月」；进入时说「女主:林晚晴、苏月」可临时指定（多个用逗号/顿号分隔）。"
       },
       "partner_profile": {
         "type": "text",
         "default": "",
-        "description": "剧情女主人设/形象（可空）",
-        "hint": "例如「黑长直学姐，温柔腹黑」。留空则由 AI 按主题塑造。"
+        "description": "剧情女主人设/形象（每行 名::人设，可空）",
+        "hint": "每行一条：`林晚晴::黑长直学姐，温柔腹黑`。名字需与 partner_name 一致才生效；留空则由 AI 按主题塑造。"
+      },
+      "no_partner": {
+        "type": "bool",
+        "default": false,
+        "description": "无女主模式（不设恋爱线）",
+        "hint": "开启后剧情无女主、无恋爱线，专注主线/冒险；进入时说「无女主」可临时开启。"
       },
       "templates": {
         "type": "text",
