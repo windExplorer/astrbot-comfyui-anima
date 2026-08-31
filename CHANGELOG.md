@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.6
+
+- **修复剧情图库模块缺失导致初始化失败**：打包清单 `build_zip.ps1` 的显式文件列表遗漏了 `story_store.py`，导致安装后报 `No module named 'story_store'`、图库功能不可用。已将 `story_store.py` 加入打包清单重新发布。
+
 ## v5.2.5
 
 - **剧情中间出图支持三种策略（默认大模型自判）**：`story_mode.image_strategy` 可选 `llm`（默认，由大模型自行判断是否出图，尊重剧情节奏）/ `interval`（按 `image_every` 固定步数间隔出图）/ `probability`（每步按 `image_prob` 概率随机出图）。头图与尾图仍始终必出。新增 `image_prob` 配置（默认 0.4）。

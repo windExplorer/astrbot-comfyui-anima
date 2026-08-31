@@ -53,6 +53,7 @@ $includeList = @(
     "translate_client.py",
     "workflow_builder.py",
     "image_store.py",
+    "story_store.py",
     "quota_store.py",
     "oplog_store.py",
     "standalone_webui.py",
