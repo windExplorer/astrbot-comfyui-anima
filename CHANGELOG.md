@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.0.9
+
+- **修复：独立 WebUI 限额页「保存全局」无效、刷新恢复默认**：根因是独立 WebUI（`standalone_webui.py`）的 `/quota/save_global` 接口只是占位 stub（直接返回提示、未写入配置），前端保存时收到成功却什么都没存。现已实现真正写入插件 config 的 `draw_limit` 并 `save_config()`（与配置页 `/config` POST 同一写法），重启插件后限额页保存的全局限额可正常持久化。AstrBot 内嵌页的 `quota_save_global` 原本已正确实现，本次无需改动。
+
 ## v5.0.8
 
 - **修复：WebUI 生图限额页点击「配置 / 重置」报错 `ReferenceError: dialog is not defined`**：根因是 `webui-src/src/views/QuotaView.vue` 的 `<script setup>` 调用了 `dialog.info()` / `dialog.warning()` 却漏掉 `useDialog` 的导入与 `const dialog = useDialog()` 声明（其余 view 均已正确引入）。已补上导入与声明并重新构建 WebUI，限额编辑与重置确认对话框恢复正常。

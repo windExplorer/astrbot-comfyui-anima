@@ -793,9 +793,27 @@ class StandaloneWebUI:
                     return _ok({"msg": "已保存"})
             return _err("缺少 user_id")
         if path == "/quota/save_global":
-            # 全局限额实际存于插件 config（draw_limit），前端走 /config 保存；
-            # 这里保留占位，避免前端请求 404。
-            return _ok({"msg": "全局限额请通过配置保存"})
+            # 全局限额存于插件 config 的 draw_limit，复用与 /config POST 一致的保存方式。
+            try:
+                body = await request.json() if request.body_exists else {}
+                if not isinstance(body, dict):
+                    body = {}
+                cur = self.plugin.config.get("draw_limit", {}) or {}
+                if not isinstance(cur, dict):
+                    cur = {}
+                if "enabled" in body:
+                    cur["enabled"] = bool(body.get("enabled"))
+                for k in ("max_total", "max_hour", "max_day"):
+                    if k in body:
+                        cur[k] = int(body.get(k, -1))
+                if "admin_exempt" in body:
+                    cur["admin_exempt"] = bool(body.get("admin_exempt"))
+                cfg = self.plugin.config
+                cfg["draw_limit"] = cur
+                cfg.save_config()
+                return _ok({"ok": True, "draw_limit": cur})
+            except Exception as e:
+                return _err(f"保存全局限额失败: {e}")
         return _err("Not Found: " + path, status=404)
 
     # ------------------------------------------------------------------ #
