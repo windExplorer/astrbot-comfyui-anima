@@ -5965,8 +5965,6 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # LLM 工具：comfyui_draw（AI 对话触发）
     # ------------------------------------------------------------------ #
-    @filter.llm_tool(name="comfyui_draw")
-    @_safe_llm_tool
     def _normalize_prompts(self, raw):
         """把 prompts 参数统一规整成 list[dict]，兼容两种写法：
 
@@ -6046,6 +6044,8 @@ class ComfyUIDrawPlugin(Star):
             resolved = fallback_wf or None
         return resolved
 
+    @filter.llm_tool(name="comfyui_draw")
+    @_safe_llm_tool
     async def llm_draw(
         self,
         event: AstrMessageEvent,

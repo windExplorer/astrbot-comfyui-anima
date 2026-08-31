@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.21
+
+- **修复 comfyui_draw 工具调用报错**（`TypeError: ComfyUIDrawPlugin._normalize_prompts() got an unexpected keyword argument 'prompt'`）：`@filter.llm_tool(name="comfyui_draw")` 与 `@_safe_llm_tool` 装饰器被错误地挂在辅助函数 `_normalize_prompts`（签名只有 `raw`）上，导致 AStrBot 把这个辅助函数注册成了 LLM 工具 `comfyui_draw`，LLM 调用时按 `prompt`/`prompts`/`count` 等参数传入而签名不匹配、报 TypeError。已将装饰器移回真正的工具函数 `llm_draw`，`comfyui_draw` 工具恢复正常（`comfyui_gallery`/`comfyui_loras`/`comfyui_workflows`/`comfyui_img2img` 不受影响）。
+
 ## v5.2.20
 
 - **新增按用户的不限轮次发图开关（聊天指令）**：`/无限发图 开|关`（别名 `/持续发图` / `/unlimited_draw` / `/连发图`）让**当前用户**开启/关闭「不限轮次持续发图」——开启后该用户对话里的 LLM 可连续多次发图、一次多张不截断（不受单轮成功次数与单次张数限制），**其他用户不受影响**；无参数时查看自己的当前状态。全局配置 `draw_auto.unlimited_draw` 保留，两种开关独立叠加。
