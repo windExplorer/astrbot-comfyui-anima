@@ -3637,6 +3637,31 @@ class ComfyUIDrawPlugin(Star):
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
         event.stop_event()
 
+    @filter.command("无限发图", alias={"持续发图", "unlimited_draw", "连发图"})
+    async def cmd_unlimited_draw(self, event: AstrMessageEvent):
+        """按当前用户开启/关闭「不限轮次持续发图」。用法：/无限发图 开|关（缺省查看状态）。仅对本人生效。"""
+        _unl = getattr(self, "_unlimited_users", None)
+        if _unl is None:
+            _unl = self._unlimited_users = set()
+        uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
+        arg = self._strip_command(
+            event.message_str, "无限发图", ("持续发图", "unlimited_draw", "连发图")
+        ).strip().lower()
+        if not arg:
+            await self._send(event, f"你当前{'已开启' if uid in _unl else '未开启'}不限轮次发图。用 /无限发图 开 或 关 切换（仅对你本人生效）。")
+            event.stop_event()
+            return
+        if arg in ("开", "on", "1", "true", "开启", "打开"):
+            _unl.add(uid)
+        elif arg in ("关", "off", "0", "false", "关闭", "关掉"):
+            _unl.discard(uid)
+        else:
+            await self._send(event, "参数用「开」或「关」（on/off）。")
+            event.stop_event()
+            return
+        await self._send(event, f"已{'开启' if uid in _unl else '关闭'}你的不限轮次发图（仅对你本人生效）——LLM 可{'连续多次发图、一次多张不截断' if uid in _unl else '按默认闸门控制'}。")
+        event.stop_event()
+
     @filter.command("img2img", alias={"图生图", "图转图"})
     async def cmd_img2img(self, event: AstrMessageEvent):
         """图生图：用附带的一张图片作为参考图重绘。用法：/图生图 描述 [--wf 工作流] [...]"""
@@ -4887,7 +4912,7 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
-    def _draw_single_max(self, count: int, source: str = "") -> tuple[int, str]:
+    def _draw_single_max(self, count: int, source: str = "", event=None) -> tuple[int, str]:
         """单次调用的出图张数上限，返回 (本次允许张数, 截断提示)。
 
         只看「这一次调用要出多少张」，与轮次、与时间窗都无关：
@@ -4900,6 +4925,12 @@ class ComfyUIDrawPlugin(Star):
             return count, ""
         if cfg.get("unlimited_draw"):
             return count, ""
+        # 按用户开关：该用户开启「不限轮次持续发图」时放行
+        _unl = getattr(self, "_unlimited_users", None)
+        if _unl and event is not None:
+            _uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
+            if _uid in _unl:
+                return count, ""
         try:
             dmax = int(cfg.get("max", 3) or 3)
         except (TypeError, ValueError):
@@ -5001,6 +5032,12 @@ class ComfyUIDrawPlugin(Star):
         cfg = self._cfg("draw_auto", {}) or {}
         if cfg.get("unlimited_draw"):
             return True, ""
+        # 按用户开关：该用户开启「不限轮次持续发图」时放行
+        _unl = getattr(self, "_unlimited_users", None)
+        if _unl and event is not None:
+            _uid = (getattr(event, "get_sender_id", lambda: "")() or "").strip()
+            if _uid in _unl:
+                return True, ""
         try:
             max_calls = int(cfg.get("per_run_max_calls", 1))
         except (TypeError, ValueError):
@@ -6288,7 +6325,7 @@ class ComfyUIDrawPlugin(Star):
                 "width": 0, "height": 0, "denoise": -1, "seed": 0,
             }]
             _wanted = _per
-        _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source)
+        _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source, event=event)
         # 注：_plan（含每项的 per-item 工作流解析）需在下方 resolved_wf 决策完成后构建，
         # 见「工作流决策」段之后。
 
@@ -8394,7 +8431,7 @@ class ComfyUIDrawPlugin(Star):
                 "width": 0, "height": 0, "denoise": -1, "seed": 0,
             }]
             _wanted2 = _per2
-        _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source)
+        _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source, event=event)
         # 注：_plan2（含每项的 per-item 工作流解析）需在下方 resolved_wf 决策完成后构建，
         # 见「决定工作流」段之后。
 
