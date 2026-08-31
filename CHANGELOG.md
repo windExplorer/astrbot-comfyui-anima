@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.1.2
+
+- **修复：生图成功后 LLM 误以为「没出图」而读路径 / 重发**：根因是 `comfyui_draw` / `comfyui_img2img` 成功出图后回传给模型的工具结果只用中性话术（甚至直接说「本次调用没有再产出新图」），既不给图片路径、也没禁止它去读取路径或重发。模型收不到「图已发出」的确切信息，就会去乱造路径喂 `astrobot_file_read_tool`，或用 `pc_send_current_media` 把已经发过的图再发一遍，造成重复刷图。现改为：① 原生 / Agent 调用成功返回时直接给出已发送的本地路径，并明确「已发出，不要再读路径 / 不要重发」；② 伴侣插件调用（source 模式）返回的 JSON 新增 `note` 字段，说明图已生成、请用 `image_paths` 直接发送、勿读路径 / 勿重复发送；③ 续画分支提示补充「勿用 `pc_send_current_media` 重复发送已发的图」；④ 单轮闸门命中提示 `_DRAW_RUN_DONE_HINT` 强化「图已经发到聊天里了，不需要、也不应该再调用任何其它工具去读取图片路径或重复发送」。
+
 ## v5.1.1
 
 - **修复：剧情档案「更新 / 删除」接口在内嵌 WebUI 与独立 WebUI 均失效**：根因是两个 POST 接口误用了 `request.body_exists` 属性读取请求体，而 AStrBot 内嵌页的 `request` 与独立通道复用的 `WebUIApi` 适配器（`_AioReqAdapter`）都没有 `body_exists` 属性，访问即抛 `AttributeError`，被 `try/except` 捕获后返回「更新失败 / 删除失败」。已统一改为与现有接口一致的 `await request.json(default={}) or {}`（`webui_api.py` 的 `story_session_update` / `story_session_delete`），内嵌页与独立 WebUI 的编辑、删除恢复可用。

@@ -4913,9 +4913,11 @@ class ComfyUIDrawPlugin(Star):
     # 注意：必须返回文本而非 None——None 会让 AstrBot 直接判定 DONE 结束循环，
     # 模型一句话不说，用户会看到「图发完就哑了」。
     _DRAW_RUN_DONE_HINT = (
-        "刚才那条消息里已经成功出过图了，所以本次调用没有再产出新图"
-        "（注意：这不是系统限制你「一轮只能画一张」，而是这一条消息的图已经给过了）。"
-        "之前生成的图已经发给用户，请用一句话简短、自然地收尾即可，"
+        "本轮对话的图片之前已经成功生成并发送到了聊天窗口，"
+        "所以本次调用没有再产出新图"
+        "（这不是「一轮只能画一张」的限制，而是这一条消息的图已经给过了）。"
+        "图已经发到聊天里了，你不需要、也不应该再调用任何其它工具去读取图片路径或重复发送这张图。"
+        "请用一句话简短、自然地收尾即可，"
         "不要对用户说「限制一张 / 同一轮只能出一张」之类的话，也不要用图库旧图来凑数。"
     )
     _DRAW_RUN_FAIL_HINT = (
@@ -6500,8 +6502,16 @@ class ComfyUIDrawPlugin(Star):
 
         if img_paths:
             if is_companion:
-                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
-                return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
+                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析。
+                # note 明确告知调用方：图已生成、直接用 image_paths 发，不要再用
+                # astrobot_file_read_tool 去读路径、也不要用 pc_send_current_media 重复发送。
+                return json.dumps({
+                    "image_paths": img_paths,
+                    "status": "ok",
+                    "note": "图片已生成完成，image_paths 为服务器本地路径，请直接发送这些图给用户；"
+                            "不要再用 astrobot_file_read_tool 去读取图片路径，"
+                            "也不要用 pc_send_current_media 重复发送同一张图（图已生成，重发只是重复刷图）。",
+                }, ensure_ascii=False)
             # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里让模型收尾。
             # 注意：不要 return None——None 会让 AstrBot 直接判定 DONE 结束循环，
             # 模型一句话不说，用户会看到「图发完就哑了」。
@@ -6517,12 +6527,22 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _e:
                     logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
                 return (
-                    f"本轮先生成并发送了 {len(img_paths)} 张（计划共 {_total_n} 张）。"
+                    f"本轮先生成并发送了 {len(img_paths)} 张（计划共 {_total_n} 张），图片已发到聊天窗口。"
                     f"剩下的 {len(_remain_prompts)} 张我会在后台继续生成，稍后自动发给你，"
-                    f"你无需再发任何消息。"
+                    f"你无需再发任何消息，也不要用 pc_send_current_media 重复发送已发的图。"
                 )
-            # 一次调用内已画完：返回中性收尾提示，由模型自行告诉用户。
-            return plugin._DRAW_RUN_DONE_HINT + (_max_hint or "")
+            # 一次调用内已画完：返回明确「已发送 + 路径」提示，由模型自然收尾。
+            # 关键：把图片本地路径直接给到模型，并明确「不要再读路径 / 再发一次」，
+            # 否则模型收不到路径信息会去乱造路径喂 astrobot_file_read_tool，或用
+            # pc_send_current_media 把已发的图再发一遍（实测会触发重复刷图）。
+            _paths_desc = "、".join(img_paths[:3]) + (" 等" if len(img_paths) > 3 else "")
+            return (
+                f"✅ 图片已成功生成并发送到聊天窗口（本地路径：{_paths_desc}）。"
+                f"这张图已经发出去了，请不要再用 astrobot_file_read_tool 读取该路径、"
+                f"也不要用 pc_send_current_media 重复发送——重发只会刷出重复的图片。"
+                f"用一句话自然告诉用户图已发给他即可。"
+                + (_max_hint or "")
+            )
         # 一张都没出：若仍有剩余要画（极少见，如软耗时预算设得过小导致一张都来不及出），
         # 仍转后台续画，不记后端失败以免模型空转重试；其余情况记一次后端失败。
         if _remain_prompts:
@@ -7915,13 +7935,30 @@ class ComfyUIDrawPlugin(Star):
 
         if img_paths:
             if is_companion:
-                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析
-                return json.dumps({"image_paths": img_paths, "status": "ok"}, ensure_ascii=False)
+                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析。
+                # note 明确告知调用方：图已生成、直接用 image_paths 发，不要再用
+                # astrobot_file_read_tool 去读路径、也不要用 pc_send_current_media 重复发送。
+                return json.dumps({
+                    "image_paths": img_paths,
+                    "status": "ok",
+                    "note": "图片已生成完成，image_paths 为服务器本地路径，请直接发送这些图给用户；"
+                            "不要再用 astrobot_file_read_tool 去读取图片路径，"
+                            "也不要用 pc_send_current_media 重复发送同一张图（图已生成，重发只是重复刷图）。",
+                }, ensure_ascii=False)
             # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里记一次成功并让模型收尾。
             # 不 return None——否则 Agent Loop 直接结束、LLM 不再说话。
             plugin._draw_run_hit(event)
             # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
-            return plugin._DRAW_RUN_DONE_HINT + (_max_hint2 or "")
+            # 同时把图片本地路径直接给到模型，并明确「不要再读路径 / 再发一次」，
+            # 避免模型误以为没出图而用 astrobot_file_read_tool 乱读路径或重发。
+            _paths_desc2 = "、".join(img_paths[:3]) + (" 等" if len(img_paths) > 3 else "")
+            return (
+                f"✅ 图片已成功生成并发送到聊天窗口（本地路径：{_paths_desc2}）。"
+                f"这张图已经发出去了，请不要再用 astrobot_file_read_tool 读取该路径、"
+                f"也不要用 pc_send_current_media 重复发送——重发只会刷出重复的图片。"
+                f"用一句话自然告诉用户图已发给他即可。"
+                + (_max_hint2 or "")
+            )
         # 一张都没出：记一次后端失败（受失败重试额度约束），仍返回文本让模型收尾。
         plugin._draw_run_fail(event, kind="backend")
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
