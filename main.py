@@ -4898,6 +4898,8 @@ class ComfyUIDrawPlugin(Star):
         cfg = self._cfg("draw_auto", {}) or {}
         if source and source.strip() == SOURCE_COMPANION_PLUGIN:
             return count, ""
+        if cfg.get("unlimited_draw"):
+            return count, ""
         try:
             dmax = int(cfg.get("max", 3) or 3)
         except (TypeError, ValueError):
@@ -4997,6 +4999,8 @@ class ComfyUIDrawPlugin(Star):
         if source and source.strip() == SOURCE_COMPANION_PLUGIN:
             return True, ""
         cfg = self._cfg("draw_auto", {}) or {}
+        if cfg.get("unlimited_draw"):
+            return True, ""
         try:
             max_calls = int(cfg.get("per_run_max_calls", 1))
         except (TypeError, ValueError):

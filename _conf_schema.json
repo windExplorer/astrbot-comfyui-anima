@@ -729,6 +729,12 @@
         "hint": "开启后，ComfyUI 后端出图失败（队列满 / 工作流报错 / 一张都没出）会算一次失败并计入上面的重试额度。默认开启。若你的 ComfyUI 经常偶发失败、希望模型可以反复重试，可关闭（此时仍受「单轮最多成功出图次数」闸门约束）。",
         "default": true
       },
+      "unlimited_draw": {
+        "type": "bool",
+        "default": false,
+        "description": "不限轮次持续发图（LLM 可一直发）",
+        "hint": "开启后，画图工具（comfyui_draw / comfyui_img2img）不再受「单轮最多成功出图次数」与「单次最多出图张数」限制：LLM 可以在对话里连续多次发图、一次要更多张也不再截断。适合剧情推演/自动连续配图等需要一直出图的场景。★有刷屏风险，仅在你需要「LLM 自己持续发图」时开启。"
+      },
       "max_images_per_batch": {
         "type": "int",
         "description": "单批生成张数上限（防超时卡死）",
