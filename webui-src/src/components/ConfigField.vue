@@ -29,6 +29,17 @@
       <span class="field-hint-text">{{ field.hint }}</span>
     </div>
 
+    <!-- 键值行列表（如剧情模板 名::设定），可增删 -->
+    <div v-else-if="field?.editor === 'kvlines'" class="kvlines">
+      <div v-for="(row, idx) in kvRows" :key="idx" class="kv-row">
+        <n-input v-model:value="row.key" size="small" placeholder="模板名" @update:value="emitKv" />
+        <span class="kv-sep">::</span>
+        <n-input v-model:value="row.val" size="small" placeholder="世界观 / 开场设定" @update:value="emitKv" />
+        <n-button size="tiny" tertiary type="error" @click="removeKv(idx)">✕</n-button>
+      </div>
+      <n-button size="small" dashed block @click="addKv">+ 添加模板</n-button>
+    </div>
+
     <!-- 多行文本 -->
     <n-input
       v-else-if="field?.type === 'text'"
@@ -87,8 +98,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
-import { NSwitch, NInput, NInputNumber, NSlider, NSelect } from "naive-ui";
+import { computed, ref, watch } from "vue";
+import { NSwitch, NInput, NInputNumber, NSlider, NSelect, NButton } from "naive-ui";
 
 const props = defineProps<{
   fieldKey: string;
@@ -107,6 +118,41 @@ function toNumber(v: any): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return isNaN(n) ? null : n;
+}
+
+// kvlines 编辑器：把 "key::val\nkey::val" 文本拆成可增删的列表
+const kvRows = ref<{ key: string; val: string }[]>([]);
+watch(
+  () => props.modelValue,
+  (v) => {
+    const cur = kvRows.value
+      .map((r) => r.key + "::" + r.val)
+      .filter((s) => s.trim() !== "" && s !== "::")
+      .join("\n");
+    if (v === cur) return; // 自己编辑产生的回写,无需重建,避免输入框失焦
+    const text = typeof v === "string" ? v : "";
+    kvRows.value = text.split("\n").map((line) => {
+      const i = line.indexOf("::");
+      if (i >= 0) return { key: line.slice(0, i), val: line.slice(i + 2) };
+      return { key: line, val: "" };
+    });
+  },
+  { immediate: true }
+);
+function emitKv() {
+  const text = kvRows.value
+    .map((r) => r.key + "::" + r.val)
+    .filter((s) => s.trim() !== "" && s !== "::")
+    .join("\n");
+  emit("update:modelValue", text);
+}
+function addKv() {
+  kvRows.value.push({ key: "", val: "" });
+  emitKv();
+}
+function removeKv(i: number) {
+  kvRows.value.splice(i, 1);
+  emitKv();
 }
 
 // object 类型：子字段变化时，拼成新对象向上 emit
@@ -136,6 +182,11 @@ function onSubUpdate(fk: string, v: any) {
 .field-hint { cursor: help; color: var(--accent); }
 .field-hint-text { color: var(--text-sub); font-size: 11px; line-height: 1.4; }
 .field-desc { color: var(--text-sub); font-size: 12px; }
+.kvlines { display: flex; flex-direction: column; gap: 8px; }
+.kv-row { display: flex; align-items: center; gap: 6px; }
+.kv-sep { color: var(--text-sub); font-family: ui-monospace, Consolas, monospace; flex: 0 0 auto; }
+.kv-row :deep(.n-input:first-child) { flex: 0 0 160px; }
+.kv-row :deep(.n-input) { flex: 1 1 auto; }
 .num-row { display: flex; gap: 12px; align-items: center; }
 .bool-row { display: flex; align-items: center; gap: 8px; }
 @media (max-width: 768px) {

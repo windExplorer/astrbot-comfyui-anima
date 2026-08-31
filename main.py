@@ -7073,7 +7073,7 @@ class ComfyUIDrawPlugin(Star):
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
             "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
             "image_every": int(cfg.get("image_every", 3) or 3),
-            "image_strategy": (cfg.get("image_strategy") or "llm").strip().lower(),
+            "image_strategy": (cfg.get("image_strategy") or "大模型自判").strip(),
             "image_prob": max(0.0, min(1.0, float(cfg.get("image_prob", 0.4) or 0.4))),
             "last_drew_step": -1,
             "last_narr": "",
@@ -7187,11 +7187,11 @@ class ComfyUIDrawPlugin(Star):
                 draw_now = bool(first or last)
                 if not draw_now:
                     mode = ctrl["image_strategy"]
-                    if mode == "llm":
+                    if mode == "大模型自判":
                         draw_now = bool(parsed.get("draw")) and bool(parsed.get("prompt"))
-                    elif mode == "interval":
+                    elif mode == "固定步数间隔":
                         draw_now = bool(ctrl["image_every"]) and ctrl["total_step"] > 0 and ctrl["total_step"] % ctrl["image_every"] == 0
-                    elif mode == "probability":
+                    elif mode == "概率随机":
                         draw_now = random.random() < ctrl["image_prob"]
                 if draw_now:
                     dprompt = parsed.get("prompt") or self._story_infer_prompt(narr)
