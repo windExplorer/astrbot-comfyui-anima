@@ -1487,6 +1487,86 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"备份失败: {e}")
 
+    # ------------------------------------------------------------------ #
+    # 剧情模式档案
+    # ------------------------------------------------------------------ #
+    async def story_sessions(self):
+        try:
+            store = getattr(self.plugin, "story", None)
+            if store is None:
+                return error_response("剧情模块未启用")
+            page = int((request.query.get("page", "1") or "1"))
+            size = min(int(request.query.get("size", "20") or "20"), 200)
+            keyword = (request.query.get("keyword", "") or "").strip()
+            user_id = (request.query.get("user_id", "") or "").strip()
+            status = (request.query.get("status", "") or "").strip()
+            date_from = (request.query.get("date_from", "") or "").strip()
+            date_to = (request.query.get("date_to", "") or "").strip()
+            rows, total = store.get_sessions(
+                page=page, size=size, keyword=keyword, user_id=user_id,
+                status=status, date_from=date_from, date_to=date_to,
+            )
+            return json_response({"sessions": rows, "total": total, "page": page, "size": size})
+        except Exception as e:
+            return error_response(f"读取剧情档案失败: {e}")
+
+    async def story_session_detail(self):
+        try:
+            store = getattr(self.plugin, "story", None)
+            if store is None:
+                return error_response("剧情模块未启用")
+            sid = int((request.query.get("id", "0") or "0"))
+            sess = store.get_session(sid)
+            if sess is None:
+                return error_response("未找到该剧情档案")
+            return json_response(sess)
+        except Exception as e:
+            return error_response(f"读取详情失败: {e}")
+
+    async def story_session_update(self):
+        try:
+            store = getattr(self.plugin, "story", None)
+            if store is None:
+                return error_response("剧情模块未启用")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            sid = int(body.get("id") or 0)
+            if not sid:
+                return error_response("缺少 id")
+            fields = {k: body[k] for k in (
+                "title", "summary", "mood", "scene", "characters", "tags",
+                "rating", "notes", "status", "source",
+            ) if k in body}
+            store.update_session(sid, fields)
+            return json_response({"ok": True})
+        except Exception as e:
+            return error_response(f"更新失败: {e}")
+
+    async def story_session_delete(self):
+        try:
+            store = getattr(self.plugin, "story", None)
+            if store is None:
+                return error_response("剧情模块未启用")
+            body = await request.json(default={}) or {}
+            ids = body.get("ids") or []
+            if not isinstance(ids, list):
+                ids = [ids]
+            ids = [int(x) for x in ids if str(x).isdigit()]
+            deleted = store.delete_sessions(ids)
+            return json_response({"ok": True, "deleted": deleted})
+        except Exception as e:
+            return error_response(f"删除失败: {e}")
+
+    async def story_stats(self):
+        try:
+            store = getattr(self.plugin, "story", None)
+            if store is None:
+                return error_response("剧情模块未启用")
+            return json_response(store.stats())
+        except Exception as e:
+            return error_response(f"统计失败: {e}")
+
 
 def _ext_of(mime: str) -> str:
     """根据 MIME 推断文件扩展名（用于 gallery_image 下载文件名）。"""
@@ -1628,87 +1708,6 @@ def _log_request(handler, route_desc: str):
             raise
 
     return wrapper
-
-
-    # ------------------------------------------------------------------ #
-    # 剧情模式档案
-    # ------------------------------------------------------------------ #
-    async def story_sessions(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            page = int((request.query.get("page", "1") or "1"))
-            size = min(int(request.query.get("size", "20") or "20"), 200)
-            keyword = (request.query.get("keyword", "") or "").strip()
-            user_id = (request.query.get("user_id", "") or "").strip()
-            status = (request.query.get("status", "") or "").strip()
-            date_from = (request.query.get("date_from", "") or "").strip()
-            date_to = (request.query.get("date_to", "") or "").strip()
-            rows, total = store.get_sessions(
-                page=page, size=size, keyword=keyword, user_id=user_id,
-                status=status, date_from=date_from, date_to=date_to,
-            )
-            return json_response({"sessions": rows, "total": total, "page": page, "size": size})
-        except Exception as e:
-            return error_response(f"读取剧情档案失败: {e}")
-
-    async def story_session_detail(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            sid = int((request.query.get("id", "0") or "0"))
-            sess = store.get_session(sid)
-            if sess is None:
-                return error_response("未找到该剧情档案")
-            return json_response(sess)
-        except Exception as e:
-            return error_response(f"读取详情失败: {e}")
-
-    async def story_session_update(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            body = await request.json(default={}) or {}
-            if not isinstance(body, dict):
-                body = {}
-            sid = int(body.get("id") or 0)
-            if not sid:
-                return error_response("缺少 id")
-            fields = {k: body[k] for k in (
-                "title", "summary", "mood", "scene", "characters", "tags",
-                "rating", "notes", "status", "source",
-            ) if k in body}
-            store.update_session(sid, fields)
-            return json_response({"ok": True})
-        except Exception as e:
-            return error_response(f"更新失败: {e}")
-
-    async def story_session_delete(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            body = await request.json(default={}) or {}
-            ids = body.get("ids") or []
-            if not isinstance(ids, list):
-                ids = [ids]
-            ids = [int(x) for x in ids if str(x).isdigit()]
-            deleted = store.delete_sessions(ids)
-            return json_response({"ok": True, "deleted": deleted})
-        except Exception as e:
-            return error_response(f"删除失败: {e}")
-
-    async def story_stats(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            return json_response(store.stats())
-        except Exception as e:
-            return error_response(f"统计失败: {e}")
 
 
 def get_webui_api_class():

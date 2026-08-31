@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.13
+
+- **彻底修复剧情档案接口路由被跳过（真正的根因是死代码缩进）**：v5.2.11 / v5.2.12 误判为模块缓存 / 旧类问题，实际真凶是 `webui_api.py` 中「剧情模式档案」的 5 个接口方法（`story_sessions` / `story_session_detail` / `story_session_update` / `story_session_delete` / `story_stats`）因缩进错误被嵌套进了 `_log_request` 函数体内、位于 `return wrapper` 之后，是**永不执行的死代码**，从未成为 `WebUIApi` 的实例方法——于是 `getattr(api, "story_sessions")` 永远取不到，路由注册被整体跳过（内嵌页剧情档案不可用；独立 WebUI 复用同一 `WebUIApi` 类同样取不到）。修复：把 5 个方法移回 `WebUIApi` 类内（`gallery_backup` 方法之后）。此版本起内嵌注册与独立 WebUI 的剧情档案接口均正常。
+
 ## v5.2.12
 
 - **修复独立 WebUI 剧情档案接口不可用（根因与内嵌页同源）**：独立 WebUI 复用的 `WebUIApi` 实例 `self._api` 由 main.py 初始化时用 `import_module` 返回模块的**全局类**重建，在 reload 失败 / `sys.modules` 缓存被污染时拿到的仍是旧类（缺 `story_sessions` / `story_session_*` / `story_stats`），导致独立 WebUI 的 `/story/*` 接口不可用。修复：抽出公共函数 `get_webui_api_class()`（reload 优先 + 从磁盘 `__file__` 强制重新执行源码兜底），内嵌路由注册与 main.py 重建 `_api` 统一复用，确保独立 WebUI 剧情档案接口稳定可用。
