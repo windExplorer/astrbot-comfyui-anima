@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.0.14
+
+- **修复「指令能出图、但 LLM 自然语言出图提示无权限」的不对称**：根因是白名单启用时，LLM 工具回调事件上的 `get_group_id()` 在某些平台/版本下返回空（原 `_check_blacklist` 注释声称「不存在则从 session_id 兜底」但代码并未实现该兜底），导致「按群」的白名单/黑名单在工具路径下命中不到，而 `_do_draw` 指令路径的同一事件群号正常——于是 `/draw` 能出、LLM 调 `comfyui_draw` 却被判无权限。现新增统一的 `_event_ids(event)` 提取（优先 `get_sender_id()`/`get_group_id()`，缺失时从 `session_id` 兜底解析群号/用户号，仍为空再退用 `_last_event` 真实会话事件），`_check_whitelist` 与 `_check_blacklist` 均改用它，使指令与工具两条路径的权限判定完全一致。另在 LLM 工具权限判断前加诊断日志（`【绘图·工具权限】user=... group=... whitelist_active=...`），便于核对解析到的身份是否与白名单/黑名单配置匹配。
+
 ## v5.0.13
 
 - **修正 WebUI 配置页「权限与图库」模块顺序**：v5.0.12 的更新日志称已将发图白名单与绘图黑名单调整为相邻，但 WebUI 配置页（`webui-src/src/views/ConfigView.vue` 的 `GROUP_META` `keys` 数组）实际并未修改，生图次数限制 `draw_limit` 仍夹在白名单与黑名单中间。现已在源码真正把顺序改为 `allow_draw_users → blacklist → draw_limit → gallery` 并重新构建 WebUI（`pages/anima-console-vue`），白名单与黑名单在配置页中相邻摆放。白名单「启用开关 + 用户/群」结构（v5.0.12 已写入 `_conf_schema.json`）随之在 WebUI 中正常显示。

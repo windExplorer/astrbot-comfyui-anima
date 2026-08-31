@@ -4619,6 +4619,59 @@ class ComfyUIDrawPlugin(Star):
             or self._parse_id_list(wl.get("groups", ""))
         )
 
+    def _event_ids(self, event) -> tuple[str, str]:
+        """从事件里尽量可靠地取 (user_id, group_id) 字符串。
+
+        优先用 AStrBot 标准方法 get_sender_id() / get_group_id()；当这些方法在 LLM 工具
+        回调的事件上返回空（部分平台/版本下工具事件未填充群号，导致「按群」的白名单 /
+        黑名单在工具路径下命中不到，而指令路径 _do_draw 的同一事件群号正常）时，从
+        session_id 兜底解析，使工具路径与指令路径的权限判定一致。
+
+        session_id 兜底规则：群消息形如 group_123456（或含 group 前缀）→ 取群号；
+        私聊 session_id 即用户号（不含 group 字样）→ 取用户号。
+        """
+        user_id = ""
+        group_id = ""
+        if event is not None:
+            try:
+                fn = getattr(event, "get_sender_id", None)
+                if callable(fn):
+                    user_id = str(fn() or "").strip()
+            except Exception:
+                user_id = ""
+            try:
+                fn = getattr(event, "get_group_id", None)
+                if callable(fn):
+                    group_id = str(fn() or "").strip()
+            except Exception:
+                group_id = ""
+        sid = ""
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+        except Exception:
+            sid = ""
+        if sid:
+            if not group_id:
+                m = re.search(r"group[^\d]*(\d{4,})", sid, re.IGNORECASE)
+                if m:
+                    group_id = m.group(1)
+            if not user_id and "group" not in sid.lower():
+                m = re.search(r"(\d{4,})", sid)
+                if m:
+                    user_id = m.group(1)
+        # 工具路径兜底：若主事件群号/用户号仍为空，退而用最近记录的真实会话事件
+        # （on_using_llm_tool / _do_draw 都会写入 self._last_event）。
+        if (not group_id or not user_id) and getattr(self, "_last_event", None) is not None and self._last_event is not event:
+            try:
+                _luid, _lgid = self._event_ids(self._last_event)
+                if not user_id and _luid:
+                    user_id = _luid
+                if not group_id and _lgid:
+                    group_id = _lgid
+            except Exception:
+                pass
+        return user_id, group_id
+
     def _check_whitelist(self, event) -> tuple[bool, str]:
         """发图白名单校验。返回 (是否允许, 拒绝原因)。
 
@@ -4629,14 +4682,7 @@ class ComfyUIDrawPlugin(Star):
         wl = self._whitelist_cfg()
         users = self._parse_id_list(wl.get("users", ""))
         groups = self._parse_id_list(wl.get("groups", ""))
-        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
-        group_id = ""
-        try:
-            get_g = getattr(event, "get_group_id", None)
-            if callable(get_g):
-                group_id = str(get_g() or "").strip()
-        except Exception:
-            group_id = ""
+        user_id, group_id = self._event_ids(event)
         if user_id and user_id in users:
             return True, ""
         if group_id and group_id in groups:
@@ -4665,15 +4711,8 @@ class ComfyUIDrawPlugin(Star):
         # 管理员豁免（默认开启，避免误把自己锁死）
         if bl.get("admin_exempt", True) and self._is_admin(event):
             return True, ""
-        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         # 群号：优先 get_group_id（AstrBot 标准方法）；不存在则从 session_id 兜底
-        group_id = ""
-        try:
-            get_g = getattr(event, "get_group_id", None)
-            if callable(get_g):
-                group_id = str(get_g() or "").strip()
-        except Exception:
-            group_id = ""
+        user_id, group_id = self._event_ids(event)
         users = self._parse_id_list(bl.get("users", ""))
         groups = self._parse_id_list(bl.get("groups", ""))
         if user_id and user_id in users:
@@ -5971,6 +6010,13 @@ class ComfyUIDrawPlugin(Star):
             event = getattr(plugin, "_last_event", None)
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
+
+        # 诊断日志：记录工具路径解析到的 user/group，便于排查「指令能出、LLM 无权限」类不对称
+        _dbg_uid, _dbg_gid = plugin._event_ids(event)
+        logger.info(
+            f"【绘图·工具权限】user={_dbg_uid} group={_dbg_gid} "
+            f"whitelist_active={plugin._is_whitelist_active()} event_type={type(event).__name__}"
+        )
 
         # ── 绘图黑名单（工具入口）─────────────────────────────────────────
         # 命中黑名单时必须「明确告知 LLM 这是权限拦截、禁止重试」，而不能让它走到 _do_draw
