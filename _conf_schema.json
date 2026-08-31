@@ -1247,8 +1247,20 @@
       "image_every": {
         "type": "int",
         "default": 3,
-        "description": "剧情推演每隔多少步自动出一张图（0 = 仅头尾与 LLM 指定时出图）",
-        "hint": "头图与尾图始终必出；中间按此步数间隔出图，与 LLM 是否在 [DRAW] 指定叠加。0 表示中间只在 AI 明确要求时出图。"
+        "description": "interval 模式下，剧情推演每隔多少步自动出一张图",
+        "hint": "仅在 image_strategy=interval 时生效。头图与尾图始终必出，不受此影响。"
+      },
+      "image_strategy": {
+        "type": "string",
+        "default": "llm",
+        "description": "中间步骤出图策略",
+        "hint": "llm=由大模型自行判断是否要出图（默认，尊重剧情节奏）；interval=按 image_every 固定步数间隔出图；probability=每步按 image_prob 概率随机出图。头图与尾图始终必出。"
+      },
+      "image_prob": {
+        "type": "float",
+        "default": 0.4,
+        "description": "probability 模式下每步出图的概率",
+        "hint": "取值范围 0-1。仅在 image_strategy=probability 时生效。"
       },
       "templates": {
         "type": "text",

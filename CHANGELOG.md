@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.5
+
+- **剧情中间出图支持三种策略（默认大模型自判）**：`story_mode.image_strategy` 可选 `llm`（默认，由大模型自行判断是否出图，尊重剧情节奏）/ `interval`（按 `image_every` 固定步数间隔出图）/ `probability`（每步按 `image_prob` 概率随机出图）。头图与尾图仍始终必出。新增 `image_prob` 配置（默认 0.4）。
+
 ## v5.2.4
 
 - **修复独立 WebUI 剧情档案接口报错**：`standalone_webui` 的 `WebUIApi` 实例在模块 reload 前已用旧类创建，导致独立 WebUI（主力通道）调用 `/story/sessions`、`/story/stats` 报 `AttributeError`。改为 reload 后重建该实例，使用最新类。

@@ -7073,6 +7073,8 @@ class ComfyUIDrawPlugin(Star):
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
             "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
             "image_every": int(cfg.get("image_every", 3) or 3),
+            "image_strategy": (cfg.get("image_strategy") or "llm").strip().lower(),
+            "image_prob": max(0.0, min(1.0, float(cfg.get("image_prob", 0.4) or 0.4))),
             "last_drew_step": -1,
             "last_narr": "",
             "history": history,
@@ -7181,11 +7183,16 @@ class ComfyUIDrawPlugin(Star):
                 ctrl["step_in_chapter"] += 1
                 last = (parsed.get("chapter_end") or
                         (ctrl["chapter_steps"] and ctrl["step_in_chapter"] >= ctrl["chapter_steps"]))
-                # 出图决策（四路并存）：头图必出 / 尾图(章节结束)必出 /
-                # LLM 在 [DRAW] 指定出 / 按 image_every 步数间隔出
-                draw_now = bool(first or last) or (bool(parsed.get("draw")) and bool(parsed.get("prompt")))
-                if not draw_now and ctrl["image_every"]:
-                    draw_now = (ctrl["total_step"] > 0 and ctrl["total_step"] % ctrl["image_every"] == 0)
+                # 出图决策：头图 / 尾图(章节结束)始终必出；中间步骤按 image_strategy 选择
+                draw_now = bool(first or last)
+                if not draw_now:
+                    mode = ctrl["image_strategy"]
+                    if mode == "llm":
+                        draw_now = bool(parsed.get("draw")) and bool(parsed.get("prompt"))
+                    elif mode == "interval":
+                        draw_now = bool(ctrl["image_every"]) and ctrl["total_step"] > 0 and ctrl["total_step"] % ctrl["image_every"] == 0
+                    elif mode == "probability":
+                        draw_now = random.random() < ctrl["image_prob"]
                 if draw_now:
                     dprompt = parsed.get("prompt") or self._story_infer_prompt(narr)
                     if dprompt:
@@ -7249,7 +7256,7 @@ class ComfyUIDrawPlugin(Star):
             "[NARRATIVE] 本步的叙事。硬性要求：①只推进「一个具体场景 / 一个动作 / 一段对话」，严禁在一步之内把整段剧情写完或草草收尾；"
             "②描写具体生动——写清环境、人物动作神态、心理活动与对话，避免流水账与概括性语言；③约 80-160 字、3-6 句；④结尾留悬念或钩子，为下一步铺垫。",
             "[DRAW] 本步对应的画面描述（动漫风，用英文 Danbooru 标签逗号分隔，如 1girl,solo,smile,outdoors；写实用中文场景）。"
-            "头图（第一步）与每章结尾一定会出图；中间每隔几步也会自动出图——因此你「也可」在情景特别合适时额外写 [DRAW]，不需要则写 [DRAW] 无。",
+            "头图（第一步）与每章结尾一定会出图；中间步骤由你判断——若本步情景值得配图就写 [DRAW] 并给出描述，不需要则写 [DRAW] 无（依剧情节奏而定，不要每步都出）。",
             "[OPTIONS] 仅当本次允许互动时，给出 2-3 个简短后续分支；不允许则写 [OPTIONS] 无。",
             "[CHAPTER_END] true 表示本章完整收束（一个事件告一段落），否则 false。",
         ]
