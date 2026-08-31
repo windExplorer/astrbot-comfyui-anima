@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.4
+
+- **修复独立 WebUI 剧情档案接口报错**：`standalone_webui` 的 `WebUIApi` 实例在模块 reload 前已用旧类创建，导致独立 WebUI（主力通道）调用 `/story/sessions`、`/story/stats` 报 `AttributeError`。改为 reload 后重建该实例，使用最新类。
+- **剧情出图改为四路并存**：头图必出、尾图（整段结束）必出、LLM 在 `[DRAW]` 指定出、并按新增 `image_every`（默认每 3 步）间隔自动出图，不再纯靠 LLM 自觉（解决「不说就不出图」）。
+- **剧情提示词强化故事性**：要求每步只推进一个具体场景/动作/对话、具体生动描写、禁止一步速通；LLM 返回空叙事时自然收尾（暂停等你「继续」）。
+
 ## v5.2.3
 
 - **修复 v4.27.4 配置 schema 加载失败**：`story_mode.loop_interval_sec` 的 `number` 类型在 AStrBot v4.27.4 不受支持，改为 `float`（支持类型白名单：int/float/bool/string/text/list/file/object/template_list/dict）。

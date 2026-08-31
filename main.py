@@ -766,6 +766,19 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(f"【初始化】 {_dep_name} 模块强制重载失败（沿用已加载模块）: {_de}")
         except Exception as _re:
             logger.warning(f"【初始化】 依赖模块强制重载失败（沿用已加载模块）: {_re}")
+        # reload 之后重建独立 WebUI 持有的 WebUIApi 实例：上面的 create_standalone_webui
+        # 在 reload 之前已用「旧的」webui_api 类创建了 self._api（从已安装旧版本升级时，
+        # sys.modules 里是旧模块），reload 只更新了模块对象、不会替换已存在的实例类，
+        # 导致独立 WebUI 调用新增接口（如剧情 story_sessions / story_stats）报 AttributeError。
+        try:
+            if getattr(self, "standalone_webui", None) is not None:
+                import importlib as _il
+                _wa = _il.import_module(
+                    f"{__package__}.webui_api" if __package__ else "webui_api"
+                )
+                self.standalone_webui._api = _wa.WebUIApi(self)
+        except Exception as _re2:
+            logger.warning(f"【初始化】 独立 WebUI 的 WebUIApi 实例重建失败（剧情接口可能不可用）: {_re2}")
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
@@ -7059,6 +7072,9 @@ class ComfyUIDrawPlugin(Star):
             "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
             "interval": float(cfg.get("loop_interval_sec", 1.5) or 1.5),
+            "image_every": int(cfg.get("image_every", 3) or 3),
+            "last_drew_step": -1,
+            "last_narr": "",
             "history": history,
             "chapter": 1,
             "step_in_chapter": 0,
@@ -7145,24 +7161,36 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(f"[剧情] LLM 调用失败: {e}")
                     await self._send(event, "（推演时 AI 调用出错，剧情暂停。说「继续」重试或「停」结束）")
                     ctrl["paused"] = True
-                    continue
+                    break
                 parsed = self._story_parse_step(resp)
                 narr = parsed.get("narrative", "").strip()
-                if narr:
-                    await self._send(event, narr)
-                    ctrl["history"].append(("assistant", narr))
-                    try:
-                        self.story.append_turn(sid, "assistant", narr)
-                    except Exception:
-                        pass
-                    ctrl["total_step"] += 1
-                    ctrl["step_in_chapter"] += 1
+                if not narr:
+                    # LLM 无新内容：开场失败直接结束；进行中则视为自然收束并暂停
+                    if not first:
+                        await self._send(event, "（剧情到这里暂时告一段落～说「继续」让我再展开，或「停」结束）")
+                        ctrl["paused"] = True
+                    break
+                await self._send(event, narr)
+                ctrl["history"].append(("assistant", narr))
+                ctrl["last_narr"] = narr
+                try:
+                    self.story.append_turn(sid, "assistant", narr)
+                except Exception:
+                    pass
+                ctrl["total_step"] += 1
+                ctrl["step_in_chapter"] += 1
                 last = (parsed.get("chapter_end") or
                         (ctrl["chapter_steps"] and ctrl["step_in_chapter"] >= ctrl["chapter_steps"]))
-                if (parsed.get("draw") and parsed.get("prompt")) or (first or last):
+                # 出图决策（四路并存）：头图必出 / 尾图(章节结束)必出 /
+                # LLM 在 [DRAW] 指定出 / 按 image_every 步数间隔出
+                draw_now = bool(first or last) or (bool(parsed.get("draw")) and bool(parsed.get("prompt")))
+                if not draw_now and ctrl["image_every"]:
+                    draw_now = (ctrl["total_step"] > 0 and ctrl["total_step"] % ctrl["image_every"] == 0)
+                if draw_now:
                     dprompt = parsed.get("prompt") or self._story_infer_prompt(narr)
                     if dprompt:
                         await self._story_draw_in_loop(event, sid, dprompt)
+                        ctrl["last_drew_step"] = ctrl["total_step"]
                 if ctrl["ask"] and parsed.get("options"):
                     opts = " / ".join(parsed["options"])
                     await self._send(event, f"你可以选择：{opts}（回复选项或发新指令都行）")
@@ -7214,14 +7242,16 @@ class ComfyUIDrawPlugin(Star):
         theme = ctrl["theme"] or "自由发挥的剧情"
         ask = ctrl["ask"]
         lines = [
-            "你是剧情推演引擎。用户进入「剧情模式」后，由你自动、连续地推进一段角色扮演/剧情，不需要等用户每句催促。",
-            f"当前剧情设定/主题：{theme}",
-            f"当前进度：第 {ctrl['chapter']} 章，本章已推 {ctrl['step_in_chapter']} 步。",
-            "输出格式（严格按此，不要多余解释）：",
-            "[NARRATIVE] 本步的叙事文本（生动、贴合设定）。",
-            "[DRAW] 本步对应的画面描述（动漫用英文 Danbooru 标签；写实用中文）。头一章第一步与每章结尾必须出图；中间步骤若情景需要也写 [DRAW]，不需要则写 [DRAW] 无。",
-            "[OPTIONS] 关键节点给出 2-3 个简短后续分支（仅当用户可选择时）；不需要则写 [OPTIONS] 无。",
-            "[CHAPTER_END] true 表示本章到此应告一段落，否则 false。",
+            "你是专业的小说剧情推演引擎。用户进入「剧情模式」后，由你自动、连续地推进一段沉浸式角色扮演剧情，全程不需要用户每句催促。",
+            f"【世界观/主题】{theme}",
+            f"【进度】第 {ctrl['chapter']} 章，本章第 {ctrl['step_in_chapter']} 步。",
+            "【输出格式，严格按此，不要输出标签以外的内容、不要写解释或点评】：",
+            "[NARRATIVE] 本步的叙事。硬性要求：①只推进「一个具体场景 / 一个动作 / 一段对话」，严禁在一步之内把整段剧情写完或草草收尾；"
+            "②描写具体生动——写清环境、人物动作神态、心理活动与对话，避免流水账与概括性语言；③约 80-160 字、3-6 句；④结尾留悬念或钩子，为下一步铺垫。",
+            "[DRAW] 本步对应的画面描述（动漫风，用英文 Danbooru 标签逗号分隔，如 1girl,solo,smile,outdoors；写实用中文场景）。"
+            "头图（第一步）与每章结尾一定会出图；中间每隔几步也会自动出图——因此你「也可」在情景特别合适时额外写 [DRAW]，不需要则写 [DRAW] 无。",
+            "[OPTIONS] 仅当本次允许互动时，给出 2-3 个简短后续分支；不允许则写 [OPTIONS] 无。",
+            "[CHAPTER_END] true 表示本章完整收束（一个事件告一段落），否则 false。",
         ]
         if not ask:
             lines.append("本次为「你推进别问我」模式：不要输出 [OPTIONS]。")
@@ -7300,6 +7330,15 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
         self._story_active.pop(key, None)
+        # 尾图：整段结束若最后一步尚未出图，补一张（基于最后叙事/主题），保证「尾必出」
+        try:
+            if (ctrl.get("last_drew_step", -1) < ctrl.get("total_step", 0)
+                    and ctrl.get("total_step", 0) > 0):
+                ln = ctrl.get("last_narr", "") or ctrl.get("theme", "")
+                if ln:
+                    await self._story_draw_in_loop(event, sid, ln)
+        except Exception as _te:
+            logger.warning(f"[剧情] 尾图生成失败（忽略）: {_te}")
         msg = "已退出剧情模式。"
         if summary:
             msg += f"\n\n📝 本次剧情摘要：\n{summary}"
