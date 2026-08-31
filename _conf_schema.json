@@ -1225,6 +1225,12 @@
         "description": "剧情推演中是否默认偶尔抛出少量互动选项",
         "hint": "开启后 bot 会在关键节点给 A/B/C 分支选项；进入时说「别问 / 你推进」可关闭。"
       },
+      "pause_on_options": {
+        "type": "bool",
+        "default": false,
+        "description": "给出分支选项时是否暂停等待用户选择",
+        "hint": "默认 false：给出选项后 bot 继续自动推进、不阻塞（符合「自己一路推进」）。开启后 bot 在给出选项时会停下等你选择或发新指令。"
+      },
       "chapter_steps": {
         "type": "int",
         "default": 0,

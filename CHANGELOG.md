@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.10
+
+- **修复剧情模式自动推演被分支选项卡住、只出一张图就停**：原逻辑 `ask` 默认 True 且 LLM 每步给 `[OPTIONS]` 分支选项时,会 `paused=True` 阻塞等待用户消息,你若不插话就永久卡住(只出了第一步头图那 1 张),违背「自己一路推进」的剧情模式设计。修复:给出选项不再默认阻塞推进(新增 `story_mode.pause_on_options` 开关,默认 false,仅显式开启时才在选项处暂停);`ask_default` 配置项此前被硬编码忽略,现已真正生效;剧情提示词优化为 `[OPTIONS]` 只在关键节点(章节结束/重大抉择)出现,避免自动推进时每步刷选项噪音。修复后 bot 会真正自动一路推进并按 `image_strategy` 连续出图,你随时插话仍可作为新指令改变方向。
+
 ## v5.2.9
 
 - **comfyui_draw / comfyui_img2img 支持 prompts 每项独立参数（per-item 多工作流出图）**：`prompts` 数组现兼容「对象数组」写法，每条可独立指定 `{prompt, workflow, img2img_workflow, loras, width, height, denoise, seed}`，未写字段回落全局参数。典型场景「真人、动漫各来一张」可一次调用传 `[{"prompt":"写实美女","workflow":"写实"}, {"prompt":"动漫少女","workflow":"Anima"}]`，两张各用各工作流出齐，不再因被单轮出图闸门拦回而只发一张。旧「纯字符串数组」写法完全兼容（每条共享全局参数）。

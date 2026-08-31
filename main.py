@@ -7198,6 +7198,7 @@ class ComfyUIDrawPlugin(Star):
             "event": event,
             "cfg": cfg,
             "ask": parsed["ask"],
+            "pause_on_options": bool(cfg.get("pause_on_options", False)),
             "theme": theme,
             "chapter_steps": int(cfg.get("chapter_steps", 0) or 0),
             "auto_max": int(cfg.get("auto_steps_per_run", 12) or 12),
@@ -7235,7 +7236,7 @@ class ComfyUIDrawPlugin(Star):
             if rest.startswith(kw):
                 rest = rest[len(kw):].strip()
                 break
-        out = {"theme": "", "ask": True, "resume_id": 0}
+        out = {"theme": "", "ask": bool((cfg or {}).get("ask_default", True)), "resume_id": 0}
         if any(x in rest for x in ("别问", "不用问", "你推进", "你决定", "别问我", "自己推")):
             out["ask"] = False
         m = re.search(r"(续写|继续)\s*(\d+)", rest)
@@ -7330,8 +7331,9 @@ class ComfyUIDrawPlugin(Star):
                         ctrl["last_drew_step"] = ctrl["total_step"]
                 if ctrl["ask"] and parsed.get("options"):
                     opts = " / ".join(parsed["options"])
-                    await self._send(event, f"你可以选择：{opts}（回复选项或发新指令都行）")
-                    ctrl["paused"] = True
+                    await self._send(event, f"你可以选择：{opts}（随时回复选项或发新指令都能改方向）")
+                    if ctrl.get("pause_on_options"):
+                        ctrl["paused"] = True
                 if ctrl["auto_max"] and ctrl["auto_max"] > 0 and ctrl["total_step"] >= ctrl["auto_max"]:
                     await self._send(event, "（本次自动推演已达步数上限，说「继续」让我接着推，或「停」结束）")
                     ctrl["paused"] = True
@@ -7387,7 +7389,7 @@ class ComfyUIDrawPlugin(Star):
             "②描写具体生动——写清环境、人物动作神态、心理活动与对话，避免流水账与概括性语言；③约 80-160 字、3-6 句；④结尾留悬念或钩子，为下一步铺垫。",
             "[DRAW] 本步对应的画面描述（动漫风，用英文 Danbooru 标签逗号分隔，如 1girl,solo,smile,outdoors；写实用中文场景）。"
             "头图（第一步）与每章结尾一定会出图；中间步骤由你判断——若本步情景值得配图就写 [DRAW] 并给出描述，不需要则写 [DRAW] 无（依剧情节奏而定，不要每步都出）。",
-            "[OPTIONS] 仅当本次允许互动时，给出 2-3 个简短后续分支；不允许则写 [OPTIONS] 无。",
+            "[OPTIONS] 仅在本次允许互动、且处于关键节点（章节结束或剧情重大抉择）时，给出 2-3 个简短后续分支；普通推进步骤写 [OPTIONS] 无，不要每步都给。",
             "[CHAPTER_END] true 表示本章完整收束（一个事件告一段落），否则 false。",
         ]
         if not ask:
