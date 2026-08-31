@@ -5923,6 +5923,85 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_draw")
     @_safe_llm_tool
+    def _normalize_prompts(self, raw):
+        """把 prompts 参数统一规整成 list[dict]，兼容两种写法：
+
+        - 旧写法：每条是纯字符串（与全局参数共享）；
+        - 新写法：每条是对象 {prompt, workflow, img2img_workflow, loras,
+          width, height, denoise, seed}，各项独立、缺省回落全局参数。
+        返回仅含非空 prompt 的项。
+        """
+        out = []
+        for x in (raw or []):
+            if isinstance(x, dict):
+                try:
+                    _w_v = int(x.get("width") or 0) or 0
+                except (TypeError, ValueError):
+                    _w_v = 0
+                try:
+                    _h_v = int(x.get("height") or 0) or 0
+                except (TypeError, ValueError):
+                    _h_v = 0
+                try:
+                    _dn = float(x.get("denoise")) if x.get("denoise") is not None else -1
+                except (TypeError, ValueError):
+                    _dn = -1
+                try:
+                    _sd = int(x.get("seed") or 0) or 0
+                except (TypeError, ValueError):
+                    _sd = 0
+                out.append({
+                    "prompt": str(x.get("prompt") or "").strip(),
+                    "workflow": (x.get("workflow") or "").strip() or None,
+                    "img2img_workflow": (x.get("img2img_workflow") or "").strip() or None,
+                    "loras": x.get("loras") or None,
+                    "width": _w_v,
+                    "height": _h_v,
+                    "denoise": _dn,
+                    "seed": _sd,
+                })
+            else:
+                out.append({
+                    "prompt": str(x).strip(),
+                    "workflow": None,
+                    "img2img_workflow": None,
+                    "loras": None,
+                    "width": 0,
+                    "height": 0,
+                    "denoise": -1,
+                    "seed": 0,
+                })
+        return [i for i in out if i["prompt"]]
+
+    def _resolve_workflow_for(self, workflow, img2img_workflow, is_img2img, was_img2img, fallback_wf):
+        """根据单条 prompt 的 workflow / img2img_workflow 与调用级图生图状态，求最终工作流名。
+
+        抽自 llm_draw / llm_img2img 原先「循环外只算一次」的工作流决策逻辑，
+        使 per-item 工作流选择复用同一套规则（含图生图回退、image_node 检测等）。
+        """
+        if is_img2img and img2img_workflow and img2img_workflow.strip():
+            resolved = img2img_workflow.strip()
+        elif is_img2img and workflow and workflow.strip():
+            # 图生图但只显式指定了文生图工作流：若它具备图生图能力（image_node 已配置
+            # 或命中默认图生图工作流）则直接用，否则回退默认图生图工作流。
+            _req_wf_name = workflow.strip()
+            _req_wf_cfg = next(
+                (w for w in self._workflows() if (w.get("name") or "").strip() == _req_wf_name),
+                None,
+            )
+            _req_has_image_cfg = bool(_req_wf_cfg and (_req_wf_cfg.get("image_node") or "").strip())
+            _default_i2i = (self._pick_default_workflow_name(is_img2img=True) or "").strip()
+            if _req_has_image_cfg or (_req_wf_name and _req_wf_name == _default_i2i):
+                resolved = _req_wf_name
+            else:
+                resolved = _default_i2i or None
+        else:
+            resolved = (workflow or "").strip() or None
+        # 回退为文生图时：不沿用原图生图工作流名（可能缺图注入会报错），改用回退工作流。
+        if was_img2img and not is_img2img:
+            resolved = fallback_wf or None
+        return resolved
+
     async def llm_draw(
         self,
         event: AstrMessageEvent,
@@ -6019,7 +6098,16 @@ class ComfyUIDrawPlugin(Star):
             loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/多画几张"）但没给具体数字时 → prompts 传 3 条不同画面。★【count 当前恒为 1，一般不用传】：张数由 prompts 的条数决定，本参数是预留给将来「同一条提示词跑不同种子出多张」用的，现在传大于 1 会被拦回并要求改用 prompts 数组。
-            prompts(array[string]): 多条提示词，【要几张就传几条】，每条各出 1 张。例如"来 3 张猫"→ 传 3 条不同姿势/场景/光线的猫；"白天、晚上、深夜各来 2 张"→ 传 6 条（白天 2 + 晚上 2 + 深夜 2）。★每条要写【不同的画面】，不要把同一条提示词重复多遍。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个画面请用它一次传完，不要拆成多次调用本工具。
+            prompts(array): 多条出图项，【要几张就传几条】，每条各出 1 张。两种写法都支持：
+                ① 纯字符串数组（旧，全局参数共享）：每条是一个画面描述，例如
+                   ["1girl 猫娘", "1boy 骑士"]；"白天、晚上、深夜各来 2 张"→ 传 6 条。
+                ② 对象数组（新，每项可独立定制）：每条是 {"prompt", "workflow",
+                   "img2img_workflow", "loras", "width", "height", "denoise", "seed"} 对象，
+                   未写的字段回落全局参数。例如要「真人、动漫各来一张、用各自工作流」→ 传
+                   [{"prompt":"写实美女","workflow":"写实"}, {"prompt":"动漫少女","workflow":"Anima"}]，
+                   一次调用两张各用各工作流出齐，不会被拆分调用拦回。
+                ★每条要写【不同的画面】，不要把同一条提示词重复多遍。与 prompt 二选一即可，
+                两者都传时以 prompts 为准。需要多个画面请用它一次传完，不要拆成多次调用本工具。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
 
@@ -6160,12 +6248,15 @@ class ComfyUIDrawPlugin(Star):
         # prompts 数组用于一次画多个不同画面（如「分别画猫、狗和兔子」）；count 表示每条
         # 提示词各出几张。总张数受插件配置的单次上限（draw_auto.max）约束，超出自动截断
         # （上限 9、要 10 张 → 只出 9 张）；伴侣插件等带 source 的调用不受此上限限制。
-        _p_list = [str(x).strip() for x in (prompts or []) if str(x).strip()]
+        # prompts 统一规整成 list[dict]：兼容「纯字符串数组」(旧) 与
+        #「对象数组」(新，每项可独立指定 workflow/img2img_workflow/loras/
+        # width/height/denoise/seed，缺省回落全局参数)。
+        _items = self._normalize_prompts(prompts)
         _per = max(1, int(count or 1))
-        if _p_list:
+        if _items:
             # 传了 prompts：【张数 = 条数】，每条各出 1 张（每条是一个独立画面）。
             # count 是预留参数（将来用于「同一条提示词跑不同种子」），当前恒为 1、不参与计算。
-            _wanted = len(_p_list)
+            _wanted = len(_items)
         else:
             # 没传 prompts：单条 prompt。
             # 要 N 张的正确写法是 prompts 传 N 个不同画面——用「单条 prompt + count=N」
@@ -6184,17 +6275,15 @@ class ComfyUIDrawPlugin(Star):
                         f"（例如要 3 张猫，就写 3 条不同姿势/场景/光线的猫），"
                         f"count 保持 1 不传，然后重新调用本工具一次。"
                     )
-            _p_list = [(prompt or "").strip()]
+            _items = [{
+                "prompt": (prompt or "").strip(),
+                "workflow": None, "img2img_workflow": None, "loras": None,
+                "width": 0, "height": 0, "denoise": -1, "seed": 0,
+            }]
             _wanted = _per
         _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source)
-        # 每条提示词各出 1 张；单次上限不足时从末尾截断
-        _plan: list[tuple[str, int]] = [(p, 1) for p in _p_list[: max(1, _allowed)]]
-        if not _plan:
-            _plan = [(_p_list[0], 1)]
-        logger.info(
-            f"【工具·llm_draw】 出图计划：{len(_plan)} 组、共 {sum(n for _, n in _plan)} 张"
-            + (f"（请求 {_wanted} 张，已按单次上限截断）" if _max_hint else "")
-        )
+        # 注：_plan（含每项的 per-item 工作流解析）需在下方 resolved_wf 决策完成后构建，
+        # 见「工作流决策」段之后。
 
         lora_map = self._parse_llm_loras(loras)
 
@@ -6320,6 +6409,8 @@ class ComfyUIDrawPlugin(Star):
         #   · txt2img：回退为文生图，按原图生图风格对应的「文生图默认工作流」来画
         #     （真人图生图 → 真人文生图，动漫图生图 → 动漫文生图），保证风格一致。
         img2img_fallback = (plugin._cfg("img2img_fallback", "prompt") or "prompt").strip().lower()
+        # 确保在「图生图回退」分支外也定义，供下方 _resolve_workflow_for 传参（否则 NameError）。
+        fallback_wf = None
         if is_img2img and not init_images:
             # 计算「回退到对应风格文生图」所需的 fallback_wf（供 txt2img 与弱信号共用）
             _req_i2i = (img2img_workflow or workflow or "").strip()
@@ -6418,6 +6509,35 @@ class ComfyUIDrawPlugin(Star):
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
 
+        # ── 出图计划：把多条提示词摊平为「每项独立参数」的列表 ──────────
+        # 每项独立完成工作流解析（per-item workflow / img2img_workflow），缺省回落调用级
+        # 默认工作流 resolved_wf；其余尺寸 / LoRA / denoise / seed 同理回落全局参数。
+        _plan: list[dict] = []
+        for _it in _items[: max(1, _allowed)]:
+            _wf = self._resolve_workflow_for(
+                _it["workflow"], _it["img2img_workflow"], is_img2img, was_img2img, fallback_wf
+            )
+            if not _wf:
+                _wf = resolved_wf
+            _plan.append({
+                "prompt": _it["prompt"],
+                "wf": _wf,
+                "loras": _it["loras"],
+                "width": _it["width"],
+                "height": _it["height"],
+                "denoise": _it["denoise"],
+                "seed": _it["seed"],
+            })
+        if not _plan:
+            _plan = [{
+                "prompt": _items[0]["prompt"], "wf": resolved_wf,
+                "loras": None, "width": 0, "height": 0, "denoise": -1, "seed": 0,
+            }]
+        logger.info(
+            f"【工具·llm_draw】 出图计划：{len(_plan)} 项、共 {len(_plan)} 张"
+            + (f"（请求 {_wanted} 张，已按单次上限截断）" if _max_hint else "")
+        )
+
         # 提示词原样透传（已移除「伴侣插件提示词过滤」功能）：不做过多的拆分/改写，
         # 直接传给 ComfyUI 出图。实际使用的正向提示词取自出图计划 _plan 的每一组
         # （支持 prompts 多画面，每组自带一条提示词）。
@@ -6439,7 +6559,7 @@ class ComfyUIDrawPlugin(Star):
         # 原生 / AI 对话调用改为「画一张发一张」：每张图出来立即 event.send，
         # 用户先收到第 1 张、再第 2 张、再第 3 张，而不是等全部画完一次性连发。
         # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
-        _total_n = sum(n for _, n in _plan)
+        _total_n = len(_plan)
         # 单批上限 max_images_per_batch：单次工具调用最多连续生成几张就收尾返回，
         # 剩余张数转入「后台续画」任务自动补发。核心目的——确保单批总耗时 < AstrBot
         # 框架工具超时（默认 120 秒），工具能在超时前正常 return，从而不会被框架
@@ -6457,63 +6577,67 @@ class ComfyUIDrawPlugin(Star):
             _budget = 0.0
         _t0 = time.monotonic()
         _seq = 0
-        _remain_prompts: list[str] = []
-        for _p_text, _n in _plan:
-            if _remain_prompts:
+        _remain_items: list[dict] = []
+        for _item in _plan:
+            if _remain_items:
                 # 已达单批上限，后续计划全部转入后台续画，避免触发框架超时取消
-                _remain_prompts.append(_p_text)
+                _remain_items.append(_item)
                 continue
-            _positive = (_p_text or "").strip()
+            _positive = (_item["prompt"] or "").strip()
             if not _positive:
                 continue
-            for _i in range(_n):
-                # 单批张数达上限，或软耗时预算耗尽：当前组已出 _i 张，剩余 (_n - _i) 张转入后台续画。
-                # 这样工具在 120 秒内收尾返回，框架绝不取消我们，发图连接永不坏。
-                # 硬性时间兜底：单批已用时间超过安全阈值（默认 100s，< 框架默认 120s
-                # 工具超时）就收尾转续画，避免慢服务器上单批总耗时逼近/超过框架超时而被
-                # 取消、破坏发图连接卡死。用户配置的 per_draw_time_budget_sec（>0）可进一步收紧。
-                _time_stop = 100.0
-                if _budget > 0:
-                    _time_stop = min(_time_stop, _budget)
-                if len(img_paths) >= _max_batch or (time.monotonic() - _t0) > _time_stop:
-                    for _k in range(_n - _i):
-                        _remain_prompts.append(_p_text)
-                    break
-                # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
-                # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
-                # 若仍用 (0 + _i) 会让多张出图的第 2 张起被固定成 1、2、3 这类退化种子。
-                _seed_i = (int(seed) + _seq) if (_total_n > 1 and seed) else seed
-                _seq += 1
-                async for node, p in plugin._do_draw(
-                    event,
-                    resolved_wf,
-                    _positive,
-                    negative,
-                    width or None,
-                    height or None,
-                    lora_map,
-                    None,
-                    _seed_i or None,
-                    init_images=init_images or None,
-                    is_img2img=is_img2img,
-                    denoise=denoise if denoise >= 0 else None,
-                    # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
-                    # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
-                    notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
-                    source=source,
-                ):
-                    if p:
-                        img_paths.append(p)
-                    # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
-                    # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
-                    # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
-                    if node is not None and not is_companion:
-                        # 每张生成成功即标记「本轮已出图」——超时取消后重调会被单轮闸门拦回，不会重复出图。
-                        plugin._draw_run_hit(event)
-                        try:
-                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
-                        except Exception as _e:
-                            logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
+            # 单批张数达上限，或软耗时预算耗尽：当前项转入后台续画收尾转续画。
+            # 这样工具在 120 秒内收尾返回，框架绝不取消我们，发图连接永不坏。
+            # 硬性时间兜底：单批已用时间超过安全阈值（默认 100s，< 框架默认 120s
+            # 工具超时）就收尾转续画，避免慢服务器上单批总耗时逼近/超过框架超时而被
+            # 取消、破坏发图连接卡死。用户配置的 per_draw_time_budget_sec（>0）可进一步收紧。
+            _time_stop = 100.0
+            if _budget > 0:
+                _time_stop = min(_time_stop, _budget)
+            if len(img_paths) >= _max_batch or (time.monotonic() - _t0) > _time_stop:
+                _remain_items.append(_item)
+                continue
+            # 仅当调用方明确指定了 seed 时才按序号递增（保证这批图可复现）。
+            # 未指定 seed（0/空/None）时必须保持 0，由下方 `or None` 转成 None 走随机；
+            # 若仍用 (0 + _seq) 会让多张出图的第 2 张起被固定成 1、2、3 这类退化种子。
+            _item_seed = _item["seed"]
+            _seed_i = (int(_item_seed) + _seq) if (_total_n > 1 and _item_seed) else _item_seed
+            _seq += 1
+            # per-item 参数：缺省回落全局参数
+            _item_lora_map = plugin._parse_llm_loras(_item["loras"]) if _item["loras"] else lora_map
+            _item_w = _item["width"] or width
+            _item_h = _item["height"] or height
+            _item_denoise = _item["denoise"] if _item["denoise"] >= 0 else denoise
+            async for node, p in plugin._do_draw(
+                event,
+                _item["wf"],
+                _positive,
+                negative,
+                _item_w or None,
+                _item_h or None,
+                _item_lora_map,
+                None,
+                _seed_i or None,
+                init_images=init_images or None,
+                is_img2img=is_img2img,
+                denoise=_item_denoise if _item_denoise >= 0 else None,
+                # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
+                # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
+                notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
+                source=source,
+            ):
+                if p:
+                    img_paths.append(p)
+                # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
+                # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
+                # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
+                if node is not None and not is_companion:
+                    # 每张生成成功即标记「本轮已出图」——超时取消后重调会被单轮闸门拦回，不会重复出图。
+                    plugin._draw_run_hit(event)
+                    try:
+                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                    except Exception as _e:
+                        logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
 
         if img_paths:
             if is_companion:
@@ -6535,9 +6659,9 @@ class ComfyUIDrawPlugin(Star):
                 # 后台任务独立把剩余图生成并自动发来，一次消息即可收齐全部 N 张）。
                 try:
                     asyncio.create_task(self._draw_continue(
-                        event, _remain_prompts, resolved_wf, lora_map, negative,
-                        init_images, is_img2img, denoise, width, height, source,
-                        seq_start=len(img_paths), seed=seed,
+                        event, _remain_items, negative,
+                        init_images, is_img2img, source,
+                        seq_start=len(img_paths),
                     ))
                 except Exception as _e:
                     logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
@@ -6563,9 +6687,9 @@ class ComfyUIDrawPlugin(Star):
         if _remain_prompts:
             try:
                 asyncio.create_task(self._draw_continue(
-                    event, _remain_prompts, resolved_wf, lora_map, negative,
-                    init_images, is_img2img, denoise, width, height, source,
-                    seq_start=0, seed=seed,
+                    event, _remain_items, negative,
+                    init_images, is_img2img, source,
+                    seq_start=0,
                 ))
             except Exception as _e:
                 logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
@@ -6576,9 +6700,9 @@ class ComfyUIDrawPlugin(Star):
         return "本次生图失败。请用一句话简短向用户说明生成遇到问题即可，不要复述本提示。"
 
     async def _draw_continue(
-        self, event, remaining: list[str], resolved_wf, lora_map, negative,
-        init_images, is_img2img, denoise, width, height, source,
-        seq_start: int = 0, seed=0,
+        self, event, remaining: list[dict], negative,
+        init_images, is_img2img, source,
+        seq_start: int = 0,
     ):
         """后台续画：工具调用按单批上限（max_images_per_batch）先发完前几张并正常 return
         后，由本独立任务把剩余张数继续生成并主动发给用户。
@@ -6599,18 +6723,24 @@ class ComfyUIDrawPlugin(Star):
             except Exception:
                 pass
             _seq = seq_start
-            for _p_text in remaining:
-                _positive = (_p_text or "").strip()
+            for _item in remaining:
+                _positive = (_item["prompt"] or "").strip()
                 if not _positive:
                     continue
-                _seed_i = (int(seed) + _seq) if seed else seed
+                _item_seed = _item["seed"]
+                _seed_i = (int(_item_seed) + _seq) if _item_seed else _item_seed
                 _seq += 1
+                # per-item 参数：缺省回落（续画无全局 lora_map，未指定 loras 的项用 None）
+                _item_lora_map = self._parse_llm_loras(_item["loras"]) if _item["loras"] else None
+                _item_w = _item["width"] or None
+                _item_h = _item["height"] or None
+                _item_denoise = _item["denoise"] if _item["denoise"] >= 0 else None
                 async for node, p in self._do_draw(
-                    event, resolved_wf, _positive, negative,
-                    width or None, height or None, lora_map, None,
+                    event, _item["wf"], _positive, negative,
+                    _item_w, _item_h, _item_lora_map, None,
                     _seed_i or None,
                     init_images=init_images or None, is_img2img=is_img2img,
-                    denoise=denoise if denoise >= 0 else None,
+                    denoise=_item_denoise,
                     notify_pending=False, source=source,
                 ):
                     if node is not None:
@@ -8008,7 +8138,16 @@ class ComfyUIDrawPlugin(Star):
             image(string): 参考图 URL。多数情况用户直接发图时无需传此参数，插件会自动从消息提取；仅当需要明确指定某张图时传入。
             denoise(number): 降噪幅度/重绘强度（0~1）。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
             count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量 → 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/多画几张"）但没给具体数字时 → prompts 传 3 条不同效果。★【count 当前恒为 1，一般不用传】：张数由 prompts 的条数决定，本参数是预留给将来「同一条提示词跑不同种子出多张」用的，现在传大于 1 会被拦回并要求改用 prompts 数组。
-            prompts(array[string]): 多条提示词，【要几张就传几条】，每条各出 1 张。例如"分别转成水彩和油画"→ 传 2 条；"三个效果各来 2 张"→ 传 6 条（每个效果 2 条不同描述）。★每条要写【不同的变换】，不要把同一条提示词重复多遍。与 prompt 二选一即可，两者都传时以 prompts 为准。需要多个效果请用它一次传完，不要拆成多次调用本工具。
+            prompts(array): 多条出图项，【要几张就传几条】，每条各出 1 张。两种写法都支持：
+                ① 纯字符串数组（旧，全局参数共享）：每条是一个变换描述，例如
+                   ["转成水彩", "转成油画"]；"三个效果各来 2 张"→ 传 6 条。
+                ② 对象数组（新，每项可独立定制）：每条是 {"prompt", "workflow",
+                   "img2img_workflow", "loras", "width", "height", "denoise", "seed"} 对象，
+                   未写的字段回落全局参数。例如要「水彩、油画各来一张、用各自图生图工作流」→ 传
+                   [{"prompt":"转水彩","img2img_workflow":"水彩图生图"}, {"prompt":"转油画","img2img_workflow":"油画图生图"}]，
+                   一次调用两个效果各用各工作流出齐，不会被拆分调用拦回。
+                ★每条要写【不同的变换】，不要把同一条提示词重复多遍。与 prompt 二选一即可，
+                两者都传时以 prompts 为准。需要多个效果请用它一次传完，不要拆成多次调用本工具。
 
         补充说明：
         - 用户未明确要求 lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -8099,12 +8238,17 @@ class ComfyUIDrawPlugin(Star):
         # ── 出图计划：把「多条提示词 × 每条几张」摊平成 (提示词, 张数) 列表 ──────
         # 与 comfyui_draw 同一套：prompts 数组用于一次做多个不同变换，count 表示每条各出几张，
         # 总张数受插件配置的单次上限（draw_auto.max）约束，超出自动截断；带 source 不受限。
-        _p_list2 = [str(x).strip() for x in (prompts or []) if str(x).strip()]
+        # prompts 统一规整成 list[dict]：兼容「纯字符串数组」(旧) 与
+        #「对象数组」(新，每项可独立指定 workflow/img2img_workflow/loras/
+        # width/height/denoise/seed，缺省回落全局参数)。
+        # 图生图场景下 img2img_workflow 即各项的图生图工作流，workflow 为文生图工作流名
+        # （仅当该项具备图生图能力时才会被采用，否则回退默认图生图）。
+        _items2 = self._normalize_prompts(prompts)
         _per2 = max(1, int(count or 1))
-        if _p_list2:
+        if _items2:
             # 同 comfyui_draw：传了 prompts 时【张数 = 条数】，每条各出 1 张；
             # count 为预留参数，当前恒为 1、不参与计算。
-            _wanted2 = len(_p_list2)
+            _wanted2 = len(_items2)
         else:
             # 同 comfyui_draw：要 N 张就该用 prompts 传 N 个不同效果，
             # 「单条 prompt + count=N」只会得到同一效果的 N 个近似副本。拦一次并教正确写法。
@@ -8120,16 +8264,15 @@ class ComfyUIDrawPlugin(Star):
                         f"{_per2} 个近似副本。请改用 prompts 数组：把 {_per2} 个不同的变换效果各写成一项，"
                         f"count 保持 1 不传，然后重新调用本工具一次。"
                     )
-            _p_list2 = [(prompt or "").strip()]
+            _items2 = [{
+                "prompt": (prompt or "").strip(),
+                "workflow": None, "img2img_workflow": None, "loras": None,
+                "width": 0, "height": 0, "denoise": -1, "seed": 0,
+            }]
             _wanted2 = _per2
         _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source)
-        _plan2: list[tuple[str, int]] = [(p, 1) for p in _p_list2[: max(1, _allowed2)]]
-        if not _plan2:
-            _plan2 = [(_p_list2[0], 1)]
-        logger.info(
-            f"【工具·llm_img2img】 出图计划：{len(_plan2)} 组、共 {sum(n for _, n in _plan2)} 张"
-            + (f"（请求 {_wanted2} 张，已按单次上限截断）" if _max_hint2 else "")
-        )
+        # 注：_plan2（含每项的 per-item 工作流解析）需在下方 resolved_wf 决策完成后构建，
+        # 见「决定工作流」段之后。
 
         # ── 收集图片（与 llm_draw 共用同一逻辑）─────────────────────
         init_images: list[str] = []
@@ -8201,12 +8344,10 @@ class ComfyUIDrawPlugin(Star):
 
         # ── 决定工作流 ─────────────────────────────────────────────
         # 图生图始终 is_img2img=True；img2img_workflow > workflow > 默认图生图
-        if img2img_workflow and img2img_workflow.strip():
-            resolved_wf = img2img_workflow.strip()
-        elif workflow and workflow.strip():
-            resolved_wf = workflow.strip()
-        else:
-            resolved_wf = None
+        # 调用级默认工作流（供 per-item 缺省回落）
+        global_resolved_wf = self._resolve_workflow_for(
+            workflow, img2img_workflow, True, False, None
+        )
 
         lora_map = self._parse_llm_loras(loras)
 
@@ -8215,49 +8356,81 @@ class ComfyUIDrawPlugin(Star):
         _, parsed_neg = plugin._split_external_prompt(prompt)
         negative = parsed_neg or (negative_prompt or "")
 
+        # ── 出图计划（per-item）：每项独立解析工作流与参数 ──────
+        _plan2: list[dict] = []
+        for _it in _items2[: max(1, _allowed2)]:
+            _wf = self._resolve_workflow_for(
+                _it["workflow"], _it["img2img_workflow"], True, False, None
+            )
+            if not _wf:
+                _wf = global_resolved_wf
+            _plan2.append({
+                "prompt": _it["prompt"],
+                "wf": _wf,
+                "loras": _it["loras"],
+                "width": _it["width"],
+                "height": _it["height"],
+                "denoise": _it["denoise"],
+                "seed": _it["seed"],
+            })
+        if not _plan2:
+            _plan2 = [{
+                "prompt": _items2[0]["prompt"], "wf": global_resolved_wf,
+                "loras": None, "width": 0, "height": 0, "denoise": -1, "seed": 0,
+            }]
+        logger.info(
+            f"【工具·llm_img2img】 出图计划：{len(_plan2)} 项、共 {len(_plan2)} 张"
+            + (f"（请求 {_wanted2} 张，已按单次上限截断）" if _max_hint2 else "")
+        )
+
         is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
 
         img_paths: list[str] = []
         # 按出图计划逐张生成：原生 / AI 对话调用「画一张发一张」，用户逐张收到；
         # 伴侣插件仍收集全部路径后返回 JSON。
-        _total_n2 = sum(n for _, n in _plan2)
+        _total_n2 = len(_plan2)
         _seq2 = 0
-        for _p_text2, _n2 in _plan2:
-            _positive2, _parsed_neg2 = plugin._split_external_prompt(_p_text2)
+        for _item2 in _plan2:
+            _positive2, _parsed_neg2 = plugin._split_external_prompt(_item2["prompt"])
             if not (_positive2 or "").strip():
                 continue
             if _parsed_neg2 and not negative:
                 negative = _parsed_neg2
-            for _j in range(_n2):
-                # 同 llm_draw：仅在明确指定 seed 时递增，未指定时保持 0 走随机，
-                # 避免多张图生图的第 2 张起被固定成 1、2、3 这类退化种子。
-                _seed_j = (int(seed) + _seq2) if (_total_n2 > 1 and seed) else seed
-                _seq2 += 1
-                async for node, p in plugin._do_draw(
-                    event,
-                    resolved_wf,
-                    _positive2,
-                    negative,
-                    None,
-                    None,
-                    lora_map,
-                    None,
-                    _seed_j or None,
-                    init_images=init_images,
-                    is_img2img=True,
-                    denoise=denoise if denoise >= 0 else None,
-                    source=source,
-                ):
-                    if p:
-                        img_paths.append(p)
-                    # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
-                    # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
-                    # 自动渲染图片，必须主动 event.send 把图发到聊天里。
-                    if node is not None and not is_companion:
-                        try:
-                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
-                        except Exception as _e:
-                            logger.warning(f"【出图·成功】 comfyui_img2img 主动发送图片失败: {_e}")
+            # 同 llm_draw：仅在明确指定 seed 时递增，未指定时保持 0 走随机，
+            # 避免多张图生图的第 2 张起被固定成 1、2、3 这类退化种子。
+            _item_seed2 = _item2["seed"]
+            _seed_j = (int(_item_seed2) + _seq2) if (_total_n2 > 1 and _item_seed2) else _item_seed2
+            _seq2 += 1
+            # per-item 参数：缺省回落全局参数（图生图默认不传 width/height）
+            _item_lora_map2 = plugin._parse_llm_loras(_item2["loras"]) if _item2["loras"] else lora_map
+            _item_w2 = _item2["width"] or None
+            _item_h2 = _item2["height"] or None
+            _item_denoise2 = _item2["denoise"] if _item2["denoise"] >= 0 else denoise
+            async for node, p in plugin._do_draw(
+                event,
+                _item2["wf"],
+                _positive2,
+                negative,
+                _item_w2,
+                _item_h2,
+                _item_lora_map2,
+                None,
+                _seed_j or None,
+                init_images=init_images,
+                is_img2img=True,
+                denoise=_item_denoise2 if _item_denoise2 >= 0 else None,
+                source=source,
+            ):
+                if p:
+                    img_paths.append(p)
+                # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
+                # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
+                # 自动渲染图片，必须主动 event.send 把图发到聊天里。
+                if node is not None and not is_companion:
+                    try:
+                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                    except Exception as _e:
+                        logger.warning(f"【出图·成功】 comfyui_img2img 主动发送图片失败: {_e}")
 
         if img_paths:
             if is_companion:

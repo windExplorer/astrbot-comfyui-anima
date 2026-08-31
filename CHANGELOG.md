@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.9
+
+- **comfyui_draw / comfyui_img2img 支持 prompts 每项独立参数（per-item 多工作流出图）**：`prompts` 数组现兼容「对象数组」写法，每条可独立指定 `{prompt, workflow, img2img_workflow, loras, width, height, denoise, seed}`，未写字段回落全局参数。典型场景「真人、动漫各来一张」可一次调用传 `[{"prompt":"写实美女","workflow":"写实"}, {"prompt":"动漫少女","workflow":"Anima"}]`，两张各用各工作流出齐，不再因被单轮出图闸门拦回而只发一张。旧「纯字符串数组」写法完全兼容（每条共享全局参数）。
+
 ## v5.2.8
 
 - **修复剧情档案接口报错（WebUIApi 缺少 story_sessions / story_stats）**：`register_web_api` 在注册路由前自保 `reload` 本模块，确保使用磁盘上最新代码定义的 `WebUIApi` 类（AStrBot 热更新只重载 main.py，依赖模块可能残留旧版）。同时 routes 列表构建改用 `getattr` 安全获取 handler，缺方法时仅跳过该路由而非整体抛 `AttributeError`，避免主控制台全部路由注册失败（否则 schema/config/gallery 等也全挂）。
