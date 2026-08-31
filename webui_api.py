@@ -1719,10 +1719,30 @@ def register_web_api(plugin) -> None:
     # AttributeError。这里 reload 本模块，确保使用磁盘上最新代码定义的 WebUIApi 类。
     try:
         import importlib
-        importlib.reload(importlib.import_module(__name__))
+        _mod = importlib.reload(importlib.import_module(__name__))
     except Exception as _re:
+        _mod = None
         _log.warning(f"[WebUI] 重载 webui_api 模块失败（沿用已加载类）: {_re}")
-    api = WebUIApi(plugin)
+    # 关键：必须从 reload 返回的模块对象上取 WebUIApi 类，而不是用本函数所在模块的
+    # 全局名。AStrBot 热更新/非标准加载下，reload 可能得到独立的新模块对象，而当前
+    # 模块全局的 WebUIApi 仍是旧类（缺 story_sessions 等新方法），直接用旧类建实例会
+    # 被下方 _h 的 getattr 判为「缺少方法」而跳过全部剧情路由。
+    _WebUIApi = getattr(_mod, "WebUIApi", None) if _mod is not None else None
+    if _WebUIApi is None:
+        # 兜底：reload 也拿不到最新类（AStrBot 的 sys.modules 缓存被污染 / 模块加载异常）时，
+        # 从磁盘 __file__ 强制重新执行本模块源码拿到最新 WebUIApi 类，确保剧情等新路由可注册。
+        try:
+            import importlib.util
+            _spec = importlib.util.spec_from_file_location(__name__ + "._fresh", __file__)
+            if _spec is not None and _spec.loader is not None:
+                _fresh = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_fresh)
+                _WebUIApi = getattr(_fresh, "WebUIApi", None)
+        except Exception:
+            _WebUIApi = None
+    if _WebUIApi is None:
+        _WebUIApi = WebUIApi
+    api = _WebUIApi(plugin)
     ctx = plugin.context
     # 路由必须含插件名：/<plugin_name>/<endpoint>。
     # 对齐 AstrBot 官方《插件 Pages》约定：后端注册带插件名前缀、

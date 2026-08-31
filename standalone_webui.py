@@ -456,6 +456,8 @@ class StandaloneWebUI:
             name = "story_session_delete"
         if name is None:
             return _err("Not Found: " + path, status=404)
+        if not hasattr(self._api, name):
+            return _err("剧情接口不可用（WebUIApi 缺少该方法，请重启插件或等待热更新）")
         adapter = self._AioReqAdapter(request)
 
         def _ok_dict(payload):
