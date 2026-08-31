@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.2.14
+
+- **修复剧情图片关联失败**：main.py 调用 `StoryStore.link_image()` 时传入了其签名不支持的 `user_id` 参数，导致日志报 `[剧情] 关联图片失败: StoryStore.link_image() got an unexpected keyword argument 'user_id'`，剧情期间生成的图片无法关联进档案。已移除多余参数（图片通过 `session_id` 关联，归属用户由会话记录提供），剧情图片关联恢复。
+
 ## v5.2.13
 
 - **彻底修复剧情档案接口路由被跳过（真正的根因是死代码缩进）**：v5.2.11 / v5.2.12 误判为模块缓存 / 旧类问题，实际真凶是 `webui_api.py` 中「剧情模式档案」的 5 个接口方法（`story_sessions` / `story_session_detail` / `story_session_update` / `story_session_delete` / `story_stats`）因缩进错误被嵌套进了 `_log_request` 函数体内、位于 `return wrapper` 之后，是**永不执行的死代码**，从未成为 `WebUIApi` 的实例方法——于是 `getattr(api, "story_sessions")` 永远取不到，路由注册被整体跳过（内嵌页剧情档案不可用；独立 WebUI 复用同一 `WebUIApi` 类同样取不到）。修复：把 5 个方法移回 `WebUIApi` 类内（`gallery_backup` 方法之后）。此版本起内嵌注册与独立 WebUI 的剧情档案接口均正常。

@@ -7159,7 +7159,7 @@ class ComfyUIDrawPlugin(Star):
                 return
             self.story.link_image(
                 sid, sha, prompt=prompt or "", width=w or 0, height=h or 0,
-                workflow=workflow or "", user_id=key,
+                workflow=workflow or "",
             )
         except Exception as e:
             logger.warning(f"[剧情] 关联图片失败: {e}")
