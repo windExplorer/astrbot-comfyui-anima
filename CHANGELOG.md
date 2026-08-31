@@ -2,9 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.0.13
+
+- **修正 WebUI 配置页「权限与图库」模块顺序**：v5.0.12 的更新日志称已将发图白名单与绘图黑名单调整为相邻，但 WebUI 配置页（`webui-src/src/views/ConfigView.vue` 的 `GROUP_META` `keys` 数组）实际并未修改，生图次数限制 `draw_limit` 仍夹在白名单与黑名单中间。现已在源码真正把顺序改为 `allow_draw_users → blacklist → draw_limit → gallery` 并重新构建 WebUI（`pages/anima-console-vue`），白名单与黑名单在配置页中相邻摆放。白名单「启用开关 + 用户/群」结构（v5.0.12 已写入 `_conf_schema.json`）随之在 WebUI 中正常显示。
+
 ## v5.0.12
 
-- **发图白名单 `allow_draw_users` 升级为「启用开关 + 用户/群」结构**：原纯文本框（仅能填用户 ID）改为对象，新增 `enabled` 总开关与 `groups` 群组字段，与绘图黑名单 `blacklist` 结构对齐（白名单同样支持按群 / 按人）。WebUI 中白名单与黑名单已调整为相邻摆放（中间不再隔着生图次数限制 `draw_limit`）。白名单优先、与黑名单互斥的语义不变：白名单启用且列表非空时只看白名单，未命中即拒绝且跳过黑名单；白名单关闭或为空时走黑名单。代码侧 `_do_draw` 入口与 `comfyui_draw` 工具入口的权限闸门外提为统一的 `_check_whitelist` / `_is_whitelist_active`。
+- **发图白名单 `allow_draw_users` 升级为「启用开关 + 用户/群」结构**：原纯文本框（仅能填用户 ID）改为对象，新增 `enabled` 总开关与 `groups` 群组字段，与绘图黑名单 `blacklist` 结构对齐（白名单同样支持按群 / 按人）。白名单优先、与黑名单互斥的语义不变：白名单启用且列表非空时只看白名单，未命中即拒绝且跳过黑名单；白名单关闭或为空时走黑名单。代码侧 `_do_draw` 入口与 `comfyui_draw` 工具入口的权限闸门外提为统一的 `_check_whitelist` / `_is_whitelist_active`。
 
 ## v5.0.11
 
