@@ -7164,6 +7164,49 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"[剧情] 关联图片失败: {e}")
 
+    async def _story_send_as_bot(self, event, text="", images=None):
+        """以 bot 正式回复发送剧情文本/图，并写入 AStrBot 会话历史。
+
+        目的：私聊下插件直发不进 AStrBot 会话历史、其他插件识别不到。这里改用
+        context.send_message 正式通道发送，并手动把消息写入 message_history_manager
+        （role=bot），让剧情文字等效于「LLM 自己发出的回复」——后续 LLM 对话可引用，
+        读取会话历史的插件（记忆/人设等）也能识别。
+        """
+        try:
+            chain = MessageChain()
+            if text:
+                chain.chain.append(Plain(text))
+            for _p in (images or []):
+                if _p:
+                    try:
+                        chain.chain.append(Image(file=_p))
+                    except Exception:
+                        pass
+            if not chain.chain:
+                return
+            try:
+                await self.context.send_message(event.unified_msg_origin, chain)
+            except Exception as _e1:
+                logger.warning(f"[剧情] 主动发送失败（回退事件通道）: {_e1}")
+                await event.send(chain)
+            try:
+                mhm = getattr(self.context, "message_history_manager", None)
+                umo = getattr(event, "unified_msg_origin", "") or ""
+                pid = (getattr(event, "get_platform_id", lambda: "")() or "").strip()
+                if mhm is not None and umo and pid:
+                    await mhm.insert_message_chain(
+                        platform_id=pid, user_id=umo, message_chain=chain,
+                        role="bot", max_messages=200,
+                    )
+            except Exception as _e2:
+                logger.warning(f"[剧情] 写入会话历史失败: {_e2}")
+        except Exception as _e:
+            logger.warning(f"[剧情] 剧情发送失败: {_e}")
+            try:
+                await self._send(event, text)
+            except Exception:
+                pass
+
     async def _story_enter(self, event, key, cfg):
         # 白名单
         wl = [x.strip() for x in (cfg.get("whitelist_users") or "")
@@ -7196,19 +7239,15 @@ class ComfyUIDrawPlugin(Star):
             source="trigger",
             title=(theme or "自由剧情")[:60], scene=theme or "",
         )
-        # 角色绑定：男主 = 用户（优先取昵称），女主默认 = bot 本体（用 bot 的人格名与人格 prompt 作人设）
+        # 角色绑定：男主 = 用户（优先取昵称）；女主默认 = 现实模式（bot 本体，按当前对话自然创作），
+        # 仅在显式指定女主名时才走名单/人设
         _user_name = (parsed.get("user_name") or (cfg.get("user_name") or "")).strip()
         if not _user_name:
             _user_name = (getattr(event, "get_sender_name", lambda: "")() or "").strip()
-        _bot_name, _bot_prompt = self._story_bot_identity()
         _partner_names = parsed.get("partner_names") or [
             x.strip() for x in str(cfg.get("partner_name") or "").split(",") if x.strip()
         ]
-        if not _partner_names:
-            _partner_names = [_bot_name or (cfg.get("partner_name") or "机器人")]
         _partner_profiles = self._story_parse_partner_profiles(cfg.get("partner_profile") or "")
-        if _bot_name and _bot_prompt and _bot_name not in _partner_profiles:
-            _partner_profiles[_bot_name] = _bot_prompt
         ctrl = {
             "sid": sid,
             "event": event,
@@ -7299,24 +7338,6 @@ class ComfyUIDrawPlugin(Star):
                 out[nm] = prof.strip()
         return out
 
-    def _story_bot_identity(self):
-        """尽力获取 bot 自己的名字与人格 prompt（用作默认女主）。返回 (name, prompt)。"""
-        name, prompt = "", ""
-        try:
-            pm = getattr(self.context, "persona_manager", None)
-            if pm is None:
-                pm = getattr(getattr(self.context, "provider_manager", None), "persona_manager", None)
-            if pm is not None:
-                ps = pm.get_default_persona()
-                if isinstance(ps, dict):
-                    name = (ps.get("name") or "").strip()
-                    prompt = (ps.get("prompt") or "").strip()
-                    if name in ("", "default"):
-                        name = ""
-        except Exception:
-            pass
-        return name, prompt
-
     def _story_match_template(self, name, cfg):
         txt = (cfg.get("templates") or "").strip()
         if not txt:
@@ -7371,7 +7392,7 @@ class ComfyUIDrawPlugin(Star):
                         await self._send(event, "（剧情到这里暂时告一段落～说「继续」让我再展开，或「停」结束）")
                         ctrl["paused"] = True
                     break
-                await self._send(event, narr)
+                await self._story_send_as_bot(event, narr)
                 ctrl["history"].append(("assistant", narr))
                 ctrl["last_narr"] = narr
                 try:
@@ -7449,22 +7470,25 @@ class ComfyUIDrawPlugin(Star):
         theme = ctrl["theme"] or "自由发挥的剧情"
         ask = ctrl["ask"]
         _uname = ctrl.get("user_name") or "你"
+        _names = ctrl.get("partner_names") or []
         if ctrl.get("no_partner"):
-            role_line = (f"【角色设定】男主 = 用户本人（称呼：{_uname}），本段剧情【无女主】、不设恋爱线，"
-                         "专注主线推进/冒险/成长，绝不把用户写成路人或另造主角，也不要塑造女主或恋爱桥段。")
-        else:
-            _names = ctrl.get("partner_names") or ["机器人"]
+            role_line = (f"【角色设定·现实模式】男主 = 用户本人（称呼：{_uname}），你就是正与用户对话的 bot。"
+                         "本段剧情【无女主】、不设恋爱线，专注把你们当前情境延续成主线/冒险故事，"
+                         "绝不把用户写成路人，也不要另造主角或恋爱桥段。")
+        elif _names:
             _profiles = ctrl.get("partner_profiles") or {}
-            _parts = []
-            for _n in _names:
-                _p = _profiles.get(_n) or "由你按主题合理塑造，活泼自然、与男主互动亲密"
-                _parts.append(f"{_n}（{_p}）")
+            _parts = [f"{_n}（{_profiles.get(_n) or '由你按主题合理塑造，与男主互动自然'}）" for _n in _names]
             _label = "女主（多个）" if len(_names) > 1 else "女主"
-            role_line = (f"【角色设定】男主 = 用户本人（称呼：{_uname}），你就是男主，剧情始终围绕你与女主的互动展开，"
-                         f"绝不把用户写成路人或另造男主；{_label} = {'、'.join(_parts)}，"
-                         "多女主时可发展各自支线，注意保持各角色人设一致。")
+            role_line = (f"【角色设定】男主 = 用户本人（称呼：{_uname}），你就是正与用户对话的 bot；"
+                         f"{_label} = {'、'.join(_parts)}。剧情围绕你与他们的互动展开，多女主可发展各自支线。")
+        else:
+            # 默认现实模式：把「正在对话的两个人」写进故事，按当前对话语境续写
+            role_line = (f"【角色设定·现实模式】你就是现在正与用户对话的 bot（剧情中的女主就是你本人，保持你在对话中展现的性格与语气）；"
+                         f"男主就是正在和你聊天的用户本人（称呼：{_uname}）。"
+                         "不要把用户当成路人，也不要另造主角。请把你们正在聊的情境（如一起出门游玩等）"
+                         "自然写成一段两人的故事，像延续对话一样往下推进，第二人称视角。")
         lines = [
-            "你是专业的小说剧情推演引擎。用户进入「剧情模式」后，由你自动、连续地推进一段沉浸式角色扮演剧情，全程不需要用户每句催促。",
+            "你就是正在与用户现实对话的 bot。用户进入「剧情模式」后，你基于你们当前对话的语境，把两个人自然写进故事并自动、连续地推进（每步发叙事+配图），全程不需要用户每句催促。",
             f"【世界观/主题】{theme}",
             role_line,
             f"【进度】第 {ctrl['chapter']} 章，本章第 {ctrl['step_in_chapter']} 步。",
@@ -7529,7 +7553,16 @@ class ComfyUIDrawPlugin(Star):
             ):
                 if node is not None:
                     try:
-                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                        _paths = []
+                        _chain = node.chain if isinstance(node, MessageChain) else getattr(node, "chain", None)
+                        if _chain:
+                            for _c in _chain:
+                                if isinstance(_c, Image) and (_c.file or _c.url):
+                                    _paths.append(_c.file or _c.url)
+                        if _paths:
+                            await self._story_send_as_bot(event, images=_paths)
+                        else:
+                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as e:
                         logger.warning(f"[剧情] 出图发送失败: {e}")
         except Exception as e:
