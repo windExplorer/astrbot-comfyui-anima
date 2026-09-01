@@ -3277,7 +3277,25 @@ class ComfyUIDrawPlugin(Star):
         # 提示词 + 整段分镜描述）。未配置 prompt_slots 的工作流整段跳过，行为不变。
         # 注意：槽位只负责**额外的**文本节点；主正向提示词仍走上方 positive 全流程
         # （中文翻译 / LoRA 预设 / 触发词追加），以保证这些现有能力不丢失。
-        for _slot in (wf.get("prompt_slots") or []):
+        # prompt_slots 在配置里可能是 JSON 字符串（WebUI 文本域）或对象数组
+        # （直接改配置文件），统一归一化为列表后再遍历，避免遍历字符串时
+        # 逐字符迭代、被后面的 isinstance 判定全部过滤掉而静默失效。
+        _slots_raw = wf.get("prompt_slots")
+        _slots: list = []
+        if isinstance(_slots_raw, str) and _slots_raw.strip():
+            try:
+                _parsed = json.loads(_slots_raw)
+                if isinstance(_parsed, list):
+                    _slots = _parsed
+                elif isinstance(_parsed, dict):
+                    _slots = [_parsed]
+                else:
+                    logger.warning("【槽位】 prompt_slots 应为数组或对象，已忽略")
+            except Exception as e:
+                logger.warning(f"【槽位】 prompt_slots JSON 解析失败，已跳过: {e}")
+        elif isinstance(_slots_raw, list):
+            _slots = _slots_raw
+        for _slot in _slots:
             if not isinstance(_slot, dict):
                 continue
             _key = (_slot.get("key") or "").strip()

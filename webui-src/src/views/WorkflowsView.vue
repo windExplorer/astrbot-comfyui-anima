@@ -131,6 +131,12 @@
           <n-form-item label="默认宽度"><n-input-number v-model:value="editForm.default_width" style="width:100%" /></n-form-item>
           <n-form-item label="默认高度"><n-input-number v-model:value="editForm.default_height" style="width:100%" /></n-form-item>
         </div>
+        <n-form-item label="宽高注入范围">
+          <n-space vertical :size="4" style="width:100%">
+            <n-select v-model:value="editForm.resolution_mode" :options="resolutionModeOptions" style="width:100%" />
+            <span class="form-hint">single=只改上方「分辨率节点」（留空则自动探测第一个 EmptyLatentImage），与旧行为一致；all=改<b>所有</b> EmptyLatentImage —— anima 生图 → boogu 加字这类两阶段串联工作流必须选它，否则前后 latent 尺寸不一致、构图被拉伸；none=完全不改，沿用工作流 JSON 原始尺寸（也可用来避开默认宽高的兜底值）</span>
+          </n-space>
+        </n-form-item>
         <div class="form-grid">
           <n-form-item label="参考图节点"><n-input v-model:value="editForm.image_node" placeholder="图生图 LoadImage（可选）" /></n-form-item>
           <n-form-item label="主模节点（lora_anchor）"><n-input v-model:value="editForm.lora_anchor" placeholder="CheckpointLoader/UNETLoader 键名，留空自动探测" /></n-form-item>
@@ -167,6 +173,25 @@
           <n-space vertical :size="4" style="width:100%">
             <n-input-number v-model:value="editForm.default_denoise" :min="-1" :max="1" :step="0.05" :precision="2" :disabled="editForm.denoise_off" style="width:100%" />
             <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
+          </n-space>
+        </n-form-item>
+        <n-divider style="margin:8px 0">── 多槽位提示词注入（表情包 / 漫画）──</n-divider>
+        <n-form-item label="多槽位提示词注入（prompt_slots）">
+          <n-space vertical :size="4" style="width:100%">
+            <n-input
+              v-model:value="editForm.prompt_slots"
+              type="textarea"
+              :rows="6"
+              placeholder='[{"key":"caption","node":"11","field":"prompt","vars":["bubble_text","bottom_text"],"template":{"prefix":"...","blocks":[{"var":"bubble_text","max_chars":20,"tiers":[{"max_chars":8,"text":"...气泡内写着「{bubble_text}」..."}]}],"suffix":"..."}}]'
+            />
+            <span class="form-hint">
+              给「一条工作流需要多处、语义不同的文本」的场景用 —— 如表情包（anima 生图提示词走<b>正提示词节点</b> + boogu 加字指令走<b>这里</b>）、漫画（角色提示词 + 整段分镜描述）。
+              <b>留空 = 不启用，普通工作流无需填写，行为完全不变。</b>
+              每组字段：key（槽位名）/ node（目标节点 ID）/ field（输入框名，默认 text）/ vars（变量名数组）/ template（模板）。
+              template 可为字符串，或对象 {prefix, blocks:[{var, max_chars, tiers:[{max_chars, text}]}], suffix} ——
+              <b>变量为空则该段不渲染</b>（防止生成空气泡），<b>tiers 按字数自动选档</b>，实现气泡宽度 / 字号 / 行数随字数自适应。
+              主正向提示词仍走「正提示词节点」，不受此影响。
+            </span>
           </n-space>
         </n-form-item>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
@@ -388,6 +413,13 @@ function onCoverNav(delta: number) {
 const editShow = ref(false);
 const editTitle = ref("编辑工作流");
 const editIndex = ref(-1);
+// 宽高注入范围（resolution_mode）下拉选项
+const resolutionModeOptions = [
+  { label: "single（默认）只改分辨率节点 / 第一个 EmptyLatentImage", value: "single" },
+  { label: "all：改所有 EmptyLatentImage（两阶段串联工作流必选）", value: "all" },
+  { label: "none：完全不改，沿用工作流 JSON 原尺寸", value: "none" },
+];
+
 const editForm = reactive<Record<string, any>>({});
 
 function openForm(idx: number, prefill?: any) {
@@ -414,6 +446,8 @@ function openForm(idx: number, prefill?: any) {
     output_node: w.output_node || "",
     resolution_width_field: w.resolution_width_field || "width",
     resolution_height_field: w.resolution_height_field || "height",
+    resolution_mode: w.resolution_mode || "single",
+    prompt_slots: w.prompt_slots || "",
     default_width: w.default_width ?? 512,
     default_height: w.default_height ?? 512,
     image_node: w.image_node || "",
@@ -458,6 +492,23 @@ async function saveEdit() {
     // denoise 开关：勾选不注入时强制 -1（低于 min 的语义值，后端识别为「不注入」）
     if (v.denoise_off) v.default_denoise = -1;
     delete v.denoise_off;
+    // prompt_slots 必须是合法 JSON（数组或对象）：后端解析失败只会记日志并跳过，
+    // 用户侧表现为「填了却没生效」，因此在保存前拦截，避免静默失效。
+    const psRaw = String(v.prompt_slots || "").trim();
+    if (psRaw) {
+      try {
+        const ps = JSON.parse(psRaw);
+        if (!Array.isArray(ps) && (typeof ps !== "object" || ps === null)) {
+          message.warning("多槽位提示词注入：必须是 JSON 数组或对象");
+          saving.value = false;
+          return;
+        }
+      } catch (err: any) {
+        message.warning("多槽位提示词注入：JSON 格式错误 —— " + (err.message || ""));
+        saving.value = false;
+        return;
+      }
+    }
     // LoRA 图形化列表 → 序列化为后端兼容的 loras_text（每行 名称|权重|0/1）
     v.loras_text = serializeLorasText(v.loraList);
     delete v.loraList;
