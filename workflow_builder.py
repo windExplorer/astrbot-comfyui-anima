@@ -262,6 +262,55 @@ def _next_free_id(prompt: dict) -> str:
     return str(mx + 1)
 
 
+def _prefer_model_anchor(prompt: dict, model_srcs: set) -> str | None:
+    """从多个候选主模里挑 LoRA 注入锚点：优先「非 GGUF」的主模。
+
+    单管线（只有一个候选）时原样返回，行为不变；多管线工作流（如漫画：GGUF 编辑
+    模型 + 标准 anima 生图模型）里，GGUF 通常无法叠加标准 LoRA、且往往是编辑/细化
+    管线而非基础生图管线，所以把 LoRA 锚到能正常生效的基础生图主模上。找不到候选时
+    返回 None。
+    """
+    if not model_srcs:
+        return None
+    non_gguf = [
+        s for s in model_srcs
+        if "gguf" not in ((prompt.get(s) or {}).get("class_type") or "").lower()
+    ]
+    candidates = non_gguf or list(model_srcs)
+    return next(iter(candidates))
+
+
+def _clip_for_model_anchor(prompt: dict, model_anchor: str | None) -> str | None:
+    """找与给定 model 锚点同属一条生图管线的 CLIP 加载节点（用于完整模式 LoRA）。
+
+    顺着「使用该主模的 sampler → 它消费的 text-encode 节点 → 其 clip 上游」回溯；
+    找不到则返回 None（调用方回退到自动探测到的第一个 clip 源）。
+    """
+    if not model_anchor:
+        return None
+    for _yid, ynode in prompt.items():
+        if not isinstance(ynode, dict):
+            continue
+        ct = (ynode.get("class_type") or "").lower()
+        if "sampler" not in ct:
+            continue
+        m = (ynode.get("inputs") or {}).get("model")
+        if not (isinstance(m, list) and len(m) == 2 and str(m[0]) == str(model_anchor)):
+            continue
+        for _f, v in (ynode.get("inputs") or {}).items():
+            if isinstance(v, list) and len(v) == 2:
+                src = str(v[0])
+                snode = prompt.get(src)
+                if not isinstance(snode, dict):
+                    continue
+                sct = (snode.get("class_type") or "").lower()
+                if "clip" in sct and ("encode" in sct or "text" in sct):
+                    cv = (snode.get("inputs") or {}).get("clip")
+                    if isinstance(cv, list) and len(cv) == 2:
+                        return str(cv[0])
+    return None
+
+
 def _find_injection_anchors(prompt: dict):
     """探测 LoRA 注入所需的 (model_src, clip_src) 锚点（找不到返回 (None, None)）。
 
@@ -310,8 +359,11 @@ def _find_injection_anchors(prompt: dict):
         return (nid, nid)
 
     # 3) 分离式：model 来自一个节点、clip 来自另一个
-    m = next(iter(model_srcs)) if model_srcs else None
-    c = next(iter(clip_srcs)) if clip_srcs else None
+    # 多管线工作流优先把 LoRA 锚到非 GGUF 的基础生图主模；clip 锚点尽量对齐到同一条管线。
+    m = _prefer_model_anchor(prompt, model_srcs)
+    c = _clip_for_model_anchor(prompt, m) if m is not None else None
+    if c is None:
+        c = next(iter(clip_srcs)) if clip_srcs else None
     return (m, c)
 
 

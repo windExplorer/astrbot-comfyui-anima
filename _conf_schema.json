@@ -344,7 +344,7 @@
           "lora_anchor": {
             "type": "string",
             "description": "主模节点 ID（可选）",
-            "hint": "工作流本身没有 LoraLoader 节点、想完全靠下方配置组装 LoRA 时填写：填主模加载节点（CheckpointLoader / UNETLoader）的键名（示例：4，仅举例、非默认值）。插件会在它之后自动新建 LoRA 节点并接线；留空则自动探测主模节点。若工作流已有 LoraLoader 则无需填写。默认「加载LoRA（仅模型）」只需这一路主模锚点即可。",
+            "hint": "工作流本身没有 LoraLoader 节点、想完全靠下方配置组装 LoRA 时填写：填主模加载节点（CheckpointLoader / UNETLoader）的键名（示例：4，仅举例、非默认值）。插件会在它之后自动新建 LoRA 节点并接线；留空则自动探测主模节点。若工作流已有 LoraLoader 则无需填写。默认「加载LoRA（仅模型）」只需这一路主模锚点即可。自动探测在「多模型管线」工作流（如漫画：GGUF 编辑模型 + 标准 anima 生图模型）里会优先把 LoRA 锚到非 GGUF 的基础生图主模，避免注到无法叠加标准 LoRA 的编辑管线上；仍锚错时在此显式指定。",
             "default": ""
           },
           "lora_clip": {
