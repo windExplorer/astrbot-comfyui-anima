@@ -414,6 +414,12 @@
     "hint": "用户未指定工作流时，图生图默认使用的「真人」风格工作流（当风格优先级=real 时优先）。留空则回退到「默认动漫图生图」。",
     "default": ""
   },
+  "default_comic_workflow": {
+    "type": "string",
+    "description": "默认表情包/漫画工作流名",
+    "hint": "使用 /表情包 指令或 AI 调用 comfyui_comic 工具、且未显式指定工作流时默认使用的工作流（需已配置 prompt_slots 多槽位注入）。留空则回退到「表情包」。",
+    "default": ""
+  },
   "danbooru": {
     "type": "object",
     "description": "Danbooru 标签服务器",
