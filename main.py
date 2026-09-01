@@ -1583,6 +1583,107 @@ class ComfyUIDrawPlugin(Star):
         _allowed = {v["name"] for v in _vars}
         return {k: str(v).strip() for k, v in _parsed.items() if k in _allowed and str(v).strip()}
 
+    async def _comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True):
+        """用内部 LLM 把用户一句想法展开为：Anima 画面提示词(positive_prompt) + 表情包槽位文字。
+
+        一次调用产出两部分；want_prompt/want_slots 控制需要生成哪些，未开启的部分用
+        原始想法 / 工作流默认文字兜底。无配置模型、调用失败时同样兜底（指令路径不会崩）。
+        返回 (positive_prompt, slot_values)。
+        """
+        _slots = self._normalize_prompt_slots(wf.get("prompt_slots")) if want_slots else []
+        if not (want_prompt or _slots):
+            return idea, None
+        model = self._cfg("llm_model", "").strip()
+        if not model:
+            logger.info("【表情包·造词】 未配置 llm_model，跳过 LLM（用原始想法作为提示词/默认文字）")
+            return idea, None
+        # 槽位变量清单（去重）
+        _seen: set[str] = set()
+        _vars: list[dict] = []
+        for _s in _slots:
+            if not isinstance(_s, dict):
+                continue
+            for _v in (_s.get("vars") or []):
+                _v = str(_v).strip()
+                if _v and _v not in _seen:
+                    _seen.add(_v)
+                    _vars.append({"name": _v, "hint": self._slot_var_hint(_v, _s)})
+        lora_hint = ""
+        if lora_map:
+            lora_hint = "用户指定的 LoRA：" + "、".join(
+                f"{k}(权重{round(float(v), 2)})" for k, v in lora_map.items()
+            ) + "。画面提示词里不要写 <lora:> 标签，系统会自动注入。"
+        _req: list[str] = []
+        if want_prompt:
+            _req.append(
+                '"positive_prompt": 字符串，Anima 底模用的动漫画面提示词——详细的英文 Danbooru 风格标签，'
+                "包含主体、动作、场景、画质词（masterpiece、best quality 等），贴合用户想法"
+            )
+        if _vars:
+            _req.append(
+                '"slots": 对象，键为下方槽位变量名（必须严格一致），值为该槽位应写的文字——'
+                "要幽默、贴合梗、口语化，不要把用户原话直接搬过来当文字"
+            )
+        _system = (
+            "你是表情包/漫画提示词助手。用户用一句中文描述想法，请只输出一个 JSON 对象"
+            "（不要任何解释、不要 markdown 代码块、不要反引号）。"
+        )
+        if _req:
+            _system += "\nJSON 需包含以下字段：\n- " + "\n- ".join(_req)
+        _user = f"用户想法：\n{idea}\n"
+        if lora_hint:
+            _user += lora_hint + "\n"
+        if _vars:
+            _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
+            _user += f"槽位变量（键名必须严格一致）：\n{_spec}\n"
+        try:
+            logger.info(f"【表情包·造词】 使用指定模型({model}) 生成提示词/文字")
+            _resp = await self.context.llm_generate(chat_provider_id=model, prompt=_system + "\n\n" + _user)
+            self._record_llm_token("comic_prompt", model, _resp)
+            _text = getattr(_resp, "completion_text", "") or ""
+        except Exception as e:
+            logger.warning(f"【表情包·造词】 LLM 调用失败，用兜底: {e}")
+            return idea, None
+        _text = _text.strip()
+        if _text.startswith("```"):
+            _text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", _text, flags=re.DOTALL)
+        try:
+            _parsed = json.loads(_text)
+        except Exception:
+            _m = re.search(r"\{.*\}", _text, re.DOTALL)
+            if _m:
+                try:
+                    _parsed = json.loads(_m.group(0))
+                except Exception:
+                    _parsed = {}
+            else:
+                _parsed = {}
+        if not isinstance(_parsed, dict):
+            _parsed = {}
+        positive = idea
+        if want_prompt:
+            _p = str(_parsed.get("positive_prompt") or "").strip()
+            if _p:
+                positive = _p
+        slot_values = None
+        if _vars:
+            _llm_slots = _parsed.get("slots") if isinstance(_parsed.get("slots"), dict) else {}
+            slot_values = {}
+            for _v in _vars:
+                _name = _v["name"]
+                _t = str((_llm_slots or {}).get(_name) or "").strip()
+                if _t:
+                    slot_values[_name] = _t
+                else:
+                    _d = ""
+                    for _s in _slots:
+                        if _name in {str(x).strip() for x in (_s.get("vars") or [])}:
+                            _d = (_s.get("default") or "")
+                            break
+                    if _d:
+                        slot_values[_name] = _d
+        return positive, slot_values
+
     @staticmethod
     def _parse_presets(raw) -> list[dict]:
         """把 LoRA 预设配置解析成 [{name, prompt}] 列表。
@@ -3966,12 +4067,16 @@ class ComfyUIDrawPlugin(Star):
 
     @filter.command("表情包", alias={"漫画", "comic"})
     async def cmd_comic(self, event: AstrMessageEvent):
-        """表情包/漫画：一句想法直出带文字的图。用法：/表情包 想法 [--wf 工作流] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字]"""
+        """表情包/漫画：一句想法直出带文字的图。用法：/表情包 想法 [--wf 工作流] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字] [--raw 不扩写提示词]"""
         args = self._strip_command(
             (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
             "表情包",
             ("漫画", "comic"),
         )
+        # --raw：绕过 LLM，直接把原话当提示词、沿用工作流默认文字
+        _parts = (args or "").split()
+        _auto_raw = "--raw" in _parts
+        args = " ".join(p for p in _parts if p != "--raw")
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
         wf_name, _err = self._auto_comic_workflow(wf_name)
         if _err:
@@ -3979,15 +4084,27 @@ class ComfyUIDrawPlugin(Star):
             return
         if not prompt.strip():
             await self._send(event,
-                "用法：/表情包 用鲸鱼娘lora，画面是帮用户写代码时偷偷删掉用户的学习资料 [--wf 工作流] [--seed 12345]")
+                "用法：/表情包 用鲸鱼娘lora，画面是帮用户写代码时偷偷删掉用户的学习资料 [--wf 工作流] [--seed 12345] [--raw 不扩写提示词]")
             return
         wf = self._find_workflow_by_name(wf_name) or {}
-        slot_values = await self._comic_write_slots_llm(wf, (event.message_str or ""), prompt)
+        # LLM 展开：把一句想法变成 anima 画面提示词 + 表情包文字（受配置开关与 --raw 控制）
+        build_prompt = self._cfg("enable_llm_prompt", True) and not _auto_raw
+        build_slots = self._cfg("enable_llm_slots", True) and not _auto_raw
+        positive_prompt = prompt
+        slot_values = None
+        if build_prompt or build_slots:
+            positive_prompt, slot_values = await self._comic_build_prompts_llm(
+                wf, prompt, lora_map, want_prompt=build_prompt, want_slots=build_slots
+            )
+            if not build_prompt:
+                positive_prompt = prompt
+            if not build_slots:
+                slot_values = None
         # 已读回执由 _ack_command_received 统一处理（覆盖本插件所有指令，含 /表情包）
         # 若消息或引用(回复)里带了图片，则按图生图处理
         images = await self._extract_images(event)
         async for m, _p in self._do_draw(
-            event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
             is_img2img=bool(images),
             denoise=denoise,

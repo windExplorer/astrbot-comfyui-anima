@@ -599,6 +599,18 @@
     "hint": "开启后 AI 对话中可自动调用画图工具（comfyui_draw / comfyui_img2img）。关闭后仅支持指令画图（/draw、/img2img、/画xxx 等），避免与伴侣插件等第三方插件重复触发。",
     "default": true
   },
+  "enable_llm_prompt": {
+    "type": "bool",
+    "description": "指令生成动漫画面提示词(LLM)",
+    "hint": "使用 /表情包 指令时，用 LLM 把用户的一句想法扩写成 Anima 专用的英文动漫画面提示词(positive_prompt)。关闭则把用户原话直接当提示词。仅影响「指令」路径；AI 对话调用 comfyui_comic 工具本就会生成完整提示词。",
+    "default": true
+  },
+  "enable_llm_slots": {
+    "type": "bool",
+    "description": "指令生成表情包文字(LLM)",
+    "hint": "使用 /表情包 指令时，用 LLM 根据用户的想法生成气泡/底部等槽位文字（而不是用工作流写死的默认文字）。关闭则沿用工作流默认文字。",
+    "default": true
+  },
   "llm_model": {
     "type": "string",
     "description": "指定用于「理解指令并调用工具」的大模型",
