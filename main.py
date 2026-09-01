@@ -1660,13 +1660,14 @@ class ComfyUIDrawPlugin(Star):
     async def _comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True):
         """用内部 LLM 把用户一句想法展开为：Anima 画面提示词(positive_prompt) + 表情包槽位文字。
 
-        一次调用产出两部分；want_prompt/want_slots 控制需要生成哪些，未开启的部分用
+        一次调用产出三部分；want_prompt/want_slots 控制需要生成哪些，未开启的部分用
         原始想法 / 工作流默认文字兜底。无配置模型、调用失败时同样兜底（指令路径不会崩）。
-        返回 (positive_prompt, slot_values)。
+        返回 (positive_prompt, slot_values, lora_extracted)：``lora_extracted`` 是从用户自由文本里
+        识别出的 LoRA 名称→权重(None=默认) 字典，仅当调用方未显式用 --名称 指定 LoRA 时拿来兜底。
         """
         _slots = self._normalize_prompt_slots(wf.get("prompt_slots")) if want_slots else []
         if not (want_prompt or _slots):
-            return idea, None
+            return idea, None, {}
         model = self._cfg("llm_model", "").strip()
         if not model:
             # 未单独配置表情包造词模型时，复用翻译模型（translate_llm_model / 当前对话 provider），
@@ -1674,7 +1675,7 @@ class ComfyUIDrawPlugin(Star):
             model = self._resolve_translate_provider_id() or ""
         if not model:
             logger.info("【表情包·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过造词（用原始想法作为提示词/默认文字）")
-            return idea, None
+            return idea, None, {}
         # 槽位变量清单（去重）
         _seen: set[str] = set()
         _vars: list[dict] = []
@@ -1691,6 +1692,17 @@ class ComfyUIDrawPlugin(Star):
             lora_hint = "用户指定的 LoRA：" + "、".join(
                 f"{k}(权重{round(float(v), 2)})" for k, v in lora_map.items()
             ) + "。画面提示词里不要写 <lora:> 标签，系统会自动注入。"
+        # 可选 LoRA 清单：让 LLM 从用户自由文本里识别「想用的 LoRA」（如“用鲸鱼娘lora”
+        # 自然语言写法，_parse_draw_args 解析不到，只能靠 LLM 从清单里挑出真实名称）。
+        _lora_catalog: list[str] = []
+        for _l in self._lora_library():
+            _nm = (_l.get("name") or "").strip()
+            if _nm and _nm not in _lora_catalog:
+                _lora_catalog.append(_nm)
+            for _al in (_l.get("aliases") or []):
+                _al = str(_al).strip()
+                if _al and _al not in _lora_catalog:
+                    _lora_catalog.append(_al)
         _req: list[str] = []
         if want_prompt:
             _req.append(
@@ -1704,6 +1716,12 @@ class ComfyUIDrawPlugin(Star):
                 "若某个位置（如气泡或底部）不需要文字，返回空字符串或省略该键即可"
                 "（节点会被清空，不出该位置文字）"
             )
+        if _lora_catalog:
+            _req.append(
+                '"loras": 数组，用户想用的 LoRA 名称列表——只能从下方「可选 LoRA」清单里挑'
+                "（清单里没有就返回空数组 []）；不要把 LoRA 名当画面词写进 positive_prompt，"
+                "也不要写 <lora:> 标签，系统会按清单名称自动注入"
+            )
         _system = (
             "你是表情包/漫画提示词助手。用户用一句中文描述想法，请只输出一个 JSON 对象"
             "（不要任何解释、不要 markdown 代码块、不要反引号）。"
@@ -1713,6 +1731,8 @@ class ComfyUIDrawPlugin(Star):
         _user = f"用户想法：\n{idea}\n"
         if lora_hint:
             _user += lora_hint + "\n"
+        if _lora_catalog:
+            _user += "可选 LoRA（用户想用时只能从中挑选，名称须完全一致）：" + "、".join(_lora_catalog) + "\n"
         if _vars:
             _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
             _user += (
@@ -1726,7 +1746,7 @@ class ComfyUIDrawPlugin(Star):
             _text = getattr(_resp, "completion_text", "") or ""
         except Exception as e:
             logger.warning(f"【表情包·造词】 LLM 调用失败，用兜底: {e}")
-            return idea, None
+            return idea, None, {}
         _text = _text.strip()
         if _text.startswith("```"):
             _text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", _text, flags=re.DOTALL)
@@ -1757,7 +1777,33 @@ class ComfyUIDrawPlugin(Star):
                 # LLM 模式：空值 = 该位置有意留空（不出气泡 / 不出底部），记 "" 交由注入层
                 # 清空节点；不再回退 default（default 是直填模式才用的兜底）。
                 slot_values[_name] = str((_llm_slots or {}).get(_name) or "").strip()
-        return positive, slot_values
+        # 从自由文本识别 LoRA：把 LLM 返回的 loras 名称归一到库里的真实名称。
+        # 仅当调用方未用 --名称 显式指定时才用作兜底（命令行 --名称 优先级更高）。
+        _extracted: dict[str, float | None] = {}
+        if _lora_catalog:
+            _raw = _parsed.get("loras")
+            if isinstance(_raw, list):
+                for _item in _raw:
+                    _item = str(_item).strip()
+                    if not _item:
+                        continue
+                    _match = next(
+                        (
+                            (l.get("name") or "").strip()
+                            for l in self._lora_library()
+                            if workflow_builder._lora_name_matches((l.get("name") or "").strip(), _item)
+                            or any(
+                                workflow_builder._lora_name_matches(str(a).strip(), _item)
+                                for a in (l.get("aliases") or [])
+                            )
+                        ),
+                        None,
+                    )
+                    if _match:
+                        _extracted[_match] = None
+                if _extracted:
+                    logger.info(f"【表情包·造词】 从自由文本识别到 LoRA：{list(_extracted.keys())}")
+        return positive, slot_values, _extracted
 
     @staticmethod
     def _parse_presets(raw) -> list[dict]:
@@ -4246,13 +4292,16 @@ class ComfyUIDrawPlugin(Star):
         positive_prompt = prompt
         slot_values = None
         if build_prompt or build_slots:
-            positive_prompt, slot_values = await self._comic_build_prompts_llm(
+            positive_prompt, slot_values, _lora_extracted = await self._comic_build_prompts_llm(
                 wf, prompt, lora_map, want_prompt=build_prompt, want_slots=build_slots
             )
             if not build_prompt:
                 positive_prompt = prompt
             if not build_slots:
                 slot_values = None
+            # 未用 --名称 显式指定 LoRA 时，用 LLM 从自由文本识别到的 LoRA 兜底
+            if not lora_map and _lora_extracted:
+                lora_map = _lora_extracted
         images = await self._extract_images(event)
         async for m, _p in self._do_draw(
             event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
@@ -4331,13 +4380,15 @@ class ComfyUIDrawPlugin(Star):
         positive_prompt = prompt
         slot_values = None
         if build_prompt or build_slots:
-            positive_prompt, slot_values = await self._comic_build_prompts_llm(
+            positive_prompt, slot_values, _lora_extracted = await self._comic_build_prompts_llm(
                 wf, prompt, lora_map, want_prompt=build_prompt, want_slots=build_slots
             )
             if not build_prompt:
                 positive_prompt = prompt
             if not build_slots:
                 slot_values = None
+            if not lora_map and _lora_extracted:
+                lora_map = _lora_extracted
         async for m, _p in self._do_draw(
             event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images, is_img2img=True, denoise=denoise,
