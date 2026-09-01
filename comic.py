@@ -223,16 +223,67 @@ def slot_var_hint(var_name: str, slot: dict) -> str:
     """
     _n = (var_name or "").strip().lower()
     if _n in ("bubble", "caption", "speech", "气泡", "台词", "对话"):
-        return "气泡内文字：角色第一人称台词，口语化、带情绪，简短（建议 ≤12 字）"
+        return "气泡内文字：角色第一人称台词，口语化、带情绪；务必短——建议 ≤8 字，最多不超过 12 字"
     if _n in ("bottom", "subtitle", "sub", "底部", "旁白", "真相", "标题"):
-        return "底部文字：第三人称旁白/真相点破，概括像视频标题（建议 ≤12 字）"
+        return "底部旁白：第三人称真相点破，像视频标题；务必短——建议 ≤6 字，最多不超过 10 字"
     if _n in ("comic", "desc", "分镜", "剧情", "story"):
         return "整段分镜/剧情描述：随格数展开，文字不限"
     _hints = slot.get("hints") if isinstance(slot.get("hints"), dict) else {}
     _custom = (_hints or {}).get(var_name)
     if _custom:
         return str(_custom)
-    return f"该槽位（{var_name}）应写的文字"
+    return f"该槽位（{var_name}）应写的文字（尽量简短）"
+
+
+def _var_category(name: str) -> str:
+    """把槽位变量归类到语义类别，供『用户要求不写字』的指令识别。"""
+    _n = (name or "").strip().lower()
+    if _n in ("bottom", "subtitle", "sub", "底部", "旁白", "真相", "标题"):
+        return "bottom"
+    if _n in ("bubble", "caption", "speech", "气泡", "台词", "对话"):
+        return "bubble"
+    if _n in ("comic", "desc", "分镜", "剧情", "story"):
+        return "comic"
+    return "other"
+
+
+# 用户「不要某位置文字」的否定词 / 目标词，用于确定性禁用（不依赖 LLM 是否听话）
+_NEG_TOKENS = (
+    "不要", "不加", "别加", "别写", "别放", "别", "去掉", "移除", "省略",
+    "省去", "无", "没有", "不需要", "不用", "禁止", "omit", "remove",
+    "without", "no", "none", "skip",
+)
+_BOTTOM_TARGETS = ("底部", "旁白", "字幕", "副标题", "caption", "bottom", "subtitle", "sub")
+_BUBBLE_TARGETS = ("气泡", "台词", "对话", "caption", "bubble", "speech")
+
+
+def _detect_disabled_slots(text: str, vars_list: list[dict]) -> set[str]:
+    """识别用户原话里『不要某位置文字』的指令，返回应被禁用的槽位变量名集合。
+
+    纯文本规则匹配（不依赖 LLM 是否听话），保证用户明确说『不要底部 / 不加旁白』
+    时一定生效：命中后对应槽位强制返回空字符串，节点被清空、不出该位置文字。
+    """
+    if not text:
+        return set()
+    _t = text.lower()
+    _disabled: set[str] = set()
+    for _v in vars_list:
+        _name = _v.get("name") or ""
+        _cat = _var_category(_name)
+        _targets = _BOTTOM_TARGETS if _cat == "bottom" else (_BUBBLE_TARGETS if _cat == "bubble" else None)
+        if not _targets:
+            continue
+        for _neg in _NEG_TOKENS:
+            _nl = _neg.lower()
+            for _tg in _targets:
+                _tg = _tg.lower()
+                # 否定词与目标词都要出现，且否定词出现在目标词前/附近（避免『要底部』反向命中）
+                if (_nl in _t) and (_tg in _t) and _t.find(_nl) <= _t.find(_tg) + len(_tg) + 4:
+                    _disabled.add(_name)
+                    break
+            if _name in _disabled:
+                break
+    return _disabled
 
 
 def render_slot_template(self, slot: dict, template, values: dict) -> str | None:
@@ -413,6 +464,8 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
             if _v and _v not in _seen:
                 _seen.add(_v)
                 _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
+    # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
+    _disabled = _detect_disabled_slots(user_text or scene, _vars)
     if not _vars:
         return None
     model = self._cfg("llm_model", "").strip()
@@ -431,8 +484,15 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         "槽位变量（键名必须严格一致）：\n"
         f"{_spec}\n\n"
         "任意槽位若不需要文字，返回空字符串或省略该键即可（节点会被清空，不出该位置文字）。\n"
+        "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；宁短勿长。\n"
         "只输出 JSON 对象："
     )
+    if _disabled:
+        _disabled_names = "、".join(_disabled)
+        prompt += (
+            f"\n【重要·按用户要求禁用】用户明确要求不要写以下位置，对应键必须返回空字符串"
+            f"（或省略），绝对不要生成：{_disabled_names}。"
+        )
     try:
         logger.info(f"【槽位·造词】 使用模型({model}) 生成槽位文字")
         llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
@@ -458,7 +518,13 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
     if not isinstance(_parsed, dict):
         return None
     _allowed = {v["name"] for v in _vars}
-    return {k: str(_parsed.get(k) or "").strip() for k in _allowed}
+    _out = {k: str(_parsed.get(k) or "").strip() for k in _allowed}
+    # 确定性兜底：用户说『不要底部/不加旁白』的槽位，无论 LLM 是否听话都强制清空
+    for _d in _disabled:
+        if _d in _out:
+            _out[_d] = ""
+            logger.info(f"【槽位·造词】 按用户要求禁用槽位：{_d}（强制清空）")
+    return _out
 
 
 def merge_feature_lora(self, feature: dict | None, lora_map: dict, negative: str) -> tuple[dict, str]:
@@ -519,6 +585,8 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
             if _v and _v not in _seen:
                 _seen.add(_v)
                 _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
+    # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
+    _disabled = _detect_disabled_slots(idea, _vars)
     lora_hint = ""
     if lora_map:
         lora_hint = "用户指定的 LoRA：" + "、".join(
@@ -554,7 +622,9 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
         )
     _system = (
         "你是表情包/漫画提示词助手。用户用一句中文描述想法，请只输出一个 JSON 对象"
-        "（不要任何解释、不要 markdown 代码块、不要反引号）。"
+        "（不要任何解释、不要 markdown 代码块、不要反引号）。\n"
+        "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；"
+        "除非用户明确要求写长文，否则宁短勿长。"
     )
     if _req:
         _system += "\nJSON 需包含以下字段：\n- " + "\n- ".join(_req)
@@ -569,6 +639,12 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
             f"槽位变量（键名必须严格一致）：\n{_spec}\n"
             "提示：任意槽位若不需要文字，返回空字符串或省略该键即可，系统不会强行生成。"
         )
+        if _disabled:
+            _disabled_names = "、".join(_disabled)
+            _user += (
+                f"\n【重要·按用户要求禁用】用户明确要求不要写以下位置，对应槽位必须返回空字符串"
+                f"（或省略该键），绝对不要自作主张生成：{_disabled_names}。"
+            )
     try:
         logger.info(f"【表情包·造词】 使用模型({model}) 生成提示词/文字")
         _resp = await self.context.llm_generate(chat_provider_id=model, prompt=_system + "\n\n" + _user)
@@ -605,6 +681,11 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
         for _v in _vars:
             _name = _v["name"]
             slot_values[_name] = str((_llm_slots or {}).get(_name) or "").strip()
+        # 确定性兜底：用户说『不要底部/不加旁白』的槽位，无论 LLM 是否听话都强制清空
+        for _d in _disabled:
+            if _d in slot_values:
+                slot_values[_d] = ""
+                logger.info(f"【表情包·造词】 按用户要求禁用槽位：{_d}（强制清空）")
     _extracted: dict[str, float | None] = {}
     if _lora_catalog:
         _raw = _parsed.get("loras")
