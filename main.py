@@ -1457,30 +1457,44 @@ class ComfyUIDrawPlugin(Star):
         return None
 
     def _auto_comic_workflow(self, requested: str) -> tuple[str | None, str | None]:
-        """解析表情包/漫画要用的工作流名，免去手动写 --wf。
+        """解析表情包/漫画要用的工作流名（仅限配置了 prompt_slots 的漫画工作流）。
 
         优先级：显式指定(--wf / 工具参数) > 配置 default_comic_workflow > 自动探测。
-        自动探测：优先选配置了 prompt_slots 的工作流；若只有 1 个候选（或全工作流只有 1 个）
-        直接选用，无需参数；多个候选则返回错误提示让用户用 --wf 指定或配置默认值。
+        显式指定或配置默认时，若是「漫画工作流」（配置了 prompt_slots）则直接用；
+        若不是漫画工作流（如普通文生图工作流），不报错卡死，而是回退到自动探测，
+        避免 comfyui_comic / /表情包 误用普通文生图工作流（这是常见误用）。
+        自动探测：在漫画工作流里，若只有 1 个直接选用；多个则报错让用户指定。
         返回 (wf_name, error)；wf_name 为 None 时 error 给出友好提示。
         """
-        _req = (requested or "").strip()
-        if not _req:
-            _req = (self._cfg("default_comic_workflow", "") or "").strip()
+        _all = self._workflows()
+        _comic_wf = [w for w in _all if self._normalize_prompt_slots(w.get("prompt_slots"))]
+        _names = "、".join(f"「{w.get('name', '')}」" for w in _comic_wf) or "（未配置任何漫画工作流）"
+
+        def _is_comic(name: str) -> bool:
+            _w = self._find_workflow_by_name(name)
+            return _w is not None and bool(self._normalize_prompt_slots(_w.get("prompt_slots")))
+
+        _req = (requested or "").strip() or (self._cfg("default_comic_workflow", "") or "").strip()
+        if _req and not _is_comic(_req):
+            # 指定的不是漫画工作流：告警并回退自动探测，不直接卡死
+            logger.warning(
+                f"【漫画工作流】「{_req}」未配置 prompt_slots，不是漫画工作流，"
+                f"回退到自动探测漫画工作流（可用：{_names}）。"
+            )
+            _req = ""
         if _req:
             return _req, None
-        _all = self._workflows()
-        _slot_wf = [w for w in _all if self._normalize_prompt_slots(w.get("prompt_slots"))]
-        _cand = _slot_wf or _all
-        if len(_cand) == 1:
-            _name = (_cand[0].get("name") or "").strip()
-            return _name or None, None
-        if not _cand:
-            return None, "未找到任何工作流，请先在 WebUI 添加表情包工作流，或用 --wf 指定。"
-        _names = "、".join(f"「{w.get('name', '')}」" for w in _cand)
+        # 自动探测（仅漫画工作流）
+        if len(_comic_wf) == 1:
+            return (_comic_wf[0].get("name") or "").strip() or None, None
+        if not _comic_wf:
+            return None, (
+                "未配置任何表情包/漫画工作流（需配置 prompt_slots 多槽位注入）。"
+                "请在 WebUI 给某工作流配置 prompt_slots，或在配置里设置 default_comic_workflow 为漫画工作流。"
+            )
         return None, (
-            f"检测到多个可用工作流：{_names}。请用 --wf <工作流名> 指定，"
-            f"或在插件配置里设置 default_comic_workflow 默认值。"
+            f"检测到多个漫画工作流：{_names}。请用 --wf <工作流名> 或 workflow 参数指定，"
+            f"或在配置里设置 default_comic_workflow 默认值。"
         )
 
     @staticmethod
@@ -4136,15 +4150,20 @@ class ComfyUIDrawPlugin(Star):
         denoise: float = -1,
     ):
         """生成带文字的「表情包 / 漫画」。与 comfyui_draw 用法完全一致，区别仅在于：
-        当目标工作流配置了 prompt_slots（多槽位提示词注入）时，插件会用内部 LLM
-        自动为各槽位生成文字（如气泡台词、底部旁白、分镜文字），无需你手动填槽位。
+        本工具【只能用漫画工作流】——即目标工作流配置了 prompt_slots（多槽位提示词注入，
+        用于把气泡台词/底部旁白/分镜文字写进画面）；普通文生图/图生图工作流（没配 prompt_slots）
+        不能用本工具，否则插件会报错并提示改用 comfyui_draw。插件会按以下顺序确定工作流：
+        你传的 workflow > 配置 default_comic_workflow > 自动探测（仅漫画工作流，唯一则直接用）。
+        确定工作流后，插件用内部 LLM 按你的画面描述自动生成各槽位文字，无需你手动填。
 
         Args:
             prompt(string): 【必填】画面/角色描述（中文或英文）。注意这是「出图提示词」，
-                不是气泡文字——气泡/底部/分镜文字由插件按用户原话自动生成。
+                不是气泡文字——气泡/底部/分镜文字由插件自动生成。
             negative_prompt(string): 负向提示词，可选。
-            workflow(string): 文生图工作流名，可选；不填用 default_comic_workflow 或「表情包」。
-            img2img_workflow(string): 图生图工作流名，可选。
+            workflow(string): 漫画工作流名，可选。必须是【配置了 prompt_slots 的表情包/漫画工作流】；
+                不填则由插件自动选择（或取 default_comic_workflow）。不确定有哪些时，先调
+                comfyui_workflows 查看——插件内部只会认带 prompt_slots 的工作流。禁止传普通文生图工作流。
+            img2img_workflow(string): 图生图工作流名，可选（同样须为漫画/带字工作流）。
             width(number): 宽度，0 或不填表示使用工作流默认宽度。
             height(number): 高度，0 或不填表示使用工作流默认高度。
             loras(array[string]): 需要启用的 LoRA 名称/别名列表，可选。
@@ -8786,12 +8805,15 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @filter.llm_tool(name="comfyui_workflows")
     async def llm_workflows(self, event: AstrMessageEvent):
-        """查询所有已配置的 ComfyUI 工作流列表，包括名称和是否支持图生图。
+        """查询所有已配置的 ComfyUI 工作流列表，包括名称、是否支持图生图、是否动漫、是否为漫画/带字工作流。
 
-        触发时机：在调用 comfyui_draw 或 comfyui_img2img 之前，如果需要确认
-        有哪些可用工作流、哪些支持图生图（配置了 image_node），务必先调用此工具
-        获取列表，再根据用户意图选择正确的工作流名称传入 img2img_workflow 或
-        workflow 参数。
+        触发时机：在调用 comfyui_draw / comfyui_img2img / comfyui_comic 之前，如需确认
+        有哪些可用工作流，务必先调用此工具获取列表，再根据用户意图选择正确工作流名传入。
+        列表每行标记含义：
+        - [支持图生图] / [仅文生图]：能否用于图生图（传 img2img_workflow）。
+        - 【Anima】：动漫/二次元底模工作流。
+        - [漫画/带字]：配置了 prompt_slots 多槽位注入的漫画/表情包工作流，只有这类能用于
+          comfyui_comic（生成带气泡/底部文字的图）；普通生图请用 comfyui_draw。
 
         重要：不要凭记忆或猜测工作流名称！每次都先查列表再选。
         """
@@ -8805,7 +8827,9 @@ class ComfyUIDrawPlugin(Star):
             has_image = bool((w.get("image_node") or "").strip())
             img_tag = " [支持图生图]" if has_image else " [仅文生图]"
             anima = " 【Anima】" if w.get("is_anima") else ""
-            lines.append(f"- {name}{img_tag}{anima}")
+            has_slots = bool(self._normalize_prompt_slots(w.get("prompt_slots")))
+            comic_tag = " [漫画/带字]" if has_slots else ""
+            lines.append(f"- {name}{img_tag}{anima}{comic_tag}")
 
         default = self._cfg("default_workflow", "")
         default_real = self._cfg("default_workflow_real", "")
