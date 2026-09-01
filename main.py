@@ -1456,6 +1456,33 @@ class ComfyUIDrawPlugin(Star):
                 return w
         return None
 
+    def _auto_comic_workflow(self, requested: str) -> tuple[str | None, str | None]:
+        """解析表情包/漫画要用的工作流名，免去手动写 --wf。
+
+        优先级：显式指定(--wf / 工具参数) > 配置 default_comic_workflow > 自动探测。
+        自动探测：优先选配置了 prompt_slots 的工作流；若只有 1 个候选（或全工作流只有 1 个）
+        直接选用，无需参数；多个候选则返回错误提示让用户用 --wf 指定或配置默认值。
+        返回 (wf_name, error)；wf_name 为 None 时 error 给出友好提示。
+        """
+        _req = (requested or "").strip()
+        if not _req:
+            _req = (self._cfg("default_comic_workflow", "") or "").strip()
+        if _req:
+            return _req, None
+        _all = self._workflows()
+        _slot_wf = [w for w in _all if self._normalize_prompt_slots(w.get("prompt_slots"))]
+        _cand = _slot_wf or _all
+        if len(_cand) == 1:
+            _name = (_cand[0].get("name") or "").strip()
+            return _name or None, None
+        if not _cand:
+            return None, "未找到任何工作流，请先在 WebUI 添加表情包工作流，或用 --wf 指定。"
+        _names = "、".join(f"「{w.get('name', '')}」" for w in _cand)
+        return None, (
+            f"检测到多个可用工作流：{_names}。请用 --wf <工作流名> 指定，"
+            f"或在插件配置里设置 default_comic_workflow 默认值。"
+        )
+
     @staticmethod
     def _slot_var_hint(var_name: str, slot: dict) -> str:
         """推断某个槽位变量的语义说明，供内部 LLM 造词时理解该写啥。
@@ -3946,11 +3973,13 @@ class ComfyUIDrawPlugin(Star):
             ("漫画", "comic"),
         )
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
-        if not wf_name.strip():
-            wf_name = (self._cfg("default_comic_workflow", "") or "").strip() or "表情包"
+        wf_name, _err = self._auto_comic_workflow(wf_name)
+        if _err:
+            await self._send(event, _err)
+            return
         if not prompt.strip():
             await self._send(event,
-                "用法：/表情包 用鲸鱼娘lora，画面是帮用户写代码时偷偷删掉用户的学习资料 --wf 表情包 [--seed 12345]")
+                "用法：/表情包 用鲸鱼娘lora，画面是帮用户写代码时偷偷删掉用户的学习资料 [--wf 工作流] [--seed 12345]")
             return
         wf = self._find_workflow_by_name(wf_name) or {}
         slot_values = await self._comic_write_slots_llm(wf, (event.message_str or ""), prompt)
@@ -3963,7 +3992,7 @@ class ComfyUIDrawPlugin(Star):
             is_img2img=bool(images),
             denoise=denoise,
             slot_values=slot_values,
-            explicit_default=(wf_name is None),
+            explicit_default=False,
         ):
             yield m
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
@@ -4016,13 +4045,15 @@ class ComfyUIDrawPlugin(Star):
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/表情包 等）。"
         # 计算槽位文字（若工作流配置了 prompt_slots）
-        _wf_name = (workflow or plugin._cfg("default_comic_workflow", "") or "表情包").strip()
+        _wf_name, _err = self._auto_comic_workflow(workflow)
+        if _err:
+            return _err
         _wf = plugin._find_workflow_by_name(_wf_name) or {}
         _user_text = (getattr(event, "message_str", "") or "").strip()
         slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, prompt)
         # 委托 comfyui_draw 的完整出图逻辑（权限/闸门/队列/发送均复用）
         return await self.llm_draw(
-            event, prompt=prompt, negative_prompt=negative_prompt, workflow=workflow,
+            event, prompt=prompt, negative_prompt=negative_prompt, workflow=_wf_name,
             img2img_workflow=img2img_workflow, width=width, height=height, loras=loras,
             seed=seed, count=count, prompts=prompts, source=source, image=image, denoise=denoise,
             slot_values=slot_values,
