@@ -1352,7 +1352,7 @@ class ComfyUIDrawPlugin(Star):
         # 变量全部为空 → 跳过整个槽位（否则会渲染出空内容的气泡 / 文字）
         # vars_ 为空 = 「无变量的常量模板」，不在此列，需正常渲染
         if vars_ and not any(filled.values()):
-            logger.info(f"【槽位】 {key} 变量均为空，跳过注入（沿用工作流原文）")
+            logger.info(f"【槽位】 {key} 变量均为空，渲染为空（交由注入层清空节点）")
             return None
 
         # 兼容旧的扁平字符串写法
@@ -1534,14 +1534,16 @@ class ComfyUIDrawPlugin(Star):
     async def _comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> dict:
         """用内部 LLM 为带 prompt_slots 的工作流生成各槽位文字。
 
-        返回扁平的 {var_name: text}（跨所有槽位合并）。工作流无 prompt_slots、
-        无可用模型、或调用失败时返回 {}（调用方会跳过槽位、沿用工作流默认文字）。
+        成功时返回扁平的 {var_name: text}，且**覆盖所有槽位变量**（某变量 LLM 未填 /
+        返回空 → 记 ""，交由注入层清空该节点，实现「可选位置不出字」）。无法生成
+        （无工作流 / 无槽位 / 未配模型 / 调用失败 / 解析失败）时返回 None，调用方会
+        跳过槽位、沿用工作流默认文字。
         """
         if not wf:
-            return {}
+            return None
         _slots = self._normalize_prompt_slots(wf.get("prompt_slots"))
         if not _slots:
-            return {}
+            return None
         # 收集所有 var（去重）及其语义 hint
         _seen: set[str] = set()
         _vars: list[dict] = []
@@ -1554,11 +1556,11 @@ class ComfyUIDrawPlugin(Star):
                     _seen.add(_v)
                     _vars.append({"name": _v, "hint": self._slot_var_hint(_v, _s)})
         if not _vars:
-            return {}
+            return None
         model = self._cfg("llm_model", "").strip()
         if not model:
             logger.info("【槽位·造词】 未配置 llm_model，跳过得词（沿用工作流默认文字）")
-            return {}
+            return None
         _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
         prompt = (
             "你正在为一句想法生成「表情包/漫画」的画面文字。请只输出一个 JSON 对象"
@@ -1568,6 +1570,7 @@ class ComfyUIDrawPlugin(Star):
             f"画面描述（将作为出图提示词）：\n{scene}\n\n"
             "槽位变量（键名必须严格一致）：\n"
             f"{_spec}\n\n"
+            "任意槽位若不需要文字，返回空字符串或省略该键即可（节点会被清空，不出该位置文字）。\n"
             "只输出 JSON 对象："
         )
         try:
@@ -1577,7 +1580,7 @@ class ComfyUIDrawPlugin(Star):
             text = getattr(llm_resp, "completion_text", "") or ""
         except Exception as e:
             logger.warning(f"【槽位·造词】 LLM 调用失败，沿用默认文字: {e}")
-            return {}
+            return None
         text = text.strip()
         if text.startswith("```"):
             text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text, flags=re.DOTALL)
@@ -1589,13 +1592,14 @@ class ComfyUIDrawPlugin(Star):
                 try:
                     _parsed = json.loads(m.group(0))
                 except Exception:
-                    return {}
+                    return None
             else:
-                return {}
+                return None
         if not isinstance(_parsed, dict):
-            return {}
+            return None
         _allowed = {v["name"] for v in _vars}
-        return {k: str(v).strip() for k, v in _parsed.items() if k in _allowed and str(v).strip()}
+        # 覆盖所有变量：LLM 未给 / 空 → ""（注入层会清空对应节点）
+        return {k: str(_parsed.get(k) or "").strip() for k in _allowed}
 
     async def _comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True):
         """用内部 LLM 把用户一句想法展开为：Anima 画面提示词(positive_prompt) + 表情包槽位文字。
@@ -1636,7 +1640,9 @@ class ComfyUIDrawPlugin(Star):
         if _vars:
             _req.append(
                 '"slots": 对象，键为下方槽位变量名（必须严格一致），值为该槽位应写的文字——'
-                "要幽默、贴合梗、口语化，不要把用户原话直接搬过来当文字"
+                "要幽默、贴合梗、口语化，不要把用户原话直接搬过来当文字；"
+                "若某个位置（如气泡或底部）不需要文字，返回空字符串或省略该键即可"
+                "（节点会被清空，不出该位置文字）"
             )
         _system = (
             "你是表情包/漫画提示词助手。用户用一句中文描述想法，请只输出一个 JSON 对象"
@@ -1649,7 +1655,10 @@ class ComfyUIDrawPlugin(Star):
             _user += lora_hint + "\n"
         if _vars:
             _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
-            _user += f"槽位变量（键名必须严格一致）：\n{_spec}\n"
+            _user += (
+                f"槽位变量（键名必须严格一致）：\n{_spec}\n"
+                "提示：任意槽位若不需要文字，返回空字符串或省略该键即可，系统不会强行生成。"
+            )
         try:
             logger.info(f"【表情包·造词】 使用指定模型({model}) 生成提示词/文字")
             _resp = await self.context.llm_generate(chat_provider_id=model, prompt=_system + "\n\n" + _user)
@@ -1685,17 +1694,9 @@ class ComfyUIDrawPlugin(Star):
             slot_values = {}
             for _v in _vars:
                 _name = _v["name"]
-                _t = str((_llm_slots or {}).get(_name) or "").strip()
-                if _t:
-                    slot_values[_name] = _t
-                else:
-                    _d = ""
-                    for _s in _slots:
-                        if _name in {str(x).strip() for x in (_s.get("vars") or [])}:
-                            _d = (_s.get("default") or "")
-                            break
-                    if _d:
-                        slot_values[_name] = _d
+                # LLM 模式：空值 = 该位置有意留空（不出气泡 / 不出底部），记 "" 交由注入层
+                # 清空节点；不再回退 default（default 是直填模式才用的兜底）。
+                slot_values[_name] = str((_llm_slots or {}).get(_name) or "").strip()
         return positive, slot_values
 
     @staticmethod
@@ -3561,6 +3562,10 @@ class ComfyUIDrawPlugin(Star):
                 logger.warning(f"【槽位】 prompt_slots JSON 解析失败，已跳过: {e}")
         elif isinstance(_slots_raw, list):
             _slots = _slots_raw
+        # slot_values 为 None = 「本次未尝试填槽位」（如 --raw / 未配模型 / 故障），
+        # 此时保留工作流预设文字、空值跳过；非 None = 「已尝试生成文字」，空值代表
+        # 该位置有意留空 → 必须清空节点，避免残留工作流预设（如「摸鱼中/问题不大」）。
+        _fill_intent = slot_values is not None
         for _slot in _slots:
             if not isinstance(_slot, dict):
                 continue
@@ -3569,19 +3574,26 @@ class ComfyUIDrawPlugin(Star):
             if not _key or _node in (None, ""):
                 continue
             _field = (_slot.get("field") or "text").strip() or "text"
+            _vars = [str(v).strip() for v in (_slot.get("vars") or []) if str(v).strip()]
             _tpl = _slot.get("template")
             if _tpl:
-                # 带模板：渲染（变量全空时返回 None → 跳过，避免生成「空气泡」）
+                # 带模板：渲染（变量全空时 _render_slot_template 返回 None）
                 _val = self._render_slot_template(_slot, _tpl, slot_values or {})
-                if _val is None:
-                    continue
             else:
-                # 无模板：直接把变量值写入节点
-                _val = str((slot_values or {}).get(_key, "") or "").strip()
+                # 无模板：直接把变量值写入节点。优先按首个 var 名取值（slot_values 按
+                # var 名存），回退按 slot key，避免 key≠var 时取不到而漏填（FIX D）。
+                _lookup = slot_values or {}
+                _val = str(_lookup.get(_vars[0], "") or "").strip() if _vars else ""
                 if not _val:
-                    continue
-            if workflow_builder.set_text_node(prompt, _node, _field, _val):
-                logger.info(f"【槽位】 {_key} → 节点 {_node}.{_field}（{len(_val)} 字）")
+                    _val = str(_lookup.get(_key, "") or "").strip()
+            if _val is None:
+                _val = ""
+            if not _fill_intent and not _val:
+                # 无填槽意图且本槽无值：保留工作流预设，跳过
+                continue
+            # 有填槽意图时空值 = 清空节点；否则照写（非空）
+            if workflow_builder.set_text_node(prompt, _node, _field, _val or ""):
+                logger.info(f"【槽位】 {_key} → 节点 {_node}.{_field}（{len(_val or '')} 字）")
 
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
         seeds_used = workflow_builder.randomize_seed(prompt, seed)
