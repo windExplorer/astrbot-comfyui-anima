@@ -47,6 +47,7 @@ if (Test-Path $zipPath) {
 $includeList = @(
     "_conf_schema.json",
     "main.py",
+    "comic.py",
     "webui_api.py",
     "comfyui_client.py",
     "danbooru_client.py",

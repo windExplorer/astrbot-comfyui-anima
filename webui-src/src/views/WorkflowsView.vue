@@ -13,14 +13,14 @@
       </Teleport>
     </div>
 
-    <!-- 工作流类型筛选：文生图 / 图生图（按是否配置参考图节点 image_node 判定） -->
+    <!-- 工作流类型筛选：文生图 / 表情包·漫画（按 kind 字段，兼容旧工作流按 prompt_slots 推断） -->
     <div class="filter-bar">
       <n-radio-group v-model:value="filterType" size="small" class="filter-radios">
         <n-radio-button value="all">全部</n-radio-button>
-        <n-radio-button value="txt2img">文生图</n-radio-button>
-        <n-radio-button value="img2img">图生图</n-radio-button>
+        <n-radio-button value="draw">文生图</n-radio-button>
+        <n-radio-button value="comic">表情包·漫画</n-radio-button>
       </n-radio-group>
-      <span class="filter-hint">类型按「参考图节点」是否配置自动判定</span>
+      <span class="filter-hint">类型按「是否配置多槽位提示词(prompt_slots)」自动判定</span>
     </div>
 
     <div class="wf-scroll">
@@ -44,7 +44,8 @@
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
             <n-tag v-if="w.enabled === false" size="small" type="error" :bordered="false">已停用</n-tag>
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
-            <n-tag v-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
+            <n-tag v-if="isComicW(w)" size="small" type="error" :bordered="false">表情包·漫画</n-tag>
+            <n-tag v-else-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
           </div>
           <div class="card-alias">别名：{{ aliasStr(w.aliases) }}</div>
@@ -92,6 +93,13 @@
         <n-form-item label="Anima 工作流">
           <n-switch v-model:value="editForm.is_anima" />
           <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
+        </n-form-item>
+        <n-form-item label="工作流类型">
+          <n-radio-group v-model:value="editForm.kind" size="small">
+            <n-radio-button value="draw">文生图 / 图生图</n-radio-button>
+            <n-radio-button value="comic">表情包 / 漫画</n-radio-button>
+          </n-radio-group>
+          <span class="form-hint">选「表情包/漫画」需在下方配置「多槽位提示词注入」。旧工作流有 prompt_slots 会自动判为该类。</span>
         </n-form-item>
         <n-form-item label="启用该工作流">
           <n-switch v-model:value="editForm.enabled" />
@@ -175,8 +183,8 @@
             <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
           </n-space>
         </n-form-item>
-        <n-divider style="margin:8px 0">── 多槽位提示词注入（表情包 / 漫画）──</n-divider>
-        <n-form-item label="多槽位提示词注入（prompt_slots）">
+        <n-divider v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim()" style="margin:8px 0">── 多槽位提示词注入（表情包 / 漫画）──</n-divider>
+        <n-form-item v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim()" label="多槽位提示词注入（prompt_slots）">
           <n-space vertical :size="4" style="width:100%">
             <n-input
               v-model:value="editForm.prompt_slots"
@@ -308,15 +316,17 @@ function serializeLorasText(list: LoraRow[] | undefined | null): string {
     .join("\n");
 }
 
-// 工作流类型筛选：文生图 / 图生图（按是否配置参考图节点 image_node 判定，无新增字段）
-const filterType = ref<"all" | "txt2img" | "img2img">("all");
+// 工作流类型筛选：文生图 / 表情包·漫画（按 kind 字段；旧工作流有 prompt_slots 也判为 comic）
+const filterType = ref<"all" | "draw" | "comic">("all");
+function isComicW(w: any): boolean {
+  return (w.kind || "").trim().toLowerCase() === "comic" || !!(w.prompt_slots && String(w.prompt_slots).trim());
+}
 const filteredWorkflows = computed(() => {
   const items = workflows.value.map((w, i) => ({ w, i }));
   if (filterType.value === "all") return items;
-  return items.filter(({ w }) => {
-    const isImg2img = !!((w.image_node || "").trim());
-    return filterType.value === "img2img" ? isImg2img : !isImg2img;
-  });
+  return items.filter(({ w }) =>
+    filterType.value === "comic" ? isComicW(w) : !isComicW(w)
+  );
 });
 
 // LoRA 下拉选项：按工作流底模筛选（与 availLoras 逻辑一致：底模为空则全部，LoRA 底模为空则通用）
@@ -438,6 +448,7 @@ function openForm(idx: number, prefill?: any) {
     server_name: w.server_name || "",
     workflow_name: w.workflow_name || "",
     is_anima: !!w.is_anima,
+    kind: ((w.kind || "").trim().toLowerCase() === "comic" || (w.prompt_slots || "").trim()) ? "comic" : "draw",
     civitai_url: w.civitai_url || "",
     image: w.image || "",
     positive_node: w.positive_node || "",
@@ -492,6 +503,7 @@ async function saveEdit() {
     // denoise 开关：勾选不注入时强制 -1（低于 min 的语义值，后端识别为「不注入」）
     if (v.denoise_off) v.default_denoise = -1;
     delete v.denoise_off;
+    v.kind = (v.kind === "comic") ? "comic" : "draw";
     // prompt_slots 必须是合法 JSON（数组或对象）：后端解析失败只会记日志并跳过，
     // 用户侧表现为「填了却没生效」，因此在保存前拦截，避免静默失效。
     const psRaw = String(v.prompt_slots || "").trim();

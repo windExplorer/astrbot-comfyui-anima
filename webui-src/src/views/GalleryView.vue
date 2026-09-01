@@ -67,6 +67,11 @@
           :options="typeOptions"
           @update:value="doSearch(1)"
         />
+        <n-radio-group v-model:value="catFilter" size="small" @update:value="onCatChange">
+          <n-radio-button value="all">全部</n-radio-button>
+          <n-radio-button value="表情包">表情包</n-radio-button>
+          <n-radio-button value="漫画">漫画</n-radio-button>
+        </n-radio-group>
         <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
         <n-select
           v-model:value="nsfwFilter"
@@ -191,7 +196,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref, computed } from "vue";
-import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane, NSwitch, NTooltip } from "naive-ui";
+import { useMessage, useDialog, NButton, NInput, NSelect, NCheckbox, NTag, NSpin, NEmpty, NTabs, NTabPane, NSwitch, NTooltip, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost, fetchThumb } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { fmtBytes, truncate } from "@/utils/format";
@@ -209,6 +214,12 @@ const activeTab = ref("normal");
 const search = ref("");
 const userSearch = ref("");
 const tagFilter = ref("");
+// 顶部「全部/表情包/漫画」分类筛选：映射到 tag 精确匹配（表情包/漫画 由出图自动打标）
+const catFilter = computed<string>({
+  get: () => (tagFilter.value === "表情包" || tagFilter.value === "漫画") ? tagFilter.value : "all",
+  set: (v: string) => { tagFilter.value = (v === "all" ? "" : v); },
+});
+function onCatChange() { doSearch(1); }
 const type = ref("");
 const starred = ref(false);
 const images = ref<any[]>([]);

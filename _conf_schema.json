@@ -155,6 +155,13 @@
             "hint": "指令 /draw --wf 和 AI 调用时引用此名。",
             "default": "default"
           },
+          "kind": {
+            "type": "string",
+            "description": "工作流类型",
+            "hint": "draw=普通生图/图生图；comic=表情包/漫画（需配置 prompt_slots 多槽位注入）。新增/导入的工作流若配了 prompt_slots 会自动标为 comic，一般无需手动改。",
+            "default": "draw",
+            "options": ["draw", "comic"]
+          },
           "enabled": {
             "type": "bool",
             "description": "是否启用该工作流",
@@ -416,9 +423,64 @@
   },
   "default_comic_workflow": {
     "type": "string",
-    "description": "默认表情包/漫画工作流名",
-    "hint": "使用 /表情包 指令或 AI 调用 comfyui_comic 工具、且未显式指定工作流时默认使用的工作流（需已配置 prompt_slots 多槽位注入）。留空则回退到「表情包」。",
+    "description": "默认表情包/漫画工作流名（旧，兼容用）",
+    "hint": "兼容字段：当 special_features 为空且本项有值时，插件会自动迁移出一条 meme_text 功能。新配置建议直接在「功能配置」页用 special_features 管理。本项保留仅为旧用户平滑过渡。",
     "default": ""
+  },
+  "special_features": {
+    "description": "特殊功能配置（表情包 / 图生表情包 / 漫画）",
+    "hint": "声明「表情包(meme_text) / 图生表情包(meme_img) / 漫画(comic)」三类带字功能，每项绑定一个已配置 prompt_slots 的漫画工作流（meme_img 还需配 image_node）。可选默认 LoRA 与默认负向提示词。指令 /表情包、/图生表情包 与 AI 工具 comfyui_comic / comfyui_meme_img 会按功能 key 找到对应配置并出图。留空时插件会尝试从旧配置 default_comic_workflow 自动迁移出一条 meme_text。",
+    "type": "template_list",
+    "templates": {
+      "default": {
+        "name": "功能",
+        "display_item": "name",
+        "items": {
+          "__template_key": {
+            "type": "string",
+            "description": "模板标识键（自动生成，勿手动修改）",
+            "default": ""
+          },
+          "key": {
+            "type": "string",
+            "description": "功能类型",
+            "hint": "meme_text=表情包（文生，出气泡/底部文字）；meme_img=图生表情包（需附图）；comic=漫画（文生，多格分镜）。",
+            "default": "meme_text",
+            "options": ["meme_text", "meme_img", "comic"]
+          },
+          "name": {
+            "type": "string",
+            "description": "功能显示名",
+            "hint": "在 WebUI「功能配置」页展示的名称。",
+            "default": "表情生成"
+          },
+          "workflow": {
+            "type": "string",
+            "description": "绑定的工作流名",
+            "hint": "须为已配置 prompt_slots 的漫画工作流（meme_img 还需配 image_node）。",
+            "default": ""
+          },
+          "default_lora": {
+            "type": "text",
+            "description": "默认 LoRA（可选，每行一个）",
+            "hint": "该功能出图时默认启用的 LoRA（名称|权重|0/1），留空则不默认启用。",
+            "default": ""
+          },
+          "default_negative": {
+            "type": "string",
+            "description": "默认负向提示词（可选）",
+            "hint": "该功能出图时默认叠加的负向提示词，留空则沿用工作流默认。",
+            "default": ""
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "是否启用",
+            "default": true
+          }
+        }
+      }
+    },
+    "default": []
   },
   "danbooru": {
     "type": "object",

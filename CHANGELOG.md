@@ -2,6 +2,20 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.5.4（v5.5.0 指令拆分：直填与 LLM 解耦 · 架构重构）
+
+本期落地 v5.5.0 规划的功能集（指令拆分 + 表情包/漫画逻辑解耦重构），按 T1→T7 推进：
+
+- **T1 配置/助手**：`_conf_schema.json` 工作流元素新增 `kind` 字段（draw|comic，默认 draw）；新增顶层 `special_features` 列表（key: meme_text/meme_img/comic，含 name/workflow/default_lora/default_negative/enabled）。新增助手 `_workflow_kind` / `_feature_by_key` / `_resolve_comic_workflow`（含校验，非漫画工作流报错停住），旧 `default_comic_workflow` 会在未配置任何功能时自动迁移出一条 meme_text。
+- **T2 逻辑抽离**：表情包/漫画逻辑整体迁到新模块 `comic.py`（_normalize_prompt_slots / _render_slot_template / _auto_comic_workflow / _comic_write_slots_llm / _comic_build_prompts_llm / 槽位注入 / 功能解析），`main.py` 仅留薄封装。槽位注入改为 `comic.inject_slots`。
+- **T3 指令重写**：`/表情包 画面::气泡[::底部]`（直填，不翻译、不调 LLM，无 :: 报错提示用法）、`/表情包llm`（AI 造词）、`/图生表情包`（需附图）、`/图生表情包llm`（附图+AI）。四条都按 `special_features` 功能解析工作流，`--wf` 优先；非漫画工作流报错停住。旧别名（`表情`/`漫画`/`comic`/`图生表情`）保留。
+- **T4 聊天工具**：`comfyui_comic`（文生表情/漫画）描述指向 special_features 的 meme_text/comic；新增 `comfyui_meme_img`（图生表情包，必填 image，走 meme_img 功能）。路由重定向（用户说"画个表情包"时误选 comfyui_draw 会重定向到漫画工作流）保持。
+- **T5 WebUI**：WorkflowsView 加 `kind` 选择器 +「全部/文生图/表情包·漫画」筛选，prompt_slots 仅漫画类显示；新增 FeaturesView（三张功能卡，绑定工作流/默认 LoRA/启用）；GalleryView 顶部加「全部/表情包/漫画」分类（基于自动打标）；侧边栏加「功能配置」入口。
+- **T6 自动打标**：表情包/漫画出图成功后按功能自动打标（meme_text/meme_img→「表情包」，comic→「漫画」），复用图库 tags 机制，不动表结构。
+- **T7 发布**：新增 `comic.py` 已纳入打包清单；前端重新构建注入版本号。
+
+注：此前已发布的 v5.5.1（日志打印工作流开关）、v5.5.2（自然语言 LoRA 提取）、v5.5.3（多管线 LoRA 自动锚到非 GGUF 主模）均为本期之外的独立修复，保留有效。
+
 ## v5.5.3
 
 - **LoRA 自动锚点探测：多模型工作流优先选基础生图主模**：漫画 / boogu-edit 这类「GGUF 编辑模型 + 标准 anima 生图模型」双管线工作流，之前锚点自动探测会取第一条 sampler 的 GGUF 模型（无法叠加标准 LoRA、且不是要改的生图管线），导致 LoRA 形同失效。现在 `_find_injection_anchors` 优先把 LoRA 锚到「非 GGUF」主模，并尽量把 CLIP 锚点对齐到同一条生图管线（用于完整模式 LoRA）。单管线工作流行为不变（无回归）。—— 因此漫画工作流通常**不再需要手填 `lora_anchor`**。

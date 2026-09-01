@@ -3,6 +3,7 @@ import ConfigView from "@/views/ConfigView.vue";
 import LogsView from "@/views/LogsView.vue";
 import StatsView from "@/views/StatsView.vue";
 import WorkflowsView from "@/views/WorkflowsView.vue";
+import FeaturesView from "@/views/FeaturesView.vue";
 import LorasView from "@/views/LorasView.vue";
 import GalleryView from "@/views/GalleryView.vue";
 import QuotaView from "@/views/QuotaView.vue";
@@ -26,6 +27,7 @@ const router = createRouter({
     { path: "/logs", name: "logs", component: LogsView, meta: { title: "日志" } },
     { path: "/stats", name: "stats", component: StatsView, meta: { title: "统计" } },
     { path: "/workflows", name: "workflows", component: WorkflowsView, meta: { title: "工作流" } },
+    { path: "/features", name: "features", component: FeaturesView, meta: { title: "功能配置" } },
     { path: "/loras", name: "loras", component: LorasView, meta: { title: "LoRA" } },
     { path: "/gallery", name: "gallery", component: GalleryView, meta: { title: "图库" } },
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
