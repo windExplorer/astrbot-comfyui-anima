@@ -107,6 +107,20 @@ def find_node_by_class(prompt: dict, class_type: str):
     return None
 
 
+def find_all_nodes_by_class(prompt: dict, class_type: str) -> list:
+    """返回工作流中**所有**匹配 class_type 的节点 ID（按字典顺序，找不到返回空列表）。
+
+    用于多同类节点需要统一改写的场景：例如「两阶段串联工作流」（anima 生图 →
+    boogu 编辑）里存在两个 EmptyLatentImage，宽高必须同步设置，否则前后阶段
+    尺寸不一致会导致构图被拉伸。
+    """
+    return [
+        nid
+        for nid, node in prompt.items()
+        if isinstance(node, dict) and (node.get("class_type") or "") == class_type
+    ]
+
+
 # 图加载类节点的 class_type 前缀/全称（兼容非标准 LoadImage，如 LoadImageFromPath
 # / LoadImageV2 / ImageLoader 等）。图生图时用于自动定位参考图要注入的节点。
 IMAGE_LOADER_HINTS = (

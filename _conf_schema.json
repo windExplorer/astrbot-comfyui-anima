@@ -271,6 +271,13 @@
             "hint": "宽高节点里控制高度的输入框名称，一般是 height。",
             "default": "height"
           },
+          "resolution_mode": {
+            "type": "string",
+            "description": "宽高注入范围",
+            "hint": "single（默认）：只改「宽高节点 ID」（留空则自动找第一个 EmptyLatentImage），与旧行为完全一致。all：改工作流里**所有** EmptyLatentImage —— 两阶段串联工作流（如 anima 生图 → boogu 编辑加字）前后各有一个 latent，尺寸必须同步，否则构图会被拉伸。none：完全不改，沿用工作流 JSON 里的原始尺寸 —— 适合多格拼接等尺寸固定的工作流，也可用来避开 default_width/height 的兜底。",
+            "default": "single",
+            "options": ["single", "all", "none"]
+          },
           "output_node": {
             "type": "string",
             "description": "输出节点 ID（可选）",
@@ -350,6 +357,12 @@
             "type": "text",
             "description": "LoRA 默认启用列表（每行一个，可选）",
             "hint": "每行一个 LoRA，用竖线 | 分隔三个字段：名称|权重|0/1（0=禁用，1=启用）。例如：安魂曲|1.0|1  可写多行，作用相当于本工作流的“默认启用/权重”。LoRA 的真实文件名、是否仅模型、预设提示词都在上方全局「LoRA 库」里配置，这里只需用名称引用即可；留空则本工作流不默认启用任何 LoRA（仍可用 /draw --名称 临时启用）。即使写了，若标记为 0（禁用）也不会生效。",
+            "default": ""
+          },
+          "prompt_slots": {
+            "type": "text",
+            "description": "多槽位提示词注入（JSON，可选）",
+            "hint": "给「一条工作流需要多处、语义不同的文本」的场景用 —— 如表情包（anima 生图提示词 + boogu 加字指令）、漫画（角色提示词 + 整段分镜描述）。**留空 = 不启用，普通工作流无需填写，行为完全不变**。每组字段：key(槽位名) / node(目标节点ID) / field(输入框名，默认 text) / vars(变量名数组) / template(模板)。template 可为字符串，或对象 {prefix, blocks:[{var, max_chars, tiers:[{max_chars, text}]}], suffix} —— 变量为空时整块不渲染（防止生成空气泡），tiers 按字数自动选档，实现气泡大小/字号/行数随字数自适应。主正向提示词仍走 positive_node，不受此影响。",
             "default": ""
           },
           "workflow_json": {

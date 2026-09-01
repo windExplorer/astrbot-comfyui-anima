@@ -1317,6 +1317,121 @@ class ComfyUIDrawPlugin(Star):
                 lines.append(f"{name}|{wstr}|{enabled}")
         return "\n".join(lines)
 
+    def _render_slot_template(
+        self, slot: dict, template, values: dict
+    ) -> str | None:
+        """渲染单个提示词槽位（prompt_slots）的模板。
+
+        template 支持两种写法：
+
+        1. **扁平字符串**：直接 ``str.format(**values)``。
+        2. **分块结构**（推荐）：``{prefix, blocks: [{var, max_chars, tiers|text}], suffix}``
+           - 每个 block **仅当其 var 非空时**才渲染 —— 避免生成「空气泡」
+             （变量为空却仍输出"气泡内写着「」"这类描述）；
+           - block 支持 ``tiers`` 分档：按变量实际字数取第一个满足 ``max_chars``
+             的档位，实现气泡大小 / 字号 / 行数随字数自适应；
+           - ``prefix`` / ``suffix`` 始终渲染（用于放一致性锁与风格锁）。
+
+        返回渲染后的文本；**无需注入时返回 None**（调用方跳过该槽位，
+        保留工作流 JSON 内的原文）。字数越界只记日志警告，**不截断**。
+        """
+        key = (slot.get("key") or "").strip()
+        vars_: list[str] = [
+            str(v).strip() for v in (slot.get("vars") or []) if str(v).strip()
+        ]
+        # 未显式声明 vars 时，从 blocks 里推导，避免配置只写 blocks 导致取不到值
+        if not vars_ and isinstance(template, dict):
+            vars_ = [
+                (b.get("var") or "").strip()
+                for b in (template.get("blocks") or [])
+                if isinstance(b, dict) and (b.get("var") or "").strip()
+            ]
+        filled = {v: str(values.get(v, "") or "").strip() for v in vars_}
+
+        # 变量全部为空 → 跳过整个槽位（否则会渲染出空内容的气泡 / 文字）
+        # vars_ 为空 = 「无变量的常量模板」，不在此列，需正常渲染
+        if vars_ and not any(filled.values()):
+            logger.info(f"【槽位】 {key} 变量均为空，跳过注入（沿用工作流原文）")
+            return None
+
+        # 兼容旧的扁平字符串写法
+        if isinstance(template, str):
+            try:
+                return template.format(**filled) or None
+            except Exception as e:
+                logger.warning(f"【槽位】 {key} 扁平模板渲染失败: {e}")
+                return None
+
+        if not isinstance(template, dict):
+            logger.warning(f"【槽位】 {key} 模板格式非法（应为字符串或对象），已跳过")
+            return None
+
+        parts: list[str] = []
+        prefix = (template.get("prefix") or "").strip()
+        if prefix:
+            parts.append(prefix)
+
+        for block in template.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            vn = (block.get("var") or "").strip()
+            val = filled.get(vn, "")
+            if not val:
+                continue  # 该变量为空 → 整块不渲染
+
+            # 字数越界只警告，不截断（硬截断会毁掉用户文案）
+            _mc = block.get("max_chars")
+            if _mc:
+                try:
+                    if len(val) > int(_mc):
+                        logger.warning(
+                            f"【槽位】 {key}.{vn} 共 {len(val)} 字，超过建议上限 {_mc}，"
+                            f"可能出现错字或排版漂移"
+                        )
+                except (TypeError, ValueError):
+                    pass
+
+            if block.get("text"):
+                # 单段文本写法（无分档）
+                try:
+                    parts.append(str(block["text"]).format(**{vn: val}))
+                except Exception as e:
+                    logger.warning(f"【槽位】 {key}.{vn} 文本渲染失败: {e}")
+                continue
+
+            tiers = block.get("tiers") or []
+            if not tiers:
+                logger.warning(f"【槽位】 {key}.{vn} 既无 text 也无 tiers，已跳过")
+                continue
+            # 按字数选档：取第一个满足 max_chars 的档位；都不满足则取最后一个合法档
+            picked = None
+            last_valid = None
+            for t in tiers:
+                if not isinstance(t, dict):
+                    continue
+                last_valid = t
+                try:
+                    if len(val) <= int(t.get("max_chars", 999)):
+                        picked = t
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if picked is None:
+                picked = last_valid
+            if picked is None:
+                logger.warning(f"【槽位】 {key}.{vn} tiers 中没有合法档位，已跳过")
+                continue
+            try:
+                parts.append(str(picked.get("text") or "").format(**{vn: val}))
+            except Exception as e:
+                logger.warning(f"【槽位】 {key}.{vn} 分档渲染失败: {e}")
+
+        suffix = (template.get("suffix") or "").strip()
+        if suffix:
+            parts.append(suffix)
+
+        return "".join(parts) or None
+
     @staticmethod
     def _parse_presets(raw) -> list[dict]:
         """把 LoRA 预设配置解析成 [{name, prompt}] 列表。
@@ -2683,6 +2798,7 @@ class ComfyUIDrawPlugin(Star):
         notify_pending: bool = True,
         source: str = "",
         explicit_default: bool = False,
+        slot_values: dict | None = None,
     ):
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
         # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
@@ -2944,20 +3060,35 @@ class ComfyUIDrawPlugin(Star):
         _ratio_w, _ratio_h = self._resolve_ratio_size(_ratio_src, width, height)
         w = _ratio_w if _ratio_w is not None else (width or int(wf.get("default_width", 512) or 512))
         h = _ratio_h if _ratio_h is not None else (height or int(wf.get("default_height", 512) or 512))
+        # resolution_mode 决定宽高的注入范围（默认 single，与旧行为逐字一致）：
+        #   single：仅注入 resolution_node；留空则自动探测「第一个」EmptyLatentImage
+        #   all   ：注入「所有」EmptyLatentImage —— 两阶段串联工作流（如 anima 生图
+        #           → boogu 编辑）前后各有一个 latent，尺寸必须同步，否则构图被拉伸
+        #   none  ：完全不注入，沿用工作流 JSON 原值 —— 多格拼接等尺寸固定的工作流
         if init_images:
-            res_node = None
+            res_nodes: list = []
         else:
-            res_node = wf.get("resolution_node") or ""
-            if not res_node:
-                # 未配置宽高节点时自动探测 EmptyLatentImage
-                res_node = workflow_builder.find_node_by_class(
+            _res_mode = (wf.get("resolution_mode") or "single").strip().lower()
+            if _res_mode == "none":
+                res_nodes = []
+            elif _res_mode == "all":
+                res_nodes = workflow_builder.find_all_nodes_by_class(
                     prompt, "EmptyLatentImage"
                 )
+                logger.info(f"【宽高】 resolution_mode=all，同步节点: {res_nodes or '无'}")
+            else:
+                _one = wf.get("resolution_node") or ""
+                if not _one:
+                    # 未配置宽高节点时自动探测 EmptyLatentImage
+                    _one = workflow_builder.find_node_by_class(
+                        prompt, "EmptyLatentImage"
+                    )
+                res_nodes = [_one] if _one else []
         width_field = wf.get("resolution_width_field", "width") or "width"
         height_field = wf.get("resolution_height_field", "height") or "height"
-        if res_node:
-            workflow_builder.set_number_node(prompt, res_node, width_field, w)
-            workflow_builder.set_number_node(prompt, res_node, height_field, h)
+        for _rn in res_nodes:
+            workflow_builder.set_number_node(prompt, _rn, width_field, w)
+            workflow_builder.set_number_node(prompt, _rn, height_field, h)
 
         # 注入 LoRA（合并关键词自动匹配）
         loras_cfg = self._loras_of(wf)
@@ -3140,6 +3271,33 @@ class ComfyUIDrawPlugin(Star):
                     logger.info(f"【LoRA 触发词】 已追加到正向提示词: {_add}")
                 else:
                     logger.info(f"【LoRA 触发词】 启用 LoRA 的触发词均已存在于正向提示词中，无需追加")
+
+        # 多槽位提示词注入（prompt_slots）：服务于「一条工作流需要多处语义不同的文本
+        # 注入」的场景 —— 如表情包（anima 生图提示词 + boogu 加字指令）、漫画（角色
+        # 提示词 + 整段分镜描述）。未配置 prompt_slots 的工作流整段跳过，行为不变。
+        # 注意：槽位只负责**额外的**文本节点；主正向提示词仍走上方 positive 全流程
+        # （中文翻译 / LoRA 预设 / 触发词追加），以保证这些现有能力不丢失。
+        for _slot in (wf.get("prompt_slots") or []):
+            if not isinstance(_slot, dict):
+                continue
+            _key = (_slot.get("key") or "").strip()
+            _node = _slot.get("node")
+            if not _key or _node in (None, ""):
+                continue
+            _field = (_slot.get("field") or "text").strip() or "text"
+            _tpl = _slot.get("template")
+            if _tpl:
+                # 带模板：渲染（变量全空时返回 None → 跳过，避免生成「空气泡」）
+                _val = self._render_slot_template(_slot, _tpl, slot_values or {})
+                if _val is None:
+                    continue
+            else:
+                # 无模板：直接把变量值写入节点
+                _val = str((slot_values or {}).get(_key, "") or "").strip()
+                if not _val:
+                    continue
+            if workflow_builder.set_text_node(prompt, _node, _field, _val):
+                logger.info(f"【槽位】 {_key} → 节点 {_node}.{_field}（{len(_val)} 字）")
 
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
         seeds_used = workflow_builder.randomize_seed(prompt, seed)
