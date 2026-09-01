@@ -710,6 +710,12 @@
     "hint": "出图完成后是否发送一条包含尺寸/大小/耗时/时间的小报告。默认关闭（关闭则不输出文件信息）。",
     "default": false
   },
+  "log_workflow_json": {
+    "type": "bool",
+    "description": "日志打印提交给服务器的工作流 JSON",
+    "hint": "开启后，每次出图提交时会在插件日志里完整打印提交给 ComfyUI 服务器的工作流 JSON（便于排查服务器端报错/参数注入是否正确）。默认关闭（不打印，减少日志噪声）。",
+    "default": false
+  },
   "draw_auto": {
     "type": "object",
     "description": "AI 对话自动出图控制（防连发）",

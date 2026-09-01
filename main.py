@@ -1497,6 +1497,58 @@ class ComfyUIDrawPlugin(Star):
             f"或在配置里设置 default_comic_workflow 默认值。"
         )
 
+    def _resolve_comic_wf(self, requested: str, is_img2img: bool) -> tuple[str | None, str | None]:
+        """在 _auto_comic_workflow 基础上，对图生图场景优先选「带 image_node 的漫画工作流」。
+
+        图生表情包需要工作流同时配 prompt_slots + image_node；若用户 --wf 指定了一个
+        纯文生图漫画工作流（无 image_node），自动改挑一个带 image_node 的漫画工作流，
+        否则图生图会因缺 LoadImage 节点报错。
+        """
+        _name, _err = self._auto_comic_workflow(requested)
+        if _err or not _name:
+            return _name, _err
+        _wf = self._find_workflow_by_name(_name) or {}
+        if is_img2img and not (_wf.get("image_node") or "").strip():
+            _alt = next(
+                (w for w in self._workflows()
+                 if self._normalize_prompt_slots(w.get("prompt_slots"))
+                 and (w.get("image_node") or "").strip()),
+                None,
+            )
+            if _alt:
+                logger.info(
+                    f"【漫画工作流】「{_name}」无 image_node，图生图改选带 image_node 的"
+                    f"「{_alt.get('name')}」"
+                )
+                return (_alt.get("name") or ""), None
+        return _name, None
+
+    # 表情包/漫画意图关键词：命中即判为用户想出「带文字」的表情包/漫画。
+    # 注：漫画/comic 也可能指纯漫画风插画，但插件优先按「带字表情包」处理（更符合多数意图）。
+    _COMIC_INTENT_KEYWORDS = (
+        "表情包", "表情图", "梗图", "气泡", "带字", "底部文字",
+        "meme", "sticker", "comic", "漫画",
+    )
+
+    @classmethod
+    def _is_comic_intent(cls, user_text: str, prompt: str = "") -> bool:
+        """判断用户是否想要「带文字的表情包/漫画」。命中关键词即判为 meme 意图。"""
+        _t = f"{user_text or ''} {prompt or ''}".lower()
+        return any(k in _t for k in cls._COMIC_INTENT_KEYWORDS)
+
+    def _slot_vars(self, wf: dict) -> list[str]:
+        """取出工作流 prompt_slots 的槽位变量名（去重、保序），用于直填模式按序映射。"""
+        _slots = self._normalize_prompt_slots(wf.get("prompt_slots"))
+        _vars: list[str] = []
+        for _s in _slots:
+            if not isinstance(_s, dict):
+                continue
+            for _v in (_s.get("vars") or []):
+                _v = str(_v).strip()
+                if _v and _v not in _vars:
+                    _vars.append(_v)
+        return _vars
+
     @staticmethod
     def _slot_var_hint(var_name: str, slot: dict) -> str:
         """推断某个槽位变量的语义说明，供内部 LLM 造词时理解该写啥。
@@ -1559,7 +1611,11 @@ class ComfyUIDrawPlugin(Star):
             return None
         model = self._cfg("llm_model", "").strip()
         if not model:
-            logger.info("【槽位·造词】 未配置 llm_model，跳过得词（沿用工作流默认文字）")
+            # 未单独配置表情包造词模型时，复用翻译模型（translate_llm_model / 当前对话 provider），
+            # 避免「已能翻译却因 llm_model 留空而跳过表情包/漫画文字生成」导致出图不带字。
+            model = self._resolve_translate_provider_id() or ""
+        if not model:
+            logger.info("【槽位·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过得词（沿用工作流默认文字）")
             return None
         _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
         prompt = (
@@ -1574,7 +1630,7 @@ class ComfyUIDrawPlugin(Star):
             "只输出 JSON 对象："
         )
         try:
-            logger.info(f"【槽位·造词】 使用指定模型({model}) 生成槽位文字")
+            logger.info(f"【槽位·造词】 使用模型({model}) 生成槽位文字")
             llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
             self._record_llm_token("comic_slots", model, llm_resp)
             text = getattr(llm_resp, "completion_text", "") or ""
@@ -1613,7 +1669,11 @@ class ComfyUIDrawPlugin(Star):
             return idea, None
         model = self._cfg("llm_model", "").strip()
         if not model:
-            logger.info("【表情包·造词】 未配置 llm_model，跳过 LLM（用原始想法作为提示词/默认文字）")
+            # 未单独配置表情包造词模型时，复用翻译模型（translate_llm_model / 当前对话 provider），
+            # 避免「已能翻译却因 llm_model 留空而跳过表情包/漫画文字生成」。
+            model = self._resolve_translate_provider_id() or ""
+        if not model:
+            logger.info("【表情包·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过造词（用原始想法作为提示词/默认文字）")
             return idea, None
         # 槽位变量清单（去重）
         _seen: set[str] = set()
@@ -1660,7 +1720,7 @@ class ComfyUIDrawPlugin(Star):
                 "提示：任意槽位若不需要文字，返回空字符串或省略该键即可，系统不会强行生成。"
             )
         try:
-            logger.info(f"【表情包·造词】 使用指定模型({model}) 生成提示词/文字")
+            logger.info(f"【表情包·造词】 使用模型({model}) 生成提示词/文字")
             _resp = await self.context.llm_generate(chat_provider_id=model, prompt=_system + "\n\n" + _user)
             self._record_llm_token("comic_prompt", model, _resp)
             _text = getattr(_resp, "completion_text", "") or ""
@@ -3676,24 +3736,50 @@ class ComfyUIDrawPlugin(Star):
             ", ".join(f"{nm}:{_lora_weight.get(nm, '?')}" for nm in (enabled or []))
             or "无"
         )
+        # 摘要：普通图含尺寸；表情包/漫画工作流（配了 prompt_slots）额外列出各槽位文字，
+        # 便于确认气泡/底部文字是否注入成功。
+        _size = f"{w}x{h}" if (w and h) else "(默认)"
+        _slot_lines = ""
+        _comic_slots = self._normalize_prompt_slots(wf.get("prompt_slots"))
+        if _comic_slots and slot_values:
+            _sv = self._slot_vars(wf)
+            _slot_texts = []
+            for _v in _sv:
+                _t = (slot_values.get(_v) or "").strip()
+                _slot_texts.append(f"{_v}={_t if _t else '(空/不出字)'}")
+            if _slot_texts:
+                _slot_lines = "\n  槽位文字 : " + "；".join(_slot_texts)
         logger.info(
             "【绘图·摘要】\n"
             "  工作流 : %s\n"
+            "  尺寸 : %s\n"
             "  种子 : %s\n"
             "  正向提示词 : %s\n"
             "  负向提示词 : %s\n"
-            "  启用LoRA : %s"
+            "  启用LoRA : %s%s"
             % (
                 wf.get("name"),
+                _size,
                 (seeds_used[0] if seeds_used else "(随机/未指定)"),
                 positive if positive else "(空)",
                 negative if negative else "(空)",
                 _enabled_lora,
+                _slot_lines,
             )
         )
 
         # 提交到 ComfyUI（client 已在工作流加载时创建）
         srv_key = self._server_key(server)
+        # 打印提交给服务器的工作流 JSON（受 log_workflow_json 控制，默认关闭）
+        if self._cfg("log_workflow_json", False):
+            try:
+                logger.info(
+                    "【绘图·工作流JSON】 提交给 %s 的工作流：\n%s",
+                    srv_key,
+                    json.dumps(prompt, ensure_ascii=False, indent=2),
+                )
+            except Exception as e:
+                logger.warning("【绘图·工作流JSON】 打印失败: %s", e)
         try:
             try:
                 result = await client.queue_prompt(prompt)
@@ -4091,29 +4177,70 @@ class ComfyUIDrawPlugin(Star):
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
         event.stop_event()
 
-    @filter.command("表情包", alias={"漫画", "comic"})
+    @filter.command("表情", alias={"表情包", "漫画", "comic"})
     async def cmd_comic(self, event: AstrMessageEvent):
-        """表情包/漫画：一句想法直出带文字的图。用法：/表情包 想法 [--wf 工作流] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字] [--raw 不扩写提示词]"""
+        """表情包/漫画：直填槽位出图（不调 LLM，传入啥填啥、不翻译）。
+
+        用法：/表情 画面提示词::气泡文字[::底部文字] [--wf 工作流] [--名称[:权重]] [--w 宽] [--h 高] [--seed 数字]
+
+        用 :: 分隔各段：第 1 段作为画面提示词，其后依次对应工作流 prompt_slots 的槽位变量
+        （如 bubble / bottom）。未给全的槽位留空（对应节点被清空、不出字）。
+        想让 AI 自动生成文字请用 /表情llm。
+        """
         args = self._strip_command(
             (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
-            "表情包",
-            ("漫画", "comic"),
+            "表情", ("表情包", "漫画", "comic"),
         )
-        # --raw：绕过 LLM，直接把原话当提示词、沿用工作流默认文字
+        if not (args or "").strip() or "::" not in (args or ""):
+            await self._send(event,
+                "用法：/表情 画面::气泡文字[::底部文字] [--wf 工作流]\n"
+                "例：/表情 鲸鱼娘在敲键盘::摸鱼中::其实在偷偷删你学习资料\n"
+                "想让 AI 自动生成文字请用 /表情llm 你的想法")
+            return
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
+        # 按 :: 拆分：第 1 段=画面提示词，其后=槽位文字（直填、不翻译、不调 LLM）
+        _parts = [p.strip() for p in (args or "").split("::")]
+        positive_prompt = _parts[0]
+        wf_name, _err = self._resolve_comic_wf(wf_name, False)
+        if _err:
+            await self._send(event, _err)
+            return
+        wf = self._find_workflow_by_name(wf_name) or {}
+        _vars = self._slot_vars(wf)
+        slot_values = {v: (_parts[i + 1] if i + 1 < len(_parts) else "") for i, v in enumerate(_vars)}
+        images = await self._extract_images(event)
+        async for m, _p in self._do_draw(
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
+            init_images=images, is_img2img=bool(images), denoise=denoise,
+            slot_values=slot_values, explicit_default=False,
+        ):
+            yield m
+        event.stop_event()
+
+    @filter.command("表情llm", alias={"表情包llm"})
+    async def cmd_comic_llm(self, event: AstrMessageEvent):
+        """表情包/漫画：一句想法，AI 自动生成「画面提示词 + 气泡/底部文字」。
+
+        用法：/表情llm 用鲸鱼娘lora，画面是帮用户写代码时偷偷删掉用户的学习资料 [--wf 工作流] [--raw 不扩写]
+        加 --raw 则只把原话当画面提示词、不调 LLM 扩写、不生成槽位文字（沿用工作流默认）。
+        """
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "表情llm", ("表情包llm",),
+        )
         _parts = (args or "").split()
         _auto_raw = "--raw" in _parts
         args = " ".join(p for p in _parts if p != "--raw")
         prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
-        wf_name, _err = self._auto_comic_workflow(wf_name)
+        if not (args or "").strip():
+            await self._send(event, "用法：/表情llm 你的想法 [--wf 工作流] [--raw 不扩写提示词]")
+            return
+        wf_name, _err = self._resolve_comic_wf(wf_name, False)
         if _err:
             await self._send(event, _err)
             return
-        if not prompt.strip():
-            await self._send(event,
-                "用法：/表情包 用鲸鱼娘lora，画面是帮用户写代码时偷偷删掉用户的学习资料 [--wf 工作流] [--seed 12345] [--raw 不扩写提示词]")
-            return
         wf = self._find_workflow_by_name(wf_name) or {}
-        # LLM 展开：把一句想法变成 anima 画面提示词 + 表情包文字（受配置开关与 --raw 控制）
+        # LLM 展开：把一句想法变成 anime 画面提示词 + 表情包文字（受配置开关与 --raw 控制）
         build_prompt = self._cfg("enable_llm_prompt", True) and not _auto_raw
         build_slots = self._cfg("enable_llm_slots", True) and not _auto_raw
         positive_prompt = prompt
@@ -4126,20 +4253,97 @@ class ComfyUIDrawPlugin(Star):
                 positive_prompt = prompt
             if not build_slots:
                 slot_values = None
-        # 已读回执由 _ack_command_received 统一处理（覆盖本插件所有指令，含 /表情包）
-        # 若消息或引用(回复)里带了图片，则按图生图处理
         images = await self._extract_images(event)
         async for m, _p in self._do_draw(
             event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
-            init_images=images,
-            is_img2img=bool(images),
-            denoise=denoise,
-            slot_values=slot_values,
-            explicit_default=False,
+            init_images=images, is_img2img=bool(images), denoise=denoise,
+            slot_values=slot_values, explicit_default=False,
         ):
             yield m
-        # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
-        # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
+        event.stop_event()
+
+    @filter.command("图生表情", alias={"图生表情包"})
+    async def cmd_img2img_comic(self, event: AstrMessageEvent):
+        """图生表情包：附一张参考图 + 直填槽位出图（不调 LLM，传入啥填啥、不翻译）。
+
+        用法：/图生表情 画面::气泡文字[::底部文字] [--wf 工作流]
+        第 1 段为画面提示词，其后依次对应 prompt_slots 槽位变量。未给全的槽位留空。
+        """
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "图生表情", ("图生表情包",),
+        )
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
+        images = await self._extract_images(event)
+        if not images:
+            await self._send(event, "请附上一张参考图，再用 /图生表情 画面::气泡文字[::底部文字] [--wf 工作流]")
+            return
+        if "::" not in (args or ""):
+            await self._send(event,
+                "用法：/图生表情 画面::气泡文字[::底部文字] [--wf 工作流]\n"
+                "例：/图生表情 保留角色::摸鱼中::其实在删你资料")
+            return
+        _parts = [p.strip() for p in (args or "").split("::")]
+        positive_prompt = _parts[0]
+        wf_name, _err = self._resolve_comic_wf(wf_name, True)
+        if _err:
+            await self._send(event, _err)
+            return
+        wf = self._find_workflow_by_name(wf_name) or {}
+        _vars = self._slot_vars(wf)
+        slot_values = {v: (_parts[i + 1] if i + 1 < len(_parts) else "") for i, v in enumerate(_vars)}
+        async for m, _p in self._do_draw(
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
+            init_images=images, is_img2img=True, denoise=denoise,
+            slot_values=slot_values, explicit_default=False,
+        ):
+            yield m
+        event.stop_event()
+
+    @filter.command("图生表情llm", alias={"图生表情包llm"})
+    async def cmd_img2img_comic_llm(self, event: AstrMessageEvent):
+        """图生表情包(LLM)：附一张参考图，AI 自动生成「画面提示词 + 气泡/底部文字」。
+
+        用法：/图生表情llm 你的想法 [--wf 工作流] [--raw 不扩写]
+        """
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "图生表情llm", ("图生表情包llm",),
+        )
+        _parts = (args or "").split()
+        _auto_raw = "--raw" in _parts
+        args = " ".join(p for p in _parts if p != "--raw")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
+        images = await self._extract_images(event)
+        if not images:
+            await self._send(event, "请附上一张参考图，再用 /图生表情llm 你的想法 [--wf 工作流]")
+            return
+        if not (args or "").strip():
+            await self._send(event, "用法：/图生表情llm 你的想法 [--wf 工作流] [--raw 不扩写]")
+            return
+        wf_name, _err = self._resolve_comic_wf(wf_name, True)
+        if _err:
+            await self._send(event, _err)
+            return
+        wf = self._find_workflow_by_name(wf_name) or {}
+        build_prompt = self._cfg("enable_llm_prompt", True) and not _auto_raw
+        build_slots = self._cfg("enable_llm_slots", True) and not _auto_raw
+        positive_prompt = prompt
+        slot_values = None
+        if build_prompt or build_slots:
+            positive_prompt, slot_values = await self._comic_build_prompts_llm(
+                wf, prompt, lora_map, want_prompt=build_prompt, want_slots=build_slots
+            )
+            if not build_prompt:
+                positive_prompt = prompt
+            if not build_slots:
+                slot_values = None
+        async for m, _p in self._do_draw(
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
+            init_images=images, is_img2img=True, denoise=denoise,
+            slot_values=slot_values, explicit_default=False,
+        ):
+            yield m
         event.stop_event()
 
     @filter.llm_tool(name="comfyui_comic")
@@ -6703,6 +6907,9 @@ class ComfyUIDrawPlugin(Star):
         - 本工具与 comfyui_gallery 职责严格分离：生图归 draw，发旧图归 gallery。
 
         触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时，务必调用此工具。
+        ★★重要分工：若用户要的是「表情包 / 漫画 / 带字梗图 / 气泡台词 / 底部旁白 / 分镜文字」
+        （画面里要出现文字），**不要调本工具**，改调 comfyui_comic（它会自动为槽位生成文字）。
+        即使用户只说"画个表情包/来张漫画"，也应调 comfyui_comic 而非本工具。
         详细的操作细则（数量、图生图判定、LoRA/工作流查询时机、提示词语言等）见可用技能「comfyui-draw」（若你有技能读取能力，先读它再操作）。
         ★直接调用，不要只说不动：用户让我画图/生成图时，**必须立即调用本工具**，并同时把画面描述完整填进 prompt 参数。绝不允许只回复"好/马上/快了"而不调用工具——不调用工具=没有真的画。
         
@@ -7171,6 +7378,30 @@ class ComfyUIDrawPlugin(Star):
             f"指定 img2img_workflow={img2img_workflow!r}, 指定 workflow={workflow!r}, "
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
+
+        # ── 表情包/漫画意图自动路由（v5.5.0）────────────────────────────
+        # 即便 Agent 误选 comfyui_draw（通用画图），只要用户原话是「表情包/漫画/带字梗图」
+        # 意图，就重定向到漫画工作流 + 槽位造词，确保出图带气泡/底部文字。
+        # 已带 slot_values（comfyui_comic 已注入）或第三方 source 调用不触发本路由。
+        if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            _intent_text = (getattr(event, "message_str", "") or "").strip()
+            if self._is_comic_intent(_intent_text, prompt):
+                _cwf, _cerr = self._resolve_comic_wf("", is_img2img)
+                if _cwf:
+                    logger.info(
+                        f"【路由】 检测到表情包/漫画意图，重定向到漫画工作流「{_cwf}」"
+                        f"(is_img2img={is_img2img})"
+                    )
+                    _cwf_cfg = self._find_workflow_by_name(_cwf) or {}
+                    if is_img2img:
+                        img2img_workflow = _cwf
+                    else:
+                        workflow = _cwf
+                    resolved_wf = _cwf
+                    slot_values = await self._comic_write_slots_llm(_cwf_cfg, _intent_text, prompt)
+                    logger.info(
+                        f"【路由】 漫画槽位造词完成：{'有文字' if slot_values else '无（沿用工作流默认）'}"
+                    )
 
         # ── 出图计划：把多条提示词摊平为「每项独立参数」的列表 ──────────
         # 每项独立完成工作流解析（per-item workflow / img2img_workflow），缺省回落调用级
