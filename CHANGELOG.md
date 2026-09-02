@@ -2,6 +2,35 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.26（修：LoRA 用别名传入时匹配不到、导致未注入而乱画）
+
+- **现象**：agent 经 `comfyui_loras` 查到 LoRA（如「菲比啾比」别名 `phoebe_chibi`）后，把别名填进 `comfyui_draw` / `comfyui_comic` 的 `loras` 参数；但出图时插件报「工作流未引用且全局 LoRA 库里也找不到该名称」，LoRA 不注入，角色长歪/乱画。
+- **根因**：①全局 LoRA 库的「别名 / keywords」字段用 `||` `&&` `()` 当分隔符与注释（如 `phoebe_chibi || 菲比丘比 && phoebe (角色&&画风lora)菲比啾比`），而 `_lora_library()` 只按逗号切，把整串当成一个别名；②出图补全/触发词/常驻预设等处按 LoRA 的 `name`（显示名）建索引，不认别名。`comfyui_loras` 能查到只是因为它做子串模糊匹配，出图补全是精确 key 匹配，故漏。
+- **改法**：
+  1. 新增 `_split_lora_aliases()`：按逗号/竖线/`&`/斜杠/顿号/空白切分，并剥掉圆括号/全角括号内的注释，把别名拆成干净的独立 token（`phoebe_chibi` / `菲比丘比` / `phoebe` / `菲比` 等）。
+  2. 新增 `_lora_lib_index()`：按「名称 + 全部别名」建索引。
+  3. 出图补全（`main.py` LoRA 注入段）、常驻预设（名为 0）、触发词追加（`enabled` 后补 trigger_words）、`_loras_of`、以及 `/lora` 指令开关，全部改用别名感知索引。
+- **效果**：agent 用 `comfyui_loras` 返回的任何别名（或显示名）填 `loras` 都能正确定位并注入，触发词也会一并追加，角色不再乱画。
+
+## v5.6.25（优：所有出图强制带「高质量提示词前缀」）
+
+- **目标**：用户反馈出图「单调 / 丑」，希望每张图都好看。增加一份固定的画质前缀，让每次生图都稳定带上，不依赖用户口头提「画质」。
+- **画质前缀（动漫 / 二次元）**：`masterpiece, best quality, ultra-detailed, highres, absurdres, intricate details, soft cinematic lighting, vibrant colors, refined anime style`；**真人 / 写实**对应：`最高画质, 超清, 8k分辨率, 极致细节, 电影级光影, 逼真`。
+- **落到三处**：
+  1. `skills/comfyui-draw/SKILL.md` 新增「画质前缀」章节，约束用户侧 LLM：所有 `comfyui_draw` / `comfyui_img2img` 正向提示词开头都固定加此前缀（表情包无需手加，节点 A 由插件自动套）。
+  2. `comic.py` 表情包节点 A（draw）绘图指令补同一前缀——表情包图也精致。
+  3. `main.py` 动漫提示词改写 LLM 补同一前缀——普通文生图经翻译改写后也带。
+- **效果**：agent 驱动的画图（draw / img2img）与插件内部生成的表情包节点 A 提示词，都会以画质前缀起头，整体细节 / 光影 / 精致度提升，画面不再寡淡。
+
+## v5.6.24（修：工作流 / LoRA 封面上传 413 Request Entity Too Large）
+
+- **根因**：封面上传走 `useCover.uploadFile`，原图以 base64 塞进 JSON 直传，且反代（Nginx 默认 `client_max_body_size 1m`）
+  对请求体有上限，原图稍大就被网关以 413「Request Entity Too Large」拦在插件之前，根本到不了后端。
+- **改法（前端压缩，跟反代无关）**：`uploadFile` 上传前用 `<canvas>` 把图缩到最长边 512px、转 JPEG 质量 0.85
+  再上传（多 MB 原图直接变 <100KB）；透明 PNG 先铺白底避免压成 JPEG 变黑；压缩失败（非位图 / GIF 动图）自动回退原图直传。
+  拖拽上传与封面弹窗上传都走 `useCover`，一处改动全覆盖。
+- **补充**：若你掌控服务器，也可在反代把 `client_max_body_size` 调大（如 20m）彻底放宽；两者不冲突。
+
 ## v5.6.23（优：danbooru 标签括号反转义 + 角色外观不再默认覆盖）
 
 - **danbooru 标签括号反转义**：danbooru 角色/作品标签常带括号（如 `belle (zenless zone zero)`），

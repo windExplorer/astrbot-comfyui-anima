@@ -1103,6 +1103,28 @@ class ComfyUIDrawPlugin(Star):
     def _workflows(self) -> list[dict]:
         return self._cfg("workflows", []) or []
 
+    @staticmethod
+    def _split_lora_aliases(raw: str) -> list[str]:
+        """把 LoRA 的「别名 / keywords」字段拆成干净的独立别名列表。
+
+        支持多种分隔符：逗号、全角逗号、竖线 ``|``（含 ``||``）、``&``（含 ``&&``）、
+        斜杠、顿号、空白；并去掉圆括号 / 全角括号内的注释（如 ``(角色&&画风lora)``）。
+        这样「菲比啾比, phoebe_chibi || 菲比丘比 && phoebe || 菲比 (角色&&画风lora)菲比啾比」
+        能正确拆出 phoebe_chibi / 菲比丘比 / phoebe / 菲比 等独立别名，供出图按别名匹配。
+        """
+        if not raw:
+            return []
+        cleaned = re.sub(r"[\(（][^\(（\)）]*[\)）]", " ", raw)
+        parts = re.split(r"[,，|&/、\s]+", cleaned)
+        out: list[str] = []
+        seen: set[str] = set()
+        for p in parts:
+            p = p.strip()
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
     def _lora_library(self) -> list[dict]:
         """全局 LoRA 库（配置顶层 loras）。返回项附带 aliases（供 LLM 区分/引用）。"""
         out = []
@@ -1113,13 +1135,33 @@ class ComfyUIDrawPlugin(Star):
             aliases = []
             if name:
                 aliases.append(name)
-            for a in re.split(r"[,，\n\r]+", kws):
-                a = a.strip()
+            for a in self._split_lora_aliases(kws):
                 if a and a not in aliases:
                     aliases.append(a)
             item["aliases"] = aliases
             out.append(item)
         return out
+
+    def _lora_lib_index(self) -> dict[str, dict]:
+        """全局 LoRA 库按「名称 + 全部别名」建索引（键 -> 库条目）。
+
+        供命令 / LLM 工具用别名（如 phoebe_chibi）也能定位到真实 LoRA，
+        解决「comfyui_loras 查到别名、出图却匹配不到」的问题：补全临时启用
+        的 LoRA 时，除精确 name 外也应命中别名。
+        """
+        idx: dict[str, dict] = {}
+        for l in self._lora_library():
+            keys = set()
+            nm = (l.get("name") or "").strip()
+            if nm:
+                keys.add(nm)
+            for al in (l.get("aliases") or []):
+                al = (al or "").strip()
+                if al:
+                    keys.add(al)
+            for k in keys:
+                idx.setdefault(k, l)
+        return idx
 
     def _loras_of(self, wf: dict) -> list[dict]:
         """解析本工作流实际生效的 LoRA 列表。
@@ -1129,7 +1171,7 @@ class ComfyUIDrawPlugin(Star):
         （按名称匹配）。组装时把两者合并成完整配置；若某名称在库里找不到，
         则仅用工作流里的有限信息（model_name 空，注入时会告警）。
         """
-        lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+        lib = self._lora_lib_index()
         text = (wf.get("loras_text") or "").strip()
         base = self._parse_loras_text(text) if text else (wf.get("loras", []) or [])
         merged: list[dict] = []
@@ -1678,7 +1720,10 @@ class ComfyUIDrawPlugin(Star):
             "（可能是中文、英文或中英混杂，也可能是结构化文本），请你理解其含义，"
             "改写为一张可以直接交给动漫模型（Anime 风格）的英文提示词。要求：\n"
             "1. 全部用英文，输出 Danbooru 风格标签（如 1girl, solo, white dress, "
-            "long hair, blue eyes, masterpiece, best quality），用英文逗号分隔；\n"
+            "long hair, blue eyes），用英文逗号分隔；结果开头必须固定加画质前缀 "
+            "`masterpiece, best quality, ultra-detailed, highres, absurdres, "
+            "intricate details, soft cinematic lighting, vibrant colors, refined anime style`"
+            "（稳定拉高出图精致度，不要省略）；\n"
             "2. 这是动漫/二次元风格生图，输出必须保持动漫风格（anime style, "
             "anime coloring, 2d 等），不要输出写实/照片类标签；\n"
             "3. 即使原文提到『真实摄影、手机拍照、胶片颗粒、35mm、浅景深、"
@@ -3170,7 +3215,7 @@ class ComfyUIDrawPlugin(Star):
         # apply_loras 因无配置项可遍历而不会注入任何节点，表现为「LoraLoader 节点: 无 /
         # 本次最终启用: 无」——这正是「/draw --安魂曲 没加上」的根因（工作流没引用安魂曲）。
         if active_map:
-            lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+            lib = self._lora_lib_index()
             for cmd_name in active_map:
                 if any(
                     workflow_builder._lora_name_matches(
@@ -3218,10 +3263,14 @@ class ComfyUIDrawPlugin(Star):
         # 预设（--名称/预设名）都自动带上。先排除用户已显式指定「0」的，避免重复。
         if active_map:
             always_pre: dict[str, str] = {}
-            lib_pre = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+            lib_pre = self._lora_lib_index()
             for lora_name in active_map:
                 ln = (lora_name or "").strip()
-                l = lib_pre.get(ln)
+                l = lib_pre.get(ln) or next(
+                    (v for k, v in lib_pre.items()
+                     if workflow_builder._lora_name_matches(k, ln)),
+                    None,
+                )
                 if not l:
                     continue
                 for p in self._parse_presets(l.get("presets")):
@@ -3268,7 +3317,7 @@ class ComfyUIDrawPlugin(Star):
         # 会被写入 positive（去重，仅追加缺失的词），否则只加了 LoRA 节点却没触发词，
         # 出图效果会偏离预期。仅当启用了 LoRA 且确实有触发词时才处理。
         if enabled:
-            _lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
+            _lib = self._lora_lib_index()
             _triggers: list[str] = []
             for nm in enabled:
                 _lc = next(
@@ -4753,7 +4802,7 @@ class ComfyUIDrawPlugin(Star):
                     break
             if target is None:
                 # 不在工作流默认列表里：若全局库里有，则追加一条默认（权重 1.0）
-                lib = {(x.get("name") or "").strip(): x for x in self._lora_library()}
+                lib = self._lora_lib_index()
                 if name in lib:
                     entries.append({"name": name, "weight": 1.0, "enabled": enabled})
                 else:
