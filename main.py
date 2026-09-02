@@ -3400,6 +3400,19 @@ class ComfyUIDrawPlugin(Star):
             if _slot_texts:
                 _note = "（本次未生成槽位文字，沿用工作流默认）" if not slot_values else ""
                 _slot_lines = "\n  槽位文字 : " + "；".join(_slot_texts) + _note
+                # 同时展示 boogu 实际收到的自然语言指令（一致性锁+中段+风格锁），便于核对
+                _boogu_lines = []
+                for _s in _comic_slots:
+                    if not isinstance(_s, dict) or comic.slot_mode(_s) != "nl":
+                        continue
+                    _k = (_s.get("key") or "").strip()
+                    if not _k or not (slot_values or {}).get(_k, "").strip():
+                        continue
+                    _boogu = self._render_nl_slot(_s, slot_values)
+                    if _boogu:
+                        _boogu_lines.append(f"    [{_k}] {_boogu}")
+                if _boogu_lines:
+                    _slot_lines += "\n  boogu指令 :\n" + "\n".join(_boogu_lines)
         logger.info(
             "【绘图·摘要】\n"
             "  工作流 : %s\n"
