@@ -449,6 +449,43 @@ def strip_bubble_field_from_prompt(prompt: str):
     return _prompt, _bubble
 
 
+def _bubble_slot_key_from_wf(wf: dict) -> str:
+    """从工作流 prompt_slots 找到 boogu/nl 气泡槽的变量名（找不到返回 ''）。"""
+    _raw = (wf or {}).get("prompt_slots")
+    if isinstance(_raw, str):
+        try:
+            _raw = json.loads(_raw)
+        except Exception:
+            return ""
+    if isinstance(_raw, dict):
+        _raw = [_raw]
+    if not isinstance(_raw, list):
+        return ""
+    for _s in _raw:
+        if not isinstance(_s, dict):
+            continue
+        if slot_mode(_s) == "nl":
+            _k = (_s.get("key") or "").strip()
+            if _k and _var_category(_k) == "bubble":
+                return _k
+    return ""
+
+
+def apply_bubble_fallback(slot_values: dict | None, wf: dict, bubble_text: str) -> dict | None:
+    """确定性兜底：已从 prompt 抽出气泡文字(bubble_text) 但槽位气泡为空时，强制填入，
+    避免 bot 误写 text:/气泡: 字段被剥离后气泡整段丢失（『字段为空』）。无气泡槽则不动。"""
+    if not bubble_text:
+        return slot_values
+    _key = _bubble_slot_key_from_wf(wf)
+    if not _key:
+        return slot_values
+    if slot_values is None:
+        slot_values = {}
+    if not (slot_values.get(_key) or "").strip():
+        slot_values[_key] = bubble_text
+    return slot_values
+
+
 # boogu 气泡/文字样式目录：驱动「自然语言指令」的气泡多样化（详见 skills/boogu-meme-bubbles）。
 # - desc：可直接写进 boogu 节点 prompt 中段的自然语言片段，{text} 会被替换为实际文字。
 #   其中的颜色/字号是「基准」，内部 LLM 可按角色发色、情绪、强调程度改写（见 boogu_nl_hint）。

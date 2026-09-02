@@ -4095,6 +4095,8 @@ class ComfyUIDrawPlugin(Star):
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
         slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, _clean_prompt)
+        # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
+        slot_values = comic.apply_bubble_fallback(slot_values, _wf, _bubble)
         # 委托 comfyui_draw 的完整出图逻辑（权限/闸门/队列/发送均复用）
         return await self.llm_draw(
             event, prompt=_clean_prompt, negative_prompt=negative_prompt, workflow=_wf_name,
@@ -4167,6 +4169,8 @@ class ComfyUIDrawPlugin(Star):
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
         slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, _clean_prompt)
+        # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
+        slot_values = comic.apply_bubble_fallback(slot_values, _wf, _bubble)
         return await self.llm_draw(
             event, prompt=_clean_prompt, negative_prompt=negative_prompt, workflow=_wf_name,
             width=width, height=height, loras=loras, seed=seed, count=count, prompts=prompts,
@@ -7200,6 +7204,8 @@ class ComfyUIDrawPlugin(Star):
                 slot_values = await self._comic_write_slots_llm(
                     _cwf_cfg, (_intent_text or _clean_prompt) + _bubble_hint, _clean_prompt
                 )
+                # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
+                slot_values = comic.apply_bubble_fallback(slot_values, _cwf_cfg, _bubble)
                 logger.info(
                     f"【路由】 漫画槽位造词完成：{'有文字' if slot_values else '无（沿用工作流默认）'}"
                 )
