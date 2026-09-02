@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.27（修：LoRA 别名大小写不匹配 + 用户纠正被当成表情包台词）
+
+- **现象 1（大小写）**：用户配置的别名是小写 `q版菲比`，agent 用大写 `Q版菲比` 填进 loras，仍报「找不到该名称」。
+- **根因 1**：`_lora_name_matches` 与 `_lora_lib_index` 的匹配是大小写敏感的；`Q版菲比` ≠ `q版菲比`。
+- **改法 1**：`_lora_name_matches` 改为大小写不敏感（两端 lower 后再比精确/前缀/去版本后缀）；`_lora_lib_index` 的索引同时写入小写键。现在 `Q版菲比`/`q版菲比`/`phoebe_chibi` 等任意大小写/别名都能命中。
+- **现象 2（指令当台词）**：用户说「但是菲比啾比，你没有用lora」纠正后，agent 重新出图，气泡里竟写着「但是菲比啾比，我没有用lora」——把用户的纠正原话塞进了表情包台词。
+- **根因 2**：`comfyui_comic` / `comfyui_meme_img` 把**原始用户消息**（`event.message_str`）当 `user_text` 传给漫画造词 LLM；而 `comic._gen_comic_prompts` 里 `_raw = user_text or scene`，于是纠正语句被当成「想法/台词素材」写进气泡。
+- **改法 2**：`comfyui_comic` / `comfyui_meme_img` 改为——**有显式 prompt（画面描述）时，`user_text` 取 prompt**，原始消息仅在没给 prompt 时才兜底。纠正/指令类内容不再泄漏进气泡台词。
+- **附带（工具文档）**：`comfyui_draw` / `comfyui_comic` 的 `loras` 参数说明加硬规则——用户只要提到某 LoRA 名/别名（含「用XX lora画」「你没用lora」「重新画」等纠正），都必须先 `comfyui_loras` 取规范名再填 `loras`；LoRA 名只写进 prompt 只是触发词、不会加载权重文件。
+
 ## v5.6.26（修：LoRA 用别名传入时匹配不到、导致未注入而乱画）
 
 - **现象**：agent 经 `comfyui_loras` 查到 LoRA（如「菲比啾比」别名 `phoebe_chibi`）后，把别名填进 `comfyui_draw` / `comfyui_comic` 的 `loras` 参数；但出图时插件报「工作流未引用且全局 LoRA 库里也找不到该名称」，LoRA 不注入，角色长歪/乱画。

@@ -1161,7 +1161,8 @@ class ComfyUIDrawPlugin(Star):
                     keys.add(al)
             for k in keys:
                 idx.setdefault(k, l)
-        return idx
+                idx.setdefault(k.lower(), l)
+            return idx
 
     def _loras_of(self, wf: dict) -> list[dict]:
         """解析本工作流实际生效的 LoRA 列表。
@@ -4190,7 +4191,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 预留，图生图请用 comfyui_meme_img。
             width(number): 宽度，0 或不填表示使用工作流默认宽度。
             height(number): 高度，0 或不填表示使用工作流默认高度。
-            loras(array[string]): 需要启用的 LoRA 名称/别名列表，可选。
+            loras(array[string]): 需要启用的 LoRA 名称/别名列表，可选。★硬规则：用户只要提到某个 LoRA 的名字/别名（包括「用XX lora画」「你没用lora」「重新画一张」这类纠正），都必须**先调 comfyui_loras 拿到规范名**并填进本参数；LoRA 名只写进 prompt 只是触发词，不会加载权重文件，角色会画错。
             seed(number): 随机种子，0 或不填表示每次随机。
             count(number): 预留参数，当前恒为 1。
             prompts(array): 多条出图项，要几张传几条，每条各出 1 张。
@@ -4215,10 +4216,11 @@ class ComfyUIDrawPlugin(Star):
         if _err:
             return _err
         _wf = plugin._find_workflow_by_name(_wf_name) or {}
-        _user_text = (getattr(event, "message_str", "") or "").strip()
-        # 清理段1：剥离 bot 误写的「气泡文字字段」(text:/气泡:) 与 boogu 形状描述，
-        # 抽出气泡文字作为槽位2 的自然语言提示（详见 comic.strip_bubble_field_from_prompt）
         _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
+        # 有显式 prompt（画面描述）时，以 prompt 作为台词素材；原始消息只在没给 prompt 时兜底。
+        # 否则「但是菲比啾比，你没有用lora」这类纠正/指令会经 comic 的 _raw = user_text or scene
+        # 被当成台词写进气泡（详见 comic._gen_comic_prompts）。
+        _user_text = _clean_prompt if _clean_prompt else (getattr(event, "message_str", "") or "").strip()
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
         _prompts = await plugin._comic_write_prompts_llm(
@@ -4292,10 +4294,11 @@ class ComfyUIDrawPlugin(Star):
         if _err:
             return _err
         _wf = plugin._find_workflow_by_name(_wf_name) or {}
-        _user_text = (getattr(event, "message_str", "") or "").strip()
-        # 清理段1：剥离 bot 误写的「气泡文字字段」(text:/气泡:) 与 boogu 形状描述，
-        # 抽出气泡文字作为槽位2 的自然语言提示（详见 comic.strip_bubble_field_from_prompt）
         _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
+        # 有显式 prompt（画面描述）时，以 prompt 作为台词素材；原始消息只在没给 prompt 时兜底。
+        # 否则「但是菲比啾比，你没有用lora」这类纠正/指令会经 comic 的 _raw = user_text or scene
+        # 被当成台词写进气泡（详见 comic._gen_comic_prompts）。
+        _user_text = _clean_prompt if _clean_prompt else (getattr(event, "message_str", "") or "").strip()
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
         _prompts = await plugin._comic_write_prompts_llm(
@@ -6877,7 +6880,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
-            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
+            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★硬规则：用户只要提到某个 LoRA 的名字/别名（包括「用XX lora画」「你没用lora」「重新画一张」这类纠正），都必须**先调 comfyui_loras 拿到规范名**并填进本参数；LoRA 名只写进 prompt 只是触发词，不会加载权重文件，角色会画错。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/多画几张"）但没给具体数字时 → prompts 传 3 条不同画面。★【count 当前恒为 1，一般不用传】：张数由 prompts 的条数决定，本参数是预留给将来「同一条提示词跑不同种子出多张」用的，现在传大于 1 会被拦回并要求改用 prompts 数组。
             prompts(array): 多条出图项，【要几张就传几条】，每条各出 1 张。两种写法都支持：

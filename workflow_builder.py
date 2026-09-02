@@ -553,25 +553,27 @@ def _normalize_lora_name(name: str) -> str:
 
 
 def _lora_name_matches(config_name: str, cmd_key: str) -> bool:
-    """命令简写 cmd_key 是否命中配置名 config_name。
+    """命令简写 cmd_key 是否命中配置名 config_name（大小写不敏感）。
 
     支持：
-      - 精确相等；
+      - 精确相等（忽略大小写，如 Q版菲比 == q版菲比）；
       - 对称前缀（带分隔符 - _ 空格 （ ( 【 [），如「安魂曲」<->「安魂曲-1」双向；
       - 去掉末尾版本后缀后相等，覆盖「安魂曲」「安魂曲1」「安魂曲_v1」「安魂曲 v1」。
     """
     if not config_name or not cmd_key:
         return False
-    if config_name == cmd_key:
+    a = config_name.strip().lower()
+    b = cmd_key.strip().lower()
+    if a == b:
         return True
     for sep in ("-", "_", " ", "（", "(", "【", "["):
-        if config_name.startswith(cmd_key + sep):
+        if a.startswith(b + sep):
             return True
-        if cmd_key.startswith(config_name + sep):
+        if b.startswith(a + sep):
             return True
-    if _normalize_lora_name(config_name) == cmd_key:
+    if _normalize_lora_name(a) == b:
         return True
-    if _normalize_lora_name(cmd_key) == config_name:
+    if _normalize_lora_name(b) == a:
         return True
     return False
 
