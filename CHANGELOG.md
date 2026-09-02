@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.4（修正：图生表情包只有 boogu 一段，无 anima 绘制段）
+
+- `skills/boogu-meme-bubbles/SKILL.md` 修正两种流程的架构：直出 `comfyui_comic` 是一个工作流里
+  「第一段 anima 绘制 + 第二段 boogu 加字」两段；**图生 `comfyui_meme_img` 是专门的 boogu 工作流，
+  没有第一段（anima 绘图），只需一张参考图 + 一个 boogu 指令（修饰图 + 加气泡文字）**。
+- 据此校正工具路由表、用法说明、LoRA 适用范围（LoRA 主要给直出 anima 绘制段；图生无 anima 段、风格来自参考图）、
+  并明确「anima 绘图风格」一节只适用于直出。
+
 ## v5.6.3（表情包制作大师技能补全：anima 绘图风格 + LoRA 指引）
 
 - `skills/boogu-meme-bubbles/SKILL.md` 补全「第一段 anima 绘图怎么画才好看的表情包」：
