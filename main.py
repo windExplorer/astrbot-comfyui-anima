@@ -3426,6 +3426,12 @@ class ComfyUIDrawPlugin(Star):
                         else:
                             _bv = str(_sv2.get(_k, "") or "").strip()
                     _boogu_lines.append(f"    [{_k}] {_bv if _bv else '(空/本次未生成，boogu 沿用工作流默认)'}")
+                # 真正发给 ComfyUI 的 boogu 节点指令（与 prompt_slots 配置无关，来自 boogu 接管）
+                for _bn in comic._boogu_node_ids(wf):
+                    _bv = (slot_values or {}).get(f"boogu_{_bn}", "") if slot_values else ""
+                    _boogu_lines.append(
+                        f"    [boogu节点 {_bn}] {_bv if _bv and _bv.strip() else '(空/本次未生成，boogu 沿用工作流默认)'}"
+                    )
                 if _boogu_lines:
                     _slot_lines += "\n  boogu指令 :\n" + "\n".join(_boogu_lines)
         logger.info(

@@ -485,6 +485,21 @@ def _is_boogu_node(wf: dict, slot: dict) -> bool:
     return str(_n.get("class_type") or "").strip() == "TextEncodeBooguEdit"
 
 
+def _boogu_node_ids(wf: dict) -> list:
+    """扫描工作流，返回所有 boogu 编辑节点(TextEncodeBooguEdit)的节点 id 列表。
+
+    用于『不依赖 prompt_slots 配置、直接接管 boogu 节点』：即使槽位没配 node，
+    或 node 指向对不上，也能找到真正的 boogu 节点并写入 LLM 现编的整段指令。
+    """
+    if not isinstance(wf, dict):
+        return []
+    _ids: list = []
+    for _nid, _node in wf.items():
+        if isinstance(_node, dict) and str(_node.get("class_type") or "").strip() == "TextEncodeBooguEdit":
+            _ids.append(_nid)
+    return _ids
+
+
 def apply_bubble_fallback(slot_values: dict | None, wf: dict, bubble_text: str) -> dict | None:
     """确定性兜底：已从 prompt 抽出气泡文字(bubble_text) 但槽位气泡为空时，强制填入，
     避免 bot 误写 text:/气泡: 字段被剥离后气泡整段丢失（『字段为空』）。无气泡槽则不动。"""
@@ -864,8 +879,13 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
     elif isinstance(_slots_raw, list):
         _slots = _slots_raw
     _fill_intent = slot_values is not None
+    # 直接扫描工作流里的 boogu 编辑节点，统一在循环后接管（不依赖槽位 node 配置）
+    _boogu_ids = set(_boogu_node_ids(wf))
     for _slot in _slots:
         if not isinstance(_slot, dict):
+            continue
+        # 指向 boogu 节点的槽位：跳过，避免把分字段文字写进错误字段；整段指令由下方 boogu pass 接管
+        if str(_slot.get("node") or "").strip() in _boogu_ids:
             continue
         _key = (_slot.get("key") or "").strip()
         _node = _slot.get("node")
@@ -900,6 +920,13 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
             continue
         if workflow_builder.set_text_node(prompt, _node, _field, _val or ""):
             logger.info(f"【槽位】 {_key} → 节点 {_node}.{_field}（{len(_val or '')} 字）")
+    # boogu 节点统一接管：把 LLM 现编的整段指令写入节点 prompt（字段名固定为 prompt）。
+    # 与 prompt_slots 配置无关——只要工作流含 TextEncodeBooguEdit 节点，必走此路，彻底避免写死形状。
+    for _bn in _boogu_ids:
+        _bv = (slot_values or {}).get(f"boogu_{_bn}", "") if slot_values else ""
+        if _bv and _bv.strip():
+            if workflow_builder.set_text_node(prompt, _bn, "prompt", _bv.strip()):
+                logger.info(f"【槽位·boogu】 节点 {_bn}.prompt ← LLM 整段指令（{len(_bv)} 字）")
 
 
 def _perspective_rule(subject: str) -> str:
@@ -946,8 +973,13 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subj
     _seen: set[str] = set()
     _vars: list[dict] = []
     _nl_slots: list[dict] = []
+    # 直接扫描工作流里的 boogu 编辑节点，无论 prompt_slots 怎么配，都强制接管这些节点
+    _boogu_ids = set(_boogu_node_ids(wf))
     for _s in _slots:
         if not isinstance(_s, dict):
+            continue
+        # 指向 boogu 节点的槽位：跳过，统一由下方 boogu 节点处理（避免双份文字/写死形状）
+        if str(_s.get("node") or "").strip() in _boogu_ids:
             continue
         if slot_mode(_s) == "nl":
             # 自然语言指令模式：该槽位由 LLM 直接写一段自然语言（以 slot.key 为变量名）
@@ -970,6 +1002,13 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subj
                 if _v and _v not in _seen:
                     _seen.add(_v)
                     _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
+    # boogu 节点：无论 prompt_slots 是否配了对应槽位，都让 LLM 写整段自然语言指令
+    for _bn in _boogu_ids:
+        _k = f"boogu_{_bn}"
+        if _k not in _seen:
+            _seen.add(_k)
+            _vars.append({"name": _k, "hint": boogu_nl_hint({})})
+            _nl_slots.append({"node": _bn, "key": _k})
     # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
     _disabled = _detect_disabled_slots(user_text or scene, _vars)
     # 剔除「不要发表情包」这类元指令，避免被当成画面描述语（检测必须在剥离前）
@@ -1113,8 +1152,13 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
     _seen: set[str] = set()
     _vars: list[dict] = []
     _nl_slots: list[dict] = []
+    # 直接扫描工作流里的 boogu 编辑节点，无论 prompt_slots 怎么配，都强制接管这些节点
+    _boogu_ids = set(_boogu_node_ids(wf))
     for _s in _slots:
         if not isinstance(_s, dict):
+            continue
+        # 指向 boogu 节点的槽位：跳过，统一由下方 boogu 节点处理（避免双份文字/写死形状）
+        if str(_s.get("node") or "").strip() in _boogu_ids:
             continue
         if slot_mode(_s) == "nl":
             _k = (_s.get("key") or "").strip()
@@ -1136,6 +1180,13 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
                 if _v and _v not in _seen:
                     _seen.add(_v)
                     _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
+    # boogu 节点：无论 prompt_slots 是否配了对应槽位，都让 LLM 写整段自然语言指令
+    for _bn in _boogu_ids:
+        _k = f"boogu_{_bn}"
+        if _k not in _seen:
+            _seen.add(_k)
+            _vars.append({"name": _k, "hint": boogu_nl_hint({})})
+            _nl_slots.append({"node": _bn, "key": _k})
     # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
     _disabled = _detect_disabled_slots(idea, _vars)
     # 剔除「不要发表情包」这类元指令后再喂给 LLM，避免被当成画面描述语（检测必须在剥离前）
