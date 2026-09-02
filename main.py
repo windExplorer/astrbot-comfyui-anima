@@ -3403,17 +3403,28 @@ class ComfyUIDrawPlugin(Star):
             if _slot_texts:
                 _note = "（本次未生成槽位文字，沿用工作流默认）" if not slot_values else ""
                 _slot_lines = "\n  槽位文字 : " + "；".join(_slot_texts) + _note
-                # 同时展示 boogu 实际收到的自然语言指令（一致性锁+中段+风格锁），便于核对
+                # 同时展示 boogu 实际收到的指令：每个槽位（nl / vars / template 都算）都列出来，
+                # 无论是否为空都标注，避免「非 nl 槽位」或「槽位为空」导致整段 boogu 指令消失。
+                # （你这个表情包工作流是 vars 模式，之前只遍历 nl 槽位所以一直没打印——已修正。）
                 _boogu_lines = []
                 for _s in _comic_slots:
-                    if not isinstance(_s, dict) or comic.slot_mode(_s) != "nl":
+                    if not isinstance(_s, dict):
                         continue
                     _k = (_s.get("key") or "").strip()
-                    if not _k or not (slot_values or {}).get(_k, "").strip():
+                    if not _k:
                         continue
-                    _boogu = self._render_nl_slot(_s, slot_values)
-                    if _boogu:
-                        _boogu_lines.append(f"    [{_k}] {_boogu}")
+                    if comic.slot_mode(_s) == "nl":
+                        _bv = self._render_nl_slot(_s, slot_values)
+                    else:
+                        _sv2 = slot_values or {}
+                        _vars2 = [str(v).strip() for v in (_s.get("vars") or []) if str(v).strip()]
+                        if _s.get("template"):
+                            _bv = comic.render_slot_template(self, _s, _s.get("template"), _sv2)
+                        elif _vars2:
+                            _bv = str(_sv2.get(_vars2[0], "") or "").strip()
+                        else:
+                            _bv = str(_sv2.get(_k, "") or "").strip()
+                    _boogu_lines.append(f"    [{_k}] {_bv if _bv else '(空/本次未生成，boogu 沿用工作流默认)'}")
                 if _boogu_lines:
                     _slot_lines += "\n  boogu指令 :\n" + "\n".join(_boogu_lines)
         logger.info(
