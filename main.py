@@ -1180,7 +1180,12 @@ class ComfyUIDrawPlugin(Star):
             name = (l.get("name") or "").strip()
             if not name:
                 continue
-            lib_l = lib.get(name)
+            # 先按精确名/别名/小写命中；命中不上再用 _lora_name_matches 做
+            # 前缀/版本后缀模糊匹配，避免工作流预设名与库名有微小差异时丢掉 model_name。
+            lib_l = lib.get(name) or next(
+                (v for k, v in lib.items() if workflow_builder._lora_name_matches(k, name)),
+                None,
+            )
             if lib_l:
                 merged.append(
                     {
@@ -3254,10 +3259,14 @@ class ComfyUIDrawPlugin(Star):
                         f"（工作流未预引用；文件={lib_l.get('model_name')}）"
                     )
                 else:
+                    lib_keys = list(lib.keys())
                     logger.warning(
                         f"【LoRA 提示】本次请求启用「{cmd_name}」，但工作流未引用且全局 LoRA 库"
                         f"里也找不到该名称。请先在全局「LoRA 库」配置「{cmd_name}」并填好"
                         f"model_name（真实 .safetensors 文件名），否则无法注入。"
+                        f"（诊断：全局 LoRA 库索引共 {len(lib_keys)} 个键，"
+                        f"含『{cmd_name}』={'是' if cmd_name in lib_keys else '否'}，"
+                        f"样例键={lib_keys[:8]}）"
                     )
 
         # 常驻预设：启用的 LoRA 若配置了名为「0」的预设，则无论用户是否指定其它
