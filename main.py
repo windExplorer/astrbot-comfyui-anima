@@ -1390,13 +1390,16 @@ class ComfyUIDrawPlugin(Star):
         """把配置里的 prompt_slots（JSON 字符串或对象数组）归一化为列表（实现见 comic.py）。"""
         return comic.normalize_prompt_slots(self, raw)
 
-    async def _comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> dict:
-        """用内部 LLM 为带 prompt_slots 的工作流生成各槽位文字（实现见 comic.py）。"""
-        return await comic.comic_write_slots_llm(self, wf, user_text, scene)
+    async def _comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subject: str = "user") -> dict:
+        """用内部 LLM 为带 prompt_slots 的工作流生成各槽位文字（实现见 comic.py）。
 
-    async def _comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True):
+        subject: "user"=用户自己的表情包；"bot"=bot 自己发的表情包（角色=b佯本体）。
+        """
+        return await comic.comic_write_slots_llm(self, wf, user_text, scene, subject)
+
+    async def _comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True, subject: str = "user"):
         """用内部 LLM 把用户一句想法展开为画面提示词 + 槽位文字 + 识别 LoRA（实现见 comic.py）。"""
-        return await comic.comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt, want_slots)
+        return await comic.comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt, want_slots, subject)
 
     @staticmethod
     def _parse_presets(raw) -> list[dict]:
@@ -4107,7 +4110,10 @@ class ComfyUIDrawPlugin(Star):
         _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
-        slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, _clean_prompt)
+        slot_values = await plugin._comic_write_slots_llm(
+            _wf, _user_text, _clean_prompt,
+            "bot" if (source and source.strip() == SOURCE_COMPANION_PLUGIN) else "user",
+        )
         # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
         slot_values = comic.apply_bubble_fallback(slot_values, _wf, _bubble)
         # 委托 comfyui_draw 的完整出图逻辑（权限/闸门/队列/发送均复用）
@@ -4181,7 +4187,10 @@ class ComfyUIDrawPlugin(Star):
         _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
-        slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, _clean_prompt)
+        slot_values = await plugin._comic_write_slots_llm(
+            _wf, _user_text, _clean_prompt,
+            "bot" if (source and source.strip() == SOURCE_COMPANION_PLUGIN) else "user",
+        )
         # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
         slot_values = comic.apply_bubble_fallback(slot_values, _wf, _bubble)
         return await self.llm_draw(

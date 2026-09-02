@@ -848,21 +848,37 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
             logger.info(f"【槽位】 {_key} → 节点 {_node}.{_field}（{len(_val or '')} 字）")
 
 
-# 视角规则：表情包/漫画角色 = 正在说话的用户本人（第一人称），杜绝第三人称旁观视角
-_PERSPECTIVE_RULE = (
-    "【角色即用户本人·第一人称】表情包/漫画里的角色就是【正在说话的用户本人】，一律用第一人称"
-    "『我/本人』看待，不是某个第三方人物。当用户用『我/俺/本宝宝/咱』等描述自己的状态、动作、"
-    "情绪或处境时，让角色去演绎那个状态，并把气泡/台词写成第一人称"
-    "（如用户说『我在上班还没下班』→气泡写『我还没下班』），"
-    "绝不要写成旁观者视角的第三人称（如『某人在上班』『它还在这儿加班』）。"
-    "用户没提自己时用泛称即可；但只要用户以第一人称自述，就保持第一人称、角色=用户。"
-)
+def _perspective_rule(subject: str) -> str:
+    """表情包/漫画的『主角视角』规则：按 subject 区分画面主角。
+
+    - subject="user"（默认）：用户自己的表情包，角色=正在说话的用户本人（第一人称）。
+    - subject="bot"：bot（助手/伴侣）自己发的表情包，角色=bot 本体（第一人称），
+      且绝不能把用户正在做的事当成 bot 在做的事。
+    """
+    if subject == "bot":
+        return (
+            "【角色即 bot 本体·第一人称】这是 bot（助手/伴侣）自己发的表情包，画面角色就是"
+            "【bot 本人】，用第一人称『我』代表 bot。写 bot 自己的状态 / 心情 / 陪伴"
+            "（如『我陪着你呢』『想你啦』『在呢』），围绕 bot 与用户的互动来写。"
+            "★ 绝不要把你（用户）正在做的事当成 bot 在做的事：用户在上班 / 通勤 / 吃饭 ≠ bot 在上班，"
+            "bot 没有现实里的人类日常，别编造 bot 在做这些；提到用户时用『你』称呼，"
+            "bot 用自己的口吻说话，不要把用户的活动搬进 bot 的台词 / 场景。"
+        )
+    # 默认：用户自己的表情包
+    return (
+        "【角色即用户本人·第一人称】表情包/漫画里的角色就是【正在说话的用户本人】，一律用第一人称"
+        "『我/本人』看待，不是某个第三方人物。当用户用『我/俺/本宝宝/咱』等描述自己的状态、动作、"
+        "情绪或处境时，让角色去演绎那个状态，并把气泡/台词写成第一人称"
+        "（如用户说『我在上班还没下班』→气泡写『我还没下班』），"
+        "绝不要写成旁观者视角的第三人称（如『某人在上班』『它还在这儿加班』）。"
+        "用户没提自己时用泛称即可；但只要用户以第一人称自述，就保持第一人称、角色=用户。"
+    )
 
 
 # --------------------------------------------------------------------------- #
 # LLM 造词
 # --------------------------------------------------------------------------- #
-async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> dict:
+async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subject: str = "user") -> dict:
     """用内部 LLM 为带 prompt_slots 的工作流生成各槽位文字。
 
     成功时返回扁平的 {var_name: text} 且**覆盖所有槽位变量**（空 → "" 清空节点）；
@@ -912,7 +928,7 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         "你正在为一句想法生成「表情包/漫画」的画面文字。请只输出一个 JSON 对象"
         "（不要任何解释、不要 markdown 代码块、不要反引号），键必须严格等于下方列出的"
         "槽位变量名，值为该槽位应写的文字。\n\n"
-        + _PERSPECTIVE_RULE + "\n\n"
+        + _perspective_rule(subject) + "\n\n"
         f"用户原话/想法：\n{_clean_text}\n\n"
         f"画面描述（将作为出图提示词）：\n{scene}\n\n"
         "（若下方槽位含『画面 / positive / draw 绘图提示词』：请写详细英文 Danbooru 风格标签，"
@@ -1015,7 +1031,7 @@ def merge_feature_lora(self, feature: dict | None, lora_map: dict, negative: str
     return lora_map, negative
 
 
-async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True):
+async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True, subject: str = "user"):
     """用内部 LLM 把用户一句想法展开为：Anima 画面提示词 + 表情包槽位文字 + 识别到的 LoRA。
 
     返回 (positive_prompt, slot_values, lora_extracted)。无模型/失败则兜底（不崩）。
@@ -1097,7 +1113,7 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
     _system = (
         "你是表情包/漫画提示词助手。用户用一句中文描述想法，请只输出一个 JSON 对象"
         "（不要任何解释、不要 markdown 代码块、不要反引号）。\n"
-        + _PERSPECTIVE_RULE + "\n"
+        + _perspective_rule(subject) + "\n"
     )
     if not _nl_slots:
         _system += (
