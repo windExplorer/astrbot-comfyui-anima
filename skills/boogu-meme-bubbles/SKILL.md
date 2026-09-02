@@ -17,6 +17,8 @@ description: 表情包 / 梗图 / 带字卡通图的「制作大师」技能。�
 
 一句话：直出是「anima 画 + boogu 加字」两段；图生是「boogu 直接改图 + 加字」一段（只有 boogu，无 anima）。
 
+> **工作流怎么配（给配置者）**：直出表情包只需在 workflow 配置里填 `boogu_node`（boogu 编辑指令节点 ID，如 `11`）。插件会一次性让内部 LLM 生成两段提示词——节点 A（绘图，走 `positive_node`）+ 节点 B（本节点，一整段自然语言加字指令），不再需要 `prompt_slots` 的 bubble/bottom 清单。`prompt_slots` 仍保留作为兼容旧方式。
+
 ## 二、工具路由
 
 | 场景 | 工具 | 流程 |

@@ -158,7 +158,7 @@
           "kind": {
             "type": "string",
             "description": "工作流类型",
-            "hint": "draw=普通生图/图生图；comic=表情包/漫画（需配置 prompt_slots 多槽位注入）。新增/导入的工作流若配了 prompt_slots 会自动标为 comic，一般无需手动改。",
+            "hint": "draw=普通生图/图生图；comic=表情包/漫画（需配置 boogu_node 指令节点或 prompt_slots 多槽位注入）。新增/导入的工作流若有 boogu_node 或 prompt_slots 会自动标为 comic，一般无需手动改。",
             "default": "draw",
             "options": ["draw", "comic"]
           },
@@ -372,6 +372,54 @@
             "hint": "给「一条工作流需要多处、语义不同的文本」的场景用 —— 如表情包（anima 生图提示词 + boogu 加字指令）、漫画（角色提示词 + 整段分镜描述）。**留空 = 不启用，普通工作流无需填写，行为完全不变**。每组字段：key(槽位名) / node(目标节点ID) / field(输入框名，默认 text) / mode(可选) / vars(变量名数组) / template(模板)。  ｜ mode 省略或 \"vars\"=旧模式：LLM 按 vars 填字段、template 把字段拼成文本（兼容旧配置）。  ｜ mode:\"nl\"=自然语言指令模式（boogu 加字推荐）：boogu 不认识 bubble=/bottom= 等字段，只认一段自然语言。LLM 模式：变量名=key，由 LLM 直接写一整段中文自然语言（按情绪选气泡样式，见 skills/boogu-meme-bubbles）；直填模式：用 vars（如 [\"bubble_text\",\"bottom_text\"]）经内置「气泡样式目录」拼成自然语言，支持「样式名:文字」强制指定（如 爆炸:午安 / 思考:在想啥 / 无气泡:冲），未指定时气泡位默认 bubble_style(默认云朵气泡)、底部位默认 bottom_style(默认底部字幕条)；boogu 编辑节点（TextEncodeBooguEdit）即使配成 vars 模式也会自动升级为『LLM 写整段自然语言指令』——气泡形状/位置/字体/描边颜色由 LLM 按情绪现编、随内容变化，不再锁死成固定气泡；系统仅在前后补「保持参考图不变」一致性锁与「防错字」约束（不再锁定可爱卡通风格）。template(对象 {prefix, blocks:[{var, max_chars, tiers:[{max_chars, text}]}], suffix})仍可用作自定义模板（兼容旧配置）。主正向提示词仍走 positive_node，不受此影响。",
             "default": ""
           },
+          "boogu_node": {
+            "type": "string",
+            "description": "boogu 编辑指令节点 ID（节点 B，可选）",
+            "hint": "表情包「加字 / 加气泡」编辑节点的键名（如 11，class_type 通常是 TextEncodeBooguEdit）。配置后插件会一次性让内部 LLM 生成两段提示词：节点 A（正提示词节点 positive_node）填绘图提示词，本节点填一整段<b>自然语言</b>加字指令（如「右上角加云朵气泡，写『我不干了』；不要底部字幕」），不再需要气泡/底部清单。留空则不会自动生成 boogu 指令（可改用 prompt_slots 旧方式，或不启用加字）。",
+            "default": ""
+          },
+          "boogu_field": {
+            "type": "string",
+            "description": "boogu 指令入口字段名（可选）",
+            "hint": "boogu 节点的输入框名，一般是 prompt。",
+            "default": "prompt"
+          },
+          "boogu_width_node": {
+            "type": "string",
+            "description": "后半段宽度节点 ID（可选）",
+            "hint": "两阶段串联工作流里 boogu 编辑阶段的「宽」所在节点键名。填了且下方 boogu_width 有值才注入；留空则不注入、沿用工作流自带尺寸。",
+            "default": ""
+          },
+          "boogu_height_node": {
+            "type": "string",
+            "description": "后半段高度节点 ID（可选）",
+            "hint": "boogu 编辑阶段的「高」所在节点键名。填了且下方 boogu_height 有值才注入；留空则不注入、沿用工作流自带尺寸。",
+            "default": ""
+          },
+          "boogu_width": {
+            "type": "int",
+            "description": "后半段固定宽度（可选）",
+            "hint": "写入 boogu_width_node 的宽度值。<b>完全写死、用户指令与 LLM 均不能改</b>；不填则不注入、用工作流自带尺寸。",
+            "default": 0
+          },
+          "boogu_height": {
+            "type": "int",
+            "description": "后半段固定高度（可选）",
+            "hint": "写入 boogu_height_node 的高度值。<b>完全写死、用户指令与 LLM 均不能改</b>；不填则不注入、用工作流自带尺寸。",
+            "default": 0
+          },
+          "boogu_width_field": {
+            "type": "string",
+            "description": "后半段宽度字段名（可选）",
+            "hint": "boogu_width_node 内控制宽的输入框名，默认 width。",
+            "default": "width"
+          },
+          "boogu_height_field": {
+            "type": "string",
+            "description": "后半段高度字段名（可选）",
+            "hint": "boogu_height_node 内控制高的输入框名，默认 height。",
+            "default": "height"
+          },
           "workflow_json": {
             "type": "text",
             "description": "直接粘贴 JSON（备选）",
@@ -429,7 +477,7 @@
   },
   "special_features": {
     "description": "特殊功能配置（表情包 / 图生表情包 / 漫画）",
-    "hint": "声明「表情包(meme_text) / 图生表情包(meme_img) / 漫画(comic)」三类带字功能，每项绑定一个已配置 prompt_slots 的漫画工作流（meme_img 还需配 image_node）。可选默认 LoRA 与默认负向提示词。指令 /表情包、/图生表情包 与 AI 工具 comfyui_comic / comfyui_meme_img 会按功能 key 找到对应配置并出图。留空时插件会尝试从旧配置 default_comic_workflow 自动迁移出一条 meme_text。",
+    "hint": "声明「表情包(meme_text) / 图生表情包(meme_img) / 漫画(comic)」三类带字功能，每项绑定一个漫画工作流（需配 boogu_node 指令节点，或旧版 prompt_slots；meme_img 还需配 image_node）。可选默认 LoRA 与默认负向提示词。指令 /表情包、/图生表情包 与 AI 工具 comfyui_comic / comfyui_meme_img 会按功能 key 找到对应配置并出图。留空时插件会尝试从旧配置 default_comic_workflow 自动迁移出一条 meme_text。",
     "type": "template_list",
     "templates": {
       "default": {
@@ -457,7 +505,7 @@
           "workflow": {
             "type": "string",
             "description": "绑定的工作流名",
-            "hint": "须为已配置 prompt_slots 的漫画工作流（meme_img 还需配 image_node）。",
+            "hint": "须为已配置 boogu_node 或 prompt_slots 的漫画工作流（meme_img 还需配 image_node）。",
             "default": ""
           },
           "default_lora": {

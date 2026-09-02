@@ -13,7 +13,7 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 
 - `comfyui_draw`：文生图 / 附带参考图时自动图生图。核心参数 `prompt`（单张），或多条画面用 `prompts`。
 - `comfyui_img2img`：基于一张参考图做变换 / 重绘。`prompt` 传"变换意图"（单张），或多个变换用 `prompts`。
-- `comfyui_comic`：生成**带文字**的表情包 / 漫画（气泡台词 + 底部旁白 / 多格分镜）。参数与 comfyui_draw 一致，但插件会自动为工作流的 prompt_slots 槽位生成文字，你无需手填任何槽位。
+- `comfyui_comic`：生成**带文字**的表情包 / 漫画（气泡台词 + 底部旁白 / 多格分镜）。参数与 comfyui_draw 一致，但插件会一次性为工作流生成两段提示词——节点 A（绘图，走 `positive_node`）+ 节点 B（boogu 加字指令，写进配置的 `boogu_node`），你无需手填任何槽位。
 - `comfyui_loras`：查询当前已配置的 LoRA 库（名称、别名、底模、描述、触发词）。需要用户提到"用某个 LoRA / 某风格画"但你不确定可用列表时调用。
 - `comfyui_workflows`：查询当前已配置的工作流列表（名称、是否支持图生图、是否 Anima）。
 - `comfyui_gallery`：发**以前画过/收藏**的旧图（不属于"画新图"，不要用它替代出图）。

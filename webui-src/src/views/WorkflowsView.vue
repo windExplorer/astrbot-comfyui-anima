@@ -20,7 +20,7 @@
         <n-radio-button value="draw">文生图</n-radio-button>
         <n-radio-button value="comic">表情包·漫画</n-radio-button>
       </n-radio-group>
-      <span class="filter-hint">类型按「是否配置多槽位提示词(prompt_slots)」自动判定</span>
+      <span class="filter-hint">类型按「是否配置 boogu 指令节点(boogu_node) 或多槽位提示词(prompt_slots)」自动判定</span>
     </div>
 
     <div class="wf-scroll">
@@ -99,7 +99,7 @@
             <n-radio-button value="draw">文生图 / 图生图</n-radio-button>
             <n-radio-button value="comic">表情包 / 漫画</n-radio-button>
           </n-radio-group>
-          <span class="form-hint">选「表情包/漫画」需在下方配置「多槽位提示词注入」。旧工作流有 prompt_slots 会自动判为该类。</span>
+          <span class="form-hint">选「表情包/漫画」需在下方配置「boogu 指令节点(boogu_node)」或「多槽位提示词注入(prompt_slots)」。配了这两者之一会自动判为该类。</span>
         </n-form-item>
         <n-form-item label="启用该工作流">
           <n-switch v-model:value="editForm.enabled" />
@@ -183,8 +183,8 @@
             <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
           </n-space>
         </n-form-item>
-        <n-divider v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim()" style="margin:8px 0">── 多槽位提示词注入（表情包 / 漫画）──</n-divider>
-        <n-form-item v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim()" label="多槽位提示词注入（prompt_slots）">
+        <n-divider v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim() || (editForm.boogu_node||'').trim()" style="margin:8px 0">── 表情包 / 漫画：加字配置 ──</n-divider>
+        <n-form-item v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim() || (editForm.boogu_node||'').trim()" label="多槽位提示词注入（prompt_slots，旧方式，可选）">
           <n-space vertical :size="4" style="width:100%">
             <n-input
               v-model:value="editForm.prompt_slots"
@@ -202,6 +202,31 @@
             </span>
           </n-space>
         </n-form-item>
+        <n-form-item label="boogu 指令节点（节点 B，推荐）">
+          <n-space vertical :size="4" style="width:100%">
+            <n-input v-model:value="editForm.boogu_node" placeholder="如 11（TextEncodeBooguEdit 节点键名）" />
+            <span class="form-hint">
+              表情包「加字 / 加气泡」编辑节点的 ID。配置后插件<b>一次性让 LLM 生成两段提示词</b>：
+              节点 A（正提示词节点）填绘图提示词，本节点填一整段<b>自然语言</b>加字指令（如「右上角加云朵气泡，写『我不干了』；不要底部字幕」），不再需要气泡/底部清单。
+              留空则不会自动生成 boogu 指令（可只用 prompt_slots 旧方式，或不启用加字）。
+            </span>
+          </n-space>
+        </n-form-item>
+        <div class="form-grid">
+          <n-form-item label="指令入口字段"><n-input v-model:value="editForm.boogu_field" placeholder="prompt（默认）" /></n-form-item>
+          <n-form-item label="后半段宽高节点（宽）"><n-input v-model:value="editForm.boogu_width_node" placeholder="可选，如 30" /></n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="后半段宽字段名"><n-input v-model:value="editForm.boogu_width_field" placeholder="width（默认）" /></n-form-item>
+          <n-form-item label="后半段固定宽度"><n-input-number v-model:value="editForm.boogu_width" :min="0" :max="4096" :step="64" placeholder="不填=沿用工作流自带" /></n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="后半段高节点"><n-input v-model:value="editForm.boogu_height_node" placeholder="可选，如 31" /></n-form-item>
+          <n-form-item label="后半段高字段名"><n-input v-model:value="editForm.boogu_height_field" placeholder="height（默认）" /></n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="后半段固定高度"><n-input-number v-model:value="editForm.boogu_height" :min="0" :max="4096" :step="64" placeholder="不填=沿用工作流自带" /></n-form-item>
+        </div>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="默认 LoRA">
           <div class="lora-list">
@@ -319,7 +344,7 @@ function serializeLorasText(list: LoraRow[] | undefined | null): string {
 // 工作流类型筛选：文生图 / 表情包·漫画（按 kind 字段；旧工作流有 prompt_slots 也判为 comic）
 const filterType = ref<"all" | "draw" | "comic">("all");
 function isComicW(w: any): boolean {
-  return (w.kind || "").trim().toLowerCase() === "comic" || !!(w.prompt_slots && String(w.prompt_slots).trim());
+  return (w.kind || "").trim().toLowerCase() === "comic" || !!(w.prompt_slots && String(w.prompt_slots).trim()) || !!(w.boogu_node && String(w.boogu_node).trim());
 }
 const filteredWorkflows = computed(() => {
   const items = workflows.value.map((w, i) => ({ w, i }));
@@ -448,7 +473,7 @@ function openForm(idx: number, prefill?: any) {
     server_name: w.server_name || "",
     workflow_name: w.workflow_name || "",
     is_anima: !!w.is_anima,
-    kind: ((w.kind || "").trim().toLowerCase() === "comic" || (w.prompt_slots || "").trim()) ? "comic" : "draw",
+    kind: ((w.kind || "").trim().toLowerCase() === "comic" || (w.prompt_slots || "").trim() || (w.boogu_node || "").trim()) ? "comic" : "draw",
     civitai_url: w.civitai_url || "",
     image: w.image || "",
     positive_node: w.positive_node || "",
@@ -459,6 +484,14 @@ function openForm(idx: number, prefill?: any) {
     resolution_height_field: w.resolution_height_field || "height",
     resolution_mode: w.resolution_mode || "single",
     prompt_slots: w.prompt_slots || "",
+    boogu_node: w.boogu_node || "",
+    boogu_field: w.boogu_field || "",
+    boogu_width_node: w.boogu_width_node || "",
+    boogu_height_node: w.boogu_height_node || "",
+    boogu_width: w.boogu_width ?? null,
+    boogu_height: w.boogu_height ?? null,
+    boogu_width_field: w.boogu_width_field || "",
+    boogu_height_field: w.boogu_height_field || "",
     default_width: w.default_width ?? 512,
     default_height: w.default_height ?? 512,
     image_node: w.image_node || "",

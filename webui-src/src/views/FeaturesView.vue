@@ -3,7 +3,7 @@
     <div class="view-head">
       <div>
         <h2>功能配置</h2>
-        <p>声明「表情包 / 图生表情包 / 漫画」三类带字功能，每项绑定一个已配置 prompt_slots 的漫画工作流。指令 /表情包、/图生表情包 与 AI 工具 comfyui_comic / comfyui_meme_img 会按功能 key 找到对应配置并出图。</p>
+        <p>声明「表情包 / 图生表情包 / 漫画」三类带字功能，每项绑定一个已配置 boogu_node（或旧版 prompt_slots）的漫画工作流。指令 /表情包、/图生表情包 与 AI 工具 comfyui_comic / comfyui_meme_img 会按功能 key 找到对应配置并出图。</p>
       </div>
       <n-button type="primary" :loading="saving" @click="save">保存</n-button>
     </div>
@@ -25,9 +25,9 @@
                 :options="workflowOptions"
                 filterable
                 clearable
-                placeholder="选择已配 prompt_slots 的漫画工作流"
+                placeholder="选择已配 boogu_node / prompt_slots 的漫画工作流"
               />
-              <span class="form-hint">{{ f.key === 'meme_img' ? '需配 image_node（图生表情包）' : '需配 prompt_slots（表情/漫画）' }}</span>
+              <span class="form-hint">{{ f.key === 'meme_img' ? '需配 image_node（图生表情包）' : '需配 boogu_node 或 prompt_slots（表情/漫画）' }}</span>
             </n-form-item>
             <n-form-item label="默认 LoRA（可选，每行一个，名称|权重|0/1）">
               <n-input

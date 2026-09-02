@@ -41,6 +41,9 @@ def workflow_kind(self, wf: dict | None) -> str:
         return _k
     if normalize_prompt_slots(self, wf.get("prompt_slots")):
         return "comic"
+    # 新流程：配置了 boogu_node（节点 B 编辑指令节点）的工作流同样视为表情包/漫画工作流
+    if (wf.get("boogu_node") or "").strip():
+        return "comic"
     return "draw"
 
 
@@ -126,12 +129,17 @@ def auto_comic_workflow(self, requested: str) -> tuple[str | None, str | None]:
     返回 (wf_name, error)；wf_name 为 None 时 error 给出友好提示。
     """
     _all = self._workflows()
-    _comic_wf = [w for w in _all if normalize_prompt_slots(self, w.get("prompt_slots"))]
+    _comic_wf = [w for w in _all
+                if normalize_prompt_slots(self, w.get("prompt_slots"))
+                or (w.get("boogu_node") or "").strip()]
     _names = "、".join(f"「{w.get('name', '')}」" for w in _comic_wf) or "（未配置任何漫画工作流）"
 
     def _is_comic(name: str) -> bool:
         _w = self._find_workflow_by_name(name)
-        return _w is not None and bool(normalize_prompt_slots(self, _w.get("prompt_slots")))
+        return _w is not None and bool(
+            normalize_prompt_slots(self, _w.get("prompt_slots"))
+            or (w.get("boogu_node") or "").strip()
+        )
 
     _req = (requested or "").strip() or (self._cfg("default_comic_workflow", "") or "").strip()
     if _req and not _is_comic(_req):
@@ -164,7 +172,8 @@ def resolve_comic_wf(self, requested: str, is_img2img: bool) -> tuple[str | None
     if is_img2img and not (_wf.get("image_node") or "").strip():
         _alt = next(
             (w for w in self._workflows()
-             if normalize_prompt_slots(self, w.get("prompt_slots"))
+             if (normalize_prompt_slots(self, w.get("prompt_slots"))
+                  or (w.get("boogu_node") or "").strip())
              and (w.get("image_node") or "").strip()),
             None,
         )
@@ -486,67 +495,52 @@ def _class_type_is_boogu(class_type) -> bool:
     return False
 
 
-# boogu 编辑节点文本输入里特有的「编辑指令」标记（普通 anima 绘图提示词不会出现这些词）。
-# 用它们做内容兜底识别，避免依赖节点 class_type（多合一/自定义节点类名千奇百怪）。
-_BOOGU_TEXT_SIG = (
-    "保持参考图", "对话气泡", "字幕条", "云朵气泡", "气泡内写着",
-    "boogu", "booguedit", "caption",
-)
+def _node_model_is_boogu(wf: dict, node: dict) -> bool:
+    """兜底识别：节点通过 clip / model 输入链路加载了 boogu 专用模型
+    （CLIPLoader type=boogu，或 UnetLoaderGGUF / UNETLoader 加载 boogu-edit 模型）。
 
-
-def _node_text_is_boogu(node: dict) -> bool:
-    """兜底识别：节点文本输入本身含 boogu 编辑风格指令（如「保持参考图…」「对话气泡」），
-    即使 class_type 是奇葩多合一节点也能接管。"""
+    不依赖节点文案、也不依赖类名是否含 boogu——专兜「多合一节点类名不含 boogu、
+    配置里也没标 boogu:true」的离谱情况。文案是会被 LLM 替换的内容，绝不可用作识别特征。
+    """
     if not isinstance(node, dict):
         return False
     _inputs = node.get("inputs")
     if not isinstance(_inputs, dict):
         return False
-    for _k in ("prompt", "text", "boogu_prompt", "instruction"):
-        _v = _inputs.get(_k)
-        if isinstance(_v, str) and any(_s in _v for _s in _BOOGU_TEXT_SIG):
+    for _port in ("clip", "model", "models", "unet_name", "model_name"):
+        _ref = _inputs.get(_port)
+        _nid = None
+        if isinstance(_ref, list) and _ref:
+            _nid = str(_ref[0]).strip()
+        elif isinstance(_ref, str):
+            _nid = _ref.strip()
+        if not _nid:
+            continue
+        _src = wf.get(_nid)
+        if not isinstance(_src, dict):
+            continue
+        _sct = str(_src.get("class_type") or "").strip().lower()
+        _sin = _src.get("inputs")
+        if not isinstance(_sin, dict):
+            continue
+        if "clip" in _sct and str(_sin.get("type") or "").strip().lower() == "boogu":
             return True
+        for _m in ("unet_name", "model_name"):
+            if "boogu" in str(_sin.get(_m) or "").strip().lower():
+                return True
     return False
 
 
-def _slot_is_boogu_like(wf: dict, slot: dict) -> bool:
-    """槽位本身像 boogu 加字槽：其模板/提示/指向节点的文本输入含气泡等 boogu 标记。
-
-    用于「槽位写法固定模板、节点类名又不叫 boogu」的奇葩多合一节点——只要槽位在写
-    气泡/字幕类自然语言，就强制升级为 LLM 写整段指令。
-    """
-    if not isinstance(slot, dict):
-        return False
-    _hay = ""
-    _tpl = slot.get("template")
-    if isinstance(_tpl, str):
-        _hay += _tpl
-    elif isinstance(_tpl, dict):
-        _hay += json.dumps(_tpl, ensure_ascii=False)
-    _hay += " " + " ".join(str(v) for v in (slot.get("vars") or []))
-    _hay += " " + str(slot.get("hint") or "")
-    # 该槽位指向节点的文本输入也可能直接含 boogu 指令
-    _nid = str(slot.get("node") or "").strip()
-    _n = wf.get(_nid) or {}
-    _inputs = _n.get("inputs", {}) if isinstance(_n, dict) else {}
-    for _k in ("prompt", "text", "boogu_prompt", "instruction"):
-        _v = _inputs.get(_k)
-        if isinstance(_v, str):
-            _hay += " " + _v
-    return any(_s in _hay for _s in _BOOGU_TEXT_SIG)
-
-
 def _is_boogu_node(wf: dict, slot: dict) -> bool:
-    """判断槽位是否指向 boogu 编辑节点（指令式图生图，节点只认一段自然语言）。
+    """槽位是否指向 boogu 编辑节点（指令式图生图，节点只认一段自然语言）。
 
     boogu 槽即使被配成 目录/vars 模式，也应升级为『LLM 写整段自然语言指令』，
-    否则气泡形状/位置/字体会被 _boogu_style_desc 写死（用户要 LLM 现编、外观随内容变）。
+    否则气泡形状/位置/字体会被写死（用户要 LLM 现编、外观随内容变）。
 
-    判定（满足其一即为 boogu 节点）：
-    1. 节点 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
-    2. 节点文本输入本身含 boogu 编辑指令（保持参考图 / 对话气泡 等，不依赖类名）；
-    3. 槽位显式声明 ``"boogu": true``；
-    4. 槽位模板/提示/指向节点含气泡等 boogu 标记（多合一节点写法固定也能接管）。
+    判定（满足其一即为 boogu 节点，全部基于「配置/类型/模型链路」，绝不扫文案）：
+    1. 槽位显式 ``"boogu": true``（用户在 prompt_slots 里已填节点 id 并声明 boogu）；
+    2. 指向节点的 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
+    3. 指向节点通过 clip / model 链路加载了 boogu 专用模型（多合一节点兜底）。
     """
     if not isinstance(slot, dict):
         return False
@@ -556,21 +550,16 @@ def _is_boogu_node(wf: dict, slot: dict) -> bool:
     if not _node or not isinstance(wf, dict):
         return False
     _n = wf.get(_node) or {}
-    if _class_type_is_boogu(_n.get("class_type")):
-        return True
-    if _node_text_is_boogu(_n):
-        return True
-    return _slot_is_boogu_like(wf, slot)
+    return _class_type_is_boogu(_n.get("class_type")) or _node_model_is_boogu(wf, _n)
 
 
 def _boogu_node_ids(wf: dict) -> list:
     """扫描工作流，返回所有 boogu 编辑节点 id（无论 prompt_slots 怎么配都接管）。
 
-    来源（任一即接管，彻底不依赖节点类名）：
+    判定来源（全部基于「配置/类型/模型链路」，绝不扫节点文案——文案是要被 LLM 替换的内容）：
     1. 节点 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
-    2. 节点文本输入本身含 boogu 编辑指令（保持参考图 / 对话气泡 等）；
-    3. prompt_slots 里带 ``"boogu": true`` 的槽位指向的节点；
-    4. prompt_slots 里模板/提示含气泡标记的槽位指向的节点（奇葩多合一节点兜底）。
+    2. 节点通过 clip / model 链路加载了 boogu 专用模型；
+    3. prompt_slots 里显式 ``"boogu": true`` 的槽位指向的节点（用户已填节点 id）。
     """
     if not isinstance(wf, dict):
         return []
@@ -584,10 +573,10 @@ def _boogu_node_ids(wf: dict) -> list:
 
     for _nid, _node in wf.items():
         if isinstance(_node, dict) and (
-            _class_type_is_boogu(_node.get("class_type")) or _node_text_is_boogu(_node)
+            _class_type_is_boogu(_node.get("class_type")) or _node_model_is_boogu(wf, _node)
         ):
             _add(_nid)
-    # prompt_slots 里显式声明 / 写法像 boogu 的槽位指向的节点
+    # prompt_slots 里显式声明 boogu 的槽位指向的节点（用户已填 node id + boogu:true）
     _raw = wf.get("prompt_slots")
     if isinstance(_raw, str) and _raw.strip():
         try:
@@ -598,9 +587,7 @@ def _boogu_node_ids(wf: dict) -> list:
         _raw = [_raw]
     if isinstance(_raw, list):
         for _s in _raw:
-            if not isinstance(_s, dict):
-                continue
-            if _s.get("boogu") is True or _slot_is_boogu_like(wf, _s):
+            if isinstance(_s, dict) and _s.get("boogu") is True:
                 _add(str(_s.get("node") or "").strip())
     return _ids
 
@@ -1088,122 +1075,61 @@ def _perspective_rule(subject: str) -> str:
 # --------------------------------------------------------------------------- #
 # LLM 造词
 # --------------------------------------------------------------------------- #
-async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subject: str = "user") -> dict:
-    """用内部 LLM 为带 prompt_slots 的工作流生成各槽位文字。
+async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, subject: str = "user") -> dict:
+    """用内部 LLM 一次性生成表情包的两段提示词（不再拆成气泡/底部清单）：
 
-    成功时返回扁平的 {var_name: text} 且**覆盖所有槽位变量**（空 → "" 清空节点）；
-    无法生成时返回 None，调用方跳过槽位、沿用工作流默认文字。
+    - draw ：节点 A 的【绘图正向提示词】（Anima 英文 Danbooru 标签风格）
+    - boogu：节点 B 的【boogu 编辑自然语言指令】（中文：加什么气泡、写什么字）
+
+    返回 {"draw": str, "boogu": str}；模型未配置或调用失败时返回 {"draw": "", "boogu": ""}，
+    调用方跳过、沿用工作流默认文字。
     """
-    if not wf:
-        return None
-    _slots = normalize_prompt_slots(self, wf.get("prompt_slots"))
-    if not _slots:
-        return None
-    _seen: set[str] = set()
-    _vars: list[dict] = []
-    _nl_slots: list[dict] = []
-    # 直接扫描工作流里的 boogu 编辑节点，无论 prompt_slots 怎么配，都强制接管这些节点
-    _boogu_ids = set(_boogu_node_ids(wf))
-    for _s in _slots:
-        if not isinstance(_s, dict):
-            continue
-        # 指向 boogu 节点的槽位：跳过，统一由下方 boogu 节点处理（避免双份文字/写死形状）
-        if str(_s.get("node") or "").strip() in _boogu_ids:
-            continue
-        if slot_mode(_s) == "nl":
-            # 自然语言指令模式：该槽位由 LLM 直接写一段自然语言（以 slot.key 为变量名）
-            _k = (_s.get("key") or "").strip()
-            if _k and _k not in _seen:
-                _seen.add(_k)
-                _vars.append({"name": _k, "hint": boogu_nl_hint(_s)})
-                _nl_slots.append(_s)
-        elif _is_boogu_node(wf, _s):
-            # boogu 编辑节点：即使配成 目录/vars 模式，也升级为『LLM 写整段自然语言指令』，
-            # 避免气泡形状/位置/字体被 _boogu_style_desc 写死（用户要 LLM 现编整段、外观随内容变）。
-            _k = (_s.get("key") or "").strip() or f"boogu_{_s.get('node')}"
-            if _k not in _seen:
-                _seen.add(_k)
-                _vars.append({"name": _k, "hint": boogu_nl_hint(_s)})
-                _nl_slots.append(_s)
-        else:
-            for _v in (_s.get("vars") or []):
-                _v = str(_v).strip()
-                if _v and _v not in _seen:
-                    _seen.add(_v)
-                    _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
-    # boogu 节点：无论 prompt_slots 是否配了对应槽位，都让 LLM 写整段自然语言指令
-    for _bn in _boogu_ids:
-        _k = f"boogu_{_bn}"
-        if _k not in _seen:
-            _seen.add(_k)
-            _vars.append({"name": _k, "hint": boogu_nl_hint({})})
-            _nl_slots.append({"node": _bn, "key": _k})
-    # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
-    _disabled = _detect_disabled_slots(user_text or scene, _vars)
-    # 剔除「不要发表情包」这类元指令，避免被当成画面描述语（检测必须在剥离前）
-    _clean_text = strip_comic_negations(user_text or scene)
-    if not _vars:
-        return None
+    _raw = user_text or scene
+    _clean = strip_comic_negations(_raw)
     model = self._cfg("llm_model", "").strip()
     if not model:
         model = self._resolve_translate_provider_id() or ""
     if not model:
-        logger.info("【槽位·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过得词（沿用工作流默认文字）")
-        return None
-    _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
-    _nl_notes = _nl_disable_notes(user_text or scene)
-    _thought_note = _detect_thought(user_text or scene)
-    _is_nl = bool(_nl_slots)
+        logger.info("【表情包·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过得词（沿用工作流默认）")
+        return {"draw": "", "boogu": ""}
+    _nl_notes = _nl_disable_notes(_raw)
+    _thought_note = _detect_thought(_raw)
     prompt = (
-        "你正在为一句想法生成「表情包/漫画」的画面文字。请只输出一个 JSON 对象"
-        "（不要任何解释、不要 markdown 代码块、不要反引号），键必须严格等于下方列出的"
-        "槽位变量名，值为该槽位应写的文字。\n\n"
+        "你正在为一句想法生成「表情包」所需的两段提示词。只输出一个 JSON 对象"
+        "（不要任何解释、不要 markdown 代码块、不要反引号），键固定为 draw 与 boogu：\n\n"
         + _perspective_rule(subject) + "\n\n"
-        f"用户原话/想法：\n{_clean_text}\n\n"
-        f"画面描述（将作为出图提示词）：\n{scene}\n\n"
-        "（若下方槽位含『画面 / positive / draw 绘图提示词』：请写详细英文 Danbooru 风格标签，"
+        f"用户原话/想法：\n{_clean}\n\n"
+        f"画面描述（将作为出图参考）：\n{scene}\n\n"
+        "draw：节点 A 的【绘图正向提示词】，写详细英文 Danbooru 风格标签，"
         "含 masterpiece、best quality、主体、表情、动作；表情包讲究『字能读、脸能懂』——"
         "表情要夸张（瞪眼/张嘴/脸红/炸毛/流泪）、角色上半身或大头特写且四周留白给气泡、"
         "背景简洁（simple background / plain background）以便白字气泡可读、用干净利落的动漫赛璐璐风，"
-        "不要写成简短中文。）\n\n"
-        "槽位变量（键名必须严格一致）：\n"
-        f"{_spec}\n\n"
+        "不要写成简短中文。\n"
+        "boogu：节点 B 的【编辑自然语言指令】（中文），描述在已生成的卡通图上【添加哪些文字元素】"
+        "——例如『在右上角加一个云朵气泡，里面写「我不干了」；不需要底部字幕』。"
+        "boogu 不认识任何字段名（bubble= / bottom= 等），只认自然语言，禁止输出键值对 / JSON。"
+        "气泡/文字样式按情绪多样化：可爱日常→云朵气泡；普通说话→圆角对话气泡；"
+        "内心OS/犹豫→思考气泡；大喊/震惊/激动→爆炸气泡；怒气/急促→尖角气泡；"
+        "通用梗图大字→无气泡白字黑边；拟声/冲击→放射爆裂大字。"
+        "旁白/底部字幕条【默认绝对不加】：只有内容明显是吐槽/真相总结、或用户明确要『字幕/旁白』时才用。"
+        "字号随字数自适应、整体偏小，文字务必简短（气泡 ≤8 字、底部 ≤6 字），且必须在气泡内留边距、绝不溢出。\n"
     )
-    if _is_nl:
-        prompt += (
-            "其中带【boogu 编辑指令】说明的槽位，其值必须是一整段【自然语言指令】"
-            "（可一两句话，描述加什么气泡 / 加什么底部文字），不要写短词、不要写键值对。"
-            "（旁白/底部字幕默认不加：多数表情包只有气泡台词，只有吐槽/总结/用户要字幕时才写底部。）\n"
-        )
-    else:
-        prompt += (
-            "任意槽位若不需要文字，返回空字符串或省略该键即可（节点会被清空，不出该位置文字）。\n"
-            "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；宁短勿长。\n"
-        )
-    if slots_few_shot(_vars):
-        prompt += slots_few_shot(_vars) + "\n"
-    prompt += "只输出 JSON 对象："
-    if _disabled:
-        _disabled_names = "、".join(_disabled)
-        prompt += (
-            f"\n【重要·按用户要求禁用】用户明确要求不要写以下位置，对应键必须返回空字符串"
-            f"（或省略），绝对不要生成：{_disabled_names}。"
-        )
     if _nl_notes:
-        prompt += f"\n【重要·boogu 指令约束】{_nl_notes}。"
+        prompt += f"\n【boogu 约束】{_nl_notes}。"
     if _thought_note:
-        prompt += f"\n【重要·气泡样式】{_thought_note}。"
-    _fb_note = _feedback_note(user_text or scene)
+        prompt += f"\n【气泡样式】{_thought_note}。"
+    _fb_note = _feedback_note(_raw)
     if _fb_note:
-        prompt += f"\n【重要·反馈处理】{_fb_note}。"
+        prompt += f"\n【反馈处理】{_fb_note}。"
+    prompt += '\n输出 JSON：{"draw": "英文绘图提示词", "boogu": "中文编辑指令"}'
     try:
-        logger.info(f"【槽位·造词】 使用模型({model}) 生成槽位文字")
+        logger.info(f"【表情包·造词】 使用模型({model}) 生成两段提示词")
         llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
-        self._record_llm_token("comic_slots", model, llm_resp)
+        self._record_llm_token("comic_prompts", model, llm_resp)
         text = getattr(llm_resp, "completion_text", "") or ""
     except Exception as e:
-        logger.warning(f"【槽位·造词】 LLM 调用失败，沿用默认文字: {e}")
-        return None
+        logger.warning(f"【表情包·造词】 LLM 调用失败，沿用默认文字: {e}")
+        return {"draw": "", "boogu": ""}
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text, flags=re.DOTALL)
@@ -1215,19 +1141,15 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subj
             try:
                 _parsed = json.loads(m.group(0))
             except Exception:
-                return None
+                return {"draw": "", "boogu": ""}
         else:
-            return None
+            return {"draw": "", "boogu": ""}
     if not isinstance(_parsed, dict):
-        return None
-    _allowed = {v["name"] for v in _vars}
-    _out = {k: str(_parsed.get(k) or "").strip() for k in _allowed}
-    # 确定性兜底：用户说『不要底部/不加旁白』的槽位，无论 LLM 是否听话都强制清空
-    for _d in _disabled:
-        if _d in _out:
-            _out[_d] = ""
-            logger.info(f"【槽位·造词】 按用户要求禁用槽位：{_d}（强制清空）")
-    return _out
+        return {"draw": "", "boogu": ""}
+    return {
+        "draw": str(_parsed.get("draw") or "").strip(),
+        "boogu": str(_parsed.get("boogu") or "").strip(),
+    }
 
 
 def merge_feature_lora(self, feature: dict | None, lora_map: dict, negative: str) -> tuple[dict, str]:

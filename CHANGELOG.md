@@ -2,6 +2,30 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.21（修：boogu 节点识别不再扫文案——改按「配置声明 / class_type / 模型链路」判定）
+
+- **根因**：v5.6.20 用「扫节点文案（保持参考图 / 对话气泡 等）」来兜底识别 boogu 节点，
+  但文案本身就是要被 LLM 替换的指令，拿它当识别特征等于循环论证，且对没在默认文案里带这些词的
+  节点会漏判 → 节点落回普通 vars 槽位、套用写死模板（带 bubble/bottom 的「底部的文字是""」）。
+  表情包工作流是**两段**：anima 段（正向/负向提示词）+ boogu 段（编辑指令）。boogu 段没被识别，
+  就只有 anima 段正常传、boogu 段一直吃模板。
+- **改法（彻底不扫文案）**：boogu 节点判定只基于三种确定性信号，任一即接管：
+  1. `prompt_slots` 里槽位显式 `"boogu": true`（用户已填节点 id，直接信配置）；
+  2. 节点 `class_type` 命中 boogu（官方 `TextEncodeBooguEdit` 或含 boogu 的多合一节点）；
+  3. 节点通过 `clip` / `model` 输入链路加载了 boogu 专用模型（CLIPLoader type=boogu，或
+     UnetLoaderGGUF / UNETLoader 加载 boogu-edit 模型）——专兜「类名不含 boogu、配置也没标」的离谱多合一节点。
+- **效果**：boogu 节点必被 `comic_write_slots_llm` 接管，LLM 现编整段编辑指令写入 `boogu_{节点id}`，
+  `inject_slots` 覆盖写进节点（字段名按节点入口自适应：prompt / text / boogu_prompt / instruction），
+  不再出现写死模板；anima 段与 boogu 段两条提示词都正常传入 ComfyUI。
+- **注意**：若你的 boogu 槽位还没标 `"boogu": true` 且节点类名/模型链路都兜不到，请在该槽位加
+  `"boogu": true`（你已经填了 node id，补这一行即可）。
+- **配套（本次顺带）**：工作流配置新增独立 `boogu_node` 字段（boogu 编辑指令节点 id，如 `11`），
+  表情包工作流配了它就「一次性生成两段提示词」——节点 A（绘图，走 `positive_node`）+ 节点 B（本节点，
+  一整段自然语言加字指令），不再需要 `prompt_slots` 的气泡/底部清单；`_conf_schema.json` 与 WebUI
+  编辑页（WorkflowsView / FeaturesView）已加上该字段及后半段写死宽高（boogu_width_node / boogu_width
+  等），comic 工作流自动判定从「只看 prompt_slots」改为「`boogu_node` 或 `prompt_slots`」；
+  `skills/comfyui-draw/SKILL.md`、`skills/boogu-meme-bubbles/SKILL.md`、`docs/comic-meme-design.md` 同步更新。
+
 ## v5.6.20（修：多合一节点仍走模板——改为不依赖类名，按「节点文本/槽位写法含 boogu 标记」兜底接管）
 
 - **根因（续 v5.6.19）**：v5.6.19 仍只认 `class_type`（含 boogu / 显式 `"boogu": true`）。

@@ -1390,12 +1390,12 @@ class ComfyUIDrawPlugin(Star):
         """把配置里的 prompt_slots（JSON 字符串或对象数组）归一化为列表（实现见 comic.py）。"""
         return comic.normalize_prompt_slots(self, raw)
 
-    async def _comic_write_slots_llm(self, wf: dict, user_text: str, scene: str, subject: str = "user") -> dict:
-        """用内部 LLM 为带 prompt_slots 的工作流生成各槽位文字（实现见 comic.py）。
+    async def _comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, subject: str = "user") -> dict:
+        """用内部 LLM 一次性生成表情包的两段提示词（draw + boogu，实现见 comic.py）。
 
-        subject: "user"=用户自己的表情包；"bot"=bot 自己发的表情包（角色=b佯本体）。
+        subject: "user"=用户自己的表情包；"bot"=bot 自己发的表情包（角色=佯本体）。
         """
-        return await comic.comic_write_slots_llm(self, wf, user_text, scene, subject)
+        return await comic.comic_write_prompts_llm(self, wf, user_text, scene, subject)
 
     async def _comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, want_slots=True, subject: str = "user"):
         """用内部 LLM 把用户一句想法展开为画面提示词 + 槽位文字 + 识别 LoRA（实现见 comic.py）。"""
@@ -3302,7 +3302,34 @@ class ComfyUIDrawPlugin(Star):
         # 注意：槽位只负责**额外的**文本节点；主正向提示词仍走上方 positive 全流程
         # （中文翻译 / LoRA 预设 / 触发词追加），以保证这些现有能力不丢失。
         # 实现见 comic.py:inject_slots（归一化 / 渲染 / 清空节点均在那里）。
-        comic.inject_slots(self, prompt, wf, slot_values)
+        # 表情包 boogu 节点（节点 B）指令注入 + 后半段固定宽高：
+        # 节点 B 指令来自内部 LLM 生成的两段提示词之一（slot_values["boogu"]），
+        # 按配置 boogu_node 写入；后半段宽高只认配置写死的值（用户指令 / LLM 均不可改），
+        # 未配置则不注入、沿用工作流自带尺寸。
+        _boogu_instr = ((slot_values or {}).get("boogu") or "") if slot_values else ""
+        _bn = wf.get("boogu_node")
+        if _bn and _boogu_instr and _boogu_instr.strip():
+            workflow_builder.set_text_node(
+                prompt, _bn, (wf.get("boogu_field") or "prompt"), _boogu_instr.strip()
+            )
+            logger.info(f"【boogu】 指令 → 节点 {_bn}（{len(_boogu_instr.strip())} 字）")
+        elif _bn:
+            logger.info(f"【boogu】 节点 {_bn} 本次未生成指令（沿用工作流默认）")
+        _bw = wf.get("boogu_width_node")
+        if _bw and wf.get("boogu_width") is not None:
+            workflow_builder.set_number_node(
+                prompt, _bw, (wf.get("boogu_width_field") or "width"), int(wf.get("boogu_width"))
+            )
+            logger.info(f"【boogu 宽】 节点 {_bw} = {wf.get('boogu_width')}")
+        _bh = wf.get("boogu_height_node")
+        if _bh and wf.get("boogu_height") is not None:
+            workflow_builder.set_number_node(
+                prompt, _bh, (wf.get("boogu_height_field") or "height"), int(wf.get("boogu_height"))
+            )
+            logger.info(f"【boogu 高】 节点 {_bh} = {wf.get('boogu_height')}")
+        # 旧 prompt_slots 工作流（未配置 boogu_node）仍走原槽位注入逻辑
+        if not _bn:
+            comic.inject_slots(self, prompt, wf, slot_values)
 
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
         seeds_used = workflow_builder.randomize_seed(prompt, seed)
@@ -4133,15 +4160,15 @@ class ComfyUIDrawPlugin(Star):
         _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
-        slot_values = await plugin._comic_write_slots_llm(
+        _prompts = await plugin._comic_write_prompts_llm(
             _wf, _user_text, _clean_prompt,
             "bot" if (source and source.strip() == SOURCE_COMPANION_PLUGIN) else "user",
         )
-        # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
-        slot_values = comic.apply_bubble_fallback(slot_values, _wf, _bubble)
+        _draw = _prompts.get("draw") or _clean_prompt
+        slot_values = {"boogu": _prompts.get("boogu") or ""}
         # 委托 comfyui_draw 的完整出图逻辑（权限/闸门/队列/发送均复用）
         return await self.llm_draw(
-            event, prompt=_clean_prompt, negative_prompt=negative_prompt, workflow=_wf_name,
+            event, prompt=_draw, negative_prompt=negative_prompt, workflow=_wf_name,
             img2img_workflow=img2img_workflow, width=width, height=height, loras=loras,
             seed=seed, count=count, prompts=prompts, source=source, image=image, denoise=denoise,
             slot_values=slot_values, comic_feature="meme_text", caption=caption,
@@ -4210,14 +4237,14 @@ class ComfyUIDrawPlugin(Star):
         _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
         if _bubble:
             _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
-        slot_values = await plugin._comic_write_slots_llm(
+        _prompts = await plugin._comic_write_prompts_llm(
             _wf, _user_text, _clean_prompt,
             "bot" if (source and source.strip() == SOURCE_COMPANION_PLUGIN) else "user",
         )
-        # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
-        slot_values = comic.apply_bubble_fallback(slot_values, _wf, _bubble)
+        _draw = _prompts.get("draw") or _clean_prompt
+        slot_values = {"boogu": _prompts.get("boogu") or ""}
         return await self.llm_draw(
-            event, prompt=_clean_prompt, negative_prompt=negative_prompt, workflow=_wf_name,
+            event, prompt=_draw, negative_prompt=negative_prompt, workflow=_wf_name,
             width=width, height=height, loras=loras, seed=seed, count=count, prompts=prompts,
             source=source, image=image, denoise=denoise, slot_values=slot_values, comic_feature="meme_img",
             caption=caption,
@@ -7246,13 +7273,20 @@ class ComfyUIDrawPlugin(Star):
                     _bubble_hint = f"\n（用户/上文指定的气泡文字：{_bubble}）"
                 for _it in _items:
                     _it["prompt"], _ = comic.strip_bubble_field_from_prompt(_it.get("prompt") or "")
-                slot_values = await self._comic_write_slots_llm(
+                _prompts = await self._comic_write_prompts_llm(
                     _cwf_cfg, (_intent_text or _clean_prompt) + _bubble_hint, _clean_prompt
                 )
-                # 确定性兜底：抽出气泡文字但 LLM 没写进槽位时强制填入，杜绝「字段为空」
-                slot_values = comic.apply_bubble_fallback(slot_values, _cwf_cfg, _bubble)
+                # 节点 A（绘图提示词）：覆盖出图计划里每条的 prompt
+                if _prompts.get("draw"):
+                    prompt = _prompts["draw"]
+                    for _it in _items:
+                        _it["prompt"] = _prompts["draw"]
+                # 节点 B（boogu 编辑指令）：随 slot_values 传入 _do_draw，按配置 boogu_node 注入
+                slot_values = {"boogu": _prompts.get("boogu") or ""}
                 logger.info(
-                    f"【路由】 漫画槽位造词完成：{'有文字' if slot_values else '无（沿用工作流默认）'}"
+                    f"【路由】 漫画两段提示词生成："
+                    f"绘图={'有' if _prompts.get('draw') else '无'}, "
+                    f"boogu={'有' if slot_values.get('boogu') else '无（沿用工作流默认）'}"
                 )
 
         # ── 出图计划：把多条提示词摊平为「每项独立参数」的列表 ──────────
