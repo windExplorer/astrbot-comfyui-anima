@@ -769,8 +769,33 @@
   "show_draw_report": {
     "type": "bool",
     "description": "出图完成后输出文件信息",
-    "hint": "出图完成后是否发送一条包含尺寸/大小/耗时/时间的小报告。默认关闭（关闭则不输出文件信息）。",
+    "hint": "出图完成后是否发送一条包含尺寸/大小/耗时/时间的小报告。默认关闭（关闭则不输出文件信息）。开启且「图文消息」的 merge_draw_report 为 true 时，这份报告会并进图片那条消息里（不再单独发一条）。",
     "default": false
+  },
+  "image_caption": {
+    "type": "object",
+    "description": "图文消息（文字 + 图片合成一条发送）",
+    "hint": "把配文与图片合成【一条】消息发出，而不是先文字后图片两条。注意：个别平台不支持图文混排时会退化成两条，属正常现象。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用图文消息",
+        "hint": "开启后，出图时会把配文（LLM 工具传入的 caption）与图片合成一条消息发送；关闭则维持原样（图片单独一条）。",
+        "default": true
+      },
+      "merge_draw_report": {
+        "type": "bool",
+        "description": "出图小报告并入图片消息",
+        "hint": "开启「出图完成后输出文件信息」时，把那份尺寸/大小/耗时报告一起塞进图片那条消息，不再单独发一条。",
+        "default": true
+      },
+      "max_caption_chars": {
+        "type": "int",
+        "description": "配文最大字数",
+        "hint": "超过则按此长度截断（防止模型输出一大段话把图挤没了）。0 表示不限制。默认 200。",
+        "default": 200
+      }
+    }
   },
   "log_workflow_json": {
     "type": "bool",

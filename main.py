@@ -2317,6 +2317,59 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _e:
             logger.warning(f"【发送】 主动发送文本失败（忽略，不中断主流程）: {_e}")
 
+    # ------------------------------------------------------------------ #
+    # 图文消息：把「配文 / 出图报告」与图片合成一条消息发送
+    # ------------------------------------------------------------------ #
+    def _cfg_image_caption(self) -> dict:
+        """读取「图文消息」配置块（容错：任何异常 / 非 dict 都退回空 dict）。"""
+        try:
+            _c = self._cfg("image_caption", {}) or {}
+            return _c if isinstance(_c, dict) else {}
+        except Exception:
+            return {}
+
+    def _draw_report_text(self, img_path, w, h, draw_start) -> str:
+        """生成出图小报告文案（尺寸 / 大小 / 耗时 / 时间），失败返回空串。
+
+        抽成方法是因为图文消息需要在**发图之前**就把报告算出来（并入同一条消息），
+        而旧逻辑是在发图之后单独发一条。
+        """
+        try:
+            _st = os.stat(img_path)
+            _ftime = time.strftime("%m-%d %H:%M:%S", time.localtime(_st.st_mtime))
+            _kb = _st.st_size / 1024.0
+            _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
+            # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
+            if _PILImage is not None:
+                try:
+                    with _PILImage.open(img_path) as _im:
+                        _wh = f"{_im.width}×{_im.height}"
+                except Exception:
+                    _wh = f"{w}×{h}"
+            else:
+                _wh = f"{w}×{h}"
+            _cost = time.time() - draw_start
+            return random.choice(_DRAW_DONE_HINTS).format(
+                ftime=_ftime, wh=_wh, size=_size, cost=f"{_cost:.1f}",
+            )
+        except Exception as _e:
+            logger.warning(f"【出图·报告】 生成小报告失败（不影响出图）: {_e}")
+            return ""
+
+    def _build_image_caption(self, caption: str, report_text: str) -> str:
+        """拼出随图发送的文字（配文 + 可选出图报告），按配置做长度截断。"""
+        _parts = [p for p in ((caption or "").strip(), (report_text or "").strip()) if p]
+        if not _parts:
+            return ""
+        _text = "\n".join(_parts)
+        try:
+            _max = int(self._cfg_image_caption().get("max_caption_chars", 200) or 0)
+        except (TypeError, ValueError):
+            _max = 0
+        if _max > 0 and len(_text) > _max:
+            _text = _text[:_max].rstrip() + "…"
+        return _text
+
     def _share_base_url(self) -> str:
         cfg = self._cfg("share_webui", {}) or {}
         domain = (cfg.get("domain") or "").strip().rstrip("/")
@@ -2766,6 +2819,7 @@ class ComfyUIDrawPlugin(Star):
         explicit_default: bool = False,
         slot_values: dict | None = None,
         comic_feature: str | None = None,
+        caption: str = "",
     ):
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
         # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
@@ -3617,8 +3671,34 @@ class ComfyUIDrawPlugin(Star):
                             # 标记被拦截：不发送、不入图库、不 yield 图片，但继续走
                             # 后续「绘图结束」日志与操作日志（记录为拦截），多图时跳到下一张。
                             _nsfw_blocked = True
+                    # ── 图文消息：把配文 / 出图报告与图片合成【一条】消息 ──────────
+                    # 必须在发图前算好（旧逻辑是发图后单独发一条）。报告并入后不再重复发送。
+                    _report_merged = False
+                    _cap_text = ""
+                    if not _nsfw_blocked and (self._cfg_image_caption().get("enabled", True)):
+                        _rpt = ""
+                        if self._cfg("show_draw_report", False) and self._cfg_image_caption().get("merge_draw_report", True):
+                            _rpt = self._draw_report_text(img_path, w, h, _draw_start)
+                            if _rpt:
+                                _report_merged = True
+                        _cap_text = self._build_image_caption(caption, _rpt)
                     if not _nsfw_blocked:
-                        yield event.image_result(_send_img_path), _send_img_path
+                        if _cap_text:
+                            _cap_result = event.chain_result(
+                                [Plain(text=_cap_text), Image.fromFileSystem(_send_img_path)]
+                            )
+                            # ★必须显式关闭「文本转图片」：AstrBot 的 t2i 装饰阶段在
+                            # （use_t2i_ is None and 全局 t2i 开启）或 use_t2i_ 为真时，
+                            # 会把整条链里开头的 Plain 渲染成图并**整条替换**为那张渲染图——
+                            # 配文一旦超过 t2i 字数阈值，辛苦生成的图片会被直接丢弃。
+                            # 置为 False 即强制走普通文本发送，保住图片。
+                            try:
+                                _cap_result.use_t2i_ = False
+                            except Exception:
+                                pass
+                            yield _cap_result, _send_img_path
+                        else:
+                            yield event.image_result(_send_img_path), _send_img_path
 
                     # 出图成功业务日志（仅成功发送时打印用户信息，被 NSFW 拦截的图不发）
                     if not _nsfw_blocked:
@@ -3712,31 +3792,12 @@ class ComfyUIDrawPlugin(Star):
 
                     # 出图完成后的贴心小报告：文件时间、尺寸、耗时（随机萌文案）。
                     # 受配置 show_draw_report 控制（默认关闭，关闭则不输出文件信息）。
-                    if self._cfg("show_draw_report", False):
+                    # 若上面已把报告并进图片那条消息（图文消息），这里不再重复发一条。
+                    if self._cfg("show_draw_report", False) and not _report_merged:
                         try:
-                            _st = os.stat(img_path)
-                            _ftime = time.strftime(
-                                "%m-%d %H:%M:%S", time.localtime(_st.st_mtime)
-                            )
-                            _kb = _st.st_size / 1024.0
-                            _size = f"{_kb / 1024.0:.2f} MB" if _kb >= 1024 else f"{_kb:.1f} KB"
-                            # 像素尺寸：优先读真实图片，环境无 Pillow 时回退到本次请求的宽高
-                            if _PILImage is not None:
-                                try:
-                                    with _PILImage.open(img_path) as _im:
-                                        _wh = f"{_im.width}×{_im.height}"
-                                except Exception:
-                                    _wh = f"{w}×{h}"
-                            else:
-                                _wh = f"{w}×{h}"
-                            _cost = time.time() - _draw_start
-                            await self._send(
-                                event,
-                                random.choice(_DRAW_DONE_HINTS).format(
-                                    ftime=_ftime, wh=_wh, size=_size,
-                                    cost=f"{_cost:.1f}",
-                                ),
-                            )
+                            _rpt_text = self._draw_report_text(img_path, w, h, _draw_start)
+                            if _rpt_text:
+                                await self._send(event, _rpt_text)
                         except Exception as _e:
                             logger.warning(f"【出图·报告】 发送小报告失败（不影响出图）: {_e}")
             finally:
@@ -3977,6 +4038,7 @@ class ComfyUIDrawPlugin(Star):
         source: str = "",
         image: str = "",
         denoise: float = -1,
+        caption: str = "",
     ):
         """生成带文字的「表情包 / 漫画」（文生图，无需参考图）。与 comfyui_draw 用法一致，区别仅在于：
         本工具绑定 special_features 里的「表情生成(meme_text)」/「漫画(comic)」功能——
@@ -4002,6 +4064,9 @@ class ComfyUIDrawPlugin(Star):
             prompts(array): 多条出图项，要几张传几条，每条各出 1 张。
             image(string): 图生图参考图 URL——本工具为文生，传了也不作图生图处理；图生请用 comfyui_meme_img。
             denoise(number): 降噪幅度（0~1），仅图生图有效，可选。
+            caption(string): 【图文消息】你想和图片发在【同一条消息】里的那句话（建议 20 字以内，
+                用你自己的口吻；不要复述画面内容）。填了它，文字和图片会合成一条消息发出。
+                ★配文已随图发出，工具返回后【不要再重复说一遍】同样的话。不想配文就留空。
 
         何时用本工具而非 comfyui_draw：用户要的是「表情包 / 漫画 / 带字梗图 / 多格漫画」，
         即画面里需要出现文字（气泡台词、底部旁白、分镜文字）。其余普通生图仍用 comfyui_draw。
@@ -4022,7 +4087,7 @@ class ComfyUIDrawPlugin(Star):
             event, prompt=prompt, negative_prompt=negative_prompt, workflow=_wf_name,
             img2img_workflow=img2img_workflow, width=width, height=height, loras=loras,
             seed=seed, count=count, prompts=prompts, source=source, image=image, denoise=denoise,
-            slot_values=slot_values, comic_feature="meme_text",
+            slot_values=slot_values, comic_feature="meme_text", caption=caption,
         )
 
     @filter.llm_tool(name="comfyui_meme_img")
@@ -4042,6 +4107,7 @@ class ComfyUIDrawPlugin(Star):
         source: str = "",
         image: str = "",
         denoise: float = -1,
+        caption: str = "",
     ):
         """图生表情包：附一张参考图 + 自动生成气泡/底部文字（图生图）。绑定 special_features 的
         「图生表情包(meme_img)」功能——目标工作流须配置 prompt_slots + image_node。
@@ -4061,6 +4127,9 @@ class ComfyUIDrawPlugin(Star):
             prompts(array): 多条出图项（需图生图时每项带 image），要几张传几条。
             image(string): 【必填】参考图 URL。
             denoise(number): 降噪幅度（0~1），仅图生图有效，可选。
+            caption(string): 【图文消息】你想和图片发在【同一条消息】里的那句话（建议 20 字以内，
+                用你自己的口吻；不要复述画面内容）。填了它，文字和图片会合成一条消息发出。
+                ★配文已随图发出，工具返回后【不要再重复说一遍】同样的话。不想配文就留空。
 
         何时用本工具：用户想「拿一张图改成表情包 / 在图上加文字气泡」。普通文生表情包用 comfyui_comic。
         """
@@ -4084,6 +4153,7 @@ class ComfyUIDrawPlugin(Star):
             event, prompt=prompt, negative_prompt=negative_prompt, workflow=_wf_name,
             width=width, height=height, loras=loras, seed=seed, count=count, prompts=prompts,
             source=source, image=image, denoise=denoise, slot_values=slot_values, comic_feature="meme_img",
+            caption=caption,
         )
 
     @filter.command("无限绘图", alias={"无限发图", "持续发图", "unlimited_draw", "连发图"})
@@ -6561,6 +6631,7 @@ class ComfyUIDrawPlugin(Star):
         denoise: float = -1,
         slot_values: dict | None = None,
         comic_feature: str | None = None,
+        caption: str = "",
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
@@ -6598,6 +6669,16 @@ class ComfyUIDrawPlugin(Star):
         - 用户明确说不要/取消/别发/不需要图。
         - 与画图无关的普通闲聊。
         
+        caption 配文（图文消息，可选但推荐）：
+        - caption 是你想和图片**发在同一条消息里**的那句话（如「给你画好啦～」「这只猫有点嚣张」）。
+          填了它，插件会把「这段文字 + 图片」合成【一条】消息发出，比「先一句话、再一张图」自然得多。
+        - 只写一句简短的配文（建议 20 字以内），用你自己的口吻；不要写长篇大论，
+          也不要把画面描述 / prompt 复述进来（画面内容由 prompt 负责）。
+        - ★★最重要：配文会随图一起发出，工具返回后【绝对不要】在回复里再说一遍同样的话，
+          否则用户会看到两遍。配文已经表达过的部分，后续回复直接略过或换个角度接续即可。
+        - 一次出多张（prompts 多条）时，配文只会加在【第一张】图上，其余图片不带文字。
+        - 不想配文就留空（默认），图片照常单独发出。
+
         数量（重要）：【张数 = prompts 的条数】
         - 只画 1 张（如「画张图」「画个女孩」）→ 用 prompt 单条即可，不用传 count。
         - 要 N 张（如「来 3 张猫」）→ prompts 传 N 条，每条写一个【不同】的画面（不同姿势/场景/光线）。
@@ -7202,6 +7283,9 @@ class ComfyUIDrawPlugin(Star):
                 notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
                 source=source,
                 slot_values=slot_values,
+                # 图文消息：配文只加在【第一张】图上（还没出过图 = 这是第一张），
+                # 多张时避免同一句话被重复 N 遍。
+                caption=(caption if not img_paths else ""),
             ):
                 if p:
                     img_paths.append(p)
@@ -8787,6 +8871,7 @@ class ComfyUIDrawPlugin(Star):
         count: int = 0,
         prompts: list = None,
         source: str = "",
+        caption: str = "",
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
 
@@ -8821,6 +8906,13 @@ class ComfyUIDrawPlugin(Star):
         - ⚠️ 图生图不需要你（大模型）去"理解"或"描述"参考图的内容：
           参考图会直接作为像素喂给 ComfyUI 的 LoadImage 节点，你只需把用户的变换意图
           翻译成英文提示词（prompt）即可，不要浪费步骤去调用视觉转述/读取图片内容。
+
+        caption 配文（图文消息，可选但推荐）：
+        - caption 是你想和图片**发在同一条消息里**的那句话（如「给你改好啦～」），
+          填了它，插件会把「这段文字 + 图片」合成【一条】消息发出。建议 20 字以内、用你自己的口吻，
+          不要复述画面内容（画面由 prompt 负责）。
+        - ★配文会随图发出，工具返回后【绝对不要】在回复里再说一遍同样的话。
+        - 一次出多张（prompts 多条）时，配文只加在【第一张】图上。不想配文就留空（默认）。
 
         提示词语言规范（务必遵守）：
         - 先确定本次出图的工作流类型：真人/写实工作流（is_anima=false）或动漫/二次元工作流
@@ -9142,6 +9234,8 @@ class ComfyUIDrawPlugin(Star):
                 is_img2img=True,
                 denoise=_item_denoise2 if _item_denoise2 >= 0 else None,
                 source=source,
+                # 图文消息：配文只加在【第一张】图上，多张时避免同一句话重复 N 遍
+                caption=(caption if not img_paths else ""),
             ):
                 if p:
                     img_paths.append(p)
