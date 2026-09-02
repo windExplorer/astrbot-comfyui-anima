@@ -378,6 +378,211 @@ def slots_few_shot(vars_list: list[dict]) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# boogu「自然语言指令」模式（mode: "nl"）
+# --------------------------------------------------------------------------- #
+# boogu 是**指令式图生图**模型：节点 prompt 就是一段【中文自然语言指令】，
+# 不认识任何字段名（bubble= / bottom= 等）。所以第二个槽位（boogu 加字）应当让
+# LLM / 用户直接产出「一整段自然语言」，而不是拆成 bubble_text / bottom_text 字段回填。
+# 本组常量与函数支撑 prompt_slots 的 mode:"nl" 槽位：
+#   - prefix / suffix：固定的「一致性锁」与「风格锁」自然语言（工程补偿，防止 boogu 改坏参考图）
+#   - 中段：LLM 写 / 直填模板包，都是自然语言
+#   - 最终注入节点的是 prefix + 中段 + suffix 拼成的一整段自然语言
+
+# 一致性锁：boogu 图生图一致性弱，必须显式要求「保持参考图不变」，否则人物会被改
+DEFAULT_BOOGU_PREFIX = (
+    "保持参考图中的人物、表情、构图、背景完全不变，不要改变人物的动作、姿势和表情，"
+    "不要添加与文字无关的新元素。"
+)
+# 风格锁：可爱卡通 + 防错字收尾
+DEFAULT_BOOGU_SUFFIX = (
+    "整体为可爱卡通风格，配色柔和明快，线条圆润。画面其他部分与参考图保持一致，"
+    "文字清晰可读无错别字。"
+)
+
+
+def slot_mode(slot: dict) -> str:
+    """槽位模式：nl（自然语言指令）= 让 LLM/用户直接写一段自然语言；vars（默认）= 旧字段回填。"""
+    _m = (slot.get("mode") or "").strip().lower()
+    return _m if _m in ("nl", "vars") else "vars"
+
+
+# boogu 气泡/文字样式目录：驱动「自然语言指令」的气泡多样化（详见 skills/boogu-meme-bubbles）。
+# - desc：可直接写进 boogu 节点 prompt 中段的自然语言片段，{text} 会被替换为实际文字。
+#   其中的颜色/字号是「基准」，内部 LLM 可按角色发色、情绪、强调程度改写（见 boogu_nl_hint）。
+# - tokens：直填模式下可用「样式名:文字」强制指定的前缀（ASCII 冒号）。
+# - use_for：何时用该样式（给内部 LLM 做自动选型参考）。
+BOOGU_BUBBLE_CATALOG = [
+    {
+        "name": "云朵气泡",
+        "tokens": ["云朵", "云朵气泡", "cloud", "气泡", "普通气泡"],
+        "use_for": "可爱、温柔、日常、轻松的对话",
+        "desc": "在人物头部右上方添加一个云朵形状的白色对话气泡，边缘圆润蓬松，气泡底部有一个小尖角指向人物的嘴，气泡内写着深棕色的简体中文「{text}」，圆润卡通体、笔画饱满圆头、胖乎乎的可爱字体，笔画粗壮，字号大而醒目，文字在气泡内横向居中排列。",
+    },
+    {
+        "name": "圆角对话气泡",
+        "tokens": ["圆角", "对话气泡", "说话", "speech"],
+        "use_for": "普通说话、陈述、解释、提醒",
+        "desc": "在人物头部一侧添加一个圆角矩形的白色对话气泡，气泡有一条小尾巴指向人物，气泡内用圆润卡通体写着深棕色的简体中文「{text}」，字号较大、横向居中。",
+    },
+    {
+        "name": "思考气泡",
+        "tokens": ["思考", "os", "内心", "悄悄话", "thought", "疑问", "问号"],
+        "use_for": "内心想法、OS、悄悄话、犹豫、自言自语",
+        "desc": "在人物头部上方添加一串由小到大的圆形思考气泡连向人物的头，最上方的大气泡里用圆润手写体写着深灰色的简体中文「{text}」，字号中等，表达内心想法。",
+    },
+    {
+        "name": "爆炸气泡",
+        "tokens": ["爆炸", "星形", "burst", "震惊", "激动", "大喊", "尖叫"],
+        "use_for": "大喊、震惊、激动、强调、吐槽爆发",
+        "desc": "在画面上方炸开一个星形/爆炸形状的彩色对话气泡（橙红或亮黄底色、深色锯齿边缘），气泡内用粗黑体写着深色的简体中文「{text}」，字号超大、字形夸张外扩，表现大喊或震惊。",
+    },
+    {
+        "name": "尖角气泡",
+        "tokens": ["尖角", "闪电", "怒", "怒气", "急促", "spiky"],
+        "use_for": "怒气、急促、电竞感、质问",
+        "desc": "在人物头部一侧添加一个带尖锐棱角或锯齿边缘的白色对话气泡，气泡内用粗体写着深色的简体中文「{text}」，字号大，边缘锋利，表现怒气或急促。",
+    },
+    {
+        "name": "底部字幕条",
+        "tokens": ["字幕", "底部", "旁白", "caption", "说明", "总结"],
+        "use_for": "旁白、吐槽、真相总结、说明文字（偶用：默认不加，仅吐槽/总结/用户要字幕时才用）",
+        "desc": "在图片底部约六分之一处添加一条白色的圆角横条字幕，上面用深棕色粗圆润卡通体写着简体中文「{text}」，带粗深棕色描边，字号很大，横向居中，可爱醒目。",
+    },
+    {
+        "name": "无气泡白字黑边",
+        "tokens": ["无气泡", "经典", "白字", "meme", "大字", "标题"],
+        "use_for": "通用梗图、大字标题、上方/下方居中配字",
+        "desc": "不使用任何气泡框，直接在画面合适位置（如底部或顶部）用粗体简体中文写上「{text}」，白色填充、深黑色粗描边，字号超大、横向居中排列，经典表情包大字样式。",
+    },
+    {
+        "name": "无气泡直接压字",
+        "tokens": ["压字", "直接", "叠加", "overlay"],
+        "use_for": "把字直接压在画面安静区、不挡主体",
+        "desc": "不使用气泡框，直接在画面中较空的区域用圆润卡通体写上深棕色的简体中文「{text}」，加白色细描边以保证在复杂背景上可读，字号中等、自然摆放。",
+    },
+    {
+        "name": "放射爆裂大字",
+        "tokens": ["放射", "爆裂", "拟声", "冲击", "放射状", "speed"],
+        "use_for": "拟声词（咚/啪/汪）、极度强调、冲击感",
+        "desc": "在画面中央或人物附近用放射状爆发的粗体字写上简体中文「{text}」，字形向外炸开、带速度线，橙红配色加深色描边，字号超大，表现冲击与强调。",
+    },
+]
+
+
+def boogu_nl_hint(slot: dict) -> str:
+    """给内部 LLM 的「boogu 提示词写法指南」——约束它怎么写，并按情绪选多样化气泡。
+
+    系统会自动在前后补一致性锁 / 风格锁，所以 LLM 只写中间的「加气泡 / 加底部」描述。
+    """
+    _styles = "、".join(f"{_c['name']}({_c['use_for']})" for _c in BOOGU_BUBBLE_CATALOG)
+    return (
+        "【boogu 编辑指令（自然语言·中段）】为 boogu 图像编辑模型写一段【中文自然语言】，"
+        "描述要在已生成的卡通图上【添加哪些文字元素】。⚠️ boogu 不认识任何字段名"
+        "（bubble= / bottom= 等），只认自然语言，禁止输出键值对 / JSON。\n"
+        "系统会自动在前后补上「保持参考图不变」的一致性锁与风格锁，你只需写中间的添加描述。\n"
+        f"★ 气泡/文字样式必须多样化，不要每次都用同一种。可选样式有：{_styles}。\n"
+        "★ 按语气/情绪/内容自动选合适样式：可爱日常→云朵气泡；普通说话→圆角对话气泡；"
+        "内心OS/犹豫→思考气泡；大喊/震惊/激动→爆炸气泡；怒气/急促→尖角气泡；"
+        "通用梗图大字→无气泡白字黑边；拟声/冲击→放射爆裂大字。\n"
+        "★ 旁白/底部字幕条【默认不要加】：绝大多数表情包只有气泡台词、没有旁白；"
+        "只有当内容明显是吐槽/真相总结/用户明确要『字幕/旁白』时，才用底部字幕条。\n"
+        "★ 用户若明确指定了样式（如『用爆炸气泡』『不要气泡』『底部字幕条』『经典白字黑边』），优先满足。\n"
+        "★ 气泡细节要会变化（别永远深棕/黑描边 + 超大字）：\n"
+        "  - 边框/描边颜色：可跟随角色发色或情绪色（愤怒→红、害羞→粉、平静→墨色/原色），不必固定深棕或黑；\n"
+        "  - 线条粗细：大喊/震惊→粗，温柔/悄悄话/内心OS→细；\n"
+        "  - 字号：强调/标题/大喊→大，轻语气/内心OS/日常→中等或偏小，不固定一律超大。\n"
+        "  （目录里各样式的颜色/字号只是『基准』，可按上面规则改写，不要机械照抄。)\n"
+        "对选中的样式，写清：位置、形状/底色、文字内容、边框颜色、线条粗细、字体"
+        "（圆润卡通体/粗黑体/手写体）、字号。文字务必短：气泡 ≤8 字、底部 ≤6 字；长文/小字 boogu 易错字缺字。\n"
+        "只输出这一段自然语言描述本身，不要解释、不要 JSON、不要 markdown。"
+    )
+
+
+_BOTTOM_DISABLE_KW = (
+    "不要底部", "不加底部", "不要旁白", "不加旁白", "不要字幕", "不要底部文字",
+    "无底部", "no bottom", "no caption", "without caption",
+)
+_BUBBLE_DISABLE_KW = (
+    "不要气泡", "不加气泡", "不要台词", "不要对话气泡", "无气泡",
+    "no bubble", "no speech", "without bubble",
+)
+
+
+def _nl_disable_notes(text: str) -> str:
+    """识别用户「不要底部 / 不要气泡」指令，返回要塞进 LLM 提示的 boogu 约束句。"""
+    _t = (text or "").lower()
+    _notes: list[str] = []
+    if any(k in _t for k in _BOTTOM_DISABLE_KW):
+        _notes.append("绝对不要添加底部字幕 / 旁白文字")
+    if any(k in _t for k in _BUBBLE_DISABLE_KW):
+        _notes.append("绝对不要添加对话气泡文字")
+    return "；".join(_notes)
+
+
+def _boogu_style_desc(style_name: str, text: str) -> str | None:
+    """取目录中某样式的自然语言描述片段，并把 {text} 替换为实际文字。"""
+    for _c in BOOGU_BUBBLE_CATALOG:
+        if _c["name"] == style_name:
+            return _c["desc"].replace("{text}", text)
+    return None
+
+
+def _parse_boogu_style_prefix(value: str):
+    """直填：检测『样式名:文字』前缀（ASCII 冒号），返回 (样式名|None, 文字)。"""
+    _v = (value or "").strip()
+    if ":" in _v:
+        _head, _rest = _v.split(":", 1)
+        _head = _head.strip().lower()
+        for _c in BOOGU_BUBBLE_CATALOG:
+            if _head == _c["name"].lower() or _head in [str(t).lower() for t in _c["tokens"]]:
+                return _c["name"], _rest.strip()
+    return None, _v
+
+
+def _render_nl_slot(self, slot: dict, slot_values: dict | None) -> str:
+    """nl 模式：boogu 编辑指令 = 一致性锁(prefix) + 中段 + 风格锁(suffix)，一整段自然语言。
+
+    中段来源（优先级）：
+    - LLM 模式：slot_values[slot.key] 是一整段自然语言中段（内部 LLM 按气泡目录自动选型）；
+    - 直填·目录模式：用 vars（如 bubble_text/bottom_text）经气泡目录拼成自然语言，
+      支持「样式名:文字」强制指定样式（如「爆炸:午安」）；
+    - 直填·模板模式：slot 配了 template 时仍走模板（旧用法，兼容）。
+    """
+    _key = (slot.get("key") or "").strip()
+    _sv = slot_values or {}
+    if _sv.get(_key, "").strip():
+        # LLM 模式：直接给了一段自然语言中段
+        return _nl_join(slot, _sv[_key].strip())
+    if slot.get("template"):
+        # 直填·模板模式（兼容旧配置）
+        _middle = render_slot_template(self, slot, slot.get("template"), _sv) or ""
+        return _nl_join(slot, _middle)
+    # 直填·目录模式：每个 var 映射一个文字位，按样式目录生成自然语言
+    _vars = [str(v).strip() for v in (slot.get("vars") or []) if str(v).strip()]
+    _parts: list[str] = []
+    for _i, _vn in enumerate(_vars):
+        _raw = str(_sv.get(_vn, "") or "").strip()
+        if not _raw:
+            continue
+        _style, _text = _parse_boogu_style_prefix(_raw)
+        if _style is None:
+            # 未指定样式：气泡位默认用 bubble_style，其余（如底部）默认用 bottom_style
+            _style = slot.get("bottom_style") if _i >= 1 else slot.get("bubble_style")
+            _style = _style or ("底部字幕条" if _i >= 1 else "云朵气泡")
+        _d = _boogu_style_desc(_style, _text)
+        if _d:
+            _parts.append(_d)
+    return _nl_join(slot, "\n\n".join(_parts))
+
+
+def _nl_join(slot: dict, middle: str) -> str:
+    """把「一致性锁 + 中段 + 风格锁」拼成一整段自然语言（中段空则不渲染中段）。"""
+    _prefix = (slot.get("prefix") or DEFAULT_BOOGU_PREFIX).strip()
+    _suffix = (slot.get("suffix") or DEFAULT_BOOGU_SUFFIX).strip()
+    return "\n\n".join(p for p in (_prefix, (middle or "").strip(), _suffix) if p)
+
+
 def render_slot_template(self, slot: dict, template, values: dict) -> str | None:
     """渲染单个提示词槽位（prompt_slots）的模板。
 
@@ -515,15 +720,19 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
         if not _key or _node in (None, ""):
             continue
         _field = (_slot.get("field") or "text").strip() or "text"
-        _vars = [str(v).strip() for v in (_slot.get("vars") or []) if str(v).strip()]
-        _tpl = _slot.get("template")
-        if _tpl:
-            _val = render_slot_template(self, _slot, _tpl, slot_values or {})
+        if slot_mode(_slot) == "nl":
+            # 自然语言指令模式：LLM 写中段 / 直填用模板包中段，最终拼成一段自然语言
+            _val = _render_nl_slot(self, _slot, slot_values)
         else:
-            _lookup = slot_values or {}
-            _val = str(_lookup.get(_vars[0], "") or "").strip() if _vars else ""
-            if not _val:
-                _val = str(_lookup.get(_key, "") or "").strip()
+            _vars = [str(v).strip() for v in (_slot.get("vars") or []) if str(v).strip()]
+            _tpl = _slot.get("template")
+            if _tpl:
+                _val = render_slot_template(self, _slot, _tpl, slot_values or {})
+            else:
+                _lookup = slot_values or {}
+                _val = str(_lookup.get(_vars[0], "") or "").strip() if _vars else ""
+                if not _val:
+                    _val = str(_lookup.get(_key, "") or "").strip()
         if _val is None:
             _val = ""
         if not _fill_intent and not _val:
@@ -548,14 +757,23 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         return None
     _seen: set[str] = set()
     _vars: list[dict] = []
+    _nl_slots: list[dict] = []
     for _s in _slots:
         if not isinstance(_s, dict):
             continue
-        for _v in (_s.get("vars") or []):
-            _v = str(_v).strip()
-            if _v and _v not in _seen:
-                _seen.add(_v)
-                _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
+        if slot_mode(_s) == "nl":
+            # 自然语言指令模式：该槽位由 LLM 直接写一段自然语言（以 slot.key 为变量名）
+            _k = (_s.get("key") or "").strip()
+            if _k and _k not in _seen:
+                _seen.add(_k)
+                _vars.append({"name": _k, "hint": boogu_nl_hint(_s)})
+                _nl_slots.append(_s)
+        else:
+            for _v in (_s.get("vars") or []):
+                _v = str(_v).strip()
+                if _v and _v not in _seen:
+                    _seen.add(_v)
+                    _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
     # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
     _disabled = _detect_disabled_slots(user_text or scene, _vars)
     # 剔除「不要发表情包」这类元指令，避免被当成画面描述语（检测必须在剥离前）
@@ -569,6 +787,8 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         logger.info("【槽位·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过得词（沿用工作流默认文字）")
         return None
     _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
+    _nl_notes = _nl_disable_notes(user_text or scene)
+    _is_nl = bool(_nl_slots)
     prompt = (
         "你正在为一句想法生成「表情包/漫画」的画面文字。请只输出一个 JSON 对象"
         "（不要任何解释、不要 markdown 代码块、不要反引号），键必须严格等于下方列出的"
@@ -577,17 +797,29 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         f"画面描述（将作为出图提示词）：\n{scene}\n\n"
         "槽位变量（键名必须严格一致）：\n"
         f"{_spec}\n\n"
-        "任意槽位若不需要文字，返回空字符串或省略该键即可（节点会被清空，不出该位置文字）。\n"
-        "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；宁短勿长。\n"
-        + (slots_few_shot(_vars) + "\n" if slots_few_shot(_vars) else "")
-        + "只输出 JSON 对象："
     )
+    if _is_nl:
+        prompt += (
+            "其中带【boogu 编辑指令】说明的槽位，其值必须是一整段【自然语言指令】"
+            "（可一两句话，描述加什么气泡 / 加什么底部文字），不要写短词、不要写键值对。"
+            "（旁白/底部字幕默认不加：多数表情包只有气泡台词，只有吐槽/总结/用户要字幕时才写底部。）\n"
+        )
+    else:
+        prompt += (
+            "任意槽位若不需要文字，返回空字符串或省略该键即可（节点会被清空，不出该位置文字）。\n"
+            "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；宁短勿长。\n"
+        )
+    if slots_few_shot(_vars):
+        prompt += slots_few_shot(_vars) + "\n"
+    prompt += "只输出 JSON 对象："
     if _disabled:
         _disabled_names = "、".join(_disabled)
         prompt += (
             f"\n【重要·按用户要求禁用】用户明确要求不要写以下位置，对应键必须返回空字符串"
             f"（或省略），绝对不要生成：{_disabled_names}。"
         )
+    if _nl_notes:
+        prompt += f"\n【重要·boogu 指令约束】{_nl_notes}。"
     try:
         logger.info(f"【槽位·造词】 使用模型({model}) 生成槽位文字")
         llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
@@ -672,18 +904,27 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
         return idea, None, {}
     _seen: set[str] = set()
     _vars: list[dict] = []
+    _nl_slots: list[dict] = []
     for _s in _slots:
         if not isinstance(_s, dict):
             continue
-        for _v in (_s.get("vars") or []):
-            _v = str(_v).strip()
-            if _v and _v not in _seen:
-                _seen.add(_v)
-                _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
+        if slot_mode(_s) == "nl":
+            _k = (_s.get("key") or "").strip()
+            if _k and _k not in _seen:
+                _seen.add(_k)
+                _vars.append({"name": _k, "hint": boogu_nl_hint(_s)})
+                _nl_slots.append(_s)
+        else:
+            for _v in (_s.get("vars") or []):
+                _v = str(_v).strip()
+                if _v and _v not in _seen:
+                    _seen.add(_v)
+                    _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
     # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
     _disabled = _detect_disabled_slots(idea, _vars)
     # 剔除「不要发表情包」这类元指令后再喂给 LLM，避免被当成画面描述语（检测必须在剥离前）
     _clean_idea = strip_comic_negations(idea)
+    _nl_notes = _nl_disable_notes(idea)
     lora_hint = ""
     if lora_map:
         lora_hint = "用户指定的 LoRA：" + "、".join(
@@ -705,12 +946,20 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
             "包含主体、动作、场景、画质词（masterpiece、best quality 等），贴合用户想法"
         )
     if _vars:
-        _req.append(
-            '"slots": 对象，键为下方槽位变量名（必须严格一致），值为该槽位应写的文字——'
-            "要幽默、贴合梗、口语化，不要把用户原话直接搬过来当文字；"
-            "若某个位置（如气泡或底部）不需要文字，返回空字符串或省略该键即可"
-            "（节点会被清空，不出该位置文字）"
-        )
+        if _nl_slots:
+            _req.append(
+                '"slots": 对象，键为下方槽位变量名（必须严格一致），值为该槽位应写的'
+                "【自然语言 boogu 编辑指令】——直接写一段中文自然语言，描述加什么气泡 / 加什么底部文字，"
+                "不要写键值对；若某位置不需要，返回空字符串或省略该键。"
+                "（旁白/底部字幕默认不加：多数表情包只有气泡台词，只有吐槽/总结/用户要字幕时才写底部。）"
+            )
+        else:
+            _req.append(
+                '"slots": 对象，键为下方槽位变量名（必须严格一致），值为该槽位应写的文字——'
+                "要幽默、贴合梗、口语化，不要把用户原话直接搬过来当文字；"
+                "若某个位置（如气泡或底部）不需要文字，返回空字符串或省略该键即可"
+                "（节点会被清空，不出该位置文字）"
+            )
     if _lora_catalog:
         _req.append(
             '"loras": 数组，用户想用的 LoRA 名称列表——只能从下方「可选 LoRA」清单里挑'
@@ -720,9 +969,12 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
     _system = (
         "你是表情包/漫画提示词助手。用户用一句中文描述想法，请只输出一个 JSON 对象"
         "（不要任何解释、不要 markdown 代码块、不要反引号）。\n"
-        "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；"
-        "除非用户明确要求写长文，否则宁短勿长。"
     )
+    if not _nl_slots:
+        _system += (
+            "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；"
+            "除非用户明确要求写长文，否则宁短勿长。\n"
+        )
     if _req:
         _system += "\nJSON 需包含以下字段：\n- " + "\n- ".join(_req)
     _user = f"用户想法：\n{_clean_idea}\n"
@@ -734,15 +986,25 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
         _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
         _user += (
             f"槽位变量（键名必须严格一致）：\n{_spec}\n"
-            "提示：任意槽位若不需要文字，返回空字符串或省略该键即可，系统不会强行生成。"
-            + slots_few_shot(_vars)
         )
+        if _nl_slots:
+            _user += (
+                "提示：带【boogu 编辑指令】的槽位值必须是一整段自然语言（可一两句话），"
+                "不是短词、不是键值对；不需要的位置返回空字符串或省略该键。\n"
+            )
+        else:
+            _user += (
+                "提示：任意槽位若不需要文字，返回空字符串或省略该键即可，系统不会强行生成。\n"
+            )
+        _user += slots_few_shot(_vars)
         if _disabled:
             _disabled_names = "、".join(_disabled)
             _user += (
                 f"\n【重要·按用户要求禁用】用户明确要求不要写以下位置，对应槽位必须返回空字符串"
                 f"（或省略该键），绝对不要自作主张生成：{_disabled_names}。"
             )
+        if _nl_notes:
+            _user += f"\n【重要·boogu 指令约束】{_nl_notes}。"
     try:
         logger.info(f"【表情包·造词】 使用模型({model}) 生成提示词/文字")
         _resp = await self.context.llm_generate(chat_provider_id=model, prompt=_system + "\n\n" + _user)

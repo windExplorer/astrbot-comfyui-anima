@@ -4070,6 +4070,9 @@ class ComfyUIDrawPlugin(Star):
 
         何时用本工具而非 comfyui_draw：用户要的是「表情包 / 漫画 / 带字梗图 / 多格漫画」，
         即画面里需要出现文字（气泡台词、底部旁白、分镜文字）。其余普通生图仍用 comfyui_draw。
+        气泡/文字样式会自动按情绪多样化（云朵 / 圆角对话 / 思考OS / 爆炸 / 尖角 / 无气泡白字黑边 / 底部字幕条 / 放射爆裂等），
+        详见技能「boogu-meme-bubbles」；用户明确要某种样式（如「用爆炸气泡」「不要气泡」「底部字幕条」「经典白字黑边」）
+        或涉及无气泡、内心OS、拟声等写法时，把样式要求写进画面描述即可，插件会满足。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         # LLM 工具开关（与 comfyui_draw 一致；伴侣插件等第三方主动调用不受影响）
