@@ -532,6 +532,8 @@ def boogu_nl_hint(slot: dict) -> str:
         "只有内容明显是吐槽/真相总结、或用户明确要『字幕/旁白』时才用底部字幕条。"
         "即使用户没提、即使工作流可能自带默认字幕，也一律默认不加底部字幕。\n"
         "★ 用户若明确指定了样式（如『用爆炸气泡』『不要气泡』『底部字幕条』『经典白字黑边』），优先满足。\n"
+        "★ 用户只要『不要底部 / 不加旁白』时，只去掉底部字幕，**气泡台词照常写**，绝不要把整张图弄成无字；"
+        "只要『不要气泡』时只去掉气泡、底部照常。两者互不牵连。\n"
         "★ 字号必须【随字数自适应、整体偏小、宁小勿大】：字数≤4 可稍大；5-8 字中等；"
         ">8 字缩小并自动换行。任何情况下文字都要在气泡/图形内【留出内边距、绝不溢出边缘】"
         "（文字超出气泡是严重错误）。不要动不动就『超大/很大』。\n"
@@ -560,10 +562,13 @@ def _nl_disable_notes(text: str) -> str:
     """识别用户「不要底部 / 不要气泡」指令，返回要塞进 LLM 提示的 boogu 约束句。"""
     _t = (text or "").lower()
     _notes: list[str] = []
-    if any(k in _t for k in _BOTTOM_DISABLE_KW):
-        _notes.append("绝对不要添加底部字幕 / 旁白文字")
-    if any(k in _t for k in _BUBBLE_DISABLE_KW):
-        _notes.append("绝对不要添加对话气泡文字")
+    _bottom_off = any(k in _t for k in _BOTTOM_DISABLE_KW)
+    _bubble_off = any(k in _t for k in _BUBBLE_DISABLE_KW)
+    if _bottom_off:
+        # 仅禁用底部：明确气泡照常写，避免 LLM 看到否定语气把整张图都弄成无字
+        _notes.append("绝对不要添加底部字幕 / 旁白文字（但气泡台词照常生成，不要因此不写气泡）")
+    if _bubble_off:
+        _notes.append("绝对不要添加对话气泡文字（但底部字幕照常写）")
     return "；".join(_notes)
 
 
