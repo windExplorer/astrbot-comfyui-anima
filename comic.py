@@ -876,7 +876,11 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
             _slot["key"] = _key
         if not _key or _node in (None, ""):
             continue
-        _field = (_slot.get("field") or "text").strip() or "text"
+        # boogu 编辑节点(TextEncodeBooguEdit)的文字入口叫 prompt，其余文本节点默认 text；
+        # 写错字段会导致值落进节点不存在的 text 输入、ComfyUI 不认，工作流写死的模板一直生效。
+        _field = (_slot.get("field") or "").strip()
+        if not _field:
+            _field = "prompt" if _is_boogu_node(wf, _slot) else "text"
         if slot_mode(_slot) == "nl" or _is_boogu_node(wf, _slot):
             # 自然语言指令模式 / boogu 节点：LLM 写整段自然语言，最终拼成一段指令
             _val = _render_nl_slot(self, _slot, slot_values)

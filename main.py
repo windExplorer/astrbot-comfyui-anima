@@ -3413,7 +3413,8 @@ class ComfyUIDrawPlugin(Star):
                     _k = (_s.get("key") or "").strip()
                     if not _k:
                         continue
-                    if comic.slot_mode(_s) == "nl":
+                    if comic.slot_mode(_s) == "nl" or comic._is_boogu_node(wf, _s):
+                        # boogu 节点也走『LLM 整段自然语言』渲染，日志才能显示实际发给 ComfyUI 的指令
                         _bv = self._render_nl_slot(_s, slot_values)
                     else:
                         _sv2 = slot_values or {}
