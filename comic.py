@@ -486,6 +486,56 @@ def _class_type_is_boogu(class_type) -> bool:
     return False
 
 
+# boogu 编辑节点文本输入里特有的「编辑指令」标记（普通 anima 绘图提示词不会出现这些词）。
+# 用它们做内容兜底识别，避免依赖节点 class_type（多合一/自定义节点类名千奇百怪）。
+_BOOGU_TEXT_SIG = (
+    "保持参考图", "对话气泡", "字幕条", "云朵气泡", "气泡内写着",
+    "boogu", "booguedit", "caption",
+)
+
+
+def _node_text_is_boogu(node: dict) -> bool:
+    """兜底识别：节点文本输入本身含 boogu 编辑风格指令（如「保持参考图…」「对话气泡」），
+    即使 class_type 是奇葩多合一节点也能接管。"""
+    if not isinstance(node, dict):
+        return False
+    _inputs = node.get("inputs")
+    if not isinstance(_inputs, dict):
+        return False
+    for _k in ("prompt", "text", "boogu_prompt", "instruction"):
+        _v = _inputs.get(_k)
+        if isinstance(_v, str) and any(_s in _v for _s in _BOOGU_TEXT_SIG):
+            return True
+    return False
+
+
+def _slot_is_boogu_like(wf: dict, slot: dict) -> bool:
+    """槽位本身像 boogu 加字槽：其模板/提示/指向节点的文本输入含气泡等 boogu 标记。
+
+    用于「槽位写法固定模板、节点类名又不叫 boogu」的奇葩多合一节点——只要槽位在写
+    气泡/字幕类自然语言，就强制升级为 LLM 写整段指令。
+    """
+    if not isinstance(slot, dict):
+        return False
+    _hay = ""
+    _tpl = slot.get("template")
+    if isinstance(_tpl, str):
+        _hay += _tpl
+    elif isinstance(_tpl, dict):
+        _hay += json.dumps(_tpl, ensure_ascii=False)
+    _hay += " " + " ".join(str(v) for v in (slot.get("vars") or []))
+    _hay += " " + str(slot.get("hint") or "")
+    # 该槽位指向节点的文本输入也可能直接含 boogu 指令
+    _nid = str(slot.get("node") or "").strip()
+    _n = wf.get(_nid) or {}
+    _inputs = _n.get("inputs", {}) if isinstance(_n, dict) else {}
+    for _k in ("prompt", "text", "boogu_prompt", "instruction"):
+        _v = _inputs.get(_k)
+        if isinstance(_v, str):
+            _hay += " " + _v
+    return any(_s in _hay for _s in _BOOGU_TEXT_SIG)
+
+
 def _is_boogu_node(wf: dict, slot: dict) -> bool:
     """判断槽位是否指向 boogu 编辑节点（指令式图生图，节点只认一段自然语言）。
 
@@ -494,7 +544,9 @@ def _is_boogu_node(wf: dict, slot: dict) -> bool:
 
     判定（满足其一即为 boogu 节点）：
     1. 节点 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
-    2. 槽位显式声明 ``"boogu": true``（兜底：类名识别不到的奇葩多合一节点也能接管）。
+    2. 节点文本输入本身含 boogu 编辑指令（保持参考图 / 对话气泡 等，不依赖类名）；
+    3. 槽位显式声明 ``"boogu": true``；
+    4. 槽位模板/提示/指向节点含气泡等 boogu 标记（多合一节点写法固定也能接管）。
     """
     if not isinstance(slot, dict):
         return False
@@ -504,15 +556,21 @@ def _is_boogu_node(wf: dict, slot: dict) -> bool:
     if not _node or not isinstance(wf, dict):
         return False
     _n = wf.get(_node) or {}
-    return _class_type_is_boogu(_n.get("class_type"))
+    if _class_type_is_boogu(_n.get("class_type")):
+        return True
+    if _node_text_is_boogu(_n):
+        return True
+    return _slot_is_boogu_like(wf, slot)
 
 
 def _boogu_node_ids(wf: dict) -> list:
     """扫描工作流，返回所有 boogu 编辑节点 id（无论 prompt_slots 怎么配都接管）。
 
-    来源：
+    来源（任一即接管，彻底不依赖节点类名）：
     1. 节点 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
-    2. prompt_slots 里带 ``"boogu": true`` 的槽位指向的节点（类名识别不到时的兜底）。
+    2. 节点文本输入本身含 boogu 编辑指令（保持参考图 / 对话气泡 等）；
+    3. prompt_slots 里带 ``"boogu": true`` 的槽位指向的节点；
+    4. prompt_slots 里模板/提示含气泡标记的槽位指向的节点（奇葩多合一节点兜底）。
     """
     if not isinstance(wf, dict):
         return []
@@ -525,9 +583,11 @@ def _boogu_node_ids(wf: dict) -> list:
             _ids.append(_nid)
 
     for _nid, _node in wf.items():
-        if isinstance(_node, dict) and _class_type_is_boogu(_node.get("class_type")):
+        if isinstance(_node, dict) and (
+            _class_type_is_boogu(_node.get("class_type")) or _node_text_is_boogu(_node)
+        ):
             _add(_nid)
-    # prompt_slots 里显式声明的 boogu 节点（多合一节点类名识别不到时的兜底）
+    # prompt_slots 里显式声明 / 写法像 boogu 的槽位指向的节点
     _raw = wf.get("prompt_slots")
     if isinstance(_raw, str) and _raw.strip():
         try:
@@ -538,7 +598,9 @@ def _boogu_node_ids(wf: dict) -> list:
         _raw = [_raw]
     if isinstance(_raw, list):
         for _s in _raw:
-            if isinstance(_s, dict) and _s.get("boogu") is True:
+            if not isinstance(_s, dict):
+                continue
+            if _s.get("boogu") is True or _slot_is_boogu_like(wf, _s):
                 _add(str(_s.get("node") or "").strip())
     return _ids
 
