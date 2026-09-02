@@ -7534,16 +7534,16 @@ class ComfyUIDrawPlugin(Star):
                     f"剩下的 {len(_remain_items)} 张我会在后台继续生成，稍后自动发给你，"
                     f"你无需再发任何消息，也不要用 pc_send_current_media 重复发送已发的图。"
                 )
-            # 一次调用内已画完：返回明确「已发送 + 路径」提示，由模型自然收尾。
-            # 关键：把图片本地路径直接给到模型，并明确「不要再读路径 / 再发一次」，
-            # 否则模型收不到路径信息会去乱造路径喂 astrobot_file_read_tool，或用
-            # pc_send_current_media 把已发的图再发一遍（实测会触发重复刷图）。
-            _paths_desc = "、".join(img_paths[:3]) + (" 等" if len(img_paths) > 3 else "")
+            # 一次调用内已画完：图片已由插件直接发到聊天窗口，这里只需让模型自然收尾。
+            # 注意：返回值【不】再附带本地路径——早期版本把路径给模型本是防它乱造路径，
+            # 但副作用是模型会拿真路径再用 send_message_to_user 把已发的图重发一遍
+            # （实测出现「连续发两次图」）。不给路径，模型就物理上无法重复发送；
+            # 同时明确禁止调用发送类工具，避免它用 pc_send_current_media 之类再刷一次。
             return (
-                f"✅ 图片已成功生成并发送到聊天窗口（本地路径：{_paths_desc}）。"
-                f"这张图已经发出去了，请不要再用 astrobot_file_read_tool 读取该路径、"
-                f"也不要用 pc_send_current_media 重复发送——重发只会刷出重复的图片。"
-                f"用一句话自然告诉用户图已发给他即可。"
+                f"✅ 图片已成功生成并发送到聊天窗口，用户已经能看到，你无需再做任何发送动作。"
+                f"请用一句话自然告诉用户图已发给他即可；"
+                f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
+                f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
                 + (_max_hint or "")
             )
         # 一张都没出：若仍有剩余要画（极少见，如软耗时预算设得过小导致一张都来不及出），
@@ -9467,14 +9467,13 @@ class ComfyUIDrawPlugin(Star):
             # 不 return None——否则 Agent Loop 直接结束、LLM 不再说话。
             plugin._draw_run_hit(event)
             # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
-            # 同时把图片本地路径直接给到模型，并明确「不要再读路径 / 再发一次」，
-            # 避免模型误以为没出图而用 astrobot_file_read_tool 乱读路径或重发。
-            _paths_desc2 = "、".join(img_paths[:3]) + (" 等" if len(img_paths) > 3 else "")
+            # 同文生图：图片已由插件发出，返回值【不】附带本地路径，避免模型拿真路径
+            # 用 send_message_to_user 把已发的图再发一遍（出现「连续发两次图」）。
             return (
-                f"✅ 图片已成功生成并发送到聊天窗口（本地路径：{_paths_desc2}）。"
-                f"这张图已经发出去了，请不要再用 astrobot_file_read_tool 读取该路径、"
-                f"也不要用 pc_send_current_media 重复发送——重发只会刷出重复的图片。"
-                f"用一句话自然告诉用户图已发给他即可。"
+                f"✅ 图片已成功生成并发送到聊天窗口，用户已经能看到，你无需再做任何发送动作。"
+                f"请用一句话自然告诉用户图已发给他即可；"
+                f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
+                f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
                 + (_max_hint2 or "")
             )
         # 一张都没出：记一次后端失败（受失败重试额度约束），仍返回文本让模型收尾。

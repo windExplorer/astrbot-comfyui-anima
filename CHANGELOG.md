@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.32（修：出图后图片被连发两次——插件发一次 + 模型按返回路径重发一次）
+
+- **现象**：`comfyui_draw` 出图成功后，聊天里出现同一张图两次（插件在 01:32:47 已发，模型在 01:32:53 又用 `send_message_to_user` 带着返回里的本地路径重发）。
+- **根因**：`main.py` 成功返回值把图片本地路径直接给了模型（原为防模型乱造路径），但模型会拿真路径再用 `send_message_to_user` 把已发的图重发一遍。
+- **改法**：成功返回值**不再附带本地路径**，并明确禁止调用 `send_message_to_user` / `pc_send_current_media` 重发、禁止 `astrobot_file_read_tool` 读取。插件照常自己发图；模型没路径就物理上无法重复发送。文生图（`_do_draw`）与图生图（`_do_img2img`）两处同步修改。
+- 注：模型另会调 `astrobot_execute_shell` 去 `tail comfyui.log` 验证属其自身行为，与重复发图无关，未改。
+
 ## v5.6.31（诊断增强：「未配置 model_name」也打印全局库命中情况）
 
 - 在「启用 XX → 未配置 model_name」的 WARN 后追加诊断：打印全局库是否含该名、库内 model_name 是否已填。用途：一锤定音区分三种情况——
