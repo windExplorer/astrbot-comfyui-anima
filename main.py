@@ -3319,8 +3319,15 @@ class ComfyUIDrawPlugin(Star):
                 if mn:
                     logger.info(f"【LoRA】 启用 {nm} → {mn}")
                 else:
+                    # 诊断：本次 LoRA 在全局库里到底有没有、库内 model_name 是啥，
+                    # 用于区分「旧代码未重载 / 名字不在库 / 库里 model_name 真为空」三种情况。
+                    _diag_lib = self._lora_lib_index()
+                    _diag_l = _diag_lib.get(nm)
+                    _diag_mn = (_diag_l or {}).get("model_name") or ""
                     logger.warning(
-                        f"【LoRA】 启用 {nm} → 未配置 model_name，节点沿用工作流默认文件（可能不是该 LoRA）"
+                        f"【LoRA】 启用 {nm} → 未配置 model_name，节点沿用工作流默认文件（可能不是该 LoRA）。"
+                        f"（诊断：全局库含『{nm}』={'是' if _diag_l else '否'}，"
+                        f"库内 model_name={'已填(' + _diag_mn + ')' if _diag_mn else '空'}）"
                     )
 
         # 自动追加 LoRA 触发词到正向提示词：每个启用的 LoRA 配置的 trigger_words

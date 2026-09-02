@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.31（诊断增强：「未配置 model_name」也打印全局库命中情况）
+
+- 在「启用 XX → 未配置 model_name」的 WARN 后追加诊断：打印全局库是否含该名、库内 model_name 是否已填。用途：一锤定音区分三种情况——
+  ① 库含=否 → 该 LoRA 名字根本不在全局 LoRA 库（需去库里加条目）；
+  ② 库含=是、model_name=空 → 库条目里 model_name 真为空（去填上真实 .safetensors 文件名）；
+  ③ 库含=否 且索引键数极少（配合 v5.6.29 的「找不到」诊断）→ 旧代码未重载。
+- 注：精确名 + 已配 model_name 仍报该 WARNING，几乎可断定跑的是旧 v5.6.27 代码（索引残缺，`_loras_of` 读不到库配置）。
+
 ## v5.6.30（修：预设 LoRA 仍报「未配置 model_name」——即使配了也读不到）
 
 - **现象**：用户在全局 LoRA 库里已给每个 LoRA 填好 model_name，但出图仍 WARN「启用 XX → 未配置 model_name，节点沿用工作流默认文件」。
