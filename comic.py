@@ -795,6 +795,11 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         "槽位变量名，值为该槽位应写的文字。\n\n"
         f"用户原话/想法：\n{_clean_text}\n\n"
         f"画面描述（将作为出图提示词）：\n{scene}\n\n"
+        "（若下方槽位含『画面 / positive / draw 绘图提示词』：请写详细英文 Danbooru 风格标签，"
+        "含 masterpiece、best quality、主体、表情、动作；表情包讲究『字能读、脸能懂』——"
+        "表情要夸张（瞪眼/张嘴/脸红/炸毛/流泪）、角色上半身或大头特写且四周留白给气泡、"
+        "背景简洁（simple background / plain background）以便白字气泡可读、用干净利落的动漫赛璐璐风，"
+        "不要写成简短中文。）\n\n"
         "槽位变量（键名必须严格一致）：\n"
         f"{_spec}\n\n"
     )

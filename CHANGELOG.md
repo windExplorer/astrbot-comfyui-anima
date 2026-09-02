@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.3（表情包制作大师技能补全：anima 绘图风格 + LoRA 指引）
+
+- `skills/boogu-meme-bubbles/SKILL.md` 补全「第一段 anima 绘图怎么画才好看的表情包」：
+  表情夸张、构图留白（上半身/大头特写、四周留空给气泡）、背景简洁（simple background 以便白字气泡可读）、
+  干净赛璐璐动漫风、带画质词；并补全「LoRA 怎么用」：`meme_text` 功能通常已配默认 LoRA/负向词（一般不用额外加），
+  要特定画风/角色时先 `comfyui_loras` 查真实名称再填 `loras` 参数（支持 名称:权重），角色 LoRA 命中后勿重复用 danbooru 标签描述外形。
+- `comic.py` 内部 LLM 造词提示补一句「绘图提示词」的表情包风格指引
+  （详细英文 Danbooru 标签、表情夸张、留白、简洁背景、赛璐璐风），直接保证第一段出图质量，不只靠 skill 文档。
+
 ## v5.6.2（修正：表情包制作大师技能重写，讲清「一个工作流两段提示词」架构）
 
 - 重写 `skills/boogu-meme-bubbles/SKILL.md`：上一版把「一个 ComfyUI 工作流里串起两段提示词」的本质写丢，
