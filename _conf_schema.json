@@ -369,7 +369,7 @@
           "prompt_slots": {
             "type": "text",
             "description": "多槽位提示词注入（JSON，可选）",
-            "hint": "给「一条工作流需要多处、语义不同的文本」的场景用 —— 如表情包（anima 生图提示词 + boogu 加字指令）、漫画（角色提示词 + 整段分镜描述）。**留空 = 不启用，普通工作流无需填写，行为完全不变**。每组字段：key(槽位名) / node(目标节点ID) / field(输入框名，默认 text) / vars(变量名数组) / template(模板)。template 可为字符串，或对象 {prefix, blocks:[{var, max_chars, tiers:[{max_chars, text}]}], suffix} —— 变量为空时整块不渲染（防止生成空气泡），tiers 按字数自动选档，实现气泡大小/字号/行数随字数自适应。主正向提示词仍走 positive_node，不受此影响。",
+            "hint": "给「一条工作流需要多处、语义不同的文本」的场景用 —— 如表情包（anima 生图提示词 + boogu 加字指令）、漫画（角色提示词 + 整段分镜描述）。**留空 = 不启用，普通工作流无需填写，行为完全不变**。每组字段：key(槽位名) / node(目标节点ID) / field(输入框名，默认 text) / mode(可选) / vars(变量名数组) / template(模板)。  ｜ mode 省略或 \"vars\"=旧模式：LLM 按 vars 填字段、template 把字段拼成文本（兼容旧配置）。  ｜ mode:\"nl\"=自然语言指令模式（boogu 加字推荐）：boogu 不认识 bubble=/bottom= 等字段，只认一段自然语言。LLM 模式：变量名=key，由 LLM 直接写一整段中文自然语言（按情绪选气泡样式，见 skills/boogu-meme-bubbles）；直填模式：用 vars（如 [\"bubble_text\",\"bottom_text\"]）经内置「气泡样式目录」拼成自然语言，支持「样式名:文字」强制指定（如 爆炸:午安 / 思考:在想啥 / 无气泡:冲），未指定时气泡位默认 bubble_style(默认云朵气泡)、底部位默认 bottom_style(默认底部字幕条)；boogu 编辑节点（TextEncodeBooguEdit）即使配成 vars 模式也会自动升级为『LLM 写整段自然语言指令』——气泡形状/位置/字体/描边颜色由 LLM 按情绪现编、随内容变化，不再锁死成固定气泡；系统仅在前后补「保持参考图不变」一致性锁与「防错字」约束（不再锁定可爱卡通风格）。template(对象 {prefix, blocks:[{var, max_chars, tiers:[{max_chars, text}]}], suffix})仍可用作自定义模板（兼容旧配置）。主正向提示词仍走 positive_node，不受此影响。",
             "default": ""
           },
           "workflow_json": {
