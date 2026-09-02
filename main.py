@@ -4084,10 +4084,15 @@ class ComfyUIDrawPlugin(Star):
             return _err
         _wf = plugin._find_workflow_by_name(_wf_name) or {}
         _user_text = (getattr(event, "message_str", "") or "").strip()
-        slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, prompt)
+        # 清理段1：剥离 bot 误写的「气泡文字字段」(text:/气泡:) 与 boogu 形状描述，
+        # 抽出气泡文字作为槽位2 的自然语言提示（详见 comic.strip_bubble_field_from_prompt）
+        _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
+        if _bubble:
+            _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
+        slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, _clean_prompt)
         # 委托 comfyui_draw 的完整出图逻辑（权限/闸门/队列/发送均复用）
         return await self.llm_draw(
-            event, prompt=prompt, negative_prompt=negative_prompt, workflow=_wf_name,
+            event, prompt=_clean_prompt, negative_prompt=negative_prompt, workflow=_wf_name,
             img2img_workflow=img2img_workflow, width=width, height=height, loras=loras,
             seed=seed, count=count, prompts=prompts, source=source, image=image, denoise=denoise,
             slot_values=slot_values, comic_feature="meme_text", caption=caption,
@@ -4151,9 +4156,14 @@ class ComfyUIDrawPlugin(Star):
             return _err
         _wf = plugin._find_workflow_by_name(_wf_name) or {}
         _user_text = (getattr(event, "message_str", "") or "").strip()
-        slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, prompt)
+        # 清理段1：剥离 bot 误写的「气泡文字字段」(text:/气泡:) 与 boogu 形状描述，
+        # 抽出气泡文字作为槽位2 的自然语言提示（详见 comic.strip_bubble_field_from_prompt）
+        _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
+        if _bubble:
+            _user_text = (_user_text + f"\n（用户/上文指定的气泡文字：{_bubble}）").strip()
+        slot_values = await plugin._comic_write_slots_llm(_wf, _user_text, _clean_prompt)
         return await self.llm_draw(
-            event, prompt=prompt, negative_prompt=negative_prompt, workflow=_wf_name,
+            event, prompt=_clean_prompt, negative_prompt=negative_prompt, workflow=_wf_name,
             width=width, height=height, loras=loras, seed=seed, count=count, prompts=prompts,
             source=source, image=image, denoise=denoise, slot_values=slot_values, comic_feature="meme_img",
             caption=caption,
@@ -7173,7 +7183,18 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     workflow = _cwf
                 resolved_wf = _cwf
-                slot_values = await self._comic_write_slots_llm(_cwf_cfg, _intent_text or prompt, prompt)
+                # 清理段1：剥离 bot 误写的「气泡文字字段」(text:/气泡:) 与 boogu 形状描述，
+                # 抽到槽位2 的自然语言；同时清掉出图计划里每条 prompt，避免 anima 画错
+                _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)
+                prompt = _clean_prompt
+                _bubble_hint = ""
+                if _bubble:
+                    _bubble_hint = f"\n（用户/上文指定的气泡文字：{_bubble}）"
+                for _it in _items:
+                    _it["prompt"], _ = comic.strip_bubble_field_from_prompt(_it.get("prompt") or "")
+                slot_values = await self._comic_write_slots_llm(
+                    _cwf_cfg, (_intent_text or _clean_prompt) + _bubble_hint, _clean_prompt
+                )
                 logger.info(
                     f"【路由】 漫画槽位造词完成：{'有文字' if slot_values else '无（沿用工作流默认）'}"
                 )

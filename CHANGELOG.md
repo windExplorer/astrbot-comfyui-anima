@@ -2,6 +2,18 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.6（修：bot 把气泡文字写成 danbooru 字段塞进段1、且曲解问话当表情）
+
+- `comic.py` 新增 `strip_bubble_field_from_prompt`：从段1(anima 绘图)提示词里剥离 bot 误写的
+  「气泡文字字段」(`text:` / `Text:` / `bubble:` / `气泡:` / `文字:` / `台词:` 等) 与 boogu 形状描述
+  (`cloud bubble` / `speech bubble` / `thought bubble` …)，并把字段里的文字抽出来转交槽位2(boogu 自然语言)。
+  此前 bot 常把气泡文字写成 `...cute fluffy cloud bubble with soft pink border, text: 有点困了` 塞进段1，
+  既污染绘图提示词(让 anima 画云朵气泡画错)，又没进到气泡——正是用户说的「槽位2要用自然语言不是字段」。
+- `main.py` 三处调用点(`comfyui_comic` / `comfyui_meme_img` / `llm_draw` 自动路由)套用上述清理：
+  段1 用干净提示词，抽出的气泡文字作为自然语言提示喂给内部 LLM 造词，确保槽位2 始终是自然语言。
+- `skills/boogu-meme-bubbles/SKILL.md` 补充两条铁律：① `prompt`(段1/anima) 禁止写 `text:`/`气泡:` 字段与
+  boogu 形状描述；② 用户问问题/评论上一张图(如「咋没有文字了」)是闲聊不是出图指令，不要原话当气泡文字做新表情。
+
 ## v5.6.5（表情包文字/气泡质量修复：小字自适应、多变、默认无底部、覆盖工作流默认提示词）
 
 - `comic.py` `BOOGU_BUBBLE_CATALOG` 重写：去掉所有「超大/很大/大而醒目」固定字号，改为

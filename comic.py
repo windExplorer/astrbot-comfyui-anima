@@ -407,6 +407,48 @@ def slot_mode(slot: dict) -> str:
     return _m if _m in ("nl", "vars") else "vars"
 
 
+# bot 有时会误把「气泡文字 / boogu 形状描述」写成 danbooru 字段或标签塞进段1(anima 绘图)提示词，
+# 例如 "...cute fluffy cloud bubble with soft pink border, text: 有点困了" / "Text: I'm a bit tired"。
+# 这既污染绘图提示词（让 anima 去画云朵气泡），又没进到槽位2(boogu 自然语言)。
+# 下面两个清理函数把这类内容从段1剥离、并把字段里的文字抽出来交给槽位2。
+_BUBBLE_FIELD_RE = re.compile(
+    r"(?i)(?:,\s*)?"                                  # 可选前置逗号
+    r"(?:text|bubble|caption|对话框|气泡文字|气泡|文字|台词|对白)"  # 字段名
+    r"\s*[:：]\s*"                                     # 冒号（中英文）
+    r"(?P<content>[^\n]+?)"                            # 内容（到行尾）
+    r"\s*$"                                            # 行尾
+)
+_BUBBLE_SHAPE_RE = re.compile(
+    r"(?i)\s*[,，]?\s*"                               # 前置逗号/顿号
+    r"(?:cute\s+fluffy\s+cloud\s+bubble|fluffy\s+cloud\s+bubble|cloud\s+bubble"
+    r"|speech\s+bubble|speech\s+balloon|thought\s+bubble|thinking\s+bubble"
+    r"|explosion\s+bubble|burst\s+bubble|star\s+bubble|comic\s+speech\s+bubble)"
+    r"\b"
+)
+
+
+def strip_bubble_field_from_prompt(prompt: str):
+    """清理段1(anima 绘图)提示词里的「气泡文字字段」与「boogu 形状描述」。
+
+    返回 (clean_prompt, bubble_text)：
+    - 命中 ``text: / Text: / bubble: / 气泡: / 文字:`` 等字段时，抽出字段文字作为 bubble_text，
+      并从段1删除该字段（避免污染绘图提示词）；
+    - 同时删除段1里的 boogu 形状标签（cloud bubble / speech bubble / thought bubble …），
+      这些本该由槽位2(boogu)负责，塞进段1会让 anima 画错。
+    未命中则原样返回、bubble_text 为空串。
+    """
+    if not prompt:
+        return prompt or "", ""
+    _prompt = prompt
+    _m = _BUBBLE_FIELD_RE.search(_prompt)
+    _bubble = ""
+    if _m:
+        _bubble = _m.group("content").strip().strip(",，").strip()
+        _prompt = (_prompt[: _m.start()] + _prompt[_m.end():]).strip().strip(",，").strip()
+    _prompt = _BUBBLE_SHAPE_RE.sub("", _prompt).strip().strip(",，").strip()
+    return _prompt, _bubble
+
+
 # boogu 气泡/文字样式目录：驱动「自然语言指令」的气泡多样化（详见 skills/boogu-meme-bubbles）。
 # - desc：可直接写进 boogu 节点 prompt 中段的自然语言片段，{text} 会被替换为实际文字。
 #   其中的颜色/字号是「基准」，内部 LLM 可按角色发色、情绪、强调程度改写（见 boogu_nl_hint）。
