@@ -1791,6 +1791,9 @@ class ComfyUIDrawPlugin(Star):
         if danbooru is None:
             raise RuntimeError("翻译模式为 danbooru 但未启用 danbooru")
         tags = await danbooru.search(seg)
+        # 注：danbooru.search 已对标签里的括号反转义（\( \)），可直接安全进 CLIP 提示词；
+        # 且角色/作品 tag 已含完整外观设定，调用方（含 LLM 工具链）不要重复叠加
+        # blue_hair / white_dress 等外观标签，以免覆盖角色原形象。
         if tags and self._danbooru_cfg().get("append_original"):
             return f"{seg}, {tags}"
         return tags or seg
