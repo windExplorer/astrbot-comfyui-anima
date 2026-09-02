@@ -177,10 +177,70 @@ def resolve_comic_wf(self, requested: str, is_img2img: bool) -> tuple[str | None
     return _name, None
 
 
+# 否定词：识别「不要 X / 别发 X / no X」这类反向指令
+_NEG_WORDS = (
+    "不要", "别", "不加", "不用", "不是", "不想", "无需", "不许", "不能", "取消",
+    "关掉", "关闭", "禁用", "去掉", "移除", "省略", "无", "没有",
+    "no", "not", "without", "never", "none",
+)
+
+
+def _keyword_negated(text: str, index: int) -> bool:
+    """判断 text 里位于 index 处的关键词是否被**紧邻**的否定词否定。
+
+    只认「否定词末尾距关键词开头 ≤2 字」的情况，避免误伤：
+    - 「不要发表情包」夹 1 字 → 命中（否定）
+    - 「别人在做表情包」夹 3 字 → 不命中（肯定）
+    """
+    _prefix = text[max(0, index - 8):index]
+    for _neg in _NEG_WORDS:
+        _p = _prefix.rfind(_neg)
+        if _p >= 0 and (len(_prefix) - _p - len(_neg)) <= 2:
+            return True
+    return False
+
+
 def is_comic_intent(user_text: str, prompt: str = "") -> bool:
-    """判断用户是否想要「带文字的表情包/漫画」。命中关键词即判为 meme 意图。"""
+    """判断用户是否想要「带文字的表情包/漫画」。
+
+    关键词命中即判为 meme 意图，**但被否定词修饰的关键词不算命中**。
+    否则「画个猫，不要发表情包」会因为含「表情包」三个字被误判成想要表情包，
+    既走错漫画工作流，又把「不要发表情包」当成画面描述语。
+    """
     _t = f"{user_text or ''} {prompt or ''}".lower()
-    return any(k in _t for k in _COMIC_INTENT_KEYWORDS)
+    for _k in _COMIC_INTENT_KEYWORDS:
+        _start = 0
+        while True:
+            _i = _t.find(_k, _start)
+            if _i < 0:
+                break
+            if not _keyword_negated(_t, _i):
+                return True
+            _start = _i + len(_k)
+    return False
+
+
+# 「不要发表情包」这类元指令：是对出图方式的否定要求，不是画面描述
+_COMIC_NEG_PATTERN = re.compile(
+    r"(不要|别|不加|不用|不是|不想|无需|不许|取消|去掉|移除|省略|no|not|without|never)"
+    r"\s*[发画带做是用搞生成要]?\s*"
+    r"(表情包|表情图|梗图|气泡|底部文字|旁白|漫画|meme|sticker|comic)",
+    re.IGNORECASE,
+)
+
+
+def strip_comic_negations(text: str) -> str:
+    """剔除用户原话里的『不要发表情包』类元指令，只留下真正的画面描述。
+
+    这些句子若不清掉，会被当成描述语写进画面提示词 / 槽位造词，
+    导致出图内容受污染（用户反馈："把『不要发表情包』当做描述语了"）。
+    没有匹配到元指令时原样返回。
+    """
+    if not text:
+        return text or ""
+    _out = _COMIC_NEG_PATTERN.sub("", text)
+    _out = re.sub(r"\s{2,}", " ", _out).strip(" ,，、。.;；")
+    return _out or (text or "").strip()
 
 
 def slot_vars(self, wf: dict) -> list[str]:
@@ -221,12 +281,20 @@ def slot_var_hint(var_name: str, slot: dict) -> str:
     优先用 slot.hints[var] 的自定义说明；否则按变量名特征给通用提示
     （bubble=角色台词、bottom=底部旁白、comic=整段分镜）。
     """
-    _n = (var_name or "").strip().lower()
-    if _n in ("bubble", "caption", "speech", "气泡", "台词", "对话"):
-        return "气泡内文字：角色第一人称台词，口语化、带情绪；务必短——建议 ≤8 字，最多不超过 12 字"
-    if _n in ("bottom", "subtitle", "sub", "底部", "旁白", "真相", "标题"):
-        return "底部旁白：第三人称真相点破，像视频标题；务必短——建议 ≤6 字，最多不超过 10 字"
-    if _n in ("comic", "desc", "分镜", "剧情", "story"):
+    _cat = _var_category(var_name)
+    if _cat == "bottom":
+        return (
+            "【底部旁白】画面**最下方**整条横幅/字幕条上的文字——它不是角色说的话，"
+            "是旁白、吐槽、真相点破或总结句（例：「这就是程序员的日常」「我裂开了」）。"
+            "第三人称，概括整张图。务必短——建议 ≤6 字，最多不超过 10 字"
+        )
+    if _cat == "bubble":
+        return (
+            "【气泡台词】画面**内部**、人物旁边的白色气泡框里的文字——角色**亲口说出**的话，"
+            "第一人称、口语化、带情绪（例：「我不会写代码！」「别催了」）。"
+            "务必短——建议 ≤8 字，最多不超过 12 字"
+        )
+    if _cat == "comic":
         return "整段分镜/剧情描述：随格数展开，文字不限"
     _hints = slot.get("hints") if isinstance(slot.get("hints"), dict) else {}
     _custom = (_hints or {}).get(var_name)
@@ -236,13 +304,19 @@ def slot_var_hint(var_name: str, slot: dict) -> str:
 
 
 def _var_category(name: str) -> str:
-    """把槽位变量归类到语义类别，供『用户要求不写字』的指令识别。"""
+    """把槽位变量归类到语义类别：bottom / bubble / comic / other。
+
+    ⚠ 必须用**子串匹配**：真实配置里的变量名多是 ``bubble_text`` / ``bottom_text``
+    （见 docs/comic-meme-design.md），裸等值匹配 ``"bubble"`` 会全部落空，
+    导致 LLM 拿不到任何语义说明、把气泡和底部写反。
+    先判 bottom，避免 ``bottom_caption`` 之类被气泡规则吃掉。
+    """
     _n = (name or "").strip().lower()
-    if _n in ("bottom", "subtitle", "sub", "底部", "旁白", "真相", "标题"):
+    if _n == "sub" or any(k in _n for k in ("bottom", "subtitle", "底部", "旁白", "真相")):
         return "bottom"
-    if _n in ("bubble", "caption", "speech", "气泡", "台词", "对话"):
+    if any(k in _n for k in ("bubble", "caption", "speech", "气泡", "台词", "对话")):
         return "bubble"
-    if _n in ("comic", "desc", "分镜", "剧情", "story"):
+    if any(k in _n for k in ("comic", "desc", "分镜", "剧情", "story")):
         return "comic"
     return "other"
 
@@ -284,6 +358,24 @@ def _detect_disabled_slots(text: str, vars_list: list[dict]) -> set[str]:
             if _name in _disabled:
                 break
     return _disabled
+
+
+def slots_few_shot(vars_list: list[dict]) -> str:
+    """按**实际槽位变量名**生成一条「气泡 / 底部」对照示例，防止 LLM 把两者写反。
+
+    同时存在气泡槽与底部槽时才产出；无槽位或只有一类时返回空串。
+    """
+    _bubble = next((v.get("name") for v in vars_list if _var_category(v.get("name")) == "bubble"), None)
+    _bottom = next((v.get("name") for v in vars_list if _var_category(v.get("name")) == "bottom"), None)
+    if not (_bubble and _bottom):
+        return ""
+    _example = json.dumps({"slots": {_bubble: "我不会写代码！", _bottom: "这就是程序员"}}, ensure_ascii=False)
+    return (
+        "\n对照示例（务必看懂两者的区别，千万不要写反）：\n"
+        f"{_example}\n"
+        f"也就是说：{_bubble} 填**角色亲口说的话**（画面内气泡框），"
+        f"{_bottom} 填**旁白吐槽/真相总结**（画面最下方字幕条），两者语义完全不同。"
+    )
 
 
 def render_slot_template(self, slot: dict, template, values: dict) -> str | None:
@@ -466,6 +558,8 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
                 _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
     # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
     _disabled = _detect_disabled_slots(user_text or scene, _vars)
+    # 剔除「不要发表情包」这类元指令，避免被当成画面描述语（检测必须在剥离前）
+    _clean_text = strip_comic_negations(user_text or scene)
     if not _vars:
         return None
     model = self._cfg("llm_model", "").strip()
@@ -479,13 +573,14 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         "你正在为一句想法生成「表情包/漫画」的画面文字。请只输出一个 JSON 对象"
         "（不要任何解释、不要 markdown 代码块、不要反引号），键必须严格等于下方列出的"
         "槽位变量名，值为该槽位应写的文字。\n\n"
-        f"用户原话/想法：\n{user_text or scene}\n\n"
+        f"用户原话/想法：\n{_clean_text}\n\n"
         f"画面描述（将作为出图提示词）：\n{scene}\n\n"
         "槽位变量（键名必须严格一致）：\n"
         f"{_spec}\n\n"
         "任意槽位若不需要文字，返回空字符串或省略该键即可（节点会被清空，不出该位置文字）。\n"
         "文字务必简短：气泡台词通常 6~8 字、底部旁白通常 6 字以内、最多不超过 10 字；宁短勿长。\n"
-        "只输出 JSON 对象："
+        + (slots_few_shot(_vars) + "\n" if slots_few_shot(_vars) else "")
+        + "只输出 JSON 对象："
     )
     if _disabled:
         _disabled_names = "、".join(_disabled)
@@ -587,6 +682,8 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
                 _vars.append({"name": _v, "hint": slot_var_hint(_v, _s)})
     # 确定性识别用户「不要某位置文字」的指令（如『不要底部/不加旁白』），命中后强制清空该槽位
     _disabled = _detect_disabled_slots(idea, _vars)
+    # 剔除「不要发表情包」这类元指令后再喂给 LLM，避免被当成画面描述语（检测必须在剥离前）
+    _clean_idea = strip_comic_negations(idea)
     lora_hint = ""
     if lora_map:
         lora_hint = "用户指定的 LoRA：" + "、".join(
@@ -628,7 +725,7 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
     )
     if _req:
         _system += "\nJSON 需包含以下字段：\n- " + "\n- ".join(_req)
-    _user = f"用户想法：\n{idea}\n"
+    _user = f"用户想法：\n{_clean_idea}\n"
     if lora_hint:
         _user += lora_hint + "\n"
     if _lora_catalog:
@@ -638,6 +735,7 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
         _user += (
             f"槽位变量（键名必须严格一致）：\n{_spec}\n"
             "提示：任意槽位若不需要文字，返回空字符串或省略该键即可，系统不会强行生成。"
+            + slots_few_shot(_vars)
         )
         if _disabled:
             _disabled_names = "、".join(_disabled)
@@ -669,7 +767,7 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
             _parsed = {}
     if not isinstance(_parsed, dict):
         _parsed = {}
-    positive = idea
+    positive = _clean_idea
     if want_prompt:
         _p = str(_parsed.get("positive_prompt") or "").strip()
         if _p:

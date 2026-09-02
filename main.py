@@ -7055,9 +7055,15 @@ class ComfyUIDrawPlugin(Star):
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
 
+        # ── 剔除「不要发表情包」类元指令 ────────────────────────────────
+        # 这类句子是对**出图方式**的否定要求、不是画面描述；若不剔除会被当成描述语
+        # 写进画面提示词（用户反馈："把『不要发表情包』当做描述语了"）。无匹配时原样返回。
+        prompt = comic.strip_comic_negations(prompt or "")
+
         # ── 表情包/漫画意图自动路由（v5.5.0）────────────────────────────
         # 即便 Agent 误选 comfyui_draw（通用画图），只要用户原话是「表情包/漫画/带字梗图」
         # 意图，就重定向到漫画工作流 + 槽位造词，确保出图带气泡/底部文字。
+        # 注：意图识别已支持否定词（「不要发表情包」不算想发表情包）。
         # 已带 slot_values（comfyui_comic 已注入）或第三方 source 调用不触发本路由。
         if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             _intent_text = (getattr(event, "message_str", "") or "").strip()
