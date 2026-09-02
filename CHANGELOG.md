@@ -2,6 +2,26 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.6.19（修：多合一 / 自定义 boogu 节点仍走固定模板——扩展 boogu 检测 + 入口字段自适应）
+
+- **根因**：v5.6.18 只认 `class_type == "TextEncodeBooguEdit"` 来识别 boogu 节点。若用户用的是
+  **多合一（all-in-one）/ 自定义 boogu 节点**（类名不是 `TextEncodeBooguEdit`），扫描返回空 →
+  「LLM 写整段指令」接管逻辑永不触发，槽位退回渲染写死的 `template`（带 `{{{bottom}}}` 占位符），
+  底部为空时渲染出 `底部的文字是""` 这类恶心模板文字，且气泡形状被锁死。
+- **改法**：
+  1. `_class_type_is_boogu` 扩展识别：命中 `TextEncodeBooguEdit` **或类名含 `boogu`** 的节点；
+  2. 新增槽位级兜底声明 `"boogu": true`——`prompt_slots` 里给指向多合一节点的槽位加这个字段即可强制接管
+     （针对类名识别不到的奇葩节点，最稳）；
+  3. `_boogu_node_ids` 同时收集「类名命中」与「显式 `boogu: true` 槽位指向」的节点；
+  4. 注入时字段名按节点实际入口自适应：优先用槽位 `field`，否则 `prompt`（官方节点）/
+     `text`（多合一节点），且若该字段不在节点 `inputs` 里则回退到节点真实存在的文本入口
+     （`text` / `prompt` / `boogu_prompt` / `instruction`），避免写进不存在的字段导致模板一直生效。
+- **效果**：多合一 / 自定义 boogu 节点与官方节点一样，气泡/底部/字幕的【形状/位置/字体/描边/粗细】
+  均由 LLM 按情绪现编；`boogu_nl_hint` 已规定「底部字幕默认不加」，所以用户说「不要底部文字」时
+  LLM 整段指令里不会再出现空底部。
+- **用法**：若多合一节点类名含 `boogu` 可免改直接生效；否则在该表情包工作流的 `prompt_slots` 里
+  给对应槽位加 `"boogu": true`（及其真实入口字段名 `"field": "..."` 若不是 prompt/text）即可。
+
 ## v5.6.18（修：boogu 升级仍不触发——改为直接扫描工作流 boogu 节点，彻底绕开槽位配置）
 
 - **根因续 v5.6.17**：v5.6.16/17 的 boogu 升级依赖「槽位的 `node` 指向 boogu 节点」判定

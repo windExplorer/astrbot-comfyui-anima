@@ -3406,15 +3406,20 @@ class ComfyUIDrawPlugin(Star):
                 # 同时展示 boogu 实际收到的指令：每个槽位（nl / vars / template 都算）都列出来，
                 # 无论是否为空都标注，避免「非 nl 槽位」或「槽位为空」导致整段 boogu 指令消失。
                 # （你这个表情包工作流是 vars 模式，之前只遍历 nl 槽位所以一直没打印——已修正。）
+                _boogu_ids_log = set(comic._boogu_node_ids(wf))
                 _boogu_lines = []
+                # 普通槽位（非 boogu 节点）：原样显示 LLM/指令传进去的槽位文字
                 for _s in _comic_slots:
                     if not isinstance(_s, dict):
                         continue
+                    _nid = str(_s.get("node") or "").strip()
+                    if _nid in _boogu_ids_log:
+                        continue  # boogu 节点由下方统一展示，避免重复/错显旧模板
                     _k = (_s.get("key") or "").strip()
                     if not _k:
                         continue
-                    if comic.slot_mode(_s) == "nl" or comic._is_boogu_node(wf, _s):
-                        # boogu 节点也走『LLM 整段自然语言』渲染，日志才能显示实际发给 ComfyUI 的指令
+                    if comic.slot_mode(_s) == "nl":
+                        # 自然语言指令模式：显示 LLM 写的整段指令
                         _bv = self._render_nl_slot(_s, slot_values)
                     else:
                         _sv2 = slot_values or {}
@@ -3427,7 +3432,7 @@ class ComfyUIDrawPlugin(Star):
                             _bv = str(_sv2.get(_k, "") or "").strip()
                     _boogu_lines.append(f"    [{_k}] {_bv if _bv else '(空/本次未生成，boogu 沿用工作流默认)'}")
                 # 真正发给 ComfyUI 的 boogu 节点指令（与 prompt_slots 配置无关，来自 boogu 接管）
-                for _bn in comic._boogu_node_ids(wf):
+                for _bn in _boogu_ids_log:
                     _bv = (slot_values or {}).get(f"boogu_{_bn}", "") if slot_values else ""
                     _boogu_lines.append(
                         f"    [boogu节点 {_bn}] {_bv if _bv and _bv.strip() else '(空/本次未生成，boogu 沿用工作流默认)'}"

@@ -471,33 +471,91 @@ def _bubble_slot_key_from_wf(wf: dict) -> str:
     return ""
 
 
-def _is_boogu_node(wf: dict, slot: dict) -> bool:
-    """判断槽位是否指向 boogu 编辑节点（TextEncodeBooguEdit）。
+def _class_type_is_boogu(class_type) -> bool:
+    """判断节点 class_type 是否为 boogu 编辑类节点（指令式图生图）。
 
-    boogu 是【指令式图生图】模型，节点 prompt 只认一段自然语言，不认识 bubble=/bottom=
-    字段。因此 boogu 槽即使被配成 目录/vars 模式，也应升级为『LLM 写整段自然语言指令』，
-    否则气泡形状/位置/字体会被 _boogu_style_desc 写死（用户要的是 LLM 现编整段、外观随内容变）。
+    兼容两类：
+    - 官方 ``TextEncodeBooguEdit``；
+    - 自定义 / 多合一（all-in-one）boogu 节点，类名通常含 ``boogu``（大小写不敏感）。
     """
-    _node = str((slot or {}).get("node") or "").strip()
+    _ct = str(class_type or "").strip().lower()
+    if _ct == "textencodebooguedit":
+        return True
+    if "boogu" in _ct:
+        return True
+    return False
+
+
+def _is_boogu_node(wf: dict, slot: dict) -> bool:
+    """判断槽位是否指向 boogu 编辑节点（指令式图生图，节点只认一段自然语言）。
+
+    boogu 槽即使被配成 目录/vars 模式，也应升级为『LLM 写整段自然语言指令』，
+    否则气泡形状/位置/字体会被 _boogu_style_desc 写死（用户要 LLM 现编、外观随内容变）。
+
+    判定（满足其一即为 boogu 节点）：
+    1. 节点 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
+    2. 槽位显式声明 ``"boogu": true``（兜底：类名识别不到的奇葩多合一节点也能接管）。
+    """
+    if not isinstance(slot, dict):
+        return False
+    if slot.get("boogu") is True:
+        return True
+    _node = str(slot.get("node") or "").strip()
     if not _node or not isinstance(wf, dict):
         return False
     _n = wf.get(_node) or {}
-    return str(_n.get("class_type") or "").strip() == "TextEncodeBooguEdit"
+    return _class_type_is_boogu(_n.get("class_type"))
 
 
 def _boogu_node_ids(wf: dict) -> list:
-    """扫描工作流，返回所有 boogu 编辑节点(TextEncodeBooguEdit)的节点 id 列表。
+    """扫描工作流，返回所有 boogu 编辑节点 id（无论 prompt_slots 怎么配都接管）。
 
-    用于『不依赖 prompt_slots 配置、直接接管 boogu 节点』：即使槽位没配 node，
-    或 node 指向对不上，也能找到真正的 boogu 节点并写入 LLM 现编的整段指令。
+    来源：
+    1. 节点 class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点）；
+    2. prompt_slots 里带 ``"boogu": true`` 的槽位指向的节点（类名识别不到时的兜底）。
     """
     if not isinstance(wf, dict):
         return []
     _ids: list = []
-    for _nid, _node in wf.items():
-        if isinstance(_node, dict) and str(_node.get("class_type") or "").strip() == "TextEncodeBooguEdit":
+    _seen: set = set()
+
+    def _add(_nid):
+        if _nid and _nid not in _seen:
+            _seen.add(_nid)
             _ids.append(_nid)
+
+    for _nid, _node in wf.items():
+        if isinstance(_node, dict) and _class_type_is_boogu(_node.get("class_type")):
+            _add(_nid)
+    # prompt_slots 里显式声明的 boogu 节点（多合一节点类名识别不到时的兜底）
+    _raw = wf.get("prompt_slots")
+    if isinstance(_raw, str) and _raw.strip():
+        try:
+            _raw = json.loads(_raw)
+        except Exception:
+            _raw = None
+    if isinstance(_raw, dict):
+        _raw = [_raw]
+    if isinstance(_raw, list):
+        for _s in _raw:
+            if isinstance(_s, dict) and _s.get("boogu") is True:
+                _add(str(_s.get("node") or "").strip())
     return _ids
+
+
+def _boogu_field_for(wf: dict, slot: dict) -> str:
+    """boogu 节点接收整段指令的输入字段名。
+
+    - 槽位显式 ``field`` 优先（兼容入口名非 prompt 的多合一节点）；
+    - 否则：TextEncodeBooguEdit 用 prompt，其它（多合一节点）默认 text。
+    """
+    _f = (slot.get("field") or "").strip()
+    if _f:
+        return _f
+    _node = wf.get(str(slot.get("node") or "").strip()) or {}
+    if _class_type_is_boogu(_node.get("class_type")):
+        return "prompt"
+    return "text"
 
 
 def apply_bubble_fallback(slot_values: dict | None, wf: dict, bubble_text: str) -> dict | None:
@@ -879,8 +937,16 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
     elif isinstance(_slots_raw, list):
         _slots = _slots_raw
     _fill_intent = slot_values is not None
-    # 直接扫描工作流里的 boogu 编辑节点，统一在循环后接管（不依赖槽位 node 配置）
+    # 直接扫描工作流里的 boogu 编辑节点，统一在循环后接管（不依赖槽位 node 配置）。
+    # 兼容：class_type 命中 boogu（TextEncodeBooguEdit / 含 boogu 的多合一节点），
+    # 以及 prompt_slots 里显式 "boogu": true 的槽位指向的节点（类名识别不到的兜底）。
     _boogu_ids = set(_boogu_node_ids(wf))
+    _boogu_field: dict = {}
+    for _slot in _slots:
+        if isinstance(_slot, dict):
+            _nid = str(_slot.get("node") or "").strip()
+            if _nid in _boogu_ids:
+                _boogu_field[_nid] = _boogu_field_for(wf, _slot)
     for _slot in _slots:
         if not isinstance(_slot, dict):
             continue
@@ -889,20 +955,12 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
             continue
         _key = (_slot.get("key") or "").strip()
         _node = _slot.get("node")
-        # boogu 编辑节点：即使配成 目录/vars 模式，也升级为「LLM 写整段自然语言指令」，
-        # 避免气泡形状/位置/字体被 _boogu_style_desc 写死。无 key 时补一个以便注入整段指令。
-        if _is_boogu_node(wf, _slot) and not _key:
-            _key = f"boogu_{_node}"
-            _slot["key"] = _key
         if not _key or _node in (None, ""):
             continue
-        # boogu 编辑节点(TextEncodeBooguEdit)的文字入口叫 prompt，其余文本节点默认 text；
-        # 写错字段会导致值落进节点不存在的 text 输入、ComfyUI 不认，工作流写死的模板一直生效。
-        _field = (_slot.get("field") or "").strip()
-        if not _field:
-            _field = "prompt" if _is_boogu_node(wf, _slot) else "text"
-        if slot_mode(_slot) == "nl" or _is_boogu_node(wf, _slot):
-            # 自然语言指令模式 / boogu 节点：LLM 写整段自然语言，最终拼成一段指令
+        # 普通文本节点（boogu 节点已跳过）：默认入口名为 text
+        _field = (_slot.get("field") or "").strip() or "text"
+        if slot_mode(_slot) == "nl":
+            # 自然语言指令模式：LLM 写整段自然语言，最终拼成一段指令
             _val = _render_nl_slot(self, _slot, slot_values)
         else:
             _vars = [str(v).strip() for v in (_slot.get("vars") or []) if str(v).strip()]
@@ -920,13 +978,22 @@ def inject_slots(self, prompt: dict, wf: dict, slot_values: dict | None) -> None
             continue
         if workflow_builder.set_text_node(prompt, _node, _field, _val or ""):
             logger.info(f"【槽位】 {_key} → 节点 {_node}.{_field}（{len(_val or '')} 字）")
-    # boogu 节点统一接管：把 LLM 现编的整段指令写入节点 prompt（字段名固定为 prompt）。
-    # 与 prompt_slots 配置无关——只要工作流含 TextEncodeBooguEdit 节点，必走此路，彻底避免写死形状。
+    # boogu 节点统一接管：把 LLM 现编的整段指令写入节点（字段名按节点入口自适应）。
+    # 与 prompt_slots 配置无关——只要工作流含 boogu 节点，必走此路，彻底避免写死形状/模板。
     for _bn in _boogu_ids:
         _bv = (slot_values or {}).get(f"boogu_{_bn}", "") if slot_values else ""
         if _bv and _bv.strip():
-            if workflow_builder.set_text_node(prompt, _bn, "prompt", _bv.strip()):
-                logger.info(f"【槽位·boogu】 节点 {_bn}.prompt ← LLM 整段指令（{len(_bv)} 字）")
+            _field = _boogu_field.get(_bn) or "prompt"
+            _n = wf.get(_bn) or {}
+            _inputs = _n.get("inputs", {}) if isinstance(_n, dict) else {}
+            if _field not in _inputs:
+                # 多合一节点入口名可能不是 prompt，退回节点实际存在的文本输入
+                for _alt in ("text", "prompt", "boogu_prompt", "instruction"):
+                    if _alt in _inputs:
+                        _field = _alt
+                        break
+            if workflow_builder.set_text_node(prompt, _bn, _field, _bv.strip()):
+                logger.info(f"【槽位·boogu】 节点 {_bn}.{_field} ← LLM 整段指令（{len(_bv)} 字）")
 
 
 def _perspective_rule(subject: str) -> str:
