@@ -3392,7 +3392,8 @@ class ComfyUIDrawPlugin(Star):
             _slot_texts = []
             for _v in _sv:
                 _t = (slot_values.get(_v) or "").strip()
-                _slot_texts.append(f"{_v}={_t if _t else '(空/不出字)'}")
+                # 用「」包住自然语言内容、去掉「键=值」的字段观感（槽位2 实际发给 boogu 的就是这段自然语言）
+                _slot_texts.append(f"{_v}「{_t}」" if _t else f"{_v}(空/不出字)")
             if _slot_texts:
                 _slot_lines = "\n  槽位文字 : " + "；".join(_slot_texts)
         logger.info(
