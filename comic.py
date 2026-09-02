@@ -524,9 +524,10 @@ def boogu_nl_hint(slot: dict) -> str:
         "（bubble= / bottom= 等），只认自然语言，禁止输出键值对 / JSON。\n"
         "系统会自动在前后补上「保持参考图不变」的一致性锁与风格锁，你只需写中间的添加描述。\n"
         f"★ 气泡/文字样式必须多样化，不要每次都用同一种。可选样式有：{_styles}。\n"
-        "★ 按语气/情绪/内容自动选合适样式：可爱日常→云朵气泡；普通说话→圆角对话气泡；"
-        "内心OS/犹豫→思考气泡；大喊/震惊/激动→爆炸气泡；怒气/急促→尖角气泡；"
-        "通用梗图大字→无气泡白字黑边；拟声/冲击→放射爆裂大字。\n"
+        "★ 按语气/情绪/内容自动选合适样式：当内容像是在【心里嘀咕 / 自问自答 / 内心OS / 对自己说话】"
+        "（而非对画中人或观众喊话、陈述）时，一律优先用【思考气泡】，不要用带尖尾巴的对话气泡；"
+        "可爱日常→云朵气泡；普通说话→圆角对话气泡；内心OS/犹豫→思考气泡；大喊/震惊/激动→爆炸气泡；"
+        "怒气/急促→尖角气泡；通用梗图大字→无气泡白字黑边；拟声/冲击→放射爆裂大字。\n"
         "★ 旁白/底部字幕条【默认绝对不加】：绝大多数表情包只有气泡台词、没有旁白；"
         "只有内容明显是吐槽/真相总结、或用户明确要『字幕/旁白』时才用底部字幕条。"
         "即使用户没提、即使工作流可能自带默认字幕，也一律默认不加底部字幕。\n"
@@ -564,6 +565,24 @@ def _nl_disable_notes(text: str) -> str:
     if any(k in _t for k in _BUBBLE_DISABLE_KW):
         _notes.append("绝对不要添加对话气泡文字")
     return "；".join(_notes)
+
+
+_THOUGHT_KW = (
+    "内心", "os", "心想", "寻思", "琢磨", "暗自", "脑内", "脑海", "心里想",
+    "心里嘀咕", "自言自语", "嘟囔", "嘀咕", "心里话", "腹诽", "脑补",
+)
+
+
+def _detect_thought(user_text: str) -> str:
+    """识别用户内容明显是「内心想法 / OS / 自言自语」，返回强制用思考气泡的约束句（空串=不强制）。"""
+    _t = (user_text or "").lower()
+    if any(k in _t for k in _THOUGHT_KW):
+        return (
+            "用户内容明显是【内心想法 / OS / 自言自语】，必须使用【思考气泡】"
+            "（头顶一连串由小到大的圆形小泡，深灰圆润手写体），"
+            "严禁使用对话气泡 / 尖角气泡 / 云朵气泡（它们都带指向别人的尖尾巴，不像内心想法）。"
+        )
+    return ""
 
 
 def _boogu_style_desc(style_name: str, text: str) -> str | None:
@@ -834,6 +853,7 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         return None
     _spec = "\n".join(f"- {v['name']}: {v['hint']}" for v in _vars)
     _nl_notes = _nl_disable_notes(user_text or scene)
+    _thought_note = _detect_thought(user_text or scene)
     _is_nl = bool(_nl_slots)
     prompt = (
         "你正在为一句想法生成「表情包/漫画」的画面文字。请只输出一个 JSON 对象"
@@ -871,6 +891,8 @@ async def comic_write_slots_llm(self, wf: dict, user_text: str, scene: str) -> d
         )
     if _nl_notes:
         prompt += f"\n【重要·boogu 指令约束】{_nl_notes}。"
+    if _thought_note:
+        prompt += f"\n【重要·气泡样式】{_thought_note}。"
     try:
         logger.info(f"【槽位·造词】 使用模型({model}) 生成槽位文字")
         llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
@@ -976,6 +998,7 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
     # 剔除「不要发表情包」这类元指令后再喂给 LLM，避免被当成画面描述语（检测必须在剥离前）
     _clean_idea = strip_comic_negations(idea)
     _nl_notes = _nl_disable_notes(idea)
+    _thought_note = _detect_thought(idea)
     lora_hint = ""
     if lora_map:
         lora_hint = "用户指定的 LoRA：" + "、".join(
@@ -1056,6 +1079,8 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
             )
         if _nl_notes:
             _user += f"\n【重要·boogu 指令约束】{_nl_notes}。"
+        if _thought_note:
+            _user += f"\n【重要·气泡样式】{_thought_note}。"
     try:
         logger.info(f"【表情包·造词】 使用模型({model}) 生成提示词/文字")
         _resp = await self.context.llm_generate(chat_provider_id=model, prompt=_system + "\n\n" + _user)

@@ -3387,15 +3387,19 @@ class ComfyUIDrawPlugin(Star):
         _size = f"{w}x{h}" if (w and h) else "(默认)"
         _slot_lines = ""
         _comic_slots = self._normalize_prompt_slots(wf.get("prompt_slots"))
-        if _comic_slots and slot_values:
+        _slot_lines = ""
+        if _comic_slots:
+            # 表情包/漫画工作流：无论本次是否成功生成槽位文字，都列出槽位状态，
+            # 便于确认「提示词2(槽位文字)」是否注入（未生成则沿用工作流默认）。
             _sv = self._slot_vars(wf)
             _slot_texts = []
             for _v in _sv:
-                _t = (slot_values.get(_v) or "").strip()
+                _t = (slot_values.get(_v) or "").strip() if slot_values else ""
                 # 原样显示 LLM/指令传进去的槽位文字（值本身不做任何格式化包装）
                 _slot_texts.append(f"{_v}={_t if _t else '(空/不出字)'}")
             if _slot_texts:
-                _slot_lines = "\n  槽位文字 : " + "；".join(_slot_texts)
+                _note = "（本次未生成槽位文字，沿用工作流默认）" if not slot_values else ""
+                _slot_lines = "\n  槽位文字 : " + "；".join(_slot_texts) + _note
         logger.info(
             "【绘图·摘要】\n"
             "  工作流 : %s\n"
