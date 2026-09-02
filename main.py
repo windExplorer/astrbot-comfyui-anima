@@ -7144,30 +7144,39 @@ class ComfyUIDrawPlugin(Star):
         # 写进画面提示词（用户反馈："把『不要发表情包』当做描述语了"）。无匹配时原样返回。
         prompt = comic.strip_comic_negations(prompt or "")
 
-        # ── 表情包/漫画意图自动路由（v5.5.0）────────────────────────────
-        # 即便 Agent 误选 comfyui_draw（通用画图），只要用户原话是「表情包/漫画/带字梗图」
-        # 意图，就重定向到漫画工作流 + 槽位造词，确保出图带气泡/底部文字。
-        # 注：意图识别已支持否定词（「不要发表情包」不算想发表情包）。
+        # ── 表情包/漫画意图 / 漫画工作流 自动路由（v5.5.0，v5.6.5 增强）──
+        # 触发造词的两类情况：
+        #  1) 用户原话命中「表情包/漫画/带字」意图；
+        #  2) 用户显式选的工作流本身就是「漫画/带字工作流」（配了 prompt_slots）。
+        # 第 2 类很关键：否则走 comfyui_draw + workflow='表情包'（用户没说『表情包』二字）
+        # 时不会造词，boogu 节点会直接用工作流里写死的默认提示词——
+        # 表现为『巨大字 + 永远有底部字幕 + 固定气泡』，正是用户反复吐槽的丑样子。
         # 已带 slot_values（comfyui_comic 已注入）或第三方 source 调用不触发本路由。
         if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             _intent_text = (getattr(event, "message_str", "") or "").strip()
-            if self._is_comic_intent(_intent_text, prompt):
+            _comic_by_intent = self._is_comic_intent(_intent_text, prompt)
+            _cwf = None
+            if _comic_by_intent:
                 _cwf, _cerr = self._resolve_comic_wf("", is_img2img)
-                if _cwf:
-                    logger.info(
-                        f"【路由】 检测到表情包/漫画意图，重定向到漫画工作流「{_cwf}」"
-                        f"(is_img2img={is_img2img})"
-                    )
-                    _cwf_cfg = self._find_workflow_by_name(_cwf) or {}
-                    if is_img2img:
-                        img2img_workflow = _cwf
-                    else:
-                        workflow = _cwf
-                    resolved_wf = _cwf
-                    slot_values = await self._comic_write_slots_llm(_cwf_cfg, _intent_text, prompt)
-                    logger.info(
-                        f"【路由】 漫画槽位造词完成：{'有文字' if slot_values else '无（沿用工作流默认）'}"
-                    )
+            elif resolved_wf:
+                _rwf_cfg = self._find_workflow_by_name(resolved_wf)
+                if _rwf_cfg and self._workflow_kind(_rwf_cfg) == "comic":
+                    _cwf = resolved_wf
+            if _cwf:
+                logger.info(
+                    f"【路由】 漫画工作流「{_cwf}」强制造词（覆盖工作流默认 boogu 提示词）"
+                    f"(意图命中={_comic_by_intent}, is_img2img={is_img2img})"
+                )
+                _cwf_cfg = self._find_workflow_by_name(_cwf) or {}
+                if is_img2img:
+                    img2img_workflow = _cwf
+                else:
+                    workflow = _cwf
+                resolved_wf = _cwf
+                slot_values = await self._comic_write_slots_llm(_cwf_cfg, _intent_text or prompt, prompt)
+                logger.info(
+                    f"【路由】 漫画槽位造词完成：{'有文字' if slot_values else '无（沿用工作流默认）'}"
+                )
 
         # ── 出图计划：把多条提示词摊平为「每项独立参数」的列表 ──────────
         # 每项独立完成工作流解析（per-item workflow / img2img_workflow），缺省回落调用级
