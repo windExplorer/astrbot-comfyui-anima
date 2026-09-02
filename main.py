@@ -3433,7 +3433,12 @@ class ComfyUIDrawPlugin(Star):
                 # 同时展示 boogu 实际收到的指令：每个槽位（nl / vars / template 都算）都列出来，
                 # 无论是否为空都标注，避免「非 nl 槽位」或「槽位为空」导致整段 boogu 指令消失。
                 # （你这个表情包工作流是 vars 模式，之前只遍历 nl 槽位所以一直没打印——已修正。）
+                # boogu 节点显示：既含自动识别的（class_type/模型链路/prompt_slots boogu:true），
+                # 也含配置显式声明的 boogu_node（节点 B 编辑指令节点），确保节点 B 指令一定打印出来。
                 _boogu_ids_log = set(comic._boogu_node_ids(wf))
+                _bn_cfg = (wf.get("boogu_node") or "").strip()
+                if _bn_cfg:
+                    _boogu_ids_log.add(_bn_cfg)
                 _boogu_lines = []
                 # 普通槽位（非 boogu 节点）：原样显示 LLM/指令传进去的槽位文字
                 for _s in _comic_slots:
@@ -3461,6 +3466,10 @@ class ComfyUIDrawPlugin(Star):
                 # 真正发给 ComfyUI 的 boogu 节点指令（与 prompt_slots 配置无关，来自 boogu 接管）
                 for _bn in _boogu_ids_log:
                     _bv = (slot_values or {}).get(f"boogu_{_bn}", "") if slot_values else ""
+                    if not _bv:
+                        # 自动漫画路由（llm_draw）把 boogu 指令放在 slot_values["boogu"]，
+                        # 与配置 boogu_node 节点对应，兼容两种键名，确保节点 B 指令被打印。
+                        _bv = (slot_values or {}).get("boogu", "") if slot_values else ""
                     _boogu_lines.append(
                         f"    [boogu节点 {_bn}] {_bv if _bv and _bv.strip() else '(空/本次未生成，boogu 沿用工作流默认)'}"
                     )

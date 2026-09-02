@@ -589,6 +589,11 @@ def _boogu_node_ids(wf: dict) -> list:
         for _s in _raw:
             if isinstance(_s, dict) and _s.get("boogu") is True:
                 _add(str(_s.get("node") or "").strip())
+    # 配置显式声明的 boogu_node（节点 B 编辑指令节点）：用户已填节点 id，直接信任接管，
+    # 不必再依赖 class_type / 模型链路去猜（避免离谱多合一节点认不出导致节点 B 整段指令丢失）。
+    _bn = (wf.get("boogu_node") or "").strip()
+    if _bn:
+        _add(_bn)
     return _ids
 
 
@@ -1100,11 +1105,13 @@ async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, su
         + _perspective_rule(subject) + "\n\n"
         f"用户原话/想法：\n{_clean}\n\n"
         f"画面描述（将作为出图参考）：\n{scene}\n\n"
-        "draw：节点 A 的【绘图正向提示词】，写详细英文 Danbooru 风格标签，"
-        "含 masterpiece、best quality、主体、表情、动作；表情包讲究『字能读、脸能懂』——"
-        "表情要夸张（瞪眼/张嘴/脸红/炸毛/流泪）、角色上半身或大头特写且四周留白给气泡、"
-        "背景简洁（simple background / plain background）以便白字气泡可读、用干净利落的动漫赛璐璐风，"
-        "不要写成简短中文。\n"
+        "draw：节点 A 的【绘图正向提示词】，只负责『画角色 / 表情 / 动作 / 背景』，"
+        "写详细英文 Danbooru 风格标签，含 masterpiece、best quality、主体、表情、动作、构图；"
+        "表情要夸张（瞪眼/张嘴/脸红/炸毛/流泪）、角色上半身或大头特写、背景简洁"
+        "（simple background / plain background）、用干净利落的动漫赛璐璐风，不要写成简短中文。"
+        "⚠️节点 A 绝对禁止写任何文字 / 对白 / 气泡 / 字幕 / caption / speech bubble / white text 等内容"
+        "（不要把『留白给气泡』『白字气泡可读』等文字相关描述写进绘图提示词）——"
+        "文字与气泡一律由节点 B（boogu 编辑指令）负责，节点 A 写了文字会导致重影、错别字。\n"
         "boogu：节点 B 的【编辑自然语言指令】（中文），描述在已生成的卡通图上【添加哪些文字元素】"
         "——例如『在右上角加一个云朵气泡，里面写「我不干了」；不需要底部字幕』。"
         "boogu 不认识任何字段名（bubble= / bottom= 等），只认自然语言，禁止输出键值对 / JSON。"
@@ -1262,7 +1269,9 @@ async def comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt=True, wa
     if want_prompt:
         _req.append(
             '"positive_prompt": 字符串，Anima 底模用的动漫画面提示词——详细的英文 Danbooru 风格标签，'
-            "包含主体、动作、场景、画质词（masterpiece、best quality 等），贴合用户想法"
+            "包含主体、动作、场景、画质词（masterpiece、best quality 等），贴合用户想法；"
+            "⚠️节点 A 只画角色/表情/动作/背景，绝对禁止写任何文字、对白、气泡、字幕、caption、speech bubble 等内容"
+            "（文字与气泡由 boogu 节点负责，节点 A 写文字会重影/错别字）。"
         )
     if _vars:
         if _nl_slots:
