@@ -1162,7 +1162,7 @@ class ComfyUIDrawPlugin(Star):
             for k in keys:
                 idx.setdefault(k, l)
                 idx.setdefault(k.lower(), l)
-            return idx
+        return idx
 
     def _loras_of(self, wf: dict) -> list[dict]:
         """解析本工作流实际生效的 LoRA 列表。
