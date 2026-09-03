@@ -138,6 +138,8 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 
 具体角色（如初音未来、某 IP）按上面的「角色/作品的处理顺序」走——有角色 LoRA 就填 loras，没有就用 danbooru 角色 tag（带作品括号反斜杠转义），**每个角色各写一份分组**，不要共用一份描述。
 
+> ★ **某角色用了角色 LoRA，触发词必须放进它自己的括号里。** 插件（见 `main.py` 自动追加 LoRA 触发词逻辑）会把每个启用 LoRA 的触发词追加到**整段 prompt 末尾（全局生效）**；多人时若两个角色各用 LoRA，两个触发词都会被全局追加 → 互相串到对方身上、融角色。解决办法：把该 LoRA 的触发词写进对应角色的括号分组（如 `(charA_trigger, blue_hair:1.2)`），插件检测到触发词**已存在于 prompt** 就不再全局追加，触发词被括号权重绑定到那个角色、不串味。触发词从 `comfyui_loras` 查询结果的「触发词」字段拿（查 LoRA 时一并取）。单人用角色 LoRA 时全局追加无妨，但**多人务必分组**。
+
 ### 3. 角色之间的互动 / 构图（让画面真的"在一起"）
 
 在计数标签和分组之后，补互动 / 站位词，避免各画各的飘在画面两端：
@@ -159,7 +161,7 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 ### 5. 示例
 
 - "画两个女孩并肩站着" → 动漫 `prompt="masterpiece, best quality…, 2girls, side_by_side, (blue_hair, long_hair:1.2), (pink_hair, short_hair:1.2)"`。
-- "初音和邻居妹妹一起自拍" → 先 `comfyui_loras` 找初音 LoRA 填 `loras`，再 `prompt="masterpiece…, 1girl 1girl, group_photo, selfie, (hatsune_miku:1.2), (原创少女角色:1.2)"`（两人均带分组）。
+- "初音和她的妹妹一起，两人各带角色 LoRA" → 先 `comfyui_loras` 查两人 LoRA + 各自触发词（如 `miku` / `imouto`），`loras=["初音LoRA", "妹妹LoRA"]`，`prompt="masterpiece…, 2girls, group_photo, (miku, blue_hair, twin_tails:1.2), (imouto, pink_hair, short_hair:1.2)"`（**两 LoRA 的触发词各自写进对应角色括号**，插件检测到已存在就不再全局追加，不会串味）。
 - "一男一女在樱花树下" → 真人中文 `prompt="最高画质…, 一男一女, 樱花树下, (左边年轻男子黑发:1.2), (右边少女白裙:1.2)"`。
 
 ## 提示词语言
