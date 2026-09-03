@@ -7438,6 +7438,11 @@ class ComfyUIDrawPlugin(Star):
         _t0 = time.monotonic()
         _seq = 0
         _remain_items: list[dict] = []
+        # 主动发图（event.send）失败的张数。旧代码先 _draw_run_hit 再 send，
+        # send 抛异常只记 warning、返回值仍宣称「已发送」，导致系统完全不知道图
+        # 没发出去：用户看不到图反复催，重试又被单轮闸门按「已出图」拦回。
+        # 现在如实统计，发送成功才计「本轮已出图」，失败由返回值如实告知模型。
+        _send_fail = 0
         for _item in _plan:
             if _remain_items:
                 # 已达单批上限，后续计划全部转入后台续画，避免触发框架超时取消
@@ -7496,12 +7501,19 @@ class ComfyUIDrawPlugin(Star):
                 # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
                 # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
                 if node is not None and not is_companion:
-                    # 每张生成成功即标记「本轮已出图」——超时取消后重调会被单轮闸门拦回，不会重复出图。
-                    plugin._draw_run_hit(event)
+                    # 画一张立刻发一张。★发送结果必须如实记录后再决定「本轮已出图」：
+                    # 旧代码先 hit 再 send，一旦 send 抛异常（协议掉线/风控/超时），
+                    # 就变成「图没发出去却算已出图」——模型被告知成功、单轮闸门也关门，
+                    # 用户看不到图只能反复重试，重试又被拦回。这里改为：仅当 send 真的
+                    # 成功返回才 hit，失败则累加 _send_fail，由下方返回值如实告知模型。
                     try:
                         await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as _e:
-                        logger.warning(f"【出图·成功】 comfyui_draw 主动发送图片失败: {_e}")
+                        _send_fail += 1
+                        logger.warning(f"【出图·发送失败】 图片已生成但 event.send 失败: {_e}")
+                    else:
+                        # 确认发出去才标记「本轮已出图」——超时取消后重调会被单轮闸门拦回，不会重复出图。
+                        plugin._draw_run_hit(event)
 
         if img_paths:
             if is_companion:
@@ -7518,6 +7530,17 @@ class ComfyUIDrawPlugin(Star):
             # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里让模型收尾。
             # 注意：不要 return None——None 会让 AstrBot 直接判定 DONE 结束循环，
             # 模型一句话不说，用户会看到「图发完就哑了」。
+            # ★发送失败优先：必须把「图已生成但没发到聊天窗口」如实回传，
+            # 否则模型以为成功、照常回复「图已发给你」，而用户压根没看到图，
+            # 再催时又被单轮闸门按「已出图」拦回——形成「说发了却没图」的死循环。
+            if _send_fail:
+                return (
+                    f"⚠️ 图片已生成（共 {len(img_paths)} 张，已存入图库），"
+                    f"但发送到聊天窗口失败 {_send_fail} 张（多为协议端掉线/风控/超时，图本身没问题）。"
+                    f"请简短告诉用户「图生成好了，但发送时卡了一下，稍后再要一次我就重新发给你」，"
+                    f"绝不要说「已经发给你了」。用户再次索要时我会重新给他出一张"
+                    f"（你不要改用 send_message_to_user / pc_send_current_media 自行发送）。"
+                )
             if _remain_items:
                 # 单批已达上限，剩余张数转入后台续画任务（工具已正常返回，QQ 连接健康，
                 # 后台任务独立把剩余图生成并自动发来，一次消息即可收齐全部 N 张）。
@@ -7609,11 +7632,14 @@ class ComfyUIDrawPlugin(Star):
                     comic_feature=comic_feature,
                 ):
                     if node is not None:
-                        self._draw_run_hit(event)
+                        # 同主流程：发送成功才算「本轮已出图」，失败只记日志，
+                        # 避免「图没发出去却算已出图」把用户后续重试挡在闸门外。
                         try:
                             await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                         except Exception as _e:
                             logger.warning(f"【续画·发送】 失败: {_e}")
+                        else:
+                            self._draw_run_hit(event)
             try:
                 await event.send(MessageChain([Plain(text=f"✅ 剩下的 {total} 张已经画好发给你啦～")]))
             except Exception:
@@ -9407,6 +9433,8 @@ class ComfyUIDrawPlugin(Star):
         # 伴侣插件仍收集全部路径后返回 JSON。
         _total_n2 = len(_plan2)
         _seq2 = 0
+        # 同 llm_draw：主动发图失败的张数，用于如实回传「图已生成但没发出去」。
+        _send_fail2 = 0
         for _item2 in _plan2:
             _positive2, _parsed_neg2 = plugin._split_external_prompt(_item2["prompt"])
             if not (_positive2 or "").strip():
@@ -9446,10 +9474,15 @@ class ComfyUIDrawPlugin(Star):
                 # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
                 # 自动渲染图片，必须主动 event.send 把图发到聊天里。
                 if node is not None and not is_companion:
+                    # 同 llm_draw：只有真的发出去才计「本轮已出图」，失败累加 _send_fail2，
+                    # 由下方返回值如实告知模型，避免「说发了却没图」。
                     try:
                         await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as _e:
-                        logger.warning(f"【出图·成功】 comfyui_img2img 主动发送图片失败: {_e}")
+                        _send_fail2 += 1
+                        logger.warning(f"【出图·发送失败】 comfyui_img2img 图已生成但 event.send 失败: {_e}")
+                    else:
+                        plugin._draw_run_hit(event)
 
         if img_paths:
             if is_companion:
@@ -9463,12 +9496,21 @@ class ComfyUIDrawPlugin(Star):
                             "不要再用 astrobot_file_read_tool 去读取图片路径，"
                             "也不要用 pc_send_current_media 重复发送同一张图（图已生成，重发只是重复刷图）。",
                 }, ensure_ascii=False)
-            # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里记一次成功并让模型收尾。
+            # 原生 / Agent 调用：图片已在循环内「画一张发一张」，这里只需让模型收尾。
             # 不 return None——否则 Agent Loop 直接结束、LLM 不再说话。
-            plugin._draw_run_hit(event)
+            # ★「本轮已出图」已在循环内按发送结果逐张计入（发送失败不计），
+            #   这里不再无条件 hit，否则会重现「图没发出去却算已出图」。
             # 若本次张数被单次上限截断过，附带一句中性的事实说明，由模型自行告诉用户。
             # 同文生图：图片已由插件发出，返回值【不】附带本地路径，避免模型拿真路径
             # 用 send_message_to_user 把已发的图再发一遍（出现「连续发两次图」）。
+            if _send_fail2:
+                return (
+                    f"⚠️ 图片已生成（共 {len(img_paths)} 张，已存入图库），"
+                    f"但发送到聊天窗口失败 {_send_fail2} 张（多为协议端掉线/风控/超时，图本身没问题）。"
+                    f"请简短告诉用户「图生成好了，但发送时卡了一下，稍后再要一次我就重新出一张」，"
+                    f"绝不要说「已经发给你了」"
+                    f"（你不要改用 send_message_to_user / pc_send_current_media 自行发送）。"
+                )
             return (
                 f"✅ 图片已成功生成并发送到聊天窗口，用户已经能看到，你无需再做任何发送动作。"
                 f"请用一句话自然告诉用户图已发给他即可；"
