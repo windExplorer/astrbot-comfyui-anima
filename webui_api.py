@@ -1436,6 +1436,18 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"打标签失败: {e}")
 
+    async def gallery_retag(self):
+        """存量图补打「表情包 / 漫画」标签（按工作流类型批量），供 WebUI 一键补标按钮调用。
+        复用插件 _gallery_retag（与 /图库 补标 命令同源逻辑）。"""
+        p = self.plugin
+        if p is None or getattr(p, "gallery", None) is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            msg = p._gallery_retag(owner="", all_view=True, session_scope="")
+            return json_response({"msg": msg})
+        except Exception as e:
+            return error_response(f"补标失败: {e}")
+
     async def backup_db(self):
         """备份图库数据库（gallery.db），返回 base64 便于前端触发下载。
 
@@ -1786,6 +1798,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/restore", _h("gallery_restore"), ["POST"], "图库恢复"),
         (f"{prefix}/gallery/purge", _h("gallery_purge"), ["POST"], "图库彻底删除"),
         (f"{prefix}/gallery/tags", _h("gallery_tags"), ["POST"], "图库打标签"),
+        (f"{prefix}/gallery/retag", _h("gallery_retag"), ["POST"], "图库存量补标"),
         (f"{prefix}/gallery/backup", _h("backup_db"), ["GET"], "备份图库数据库"),
         (f"{prefix}/stats/ranking", _h("stats_ranking"), ["GET"], "用户生图排行"),
         (f"{prefix}/stats/trend", _h("stats_trend"), ["GET"], "生图小时趋势"),

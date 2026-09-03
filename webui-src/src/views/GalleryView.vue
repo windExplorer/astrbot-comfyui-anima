@@ -83,6 +83,12 @@
         <n-button size="small" type="primary" @click="doSearch(1)">搜索</n-button>
         <n-tooltip trigger="hover">
           <template #trigger>
+            <n-button size="small" :loading="retagging" @click="retag">补标表情包/漫画</n-button>
+          </template>
+          给「自动打标功能上线前」生成的存量图，按工作流类型批量补打「表情包/漫画」标签，之后分类按钮与按标签搜索即可命中
+        </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
             <n-switch v-model:value="nsfwBlurGlobal" size="small" @update:value="onBlurGlobalChange">
               <template #checked>NSFW 模糊：开</template>
               <template #unchecked>NSFW 模糊：关</template>
@@ -402,6 +408,20 @@ async function reloadThumb(img: any) {
 function onThumbError(img: any) {
   const sha = img.sha || img.sha256;
   if (sha) thumbFailed[sha] = true;
+}
+
+const retagging = ref(false);
+async function retag() {
+  retagging.value = true;
+  try {
+    const d = await apiPost("gallery/retag");
+    message.success(d?.msg || "补标完成");
+    doSearch(1);
+  } catch (e: any) {
+    message.error(e?.message || "补标失败");
+  } finally {
+    retagging.value = false;
+  }
 }
 
 async function doSearch(p: number) {

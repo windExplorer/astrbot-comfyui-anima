@@ -2775,6 +2775,38 @@ class ComfyUIDrawPlugin(Star):
                 exc_info=True,
             )
 
+    def _gallery_retag(self, owner: str = "", all_view: bool = False, session_scope: str = "") -> str:
+        """给存量图批量补打「表情包 / 漫画」标签：按各图所用工作流是否为漫画类
+        （prompt_slots / boogu_node / kind=comic）判定标签。供 /图库 补标 命令与
+        WebUI 调用。add_tags 幂等，重复执行无害。返回给用户看的结果文本。"""
+        g = self.gallery
+        if g is None:
+            return "图库未启用或初始化失败"
+        try:
+            # 收集漫画类工作流名 -> 应补的标签（kind=comic 判为漫画，否则表情包）
+            comic_names: dict[str, str] = {}
+            for w in self._workflows():
+                nm = (w.get("name") or "").strip().lower()
+                if nm and self._workflow_kind(w) == "comic":
+                    comic_names[nm] = "漫画" if (w.get("kind") or "").strip().lower() == "comic" else "表情包"
+            if not comic_names:
+                return "未识别到任何表情包/漫画类工作流，无法批量补标。"
+            rows = g.search(owner=("" if all_view else owner), limit=200000, offset=0, session=session_scope)
+            cnt = {"表情包": 0, "漫画": 0}
+            for r in rows:
+                nm = (r.get("workflow") or "").strip().lower()
+                tag = comic_names.get(nm)
+                if tag:
+                    g.add_tags(r.get("sha256") or "", [tag])
+                    cnt[tag] += 1
+            return (
+                f"✅ 已按工作流类型批量补打标签：表情包 {cnt['表情包']} 张、漫画 {cnt['漫画']} 张。\n"
+                f"之后在图库点「表情包 / 漫画」分类即可筛选，或按标签输入「表情包」搜索。"
+            )
+        except Exception as _e:
+            logger.warning(f"【图库】 补标失败: {_e}", exc_info=True)
+            return f"补标失败：{_e}"
+
     @staticmethod
     def _classify_error(exc: Exception) -> str:
         """把异常粗分类，用于挑选给用户看的可爱话术（connect/timeout/server/generic）。
@@ -6259,6 +6291,13 @@ class ComfyUIDrawPlugin(Star):
                         f"✅ 最近一次重扫已完成：共 {done} 张，检出涩图 {nsfw} 张"
                         + ("（进行中标记已清除）" if finished is None else ""),
                     )
+            event.stop_event()
+        elif sub in ("补标", "补打标签", "retag"):
+            # 存量图补打「表情包 / 漫画」标签：T6 自动打标上线前生成的图没有 tag，
+            # 导致图库「表情包 / 漫画」分类筛选与按标签搜索筛不到。按各图所用工作流
+            # 是否为漫画类批量补标（add_tags 幂等，重复执行无害）。逻辑抽到 _gallery_retag，
+            # WebUI 的一键补标按钮复用同一方法。
+            await self._send(event, self._gallery_retag(owner=owner, all_view=all_view, session_scope=session_scope))
             event.stop_event()
         elif sub == "list":
             # 列表分页：每页数量取自 gallery.page_size 配置（默认 5，夹紧到 1~50）
