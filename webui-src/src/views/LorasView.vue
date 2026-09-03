@@ -35,11 +35,29 @@
           <n-radio-button value="__none__">未分类 ({{ countByCategory("__none__") }})</n-radio-button>
         </n-radio-group>
       </div>
+      <!-- 关键词搜索：名称 / 别名 / 分类 / 模型文件名 / 触发词 / 描述；与底模、分类筛选叠加生效 -->
+      <div class="filter-bar">
+        <span class="filter-label">搜索：</span>
+        <n-input
+          v-model:value="searchText"
+          size="small"
+          clearable
+          class="filter-search"
+          placeholder="搜索名称 / 别名 / 分类 / 模型文件 / 触发词…"
+        />
+        <span v-if="searchText.trim()" class="filter-hint">
+          匹配 {{ filteredIndexes.length }} / {{ loras.length }} 条
+        </span>
+      </div>
     </Teleport>
     <div class="lora-scroll">
     <n-spin :show="loading">
       <n-empty v-if="!loading && !loras.length" description="尚未配置任何 LoRA，点「新增 LoRA」添加。" style="padding:60px" />
-      <n-empty v-else-if="!loading && !filteredIndexes.length" description="当前底模分类下暂无 LoRA。" style="padding:60px" />
+      <n-empty
+        v-else-if="!loading && !filteredIndexes.length"
+        :description="searchText.trim() ? `没有匹配「${searchText.trim()}」的 LoRA。` : '当前底模分类下暂无 LoRA。'"
+        style="padding:60px"
+      />
       <div v-else class="card-grid">
         <div v-for="idx in filteredIndexes" :key="idx" class="lora-card">
           <div
@@ -164,10 +182,23 @@ const filterModel = ref("all");
 // 分类筛选：all=全部；__none__=未分类；其余=对应分类
 const filterCategory = ref("all");
 
-// 筛选后命中的 LoRA 在 loras 全量数组中的下标（操作按钮沿用全量 idx）；底模 + 分类双重过滤
+// 关键词搜索（LoRA 越来越多，靠翻页找太慢）：匹配名称、别名(keywords)、分类、
+// 模型文件名、触发词、描述、底模。与底模 / 分类筛选叠加生效。
+const searchText = ref("");
+// 单条 LoRA 是否命中搜索词（空词视为全命中）
+function loraMatches(l: any, kw: string): boolean {
+  if (!kw) return true;
+  const hay = [l.name, l.keywords, l.category, l.model_name, l.trigger_words, l.description, l.base_model]
+    .map((v) => (Array.isArray(v) ? v.join(" ") : String(v ?? "")))
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(kw);
+}
+// 筛选后命中的 LoRA 在 loras 全量数组中的下标（操作按钮沿用全量 idx）；底模 + 分类 + 关键词三重过滤
 const filteredIndexes = computed<number[]>(() => {
   const m = filterModel.value;
   const c = filterCategory.value;
+  const kw = searchText.value.trim().toLowerCase();
   return loras.value
     .map((l, i) => ({ l, i }))
     .filter(({ l }) => {
@@ -179,9 +210,13 @@ const filteredIndexes = computed<number[]>(() => {
       if (!okModel) return false;
       // 分类匹配
       const cat = (l.category || "").trim();
-      if (c === "__none__") return cat === "";
-      if (c === "all") return true;
-      return cat === c;
+      if (c === "__none__") {
+        if (cat !== "") return false;
+      } else if (c !== "all") {
+        if (cat !== c) return false;
+      }
+      // 关键词匹配
+      return loraMatches(l, kw);
     })
     .map(({ i }) => i);
 });
@@ -476,6 +511,9 @@ onMounted(load);
 .view-actions { display: flex; gap: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex: 0 0 auto; flex-wrap: wrap; }
 .filter-label { color: var(--text-sub); font-size: 13px; }
+.filter-hint { color: var(--text-sub); font-size: 12px; }
+/* 搜索框：窄屏占满一行，宽屏固定宽度不挤压筛选按钮 */
+.filter-search { width: 100%; max-width: 340px; flex: 1 1 220px; }
 /* radio-group 内按钮自动换行：长选项在窄屏不溢出 */
 .filter-radios { display: flex; flex-wrap: wrap; gap: 4px; }
 .filter-radios :deep(.n-radio-group) { flex-wrap: wrap; gap: 4px; }

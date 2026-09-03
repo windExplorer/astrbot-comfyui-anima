@@ -23,9 +23,27 @@
       <span class="filter-hint">类型按「是否配置 boogu 指令节点(boogu_node) 或多槽位提示词(prompt_slots)」自动判定</span>
     </div>
 
+    <!-- 关键词搜索：名称 / 别名 / 底模 / 服务器 / 工作流文件名 / 默认 LoRA；前端即时过滤，与类型筛选叠加生效 -->
+    <div class="filter-bar">
+      <n-input
+        v-model:value="searchText"
+        size="small"
+        clearable
+        class="filter-search"
+        placeholder="搜索名称 / 别名 / 底模 / 服务器 / 工作流文件…"
+      />
+      <span v-if="searchText.trim()" class="filter-hint">
+        匹配 {{ filteredWorkflows.length }} / {{ workflows.length }} 条
+      </span>
+    </div>
+
     <div class="wf-scroll">
     <n-spin :show="loading">
-      <n-empty v-if="!loading && !filteredWorkflows.length" description="没有符合筛选条件的工作流。" style="padding:60px" />
+      <n-empty
+        v-if="!loading && !filteredWorkflows.length"
+        :description="searchText.trim() ? `没有匹配「${searchText.trim()}」的工作流。` : '没有符合筛选条件的工作流。'"
+        style="padding:60px"
+      />
       <div v-else class="card-grid">
         <div v-for="({ w, i }, _) in filteredWorkflows" :key="i" class="wf-card">
           <div
@@ -343,15 +361,34 @@ function serializeLorasText(list: LoraRow[] | undefined | null): string {
 
 // 工作流类型筛选：文生图 / 表情包·漫画（按 kind 字段；旧工作流有 prompt_slots 也判为 comic）
 const filterType = ref<"all" | "draw" | "comic">("all");
+// 关键词搜索（工作流越来越多，靠翻页找太慢）：匹配名称、别名、底模、绑定服务器、
+// 工作流文件名、默认 LoRA 文本。前端即时过滤，与类型筛选叠加生效。
+const searchText = ref("");
 function isComicW(w: any): boolean {
   return (w.kind || "").trim().toLowerCase() === "comic" || !!(w.prompt_slots && String(w.prompt_slots).trim()) || !!(w.boogu_node && String(w.boogu_node).trim());
 }
+// 单条工作流是否命中搜索词（空词视为全命中）
+function wfMatches(w: any, kw: string): boolean {
+  if (!kw) return true;
+  const hay = [w.name, w.aliases, w.base_model, w.server_name, w.workflow_name, w.loras_text]
+    .map((v) => (Array.isArray(v) ? v.join(" ") : String(v ?? "")))
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(kw);
+}
 const filteredWorkflows = computed(() => {
-  const items = workflows.value.map((w, i) => ({ w, i }));
-  if (filterType.value === "all") return items;
-  return items.filter(({ w }) =>
-    filterType.value === "comic" ? isComicW(w) : !isComicW(w)
-  );
+  const kw = searchText.value.trim().toLowerCase();
+  return workflows.value
+    .map((w, i) => ({ w, i }))
+    .filter(({ w }) => {
+      // 类型筛选
+      if (filterType.value !== "all") {
+        const comic = isComicW(w);
+        if (filterType.value === "comic" ? !comic : comic) return false;
+      }
+      // 关键词搜索
+      return wfMatches(w, kw);
+    });
 });
 
 // LoRA 下拉选项：按工作流底模筛选（与 availLoras 逻辑一致：底模为空则全部，LoRA 底模为空则通用）
@@ -753,6 +790,8 @@ onMounted(load);
 .view-actions { display: flex; gap: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex: 0 0 auto; flex-wrap: wrap; }
 .filter-hint { color: var(--text-sub); font-size: 12px; }
+/* 搜索框：窄屏占满一行，宽屏固定宽度不挤压筛选按钮 */
+.filter-search { width: 100%; max-width: 340px; flex: 1 1 220px; }
 .filter-radios { display: flex; flex-wrap: wrap; gap: 4px; }
 .filter-radios :deep(.n-radio-group) { flex-wrap: wrap; gap: 4px; }
 .filter-radios :deep(.n-radio-button) { flex: 0 0 auto; }
