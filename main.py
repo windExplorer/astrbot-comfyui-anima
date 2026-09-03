@@ -7501,19 +7501,18 @@ class ComfyUIDrawPlugin(Star):
                 # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
                 # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
                 if node is not None and not is_companion:
-                    # 画一张立刻发一张。★发送结果必须如实记录后再决定「本轮已出图」：
-                    # 旧代码先 hit 再 send，一旦 send 抛异常（协议掉线/风控/超时），
-                    # 就变成「图没发出去却算已出图」——模型被告知成功、单轮闸门也关门，
-                    # 用户看不到图只能反复重试，重试又被拦回。这里改为：仅当 send 真的
-                    # 成功返回才 hit，失败则累加 _send_fail，由下方返回值如实告知模型。
+                    # 画一张立刻发一张。★「本轮已出图」必须按【图已生成】计，
+                    # 绝不能按「发送是否成功」计——图一旦生成，算力已消耗、图也已入库；
+                    # 若只在 send 成功时才 hit，群聊 send 失败（风控/限流/掉线，
+                    # 群聊远比私聊常见）时闸门永不计数，模型就会一直重画停不下来
+                    # （实测：群聊说一句「再来」后无限自动出图）。发送成败只决定
+                    # 【返回给模型的文案】（如实告知，不谎报成功），不影响闸门计数。
+                    plugin._draw_run_hit(event)
                     try:
                         await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as _e:
                         _send_fail += 1
                         logger.warning(f"【出图·发送失败】 图片已生成但 event.send 失败: {_e}")
-                    else:
-                        # 确认发出去才标记「本轮已出图」——超时取消后重调会被单轮闸门拦回，不会重复出图。
-                        plugin._draw_run_hit(event)
 
         if img_paths:
             if is_companion:
@@ -7538,8 +7537,9 @@ class ComfyUIDrawPlugin(Star):
                     f"⚠️ 图片已生成（共 {len(img_paths)} 张，已存入图库），"
                     f"但发送到聊天窗口失败 {_send_fail} 张（多为协议端掉线/风控/超时，图本身没问题）。"
                     f"请简短告诉用户「图生成好了，但发送时卡了一下，稍后再要一次我就重新发给你」，"
-                    f"绝不要说「已经发给你了」。用户再次索要时我会重新给他出一张"
-                    f"（你不要改用 send_message_to_user / pc_send_current_media 自行发送）。"
+                    f"绝不要说「已经发给你了」；也不要现在就重新调用本工具、"
+                    f"更不要改用 send_message_to_user / pc_send_current_media 自行发送——"
+                    f"请先结束本轮回复，等用户再次明确索要时再处理。"
                 )
             if _remain_items:
                 # 单批已达上限，剩余张数转入后台续画任务（工具已正常返回，QQ 连接健康，
@@ -7632,14 +7632,14 @@ class ComfyUIDrawPlugin(Star):
                     comic_feature=comic_feature,
                 ):
                     if node is not None:
-                        # 同主流程：发送成功才算「本轮已出图」，失败只记日志，
-                        # 避免「图没发出去却算已出图」把用户后续重试挡在闸门外。
+                        # 同主流程：「本轮已出图」按【图已生成】计（不按发送结果计），
+                        # 否则群聊 send 失败时闸门不计数、模型无限重画；
+                        # 发送失败只记日志，不影响闸门计数。
+                        self._draw_run_hit(event)
                         try:
                             await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                         except Exception as _e:
                             logger.warning(f"【续画·发送】 失败: {_e}")
-                        else:
-                            self._draw_run_hit(event)
             try:
                 await event.send(MessageChain([Plain(text=f"✅ 剩下的 {total} 张已经画好发给你啦～")]))
             except Exception:
@@ -9474,15 +9474,15 @@ class ComfyUIDrawPlugin(Star):
                 # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
                 # 自动渲染图片，必须主动 event.send 把图发到聊天里。
                 if node is not None and not is_companion:
-                    # 同 llm_draw：只有真的发出去才计「本轮已出图」，失败累加 _send_fail2，
-                    # 由下方返回值如实告知模型，避免「说发了却没图」。
+                    # 同 llm_draw：「本轮已出图」按【图已生成】计，不按发送结果计，
+                    # 避免群聊 send 失败时闸门不计数导致模型无限重画；
+                    # 发送失败累加 _send_fail2，只影响返回给模型的文案。
+                    plugin._draw_run_hit(event)
                     try:
                         await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
                     except Exception as _e:
                         _send_fail2 += 1
                         logger.warning(f"【出图·发送失败】 comfyui_img2img 图已生成但 event.send 失败: {_e}")
-                    else:
-                        plugin._draw_run_hit(event)
 
         if img_paths:
             if is_companion:
@@ -9508,8 +9508,9 @@ class ComfyUIDrawPlugin(Star):
                     f"⚠️ 图片已生成（共 {len(img_paths)} 张，已存入图库），"
                     f"但发送到聊天窗口失败 {_send_fail2} 张（多为协议端掉线/风控/超时，图本身没问题）。"
                     f"请简短告诉用户「图生成好了，但发送时卡了一下，稍后再要一次我就重新出一张」，"
-                    f"绝不要说「已经发给你了」"
-                    f"（你不要改用 send_message_to_user / pc_send_current_media 自行发送）。"
+                    f"绝不要说「已经发给你了」；也不要现在就重新调用本工具、"
+                    f"更不要改用 send_message_to_user / pc_send_current_media 自行发送——"
+                    f"请先结束本轮回复，等用户再次明确索要时再处理。"
                 )
             return (
                 f"✅ 图片已成功生成并发送到聊天窗口，用户已经能看到，你无需再做任何发送动作。"
