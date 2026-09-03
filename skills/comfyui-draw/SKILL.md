@@ -121,12 +121,15 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 - 动漫（英文标签，Anima）：`1girl` / `2girls` / `3girls` / `multiple girls` / `1boy` / `2boys` / `1boy 1girl` / `1girl 1boy` / `group` / `crowd`。
   例：`2girls`、`1boy 1girl`、`3girls`。**放在提示词主体最前面（画质前缀之后）**。
 - 真人（中文）：开头写「两个女孩」「一男一女」「三个人」，再分述各自特征。
+- 注意：`solo` 是「单人」标签，**多人绝对不要写 `solo`**，否则和计数标签冲突、模型会只画一个。
 
 > 不写计数标签，模型大概率只画 1 个人；写错人数（要 2 个却写 `1girl`）会直接少人。
 
 ### 2. 每个角色用「括号分组」独立描述，互不串味
 
 用 `(角色描述:权重)` 把**每个人**的外观/服装/动作圈成一组，权重 1.1~1.3 让模型把特征绑定到对应个体、不互相污染：
+
+> ⚠️ **动漫（Anima）模式括号里必须写英文标签**：动漫工作流会把含中文的片段交给 danbooru/LLM 翻译，翻译后 `(xxx:1.2)` 的权重括号会被丢掉、分组失效。所以动漫多人请全程英文标签（`(blue_hair, long_hair:1.2)`）；真人（中文/自然语言）括号内中英文都行（真人调用不翻译，括号权重语法直接生效）。
 
 - 动漫（英文）：
   `2girls, (blue_hair, long_hair, white_dress:1.2), (red_hair, twin_tails, casual_clothes:1.2)`
@@ -142,6 +145,7 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 - 互动：`holding_hands`、`hugging`、`looking_at_each_other`、`arm_in_arm`、`leaning_on_each_other`、`kissing`。
 - 站位 / 构图：`side_by_side`、`standing_close`、`centered`、`wide_shot`、`group_photo`、`from_side`、`sitting_together`、`back_to_back`。
 - 不要只写"在一起"中文——用上面英文标签（动漫）或"并肩站着/互相看着对方"（真人）。
+- ⚠️ 纯提示词对「谁在左/谁在右」只是**软约束**，不能精确摆位。Anima 普通生图是单 positive 通道、没有 Regional Prompter，靠「计数标签 + 每角色分组」已是当前最佳近似；要精确构图得靠 ControlNet / 参考图（图生图）。
 
 ### 4. 多人时的避坑
 
@@ -150,6 +154,7 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 - ❌ 把两个角色的外观标签平铺混在一起（如 `blue_hair red_hair`，模型不知道谁蓝发谁红发）→ 必须分组 `(蓝发:1.2), (红发:1.2)`。
 - ❌ 动漫工作流用中文写人数（"两个女孩"）→ 必须用 `2girls` 英文计数标签。
 - ✅ 画质前缀照常加（动漫 `masterpiece, best quality…`、真人 `最高画质…`），多人不影响前缀规则。
+- ✅ 分组权重 1.1~1.3 即可，**别超过 1.5**（过高人物易过拟合/崩坏、且可能把该角色画得过重挤压别人）。
 
 ### 5. 示例
 
