@@ -3732,17 +3732,34 @@ class ComfyUIDrawPlugin(Star):
                                     _group_name = str(getattr(_grp, "group_name", "") or "")
                             except Exception:
                                 _group_name = ""
+                            # 启用 LoRA（含权重）列表：用于图库大图详情展示
+                            _loras_record = [
+                                {"name": nm, "weight": _lora_weight.get(nm, None)}
+                                for nm in (enabled or [])
+                            ]
+                            # 采样器参数（steps/cfg/denoise）从工作流 JSON 提取
+                            _sampler = {}
+                            try:
+                                from . import workflow_builder as _wb
+                            except ImportError:
+                                import workflow_builder as _wb
+                            try:
+                                _sampler = _wb.get_sampler_defaults(prompt) or {}
+                            except Exception:
+                                _sampler = {}
                             _final = self.gallery.archive_image(
                                 img_path,
                                 source=SRC_GEN,
                                 prompt=positive,
                                 prompt_raw=positive,
                                 workflow=(wf.get("name") or ""),
-                                loras=enabled,
+                                loras=_loras_record,
                                 seed=(seeds_used[0] if seeds_used else None),
                                 w=_real_w,
                                 h=_real_h,
                                 denoise=(denoise if is_img2img else None),
+                                cfg=_sampler.get("cfg"),
+                                steps=_sampler.get("steps"),
                                 is_img2img=bool(is_img2img),
                                 ref_sha256=(ref_sha256 or ""),
                                 size_bytes=(os.path.getsize(img_path) if os.path.exists(img_path) else None),

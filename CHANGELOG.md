@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.7.2（图库记录补全：工作流/LoRA(权重)/CFG/步数 且大图详情可见）
+
+- 图库归档补全采样与 LoRA 信息：新增 cfg、steps 两列（带迁移 ALTER TABLE，旧库自动补列），归档时从工作流 JSON 提取 steps/cfg 写入；LoRA 由原先仅存名称列表改为存「名称 + 权重」字典列表（archive_image 的 loras 字段）。
+- 大图详情（图库 ImageViewer）新增展示 LoRA（含权重，兼容旧数据仅名称列表）、CFG、步数三行，与已有的工作流/尺寸/Seed/Denoise/提示词并列。
+
 ## v5.7.1（修复：工作流/LoRA 本地图片上传封面损坏——base64 未去 dataURL 前缀）
 
 - 修复本地图片文件上传封面（拖拽 / 选择文件）无效的问题：前端 readAsDataURL 返回带 `data:image/jpeg;base64,` 前缀的 dataURL，后端 lora_upload_image 直接 base64 解码未去前缀，导致前缀字母被当 base64 解出损坏数据（封面裂图/解码失败）；而「输入链接下载」走 lora_fetch 的 direct_image 分支不受影响。现后端解码前兼容去掉 dataURL 前缀。

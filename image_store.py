@@ -198,6 +198,8 @@ class ImageStore:
             ("nsfw_checked", "INTEGER NOT NULL DEFAULT 0"),
             ("group_id", "TEXT DEFAULT ''"),
             ("group_name", "TEXT DEFAULT ''"),
+            ("cfg", "REAL DEFAULT NULL"),
+            ("steps", "INTEGER DEFAULT NULL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -558,6 +560,8 @@ class ImageStore:
         w=None,
         h=None,
         denoise=None,
+        cfg=None,
+        steps=None,
         is_img2img: bool = False,
         ref_sha256: str = "",
         size_bytes: int = None,
@@ -642,13 +646,13 @@ class ImageStore:
                 if source == SRC_GEN and not row["prompt"] and prompt:
                     conn.execute(
                         "UPDATE images SET prompt=?, prompt_raw=?, workflow=?, "
-                        "loras=?, seed=?, w=?, h=?, denoise=?, is_img2img=?, "
+                        "loras=?, seed=?, w=?, h=?, denoise=?, cfg=?, steps=?, is_img2img=?, "
                         "ref_sha256=?, source=?, size_bytes=?, cost_sec=?, "
                         "user_id=?, user_name=?, session_id=?, trigger_msg=?, status=? "
                         "WHERE sha256=?",
                         (
                             prompt, prompt_raw, workflow, loras_json,
-                            seed, w, h, denoise,
+                            seed, w, h, denoise, cfg, steps,
                             1 if is_img2img else 0, ref_sha256 or "",
                             source, size_bytes, cost_sec,
                             user_id or "", user_name or "", session_id or "",
@@ -705,9 +709,9 @@ class ImageStore:
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
                  use_count, starred, created_at, size_bytes, cost_sec,
                  user_id, user_name, session_id, group_id, group_name, trigger_msg, status,
-                 nsfw, nsfw_score, nsfw_blur, nsfw_checked)
+                 nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?)
+                        ?,?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -717,6 +721,7 @@ class ImageStore:
                     time.time(), size_bytes, cost_sec,
                     user_id or "", user_name or "", session_id or "", group_id or "", group_name or "", trigger_msg or "", status,
                     _nsfw, _nsfw_score, None, _nsfw_checked,
+                    cfg, steps,
                 ),
             )
             conn.commit()
@@ -954,6 +959,8 @@ class ImageStore:
             "w": row["w"],
             "h": row["h"],
             "denoise": row["denoise"],
+            "cfg": row["cfg"],
+            "steps": row["steps"],
             "is_img2img": bool(row["is_img2img"]),
             "ref_sha256": row["ref_sha256"],
             "source": row["source"],

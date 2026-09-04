@@ -71,6 +71,9 @@
             <div v-if="item.group_id" class="iv-row"><span class="k">群号</span><span class="v">{{ item.group_id }}</span></div>
             <div v-if="item.group_name" class="iv-row"><span class="k">群名</span><span class="v">{{ item.group_name }}</span></div>
             <div v-if="item.seed != null" class="iv-row"><span class="k">Seed</span><span class="v">{{ item.seed }}</span></div>
+            <div v-if="lorasList.length" class="iv-row"><span class="k">LoRA</span><span class="v">{{ lorasText }}</span></div>
+            <div v-if="item.cfg != null" class="iv-row"><span class="k">CFG</span><span class="v">{{ item.cfg }}</span></div>
+            <div v-if="item.steps != null" class="iv-row"><span class="k">步数</span><span class="v">{{ item.steps }}</span></div>
             <div v-if="item.denoise != null" class="iv-row"><span class="k">Denoise</span><span class="v">{{ item.denoise }}</span></div>
             <div v-if="item.use_count != null" class="iv-row"><span class="k">使用次数</span><span class="v">{{ item.use_count }}</span></div>
             <div class="iv-row iv-prompt"><span class="k">提示词</span><span class="v">{{ item.prompt_raw || item.prompt || "（无）" }}</span></div>
@@ -112,6 +115,9 @@ interface ViewerImage {
   group_name?: string;
   seed?: number | string;
   denoise?: number;
+  cfg?: number;
+  steps?: number;
+  loras?: string | any[];
   use_count?: number;
   starred?: boolean;
   status?: number;
@@ -170,6 +176,22 @@ const typeText = computed(() => {
   if (it.source === "user") return "用户图";
   return "文生图";
 });
+
+// 图库记录里的 LoRA（含权重）：DB 存 JSON 字符串，兼容旧数据（仅名字列表）
+const lorasList = computed<Array<any>>(() => {
+  const raw = item.value?.loras;
+  if (!raw) return [];
+  let arr: any = raw;
+  if (typeof raw === "string") {
+    try { arr = JSON.parse(raw); } catch { return []; }
+  }
+  return Array.isArray(arr) ? arr : [];
+});
+const lorasText = computed(() =>
+  lorasList.value
+    .map((l: any) => (typeof l === "object" && l ? `${l.name}${l.weight != null ? ":" + l.weight : ""}` : String(l)))
+    .join("、 ") || "无"
+);
 
 async function loadMain(sha: string) {
   mainSrc.value = "";
