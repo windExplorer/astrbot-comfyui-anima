@@ -902,7 +902,27 @@ class WebUIApi:
                 async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
                     async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
                         if resp.status == 401 or resp.status == 403:
-                            return error_response("C 站 API 拒绝了匿名请求（401/403）。请在插件配置「网络与代理」里填写 civitai_api_key（C 站 Settings → Account → API Keys 生成），否则无法获取描述/封面。")
+                            # 区分「未配置 key（真匿名）」与「已配置 key 但 C 站仍拒（key 无效/过期/被代理剥离）」，
+                            # 否则用户填了 key 也会看到一模一样的「匿名请求被拒」而困惑。
+                            try:
+                                from astrbot.api import logger as _log
+                                _log.warning(
+                                    f"[LoRA抓取] C站返回 {resp.status}；"
+                                    f"当前是否已配置 civitai_api_key={'是(len=%d)' % len(_ck) if _ck else '否'}"
+                                )
+                            except Exception:
+                                pass
+                            if _ck:
+                                return error_response(
+                                    "已检测到已配置的 civitai_api_key（长度 %d），但 C 站仍返回 %d。"
+                                    "说明该 Key 无效 / 已过期，或被代理剥离了 Authorization 头。"
+                                    "请到 C 站 Settings → Account → API Keys 重新生成一份并粘贴保存后重试；"
+                                    "若使用 http_proxy，请确认代理未丢弃请求头。" % (len(_ck), resp.status)
+                                )
+                            return error_response(
+                                "C 站 API 拒绝了匿名请求（%d）。请在插件配置「网络与代理」里填写 "
+                                "civitai_api_key（C 站 Settings → Account → API Keys 生成），否则无法获取描述/封面。" % resp.status
+                            )
                         if resp.status == 429:
                             return error_response("C 站 API 限流（HTTP 429）。请稍后重试，或配置 civitai_api_key 提升额度。")
                         if resp.status != 200:
