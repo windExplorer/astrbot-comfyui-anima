@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.7.4（修复：模型无视劝退文本、comfyui_draw 空转十几轮烧 token）
+
+- 实测部分模型（角色扮演人格）会无视「硬终止」劝退文本，同轮连续调用 comfyui_draw 13+ 次（一次还并行发 10 个），每轮劝退文本反而烧 token。
+- 新增熔断：重复调用超过容忍次数后，插件先主动给用户发一条收尾消息（避免「图发完就哑了」），工具再 return None —— AstrBot 的 tool_loop_agent_runner 对 None 返回会直接终止整个 Agent Loop，不再进行下一轮 LLM 推理，彻底止损。
+- 第一次拦截仍返回文本给模型体面收尾的机会；只有执拗空转才触发熔断。同一轮并行发起的其余重复调用不重复发消息。
+
 ## v5.7.3（修复：自定义工作流 SaveImageExtended 等输出节点「未找到输出图片节点」误报）
 
 - comfyui_client.extract_images 兜底兼容 SaveImageExtended、KJNodes Image Save 等自定义保存节点的任意输出字段名（如 saved_images/image/imgs），并扫描任意含 filename 的图片列表，避免「任务完成但未找到输出图片节点」误报。

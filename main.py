@@ -5774,9 +5774,10 @@ class ComfyUIDrawPlugin(Star):
         "画图连续遇到问题，本次没能出图。"
         "请用一句话简短向用户说明情况即可，不要用图库里的旧图顶替。"
     )
-    # 重复调用超过容忍次数后才用的终止信号。实测模型被拦后会换个 seed 继续调，
-    # 若一直回 DONE_HINT 它会一直调（日志里 17 次、空转 51 秒才停），
-    # 不出图但白白烧 token、让用户干等。这里才需要一句明确的「停」。
+    # 重复调用超过容忍次数后的终止信号。实测模型被拦后会换个 seed 继续调，
+    # 若一直回 DONE_HINT 它会一直调（日志里 17 次、空转 51 秒才停）。
+    # v5.7.4 起该提示不再指望模型「读了就停」——handler 收到它会直接熔断：
+    # 插件先主动发一条收尾消息，再 return None 让框架终止 Agent Loop。
     _DRAW_RUN_STOP_HINT = (
         "已经没有新的图片要生成了。请直接结束回复：不要再调用任何画图工具，"
         "也不要用 comfyui_gallery 去翻以前的旧图来顶替——"
@@ -7041,6 +7042,21 @@ class ComfyUIDrawPlugin(Star):
         # 不看参数、不看时间间隔，因此不存在被绕过的可能。
         _gate_ok, _gate_hint = plugin._draw_run_check(event, source=source, tool_name="comfyui_draw")
         if not _gate_ok:
+            # 硬终止（重复调用超过容忍次数）：STOP_HINT 劝退文本对执拗的模型无效
+            # （实测同轮连续空转 13+ 次、每轮都烧 token）。改用熔断：
+            # 第一次先由插件主动给用户发一条收尾消息（避免「图发完就哑了」），
+            # 再 return None —— AstrBot 的 tool_loop_agent_runner 对工具返回 None
+            # 会直接 transition DONE 终止整个 Agent Loop，不再进行下一轮推理。
+            # 同一轮并行发起的其余重复调用不重复发消息，直接 None。
+            if _gate_hint is plugin._DRAW_RUN_STOP_HINT:
+                _st = plugin._draw_run_state_of(event)
+                if not _st.get("terminated"):
+                    _st["terminated"] = True
+                    try:
+                        await plugin._send(event, "（图片已经在上面发过啦，就先聊到这里吧～）")
+                    except Exception:
+                        pass
+                return None
             return _gate_hint
 
         # prompt 兜底：LLM 有时不会把描述填进 tool 参数（参数空洞 / 空 JSON {}）。分两种处理：
