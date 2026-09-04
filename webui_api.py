@@ -751,6 +751,10 @@ class WebUIApi:
                 if fname_in:
                     filename = os.path.basename(fname_in)
                 b64 = payload.get("data") or payload.get("base64") or ""
+                # 兼容 dataURL：前端 readAsDataURL 返回的串带 "data:image/jpeg;base64," 前缀，
+                # 必须先去掉前缀再解码，否则前缀里的字母会被当 base64 解出损坏数据（封面裂图/解码失败）。
+                if "," in b64:
+                    b64 = b64.split(",", 1)[1]
                 try:
                     data_bytes = base64.b64decode(b64)
                 except Exception:

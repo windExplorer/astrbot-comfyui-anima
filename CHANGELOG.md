@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.7.1（修复：工作流/LoRA 本地图片上传封面损坏——base64 未去 dataURL 前缀）
+
+- 修复本地图片文件上传封面（拖拽 / 选择文件）无效的问题：前端 readAsDataURL 返回带 `data:image/jpeg;base64,` 前缀的 dataURL，后端 lora_upload_image 直接 base64 解码未去前缀，导致前缀字母被当 base64 解出损坏数据（封面裂图/解码失败）；而「输入链接下载」走 lora_fetch 的 direct_image 分支不受影响。现后端解码前兼容去掉 dataURL 前缀。
+
 ## v5.7.0（C 站 LoRA 抓取：401/403 提示区分「未配置 key」与「key 无效」）
 
 - 优化 C 站 LoRA 抓取（lora_fetch）的 401/403 错误提示：原提示一律说「匿名请求被拒」，导致用户已配置 civitai_api_key 仍看到同一句话而困惑。现根据运行时是否真正读到 key 区分：已读到 key 则提示「key 无效 / 已过期 / 被代理剥离 Authorization 头，请到 C 站重新生成」；未读到 key 才提示「匿名请求被拒，请填写 civitai_api_key」。便于跨机器排查根因。
