@@ -178,14 +178,26 @@ def extract_images(history_entry: dict, output_node: str | None = None) -> list[
     """从任务历史条目中提取输出图片列表。
 
     兼容 outputs[...].images（SaveImage 等）与 outputs[...].gifs（VideoCombine /
-    AnimateDiff 等动图节点），降低「任务完成但未找到输出图片节点」的误报。
+    AnimateDiff 等动图节点）；并兜底扫描任意含 filename 的图片描述列表，
+    兼容 SaveImageExtended 等自定义保存节点与中转站差异格式，
+    降低「任务完成但未找到输出图片节点」的误报。
     """
+    def _looks_like_images(lst):
+        return bool(lst) and all(isinstance(x, dict) and "filename" in x for x in lst)
 
     def _imgs(out):
         if not isinstance(out, dict):
             return None
-        imgs = out.get("images") or out.get("gifs") or []
-        return imgs if imgs else None
+        # 已知标准/常见输出字段名优先
+        for key in ("images", "gifs", "saved_images", "image", "imgs", "output"):
+            v = out.get(key)
+            if isinstance(v, list) and v:
+                return v
+        # 兜底：扫描节点所有输出值，找「元素是含 filename 的图片字典」的列表
+        for v in out.values():
+            if isinstance(v, list) and _looks_like_images(v):
+                return v
+        return None
 
     if not history_entry:
         return []
@@ -199,3 +211,25 @@ def extract_images(history_entry: dict, output_node: str | None = None) -> list[
         if imgs:
             return imgs
     return []
+
+
+def task_error(history_entry: dict) -> str | None:
+    """提取 ComfyUI 任务执行报错信息（节点执行失败等），无报错返回 None。
+
+    ComfyUI 在任务失败时，history 条目的 status.messages 里会写入
+    ("execution_error", {...})，含 exception_message / node_id / node_type。
+    """
+    if not isinstance(history_entry, dict):
+        return None
+    status = history_entry.get("status") or {}
+    msgs = status.get("messages") or []
+    for m in msgs:
+        if isinstance(m, (list, tuple)) and len(m) >= 2 and m[0] == "execution_error":
+            detail = m[1]
+            if isinstance(detail, dict):
+                return (
+                    f"{detail.get('exception_message', '未知错误')}"
+                    f"（节点 {detail.get('node_id', '?')}"
+                    f"/{detail.get('node_type', '?')}）"
+                )
+    return None

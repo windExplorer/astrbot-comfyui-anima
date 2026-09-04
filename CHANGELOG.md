@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.7.3（修复：自定义工作流 SaveImageExtended 等输出节点「未找到输出图片节点」误报）
+
+- comfyui_client.extract_images 兜底兼容 SaveImageExtended、KJNodes Image Save 等自定义保存节点的任意输出字段名（如 saved_images/image/imgs），并扫描任意含 filename 的图片列表，避免「任务完成但未找到输出图片节点」误报。
+- 出图「无图」失败时新增区分日志：若是 ComfyUI 任务本身节点报错（典型如放大模型 4x-UltraSharp 缺失导致 ImageUpscaleWithModel 失败），会打印具体报错（exception_message / node_id / node_type），便于定位是工作流/模型问题而非插件问题。
+
 ## v5.7.2（图库记录补全：工作流/LoRA(权重)/CFG/步数 且大图详情可见）
 
 - 图库归档补全采样与 LoRA 信息：新增 cfg、steps 两列（带迁移 ALTER TABLE，旧库自动补列），归档时从工作流 JSON 提取 steps/cfg 写入；LoRA 由原先仅存名称列表改为存「名称 + 权重」字典列表（archive_image 的 loras 字段）。

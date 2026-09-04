@@ -3682,11 +3682,20 @@ class ComfyUIDrawPlugin(Star):
 
                 images = comfyui_client.extract_images(history, wf.get("output_node"))
                 if not images:
-                    logger.warning("【绘图·失败】[无图] 任务完成但未找到输出图片节点")
+                    # 区分：ComfyUI 任务本身报错（节点失败，如缺放大模型）vs 工作流确实无图片输出节点
+                    _task_err = comfyui_client.task_error(history)
+                    if _task_err:
+                        logger.warning(f"【绘图·失败】[无图] ComfyUI 任务执行报错：{_task_err}")
+                    else:
+                        logger.warning(
+                            "【绘图·失败】[无图] 任务完成但未找到输出图片节点"
+                            "（工作流可能缺少 SaveImage / PreviewImage / SaveImageExtended 等输出节点）"
+                        )
                     await self._send(event, self._cute("no_image"))
                     self._record_failed(
                         event, positive, wf, is_img2img, ref_sha256,
-                        _draw_start, "任务完成但未找到输出图片节点（无图）",
+                        _draw_start,
+                        f"任务完成但未找到输出图片节点（无图）{'；ComfyUI报错: ' + _task_err if _task_err else ''}",
                     )
                     return
 
