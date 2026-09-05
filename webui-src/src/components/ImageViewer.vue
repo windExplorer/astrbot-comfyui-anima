@@ -32,6 +32,7 @@
           <template v-if="item">
             <div class="iv-actions">
               <button v-if="!isTrash" class="iv-star" :class="{ on: item.starred }" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</button>
+              <button v-if="!isTrash" class="iv-dl" :disabled="downloading" @click="onDownload">{{ downloading ? "下载中…" : "⬇ 下载原图" }}</button>
               <button v-if="isNsfw && !isTrash" class="iv-blur" :class="{ on: mainBlurred }" @click="onToggleBlur">{{ blurBtnLabel }}</button>
               <n-button v-if="!isTrash" size="small" type="error" ghost @click="onDelete(item)">删除</n-button>
               <n-button v-if="isTrash" size="small" type="success" @click="onRestore(item)">恢复</n-button>
@@ -222,6 +223,72 @@ async function loadMain(sha: string) {
     }
   } catch (e) {
     mainSrc.value = "";
+  }
+}
+
+// ── 下载原图 ─────────────────────────────────────────────
+// 独立服务：/img/{sha} 直链本身就是归档原图字节，直接拉取；
+// 内嵌页：走 gallery/image?raw=1（后端原图 base64，不经 1600px 缩放/重编码）。
+const downloading = ref(false);
+
+function _extFromMime(mime: string): string {
+  const m = (mime || "").split(";")[0].trim().toLowerCase();
+  if (m === "image/png") return "png";
+  if (m === "image/webp") return "webp";
+  if (m === "image/gif") return "gif";
+  if (m === "image/bmp") return "bmp";
+  return "jpg";
+}
+
+function _tsName(created?: number | string): string {
+  let t: number;
+  if (typeof created === "number") t = created < 1e12 ? created * 1000 : created;
+  else t = Date.parse(String(created || ""));
+  if (!Number.isFinite(t) || t <= 0) t = Date.now();
+  const d = new Date(t);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function _saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+async function onDownload() {
+  const sha = fullSha.value || String(item.value?.sha256 || item.value?.sha || "");
+  if (!sha || downloading.value) return;
+  downloading.value = true;
+  try {
+    let blob: Blob;
+    if (isStandaloneMode()) {
+      const resp = await fetch(standaloneImgUrl(sha));
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      blob = await resp.blob();
+    } else {
+      const data = await apiGet("gallery/image", { sha, meta: 1, raw: 1 });
+      const du: string = (data && data.data_url) || "";
+      if (!du.startsWith("data:")) throw new Error("原图数据为空");
+      const header = du.slice(0, du.indexOf(","));
+      const mime = header.slice(5).split(";")[0] || "image/jpeg";
+      const b64 = du.slice(du.indexOf(",") + 1);
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      blob = new Blob([bytes], { type: mime });
+    }
+    const filename = `anima_${_tsName(item.value?.created_at)}_${sha.slice(0, 8)}.${_extFromMime(blob.type)}`;
+    _saveBlob(blob, filename);
+  } catch (e) {
+    message.error(`下载原图失败：${(e as Error)?.message || e}`);
+  } finally {
+    downloading.value = false;
   }
 }
 
@@ -611,6 +678,19 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-star:hover { background: rgba(255, 210, 87, 0.3); }
 .iv-star.on { background: #ffd257; color: #1a1206; border-color: #ffd257; }
+.iv-dl {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #6fd3a6;
+  background: rgba(111, 211, 166, 0.15);
+  color: #6fd3a6;
+  transition: all 0.15s;
+}
+.iv-dl:hover { background: rgba(111, 211, 166, 0.3); }
+.iv-dl:disabled { opacity: 0.5; cursor: default; }
 /* NSFW */
 .iv-nsfw-blur { filter: blur(20px) !important; transform: scale(1.05); }
 .iv-nsfw-reveal {

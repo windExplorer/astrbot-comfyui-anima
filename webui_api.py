@@ -1219,17 +1219,25 @@ class WebUIApi:
             noimg = request.query.get("noimg", "0") == "1"
             if not noimg:
                 try:
-                    # 大图默认限制在 1600px 内转 data URL，避免图生图并排时两张原图 base64
-                    # 体积过大导致加载慢/超时；需要更大可传 size=原尺寸。
-                    try:
-                        view_size = request.query.get("size", 1600, type=int)
-                    except Exception:
-                        view_size = 1600
-                    data_url = await asyncio.to_thread(_thumb_cached, path, view_size)
-                    if not data_url:
-                        raw = await asyncio.to_thread(Path(path).read_bytes)
-                        mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-                        data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                    # raw=1：返回原图 base64（不经 1600px 缩放、不经 JPEG 重编码），
+                    # 供前端「下载原图」按钮取归档原图字节。
+                    raw_mode = request.query.get("raw", "0") == "1"
+                    if raw_mode:
+                        _raw = await asyncio.to_thread(Path(path).read_bytes)
+                        _raw_mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+                        data_url = f"data:{_raw_mime};base64,{base64.b64encode(_raw).decode('ascii')}"
+                    else:
+                        # 大图默认限制在 1600px 内转 data URL，避免图生图并排时两张原图 base64
+                        # 体积过大导致加载慢/超时；需要更大可传 size=原尺寸。
+                        try:
+                            view_size = request.query.get("size", 1600, type=int)
+                        except Exception:
+                            view_size = 1600
+                        data_url = await asyncio.to_thread(_thumb_cached, path, view_size)
+                        if not data_url:
+                            raw = await asyncio.to_thread(Path(path).read_bytes)
+                            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+                            data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
                     return json_response({"data_url": data_url, "mime": None, "meta": meta})
                 except Exception as e:
                     return error_response(f"读取图片失败: {e}")
