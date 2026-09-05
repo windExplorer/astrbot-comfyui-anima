@@ -2903,6 +2903,7 @@ class ComfyUIDrawPlugin(Star):
         init_images: list[str] | None = None,
         is_img2img: bool = False,
         denoise: float | None = None,
+        trigger_words: str | None = None,
         notify_pending: bool = True,
         source: str = "",
         explicit_default: bool = False,
@@ -3365,24 +3366,35 @@ class ComfyUIDrawPlugin(Star):
         # 自动追加 LoRA 触发词到正向提示词：每个启用的 LoRA 配置的 trigger_words
         # 会被写入 positive（去重，仅追加缺失的词），否则只加了 LoRA 节点却没触发词，
         # 出图效果会偏离预期。仅当启用了 LoRA 且确实有触发词时才处理。
+        # 触发词来源分两级（v5.7.6）：
+        #   a) LLM 调 comfyui_draw 时显式传了 trigger_words（画图时已按用户需求筛选过，
+        #      典型场景：触发词里混着服装词而用户要求换装，LLM 剔除冲突词）→ 只用 LLM 的列表；
+        #      传空串 = LLM 明确表示一个触发词都不要追加。
+        #   b) 未传（None，/draw 指令、伴侣插件、表情包等路径）→ 维持旧行为：全量自动追加。
         if enabled:
             _lib = self._lora_lib_index()
             _triggers: list[str] = []
-            for nm in enabled:
-                _lc = next(
-                    (l for l in (loras_cfg or [])
-                     if (l.get("name") or "").strip() == nm),
-                    None,
-                )
-                _tw_raw = (
-                    (_lc.get("trigger_words") if _lc else None)
-                    or (_lib.get(nm) or {}).get("trigger_words")
-                    or ""
-                )
-                for _tw in re.split(r"[\n,，、;；]+", str(_tw_raw).strip()):
+            if trigger_words is not None:
+                for _tw in re.split(r"[\n,，、;；]+", str(trigger_words).strip()):
                     _tw = _tw.strip()
                     if _tw and _tw not in _triggers:
                         _triggers.append(_tw)
+            else:
+                for nm in enabled:
+                    _lc = next(
+                        (l for l in (loras_cfg or [])
+                         if (l.get("name") or "").strip() == nm),
+                        None,
+                    )
+                    _tw_raw = (
+                        (_lc.get("trigger_words") if _lc else None)
+                        or (_lib.get(nm) or {}).get("trigger_words")
+                        or ""
+                    )
+                    for _tw in re.split(r"[\n,，、;；]+", str(_tw_raw).strip()):
+                        _tw = _tw.strip()
+                        if _tw and _tw not in _triggers:
+                            _triggers.append(_tw)
             # 固定提示词或走 JSON 原值（positive 为空）时不追加触发词，
             # 避免覆盖工作流 JSON 内固化好的提示词
             if _triggers and positive and not _fixed_prompt:
@@ -6869,6 +6881,7 @@ class ComfyUIDrawPlugin(Star):
         source: str = "",
         image: str = "",
         denoise: float = -1,
+        trigger_words: str | None = None,
         slot_values: dict | None = None,
         comic_feature: str | None = None,
         caption: str = "",
@@ -6962,7 +6975,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
-            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★硬规则：用户只要提到某个 LoRA 的名字/别名（包括「用XX lora画」「你没用lora」「重新画一张」这类纠正），都必须**先调 comfyui_loras 拿到规范名**并填进本参数；LoRA 名只写进 prompt 只是触发词，不会加载权重文件，角色会画错。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。
+            loras(array[string]): 需要启用的 LoRA 名称/别名列表。每项可用 "名称" 或 "名称:权重"（冒号后为强度/权重，如 0.8 表示弱化、1.2 表示增强）。例如 ["catgirl"] 用默认权重、"catgirl:0.8" 用 0.8 权重。★硬规则：用户只要提到某个 LoRA 的名字/别名（包括「用XX lora画」「你没用lora」「重新画一张」这类纠正），都必须**先调 comfyui_loras 拿到规范名**并填进本参数；LoRA 名只写进 prompt 只是触发词，不会加载权重文件，角色会画错。★重要：当用户要求某种风格/画风/角色/人物时，**即使没给具体 LoRA 名，也应先调 comfyui_loras（可用 keyword/category 缩小，category 传「角色」）查匹配的 LoRA 再填入**；用户给了名字/别名则直接填，明确了强弱/浓度时给权重，没给则省略用默认。★角色优先：用户提到具体角色时，**先查角色 LoRA**，有匹配就填 LoRA 且不要再用 danbooru 标签重复描述外形；**没有匹配角色 LoRA 才用 danbooru MCP 查角色/作品标准标签**（见上方「角色/作品的处理顺序」）。只有确认没有任何匹配 LoRA、或用户明确不要 LoRA 时才留空。★触发词冲突提示：启用 LoRA 后插件默认自动追加其全部触发词；若触发词与用户本次要求对不上（典型：触发词里含服装/配饰词，而用户要求换别的衣服），请用 trigger_words 参数传入筛选后的触发词（保留角色/画风核心特征词、剔除冲突词），详见该参数说明。
             seed(number): 随机种子，0 或不填表示每次随机。用户明确要求"固定/复现/用同样的种子"时传入具体数字。
             count(number): 本次要生成的图片张数。★最重要规则：用户明确说出的数量是最高优先级，必须严格遵守——用户说"一张/只发一张/就一张/单张"→ 必须传 count=1；用户说"来 3 张/两张/五张"等具体数字 → 传对应 N。其次：①用户完全没提数量（如"画张图"）→ 不传 count（默认 1 张）；②"换个角度/再画一下/重来/再来"这类语义词【不自动代表多张】，默认仍为 1 张，除非用户明确说了要"几张/一些/多张"；③只有用户明确表达要多张（"来几张/多画几张"）但没给具体数字时 → prompts 传 3 条不同画面。★【count 当前恒为 1，一般不用传】：张数由 prompts 的条数决定，本参数是预留给将来「同一条提示词跑不同种子出多张」用的，现在传大于 1 会被拦回并要求改用 prompts 数组。
             prompts(array): 多条出图项，【要几张就传几条】，每条各出 1 张。两种写法都支持：
@@ -6977,6 +6990,12 @@ class ComfyUIDrawPlugin(Star):
                 两者都传时以 prompts 为准。需要多个画面请用它一次传完，不要拆成多次调用本工具。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
+            trigger_words(string): LoRA 触发词的追加控制，可选，仅在 loras 非空时有意义。三种用法：
+                ①不传本参数（默认）→ 插件自动把启用 LoRA 的【全部】触发词追加进提示词。
+                ②传筛选后的触发词（逗号分隔标签，应来自 comfyui_loras 返回的 trigger_words）→ 只追加这些。
+                ★何时该筛选：触发词里混有服装/配饰/姿势等与用户本次要求冲突的词时（典型：用户要求换别的衣服，
+                而触发词含 white dress、black gloves 等），剔除冲突词、只保留角色/画风核心特征词后传入，避免画错衣服。
+                ③传空字符串 "" → 明确表示一个触发词都不要追加（触发词与需求全面冲突、全部多余时用）。
 
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -7567,6 +7586,8 @@ class ComfyUIDrawPlugin(Star):
                 init_images=init_images or None,
                 is_img2img=is_img2img,
                 denoise=_item_denoise if _item_denoise >= 0 else None,
+                # LLM 筛选后的触发词（None=未传走自动全量追加；""=不追加；非空=只追加这些）
+                trigger_words=trigger_words,
                 # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
                 # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
                 notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
@@ -9062,6 +9083,10 @@ class ComfyUIDrawPlugin(Star):
         **务必先调用本工具**查询是否有匹配的 LoRA（可结合 keyword 或 category 缩小范围），
         再在 comfyui_draw / comfyui_img2img 的 loras 参数里填入正确名称；不要凭记忆猜测
         LoRA 名称，也不要编造不存在的 LoRA，更不要在用户要求某风格时直接跳过 LoRA 查找。
+        ★触发词使用提示：本工具返回的 trigger_words 会被插件在启用 LoRA 后【全量自动追加】到提示词；
+        其中可能混有服装/配饰/姿势等与用户本次要求冲突的词（例如用户要求换别的衣服，而触发词含 white dress）。
+        有冲突时，请在 comfyui_draw 的 trigger_words 参数传入筛选后的触发词子集（保留角色/画风核心词、剔除冲突词）；
+        触发词全部多余时传空字符串即可完全不追加。
 
         Args:
             base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
