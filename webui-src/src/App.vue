@@ -138,11 +138,6 @@ const themeOverrides: GlobalThemeOverrides = {
   },
 };
 
-interface AppEvent { detail?: unknown }
-window.addEventListener("anima:refresh" as any, () => {
-  refreshAll();
-});
-
 function emitRefresh() {
   window.dispatchEvent(new CustomEvent("anima:refresh"));
 }
