@@ -3295,6 +3295,15 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _pe:
             logger.warning(f"【平台】 平台解析失败（回退 ComfyUI）: {_pe}")
             _plat = None
+        # 用户/LLM 显式点名了平台却没走成（不存在/已停用/无白名单权限）：
+        # 给一句可见提示，不再纯静默回退（否则用户只会觉得「bot 没理我」）
+        _req_plat = (platform or "").strip()
+        if _plat is None and _req_plat and _req_plat.lower() != "comfyui":
+            await self._send(
+                event,
+                f"没找到可用的生图平台「{_req_plat}」（可能不存在、已停用或你不在该平台的使用白名单里），"
+                f"这次先用默认方式画。可用指令 /绘图平台 查看平台列表。",
+            )
         if _plat is not None:
             async for _pn, _pp in self._do_draw_nai_style(
                 event, _plat, positive, negative, width, height, seed,
@@ -7474,7 +7483,7 @@ class ComfyUIDrawPlugin(Star):
                 ①你刚通过 comfyui_loras 看到了该 LoRA 的触发词原文；
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
-            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。可传 comfyui / nai / openai / custom 或平台显示名来临时指定平台。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。部分平台受管理员设置的用户白名单限制，无权限的用户调用会自动回退 ComfyUI 出图（无需特殊处理）。
+            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。★用户提到「用某个平台/用 NAI/用某中转站」出图时：先调 comfyui_platforms 查询平台列表拿到确切名称/id，再填进本参数（不要凭记忆猜名称）；显示名匹配支持模糊（名称包含即命中、忽略大小写），也可传 comfyui / nai / openai / custom 类型名。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。平台不存在/已停用/用户不在白名单时会回退 ComfyUI 并提示用户。
             ★走 NAI 且要「特定画风 / 画师串 / 角色 / 服装 / 体位 / 异种 / 捆绑」等精确效果时：先调 nai_codex 工具检索「所长 NovelAI 法典」拿到现成 tag 串（含 artist: 画师串与权重记号），再原样拼进本工具的 prompt，不要自己凭记忆拼 NAI 标签（容易缺画师串/权重、画错味）。普通泛化画面（没指定风格）可直接写英文标签，不必查。nai_codex 的 scope 默认 sfw（常规册），仅在用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
             cfg(number): 引导系数（NAI 官方称 scale；仅对 nai / openai 类第三方平台生效，ComfyUI 忽略）。可选：让画面更贴合提示词（值越大越严格、过高易过饱和/毁图）；不传或 0=用该平台配置的默认引导系数。LLM 想微调 NAI 出图风格时可自主决定（常见 4~12，NAI 默认约 6）。各参数含义/取值/对画风的影响见可用技能「nai-params」（若你有技能读取能力，决定 NAI 参数前先读它）。
             steps(number): 采样步数（仅 nai / openai 类平台生效）。可选：步数越多细节越足、越慢；不传或 0=用平台默认（NAI 默认约 28）。
@@ -9678,6 +9687,42 @@ class ComfyUIDrawPlugin(Star):
         lines.append(f"- 动漫图生图: {default_i2i or '（未设置，回退动漫文生图）'}")
         lines.append(f"- 真人图生图: {default_i2i_real or '（未设置，回退动漫图生图）'}")
 
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
+    # LLM 工具：comfyui_platforms（查询生图平台列表）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="comfyui_platforms")
+    @_safe_llm_tool
+    async def llm_platforms(self, event: AstrMessageEvent):
+        """查询当前已配置的生图平台列表（名称/类型/状态），供 comfyui_draw 的 platform 参数使用。
+
+        触发时机：用户想「用某个平台/用 NAI/用某中转站」出图，但你不确定平台的准确显示名时，
+        先调用本工具拿到确切名称（或 id），再把名称填进 comfyui_draw 的 platform 参数。
+        显示名匹配支持模糊（名称包含即命中、忽略大小写），但仍应优先传确切显示名或 id。
+
+        Returns:
+            str: 平台清单文本（含当前默认平台），或「无第三方平台」说明。
+        """
+        try:
+            ps = self._platform_store()
+        except Exception as e:
+            return f"平台配置读取失败: {e}"
+        plats = [p for p in ps.all_platforms() if p.get("enabled", True)]
+        active = ps.active_platform()
+        if not plats:
+            return "当前没有已启用的第三方生图平台，所有绘图都走 ComfyUI，无需传 platform 参数。"
+        lines = ["已启用的生图平台（platform 参数可传「名称」或「id」）："]
+        for p in plats:
+            name = (p.get("name") or "(未命名)").strip()
+            ptype = (p.get("type") or "?").strip()
+            mark = " ★当前默认" if p.get("id") == active else ""
+            restricted = " [需白名单]" if (p.get("allowed_users") or []) else " [仅管理员可用]"
+            lines.append(f"- {name}（{ptype}）id={p.get('id')}{mark}{restricted}")
+        lines.append(
+            "说明：不传 platform 时自动用 ★当前默认（或用户 /绘图平台 切换的会话平台）；"
+            "comfyui 表示走 ComfyUI。名称匹配支持模糊（包含即命中），但优先传完整名称或 id。"
+        )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #

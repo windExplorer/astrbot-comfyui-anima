@@ -324,14 +324,29 @@ class PlatformStore:
         return [p for p in (self._cfg().get("platforms") or []) if isinstance(p, dict)]
 
     def get_platform(self, pid: str) -> dict | None:
-        """按 id 或名称查找平台条目。"""
+        """按 id 或名称查找平台条目。
+
+        匹配顺序：id/名称精确 → 忽略大小写精确 → 名称互相包含（仅唯一命中时生效）。
+        模糊层是为了容错 LLM 传参（用户说「我的NAI中转」，LLM 可能传「NAI中转」）。"""
         pid = (pid or "").strip()
         if not pid:
             return None
-        for p in self.all_platforms():
+        plats = self.all_platforms()
+        for p in plats:
             if p.get("id") == pid or (p.get("name") or "").strip() == pid:
                 return p
-        return None
+        tl = pid.lower()
+        for p in plats:
+            if (p.get("id") or "").lower() == tl or (p.get("name") or "").strip().lower() == tl:
+                return p
+        hits = []
+        for p in plats:
+            nl = (p.get("name") or "").strip().lower()
+            if not nl:
+                continue
+            if tl in nl or nl in tl:
+                hits.append(p)
+        return hits[0] if len(hits) == 1 else None
 
     def pick_platform(self, pid: str = "", user_id: str = "", is_admin: bool = False,
                       session_id: str = "") -> dict | None:
