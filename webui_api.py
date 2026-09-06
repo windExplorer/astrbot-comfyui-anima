@@ -1439,7 +1439,9 @@ class WebUIApi:
         try:
             payload = await request.json(default={}) or {}
             sha = payload.get("sha", "")
-            on = 1 if payload.get("on", True) else 0
+            # 注意：on 缺失时默认「不收藏」，避免任何不带 on 的请求被静默标星
+            # （收藏需显式 on:true；普通前端 onStar 始终带 on，无回归）。
+            on = 1 if payload.get("on", False) else 0
             if not sha:
                 return error_response("缺少 sha")
             ok = g.star(sha, on=on)

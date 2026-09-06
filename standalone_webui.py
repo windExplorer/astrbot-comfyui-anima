@@ -746,7 +746,9 @@ class StandaloneWebUI:
         if path == "/gallery/star":
             body = await request.json() if request.body_exists else {}
             sha = (body.get("sha") or "") if isinstance(body, dict) else ""
-            on = 1 if (body.get("on", True) if isinstance(body, dict) else True) else 0
+            # 注意：on 缺失时默认「不收藏」，避免任何不带 on 的请求被静默标星
+            # （收藏需显式 on:true；普通前端 onStar 始终带 on，无回归）。
+            on = 1 if (body.get("on", False) if isinstance(body, dict) else False) else 0
             ok = g.star(sha, on=on)
             self._oplog_add("gallery_star", "图库收藏" if on else "图库取消收藏", ref_sha=sha)
             return _ok({"msg": "已更新收藏" if ok else "未找到该图"})

@@ -74,6 +74,14 @@
         </n-radio-group>
         <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
         <n-select
+          v-model:value="platform"
+          size="small"
+          style="width:160px"
+          :options="platformOptions"
+          placeholder="平台"
+          @update:value="doSearch(1)"
+        />
+        <n-select
           v-model:value="nsfwFilter"
           size="small"
           style="width:120px"
@@ -146,7 +154,7 @@
                 :class="{ on: img.starred }"
                 :title="img.starred ? '取消收藏' : '收藏'"
                 @click.stop="onStar(img)"
-              >★</button>
+              >{{ img.starred ? "★" : "☆" }}</button>
               <n-popconfirm
                 :show-icon="false"
                 positive-text="删除"
@@ -228,6 +236,9 @@ const catFilter = computed<string>({
 function onCatChange() { doSearch(1); }
 const type = ref("");
 const starred = ref(false);
+// 平台筛选：选项由后端 stats.platforms 动态生成（仅列出图库里真实存在且有图的平台 + 计数）
+const platform = ref("");
+const platformOptions = ref<{ label: string; value: string }[]>([{ label: "全部平台", value: "" }]);
 const images = ref<any[]>([]);
 const total = ref(0);
 const page = ref(1);
@@ -349,6 +360,11 @@ function cutName(name: string): string {
 async function loadStats() {
   try {
     stats.value = await apiGet("gallery/stats");
+    // 平台筛选下拉：基于图库真实存在的平台分布动态生成选项
+    const ps = (stats.value && stats.value.platforms) || [];
+    platformOptions.value = [{ label: "全部平台", value: "" }].concat(
+      ps.map((p: any) => ({ label: `${p.platform}（${p.count}）`, value: p.platform })),
+    );
   } catch (e: any) {
     // stats 可能未启用，不阻塞
   }
@@ -436,6 +452,7 @@ async function doSearch(p: number) {
       starred: starred.value ? 1 : 0,
       trash: activeTab.value === "trash" ? 1 : 0,
       nsfw: nsfwFilter.value || undefined,
+      platform: platform.value || undefined,
       page: p,
       size: pageSize,
     });
@@ -725,6 +742,10 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 }
 .gal-act:hover {
   transform: scale(1.08);
+}
+/* 未收藏：空心灰星，明确表达「未收藏」（避免实心★被误认成已收藏） */
+.gal-star-btn {
+  color: rgba(255, 255, 255, 0.72);
 }
 .gal-star-btn.on {
   color: #ffd357;
