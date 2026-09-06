@@ -147,25 +147,45 @@
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
             </div>
             <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ cutName(img.user_name) }}</span>
-            <!-- 右上角操作：收藏 / 删除 -->
+            <!-- 右上角操作：普通视图=收藏/删除(移回收站)；回收站视图=恢复/彻底删除 -->
             <div class="gal-actions">
-              <button
-                class="gal-act gal-star-btn"
-                :class="{ on: img.starred }"
-                :title="img.starred ? '取消收藏' : '收藏'"
-                @click.stop="onStar(img)"
-              >{{ img.starred ? "★" : "☆" }}</button>
-              <n-popconfirm
-                :show-icon="false"
-                positive-text="删除"
-                negative-text="取消"
-                @positive-click="deleteImage(img)"
-              >
-                <template #trigger>
-                  <button class="gal-act gal-del-btn" title="删除" @click.stop.prevent>🗑</button>
-                </template>
-                确定删除这张图片吗？将移入回收站。
-              </n-popconfirm>
+              <template v-if="activeTab === 'trash'">
+                <button
+                  class="gal-act gal-restore-btn"
+                  title="恢复"
+                  @click.stop="restoreImage(img)"
+                >↩</button>
+                <n-popconfirm
+                  :show-icon="false"
+                  positive-text="彻底删除"
+                  negative-text="取消"
+                  @positive-click="purgeImage(img)"
+                >
+                  <template #trigger>
+                    <button class="gal-act gal-del-btn" title="彻底删除" @click.stop.prevent>🗑</button>
+                  </template>
+                  彻底删除后不可恢复，确定吗？
+                </n-popconfirm>
+              </template>
+              <template v-else>
+                <button
+                  class="gal-act gal-star-btn"
+                  :class="{ on: img.starred }"
+                  :title="img.starred ? '取消收藏' : '收藏'"
+                  @click.stop="onStar(img)"
+                >{{ img.starred ? "★" : "☆" }}</button>
+                <n-popconfirm
+                  :show-icon="false"
+                  positive-text="删除"
+                  negative-text="取消"
+                  @positive-click="deleteImage(img)"
+                >
+                  <template #trigger>
+                    <button class="gal-act gal-del-btn" title="删除" @click.stop.prevent>🗑</button>
+                  </template>
+                  确定删除这张图片吗？将移入回收站。
+                </n-popconfirm>
+              </template>
             </div>
             <!-- 封面未加载/加载失败时，hover 显示重载按钮 -->
             <button
@@ -584,6 +604,16 @@ function onRestore(img: any) {
   }).catch((e: any) => message.error(e.message || "恢复失败"));
 }
 
+// 卡片「恢复」快捷操作（回收站视图）
+function restoreImage(img: any) {
+  const sha = img.sha || img.sha256;
+  apiPost("gallery/restore", { sha }).then(() => {
+    message.success("已恢复");
+    doSearch(page.value);
+    loadStats();
+  }).catch((e: any) => message.error(e.message || "恢复失败"));
+}
+
 function onPurge(img: any) {
   const sha = img.sha || img.sha256;
   dialog.warning({
@@ -603,6 +633,16 @@ function onPurge(img: any) {
       }
     },
   });
+}
+
+// 卡片「彻底删除」快捷操作（回收站视图）：二次确认交给卡片 popconfirm，这里只发请求
+function purgeImage(img: any) {
+  const sha = img.sha || img.sha256;
+  apiPost("gallery/purge", { sha }).then(() => {
+    message.success("已彻底删除");
+    doSearch(page.value);
+    loadStats();
+  }).catch((e: any) => message.error(e.message || "彻底删除失败"));
 }
 
 function refresh() {
@@ -753,6 +793,13 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 }
 .gal-del-btn:hover {
   background: rgba(255, 99, 107, 0.9);
+}
+/* 回收站视图：恢复按钮（绿） */
+.gal-restore-btn {
+  color: #7fe0a8;
+}
+.gal-restore-btn:hover {
+  background: rgba(46, 158, 91, 0.9);
 }
 /* 收藏状态：即便不 hover 也让星标常显，方便辨认 */
 .gal-star-btn.on {
