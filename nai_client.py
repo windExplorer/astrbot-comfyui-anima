@@ -255,9 +255,11 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         raise PlatformError("OpenAI 兼容平台未配置模型名（model）")
     size = f"{width}x{height}"
 
-    # 高级参数进 parameters 对象（对齐 NAI 中转 OpenAI 兼容文档）；
-    # 标准 OpenAI 平台会忽略未知字段（gpt-image-1 等不接受 seed/parameters 时由上游裁剪）。
-    params_obj = {}
+    # 参数风格：use_parameters_wrapper=true（NAI 中转等私有扩展）→ negative/seed/steps 等
+    # 打包进 parameters 对象；默认（标准 OpenAI 兼容：官方/Agnes/SenseNova/newapi 等）不发送
+    # parameters —— 多数严格端点对未知字段直接 400（如 "parameters is not supported"）。
+    use_wrapper = bool(p.get("use_parameters_wrapper"))
+    params_obj: dict = {}
     if negative:
         params_obj["negative_prompt"] = negative
     if seed is not None:
@@ -272,13 +274,18 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         "n": max(1, min(4, int(count))),
         "size": size,
     }
-    if params_obj:
+    if use_wrapper and params_obj:
         body["parameters"] = params_obj
+    elif params_obj:
+        # 标准风格：负面词放顶层（支持的端点生效，不支持的一般忽略）；seed/steps 等不自动发送
+        if negative:
+            body["negative_prompt"] = negative
     quality = (p.get("quality") or "").strip()
     if quality:
         body["quality"] = quality
 
-    # 额外参数条目：合并进 body 顶层（中转站/模型专属字段，如 response_format、style 等）
+    # 额外参数条目：合并进 body 顶层（wrapper 模式则并入 parameters；
+    # 中转站/模型专属字段，如 response_format、ratio、style 等）
     try:
         try:
             from .platform_store import render_extra_params, normalize_headers
@@ -286,7 +293,13 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
             from platform_store import render_extra_params, normalize_headers
         _vars = {"prompt": prompt, "negative": negative, "model": model,
                  "width": width, "height": height, "seed": seed, "api_key": api_key}
-        body.update(render_extra_params(p.get("extra_params"), _vars))
+        extra_kv = render_extra_params(p.get("extra_params"), _vars)
+        if use_wrapper:
+            params_obj.update(extra_kv)
+            if params_obj:
+                body["parameters"] = params_obj
+        else:
+            body.update(extra_kv)
         extra_headers = normalize_headers(p, _vars)
     except Exception as _ep:
         logger.warning(f"[平台] 额外参数/自定义头渲染失败（忽略）: {_ep}")

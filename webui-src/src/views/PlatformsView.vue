@@ -171,6 +171,12 @@
           <n-form-item label="负面词">
             <n-input v-model:value="editing.negative" type="textarea" :rows="2" placeholder="部分模型不支持，会被上游忽略" />
           </n-form-item>
+          <n-form-item label="parameters 包装">
+            <n-space align="center">
+              <n-switch v-model:value="editing.use_parameters_wrapper" size="small" @update:value="markDirty" />
+              <span class="hint">仅 NAI 中转等私有扩展端点需要开启（negative/steps 等打包进 parameters 对象）；标准 OpenAI 兼容端点保持关闭，否则可能报 400「parameters is not supported」</span>
+            </n-space>
+          </n-form-item>
         </template>
         <template v-if="editing.type === 'custom'">
           <n-form-item label="请求方法">
@@ -481,6 +487,7 @@ function emptyPlatform(type: string) {
     base.size = "1024x1024";
     base.quality = "";
     base.negative = "";
+    base.use_parameters_wrapper = false;
   }
   if (type === "custom") {
     base.method = "POST";

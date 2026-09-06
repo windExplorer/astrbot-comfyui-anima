@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.3（修复：OpenAI 兼容平台默认发送 parameters 对象被严格端点 400 拒绝）
+
+- v5.8.x 起 openai 类型默认把 negative/seed 等打包进 parameters 对象（NAI 中转私有扩展），标准 OpenAI 兼容端点（Agnes/SenseNova/newapi 等）对未知字段直接 400：parameters is not supported by text image queue。
+- 修复：默认不再发送 parameters，负面词放顶层（不支持的上游忽略）；新增「parameters 包装」开关（默认关），仅 NAI 中转等私有扩展端点开启。
+- 额外参数条目随开关并入顶层或 parameters。
+
 ## v5.9.2（新增 SenseNova 日日新 U1 Fast 快速预设）
 
 - U1 Fast 走 OpenAI images 兼容端点（token.sensenova.cn/v1/images/generations），openai 类型直接可用，预设已内置 watermark=false（公测免费去水印，按官方建议显式传入）。
