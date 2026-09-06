@@ -354,6 +354,13 @@ class PlatformStore:
         if target == "comfyui":
             return None
         p = self.get_platform(target)
+        if p is None and target in ("nai", "openai", "custom", "minimax"):
+            # 按类型兜底匹配：LLM 工具允许传 "nai" 这类类型名（docstring 承诺），
+            # 显示名不含该词时按 type 取第一个启用的平台
+            for cand in self.all_platforms():
+                if (cand.get("type") or "").strip().lower() == target and cand.get("enabled", True):
+                    p = cand
+                    break
         if p is None:
             logger.warning(f"[平台] 指定平台 {target!r} 不存在，回退 ComfyUI")
             return None

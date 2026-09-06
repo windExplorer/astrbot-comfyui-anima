@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.32（平台选择支持按类型名匹配）
+
+- LLM 工具 `comfyui_draw` 的 `platform` 参数说明里承诺可传 `nai / openai / custom` 等类型名，但 `pick_platform` 实际只按 id/显示名精确匹配，显示名不含类型词时（如「我的NAI中转」）传 `nai` 会静默回退 ComfyUI。现补上按类型兜底：类型名命中时取该类型下第一个启用的平台；权限/停用校验逻辑不变。
+
 ## v5.10.31（修正 CFG Rescale 取值链路）
 
 - 修复中转站「缩放引导值（cfg_rescale）」取值错误：此前误读平台配置里不存在的 `defaults.cfg` 键（兜底 7.0）再被 clamp 到 1.0，导致走中转站时永远以最大重缩放（1.0）出图，与官方直连（读 `cfg_rescale`=0.3）表现不一致。现三条链路（中转站 `cfg` 参数 / 官方 v4 / 官方 v3）统一取 `defaults.cfg_rescale`（v4/v5 默认 0.0，v3 默认 0.3，均 clamp 0~1）。
