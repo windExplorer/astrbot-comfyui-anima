@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.8.4（PC 侧边栏补「生图平台」菜单项）
+
+- PC 侧边栏（App.vue menuOptions）与移动端抽屉（nav.ts NAV_ITEMS）是两套菜单数据源，v5.8.0 只加了移动端一套，PC 端菜单缺「生图平台」入口（直接访问 #/platforms 可用）。现已两端同步。
+
 ## v5.8.3（紧急修复：打包清单缺失 platform_store.py / nai_client.py）
 
 - build_zip.ps1 为显式文件清单模式，v5.8.0 新增的两个平台模块未同步加入清单——导致已发布的 v5.8.0~v5.8.2 包内缺失 platform_store.py 与 nai_client.py，生图平台接口/分流在用户侧全部不可用。
