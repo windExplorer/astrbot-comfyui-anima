@@ -299,7 +299,8 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
     model = (p.get("model") or "").strip()
     if not model:
         raise PlatformError("OpenAI 兼容平台未配置模型名（model）")
-    size = f"{width}x{height}"
+    # 尺寸原样透传：支持 "1024x1024" 精确值，也支持 "2K" 等档位写法（上游自行标准化）
+    size = str(p.get("size") or "").strip() or f"{width}x{height}"
 
     # 参数风格：use_parameters_wrapper=true（NAI 中转等私有扩展）→ negative/seed/steps 等
     # 打包进 parameters 对象；默认（标准 OpenAI 兼容：官方/Agnes/SenseNova/newapi 等）不发送
