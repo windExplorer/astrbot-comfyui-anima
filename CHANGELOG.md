@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.1（修复：下载带签名的临时图片链接 403 SignatureDoesNotMatch）
+
+- 部分平台（如 SenseNova）返回的图片 URL 含已编码的签名参数（X-Amz-Credential 里的 %2F），aiohttp 按未编码处理会二次编码成 %252F，签名失效 → 403 SignatureDoesNotMatch（生图成功、下载失败）。
+- 请求统一改用 yarl.URL(..., encoded=True)，保持 URL 原样不被二次编码。
+
 ## v5.10.0（修复「图已生成但测试失败：Connection closed」+ 请求详情弹窗重做）
 
 - 重要修复：请求器此前在 aiohttp 会话内返回响应对象，调用方在会话关闭后才 read()，大响应体（返回 URL 后下载图片）抛 "Connection closed"，表现为「图其实已经生成、详情里有 URL，却报测试失败」。现改为在会话关闭前读完响应体，返回 (status, headers, body_bytes)，全部平台受益。

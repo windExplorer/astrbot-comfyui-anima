@@ -27,6 +27,11 @@ from pathlib import Path
 
 import aiohttp
 
+try:
+    from yarl import URL as _YarlURL
+except ImportError:  # pragma: no cover
+    _YarlURL = None
+
 logger = logging.getLogger("astrbot")
 
 _NAI_DEFAULT_BASE = "https://image.novelai.net"
@@ -117,9 +122,17 @@ async def _request_with_retry(method: str, url: str, *, headers: dict = None,
         elif data is not None:
             cap_entry["body"] = str(data)[:4000]
         try:
+            # ★URL 必须按「已编码」处理：带签名参数（如 X-Amz-Credential 含 %2F）的临时
+            # 图片链接若被 aiohttp 二次编码会变成 %252F，导致上游 403 SignatureDoesNotMatch。
+            _target = url
+            if _YarlURL is not None and not isinstance(_target, _YarlURL):
+                try:
+                    _target = _YarlURL(str(_target), encoded=True)
+                except Exception:
+                    _target = url
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
-                    method, url, headers=headers or {}, params=params,
+                    method, _target, headers=headers or {}, params=params,
                     json=json_body, data=data,
                 ) as resp:
                     # ★必须在会话关闭前把响应体读出来：此前在 async with 内 return resp、
