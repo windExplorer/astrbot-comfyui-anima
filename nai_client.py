@@ -325,11 +325,16 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
     except (TypeError, ValueError):
         _scale = 6.0
     _scale = max(1.0, min(20.0, _scale))
+    # CFG Rescale（提示词引导重缩放，官方范围 0~1）：统一取平台 defaults.cfg_rescale。
+    # 注意 LLM 传入的 cfg 覆盖是「引导系数 scale」，与重缩放无关，不要联动
+    # （此前误读 defaults.cfg（不存在，兜底 7.0）再被 clamp 成 1.0，导致中转站
+    # 与官方直连的重缩放值不一致）。
+    _rescale_default = 0.0 if _is_v45 else 0.3
     try:
-        _cfg = float(cfg) if cfg is not None else float(_d.get("cfg", 7.0))
+        _cfg_rescale = float(_d.get("cfg_rescale", _rescale_default))
     except (TypeError, ValueError):
-        _cfg = 7.0
-    _cfg = max(0.0, min(1.0, _cfg))  # cfg_rescale 官方范围 0~1
+        _cfg_rescale = _rescale_default
+    _cfg_rescale = max(0.0, min(1.0, _cfg_rescale))
     _sampler = (sampler or _d.get("sampler") or "k_dpmpp_2m_sde")
     # v4/v5 官方支持的采样器白名单（不在列表的值上游会 400，回落官方网页端默认）
     if _is_v45:
@@ -366,7 +371,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                 "size": _nai_relay_size(width, height),
                 "steps": _steps,
                 "scale": _scale,
-                "cfg": _cfg,
+                "cfg": _cfg_rescale,
                 "sampler": _sampler,
                 "negative": negative or "",
                 "nocache": 1,
@@ -402,7 +407,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                     "scale": _scale,
                     "steps": _steps,
                     "uncond_scale": 0.00001,
-                    "cfg_rescale": float(_d.get("cfg_rescale", 0.0)),
+                    "cfg_rescale": _cfg_rescale,
                     "seed": _seed,
                     "n_samples": 1,
                     "noise_schedule": _noise,
@@ -461,7 +466,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                     "controlnet_strength": 1,
                     "legacy": False,
                     "add_original_image": True,
-                    "cfg_rescale": float(_d.get("cfg_rescale", 0.3)),
+                    "cfg_rescale": _cfg_rescale,
                     "noise_schedule": _noise,
                     "seed": _seed,
                     "negative_prompt": _neg,
