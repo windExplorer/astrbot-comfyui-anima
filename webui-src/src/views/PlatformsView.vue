@@ -403,6 +403,13 @@ const PLATFORM_PRESETS: Record<string, { label: string; fields: any }> = {
       model: "flux", extra_params: [],
     },
   },
+  agnes: {
+    label: "Agnes Image（2.0/2.1/2.5-flash，当前免费）",
+    fields: {
+      type: "openai", base_url: "https://apihub.agnes-ai.com",
+      model: "agnes-image-2.5-flash", size: "1024x1024", quality: "", negative: "",
+    },
+  },
 };
 const presetKey = ref("blank");
 const presetOptions = Object.entries(PLATFORM_PRESETS).map(([k, v]) => ({ label: v.label, value: k }));

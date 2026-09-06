@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.1（新增 Agnes Image 快速预设：2.0/2.1/2.5-flash，当前全部免费）
+
+- Agnes 的生图 API 是标准 OpenAI images 兼容（apihub.agnes-ai.com/v1/images/generations，Bearer 认证，data[0].url / b64_json 响应），openai 类型零适配直接可用。
+- 快速预设新增「Agnes Image」：默认模型 agnes-image-2.5-flash（可改 2.0/2.1），精确尺寸写法会被上游自动标准化；需 2K/4K 或特定比例时用「额外参数」条目加 size=2K、ratio=16:9。
+- SenseNova 日日新：官方文档站为 JS 动态渲染无法抓取 U1 Fast 章节，等拿到该节文档内容/抓包后适配（其兼容地址也可先手动用 openai 类型试）。
+
 ## v5.9.0（新增 MiniMax 协议适配：海螺 image-01 / image-01-live）
 
 - 新增 minimax 平台类型：同步 JSON 协议（POST /v1/image_generation），端点自动归一（填根域名/带 /v1/带端点路径均可），支持 image-01（宽高像素）与 image-01-live（宽高比自动映射最接近档位）、negative_prompt、额外参数并入请求体、自定义请求头，响应兼容 image_base64 与 image_urls 两种格式，base_resp 错误码透出。
