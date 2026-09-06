@@ -410,6 +410,16 @@ const PLATFORM_PRESETS: Record<string, { label: string; fields: any }> = {
       model: "agnes-image-2.5-flash", size: "1024x1024", quality: "", negative: "",
     },
   },
+  sensenova: {
+    label: "SenseNova 日日新（U1 Fast，信息图强）",
+    fields: {
+      type: "openai", base_url: "https://token.sensenova.cn",
+      model: "sensenova-u1-fast", size: "2048x2048", quality: "", negative: "",
+      extra_params: [
+        { key: "watermark", value: "false", vtype: "bool" },
+      ],
+    },
+  },
 };
 const presetKey = ref("blank");
 const presetOptions = Object.entries(PLATFORM_PRESETS).map(([k, v]) => ({ label: v.label, value: k }));

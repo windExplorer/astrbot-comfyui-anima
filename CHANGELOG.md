@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.2（新增 SenseNova 日日新 U1 Fast 快速预设）
+
+- U1 Fast 走 OpenAI images 兼容端点（token.sensenova.cn/v1/images/generations），openai 类型直接可用，预设已内置 watermark=false（公测免费去水印，按官方建议显式传入）。
+- 尺寸为 11 种固定档位（2K 分辨率），默认 2048x2048（1:1）；出图尺寸建议用档位值。
+- 图片 URL 为临时链接（1 小时失效）——本插件出图后立即下载归档，本地永久保存，不受影响。
+
 ## v5.9.1（新增 Agnes Image 快速预设：2.0/2.1/2.5-flash，当前全部免费）
 
 - Agnes 的生图 API 是标准 OpenAI images 兼容（apihub.agnes-ai.com/v1/images/generations，Bearer 认证，data[0].url / b64_json 响应），openai 类型零适配直接可用。
