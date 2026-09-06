@@ -259,7 +259,8 @@ def _nai_relay_size(width: int, height: int) -> str:
     中继站只认英文尺寸值（portrait/landscape/square/2k_portrait/2k_landscape/2k_square/
     4k_portrait/4k_landscape/4k_square），不认像素宽高；旧版中文键（竖图/横图…）中继站
     不识别会回落默认尺寸，导致出图尺寸与平台配置的默认尺寸对不上，故这里统一输出英文键。
-    方向由长宽比定，档位由最长边定：<1400=1K，1400~<2500=2K，>=2500=4K。"""
+    方向由长宽比定；档位按最长边分：2K 档最长边 1600/1344，4K 档 1984/1728，
+    阈值取 1650（2K 最大 1600 < 1650 ≤ 4K 最小 1728）。"""
     if height > width:
         orient = "portrait"
     elif width > height:
@@ -268,7 +269,7 @@ def _nai_relay_size(width: int, height: int) -> str:
         orient = "square"
     mx = max(int(width), int(height))
     tier = ""
-    if mx >= 2500:
+    if mx >= 1650:
         tier = "4k_"
     elif mx >= 1400:
         tier = "2k_"
@@ -291,9 +292,17 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
         raise PlatformError("NAI 平台未配置 Token（api_key）")
     model = (p.get("model") or "nai-diffusion-4-5-full").strip()
     via_middle = bool(p.get("via_middle_station"))
+    # v4/v5 模型必须用 V4 参数结构（v4_prompt/v4_negative_prompt 等），
+    # 否则负面词不生效、部分参数被忽略（对齐 NAI 官方网页端，参考 Nai2API 实测实现）
+    _is_v45 = bool(re.match(r"nai-diffusion-[45]", model))
+    # 官方 API 尺寸/步数上限：宽高 128~2048，steps 1~50
+    width = max(128, min(2048, int(width or 832)))
+    height = max(128, min(2048, int(height or 1216)))
 
-    # 画师串：官方 NAI 拼到 input 前部；中转站走独立 artist 查询参数（见各分支）。
+    # 画师串：官方 NAI 拼到 input 前部（官方网页端用换行分隔 artist 与 tag）；
+    # 中转站走独立 artist 查询参数（见各分支）。
     base_prompt = prompt
+    official_prompt = f"{artist}\n{base_prompt}" if artist else base_prompt
     if not negative:
         negative = "{}, lowres, bad anatomy, bad hands, worst quality, low quality".format(
             "username" if "4-full" in model or "5-full" in model else ""
@@ -306,15 +315,27 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
         _steps = int(steps) if steps is not None else int(_d.get("steps", 28))
     except (TypeError, ValueError):
         _steps = 28
+    _steps = max(1, min(50, _steps))  # 官方 steps 上限 50（对齐 Nai2API MAX_STEPS）
     try:
         _scale = float(cfg) if cfg is not None else float(_d.get("scale", 6))
     except (TypeError, ValueError):
         _scale = 6.0
+    _scale = max(1.0, min(20.0, _scale))
     try:
         _cfg = float(cfg) if cfg is not None else float(_d.get("cfg", 7.0))
     except (TypeError, ValueError):
         _cfg = 7.0
+    _cfg = max(0.0, min(1.0, _cfg))  # cfg_rescale 官方范围 0~1
     _sampler = (sampler or _d.get("sampler") or "k_dpmpp_2m_sde")
+    # v4/v5 官方支持的采样器白名单（不在列表的值上游会 400，回落官方网页端默认）
+    if _is_v45:
+        _v4_samplers = (
+            "k_euler", "k_euler_ancestral", "k_dpm_2", "k_dpm_fast",
+            "k_dpmpp_2m", "k_dpmpp_2m_sde", "k_dpmpp_3m_sde",
+            "k_dpmpp_sde", "k_dpmpp_2s_ancestral",
+        )
+        if _sampler not in _v4_samplers:
+            _sampler = "k_euler_ancestral"
     _noise = (noise_schedule or _d.get("noise_schedule") or "karras")
 
     results: list[bytes] = []
@@ -365,11 +386,64 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
             img = _resp_to_bytes(raw, _ct)
         else:
             # NAI 官方 /ai/generate-image（zip 响应）
-            payload = {
-                "input": f"{artist}, {base_prompt}" if artist else base_prompt,
-                "model": model,
-                "action": "generate",
-                "parameters": {
+            # v4/v5 模型必须用 V4 结构化参数（v4_prompt/v4_negative_prompt 的 caption
+            # 结构），负面词才真正生效；v3 及以下继续用扁平参数。
+            # 字段清单对齐 NAI 官方网页端（参考 Nai2API 实测实现）。
+            _neg = negative or ""
+            if _is_v45:
+                parameters = {
+                    "params_version": 3,
+                    "width": width,
+                    "height": height,
+                    "scale": _scale,
+                    "steps": _steps,
+                    "uncond_scale": 0.00001,
+                    "cfg_rescale": float(_d.get("cfg_rescale", 0.0)),
+                    "seed": _seed,
+                    "n_samples": 1,
+                    "noise_schedule": _noise,
+                    "legacy_v3_extend": False,
+                    "reference_image_multiple": [],
+                    "reference_information_extracted_multiple": [],
+                    "reference_strength_multiple": [],
+                    "v4_prompt": {
+                        "caption": {"base_caption": official_prompt, "char_captions": []},
+                        "use_coords": False,
+                        "use_order": True,
+                        "legacy_uc": False,
+                    },
+                    "v4_negative_prompt": {
+                        "caption": {"base_caption": _neg, "char_captions": []},
+                        "use_coords": False,
+                        "use_order": False,
+                        "legacy_uc": False,
+                    },
+                    "negative_prompt": _neg,
+                    "uc": _neg,
+                    "sampler": _sampler,
+                    "controlnet_strength": 1,
+                    "controlnet_model": None,
+                    "dynamic_thresholding": False,
+                    "dynamic_thresholding_percentile": 0.999,
+                    "dynamic_thresholding_mimic_scale": 10,
+                    "sm": False,
+                    "sm_dyn": False,
+                    "skip_cfg_above_sigma": None,
+                    "skip_cfg_below_sigma": 0,
+                    "lora_unet_weights": None,
+                    "lora_clip_weights": None,
+                    "deliberate_euler_ancestral_bug": False,
+                    "prefer_brownian": True,
+                    "cfg_sched_eligibility": "enable_for_post_summer_samplers",
+                    "explike_fine_detail": False,
+                    "minimize_sigma_inf": False,
+                    "uncond_per_vibe": True,
+                    "wonky_vibe_correlation": True,
+                    "image_format": "png",
+                    "version": 1,
+                }
+            else:
+                parameters = {
                     "width": width,
                     "height": height,
                     "scale": _scale,
@@ -386,12 +460,24 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                     "cfg_rescale": float(_d.get("cfg_rescale", 0.3)),
                     "noise_schedule": _noise,
                     "seed": _seed,
-                    "negative_prompt": negative or "",
-                },
+                    "negative_prompt": _neg,
+                }
+            payload = {
+                "input": official_prompt,
+                "model": model,
+                "action": "generate",
+                "parameters": parameters,
             }
             _st, _hd, raw = await _request_with_retry(
                 "POST", f"{base}/ai/generate-image",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "accept": "application/x-zip-compressed,image/png,application/json",
+                    "origin": "https://novelai.net",
+                    "referer": "https://novelai.net/",
+                    **extra_headers,
+                },
                 json_body=payload, capture=capture,
                 timeout=timeout or _DEFAULT_TIMEOUT,
             )
@@ -403,13 +489,17 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
 
 
 async def fetch_quota(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
-    """查询 NAI 中转站（sta1n 等）剩余点数。
+    """查询 NAI 剩余点数。
 
     入参 p 为平台配置 dict（取 base_url / api_key）。
-    仅 NAI 中转站可用：GET {base}/api/me?token={api_key}。
+    - NAI 中转站（via_middle_station）：GET {base}/api/me?token={api_key}
+    - NAI 官方：GET {base}/user/data（Bearer token），解析订阅固定/购买 steps 之和
+      （对齐 Nai2API fetchNovelAiAccountQuota）。
     返回 {"ok": True, "balance": int, "enabled": bool} 或 {"ok": False, "message": str}。"""
     if not isinstance(p, dict):
         return {"ok": False, "message": "平台配置无效"}
+    if not bool(p.get("via_middle_station")):
+        return await _fetch_quota_official(p, timeout=timeout)
     base = (p.get("base_url") or "").strip().rstrip("/")
     key = (p.get("api_key") or "").strip()
     if not base or not key:
@@ -433,6 +523,60 @@ async def fetch_quota(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
         "ok": True,
         "balance": int(data.get("balance", 0) or 0),
         "enabled": bool(data.get("enabled", True)),
+    }
+
+
+async def _fetch_quota_official(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
+    """NAI 官方订阅剩余点数：GET {base}/user/data（Bearer 持久 token）。
+
+    点数 = subscription.trainingStepsLeft.fixedTrainingStepsLeft + purchasedTrainingSteps
+    （字段兼容 snake_case）；查不到点数字段时返回失败，不猜 0。"""
+    key = (p.get("api_key") or "").strip()
+    if not key:
+        return {"ok": False, "message": "NAI 平台未配置 Token（api_key）"}
+    base = ((p.get("base_url") or "").strip() or _NAI_DEFAULT_BASE).rstrip("/")
+    try:
+        _st, _hd, raw = await _request_with_retry(
+            "GET", f"{base}/user/data",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "accept": "application/json",
+                "origin": "https://novelai.net",
+                "referer": "https://novelai.net/",
+            },
+            timeout=timeout,
+        )
+    except PlatformError as e:
+        return {"ok": False, "message": str(e)}
+    try:
+        data = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception:
+        return {"ok": False, "message": "上游响应解析失败"}
+    if not isinstance(data, dict):
+        return {"ok": False, "message": "上游响应格式异常"}
+    sub = data.get("subscription") if isinstance(data.get("subscription"), dict) else {}
+    steps_left = sub.get("trainingStepsLeft") if isinstance(sub.get("trainingStepsLeft"), dict) else {}
+
+    def _num(*vals):
+        for v in vals:
+            try:
+                if v is not None:
+                    return int(v)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    fixed = _num(steps_left.get("fixedTrainingStepsLeft"), steps_left.get("fixed_training_steps_left"),
+                 sub.get("fixedTrainingStepsLeft"), sub.get("fixed_training_steps_left"))
+    purchased = _num(steps_left.get("purchasedTrainingSteps"), steps_left.get("purchased_training_steps"),
+                     sub.get("purchasedTrainingSteps"), sub.get("purchased_training_steps"))
+    if fixed is None and purchased is None:
+        return {"ok": False, "message": "响应里没有订阅点数字段"}
+    return {
+        "ok": True,
+        "balance": (fixed or 0) + (purchased or 0),
+        "enabled": True,
+        "tier": sub.get("tier"),
     }
 
 

@@ -30,16 +30,18 @@ NAI_SAMPLERS = (
 NAI_NOISE_SCHEDULES = ("karras", "native", "exponential", "polyexponential")
 
 # NAI 尺寸档位 → (宽, 高)
+# 2K/4K 档对齐 NAI 官方 API 实测可用值（参考 Nai2API sizeMap）：官方单边上限 2048、
+# 且按像素配额计费，此前 1536x2304 / 2048x3072 超出配额会被上游拒绝或异常计费。
 NAI_SIZES: dict[str, tuple[int, int]] = {
     "portrait": (832, 1216),
     "landscape": (1216, 832),
     "square": (1024, 1024),
-    "2Kportrait": (1536, 2304),
-    "2Klandscape": (2304, 1536),
-    "2Ksquare": (2048, 2048),
-    "4Kportrait": (2048, 3072),
-    "4Klandscape": (3072, 2048),
-    "4Ksquare": (3072, 3072),
+    "2Kportrait": (1088, 1600),
+    "2Klandscape": (1600, 1088),
+    "2Ksquare": (1344, 1344),
+    "4Kportrait": (1344, 1984),
+    "4Klandscape": (1984, 1344),
+    "4Ksquare": (1728, 1728),
 }
 
 
