@@ -30,7 +30,7 @@
               <b>{{ p.name || "（未命名）" }}</b>
               <span class="hint">{{ p.base_url || p.url || "" }}</span>
               <span class="spacer" />
-              <n-switch v-model:value="p.enabled" size="small" @update:value="markDirty" />
+              <n-switch v-model:value="p.enabled" size="small" @update:value="saveAll" />
               <span class="hint">{{ p.enabled ? "启用" : "停用" }}</span>
               <n-button size="tiny" @click="openEdit(p)">编辑</n-button>
               <n-button size="tiny" type="error" ghost @click="removePlatform(p)">删除</n-button>
@@ -447,7 +447,7 @@ function buildPlatformFromEditing(): any {
   return item;
 }
 
-function applyEdit() {
+async function applyEdit() {
   let item: any;
   try {
     item = buildPlatformFromEditing();
@@ -460,7 +460,8 @@ function applyEdit() {
   else cfg.platforms.push(item);
   showEdit.value = false;
   markDirty();
-  message.success("已加入列表，记得点「保存」提交");
+  // 确定即自动落盘，避免「加了平台没点顶部保存」导致刷新丢失
+  await saveAll();
 }
 
 // ---- 连通性测试 ----
@@ -492,10 +493,11 @@ async function runTest() {
   }
 }
 
-function removePlatform(p: any) {
+async function removePlatform(p: any) {
   cfg.platforms = cfg.platforms.filter((x: any) => x.id !== p.id);
   if (cfg.active_platform === p.id) cfg.active_platform = "comfyui";
   markDirty();
+  await saveAll();
 }
 
 // ---- 预设编辑 ----
@@ -522,7 +524,7 @@ function openPresetEdit(kind: "artist" | "negative", pr: any) {
   showPreset.value = true;
 }
 
-function applyPreset() {
+async function applyPreset() {
   if (!editingPreset.name.trim()) { message.error("请填写名称"); return; }
   const list = presetList();
   const idx = list.findIndex((p: any) => p.id === editingPreset.id);
@@ -534,12 +536,15 @@ function applyPreset() {
   }
   showPreset.value = false;
   markDirty();
+  // 确定即自动落盘
+  await saveAll();
 }
 
-function removePreset(kind: "artist" | "negative", pr: any) {
+async function removePreset(kind: "artist" | "negative", pr: any) {
   if (kind === "artist") cfg.artist_presets = cfg.artist_presets.filter((x: any) => x.id !== pr.id);
   else cfg.negative_presets = cfg.negative_presets.filter((x: any) => x.id !== pr.id);
   markDirty();
+  await saveAll();
 }
 
 onMounted(load);
