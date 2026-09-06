@@ -3206,6 +3206,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             _plat = self._platform_store().pick_platform(
                 platform, user_id=user_id, is_admin=self._is_admin(event),
+                session_id=_session_id,
             )
         except Exception as _pe:
             logger.warning(f"【平台】 平台解析失败（回退 ComfyUI）: {_pe}")
@@ -6490,6 +6491,128 @@ class ComfyUIDrawPlugin(Star):
         """图库帮助快捷入口（/图库帮助 或 /galleryhelp）。"""
         await self._send_gallery_help(event)
         event.stop_event()
+
+    # ---- 生图平台：会话级切换（白名单）----
+    def _platform_names_text(self, ps) -> str:
+        plats = ps.all_platforms()
+        if not plats:
+            return "（无第三方平台，全部走 ComfyUI）"
+        return "\n".join(
+            f"- {p.get('name')}（{p.get('type')}）[{'启用' if p.get('enabled', True) else '停用'}] id={p.get('id')}"
+            for p in plats
+        )
+
+    def _platform_status_text(self, ps, sid: str, user_id: str, is_admin: bool) -> str:
+        def _can(p):
+            if is_admin:
+                return True
+            allowed = [str(u).strip() for u in (p.get("allowed_users") or []) if str(u).strip()]
+            return bool(allowed) and (user_id in allowed)
+        active = ps.active_platform()
+        so = ps.get_session_platform(sid)
+        cur_pid = (so.get("pid") if so else active) or "comfyui"
+        p_cur = ps.get_platform(cur_pid) if cur_pid != "comfyui" else None
+        cur_name = p_cur.get("name") if p_cur else "ComfyUI（默认）"
+        scope = "本会话覆盖" if so else "全局默认"
+        lines = [f"当前生图平台：{cur_name}（{scope}）", "可用平台（★=你可用）："]
+        for p in ps.all_platforms():
+            _en = "启用" if p.get("enabled", True) else "停用"
+            lines.append(f"  {'★' if _can(p) else '⛔'} {p.get('name')}（{p.get('type')}）[{_en}]")
+        lines.append("命令：/平台 <名称> 切换本会话 · /平台 重置 恢复默认 · /平台 全局 <名称>（管理员）")
+        return "\n".join(lines)
+
+    @filter.command("平台", alias={"生图平台", "platform", "platforms", "切换平台"})
+    async def cmd_platform(self, event: AstrMessageEvent):
+        """生图平台切换（会话级，仅白名单可用）。
+        /平台                查看当前平台与可用平台
+        /平台 <名称或id>     切换本会话生图平台（如 /平台 NAI）
+        /平台 切换 <名称>    同上
+        /平台 重置           恢复本会话为全局默认平台
+        /平台 全局 <名称>    仅管理员：设置全局默认平台
+        白名单：平台 allowed_users 为空=仅管理员可切；非空=管理员+名单内用户。
+        """
+        ps = self._platform_store()
+        sid = (getattr(event, "session_id", "") or "") if event is not None else ""
+        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        is_admin = self._is_admin(event)
+        # 去掉前导 / 与任一命令词，取剩余参数
+        msg = (event.message_str or "").strip()
+        for _w in ("生图平台", "切换平台", "平台", "platforms", "platform"):
+            _low = msg.lower()
+            if _low.startswith("/" + _w) or _low.startswith(_w):
+                msg = msg[len(_w):].lstrip()
+                break
+        raw = msg.strip()
+        parts = raw.split()
+        sub = (parts[0] or "").lower() if parts else ""
+        rest = parts[1:]
+
+        def _can_use(p):
+            if is_admin:
+                return True
+            allowed = [str(u).strip() for u in (p.get("allowed_users") or []) if str(u).strip()]
+            return bool(allowed) and (user_id in allowed)
+
+        _switch_subs = {"切换", "switch", "切", "用"}
+        _reset_subs = {"重置", "reset", "默认", "default", "取消", "clear"}
+        _global_subs = {"全局", "global", "setglobal"}
+
+        # 全局设置（仅管理员）
+        if sub in _global_subs:
+            if not is_admin:
+                await self._send(event, "只有管理员可以设置全局默认平台。")
+                event.stop_event(); return
+            name = " ".join(rest).strip()
+            if not name:
+                await self._send(event, "用法：/平台 全局 <平台名称或id>")
+                event.stop_event(); return
+            p = ps.get_platform(name)
+            if p is None:
+                await self._send(event, f"未找到平台「{name}」。可用：\n{self._platform_names_text(ps)}")
+                event.stop_event(); return
+            if not p.get("enabled", True):
+                await self._send(event, f"平台「{p.get('name')}」已停用，无法设为全局默认。")
+                event.stop_event(); return
+            ps.set_active_platform(p.get("id"))
+            await self._send(event, f"✅ 已将全局默认生图平台设为「{p.get('name')}」({p.get('type')})。")
+            event.stop_event(); return
+
+        # 重置本会话
+        if sub in _reset_subs:
+            ps.clear_session_platform(sid)
+            await self._send(event, "✅ 本会话已恢复为全局默认生图平台（之前的切换已清除）。")
+            event.stop_event(); return
+
+        # 切换本会话
+        if sub in _switch_subs:
+            name = " ".join(rest).strip()
+            if not name:
+                await self._send(event, "用法：/平台 切换 <平台名称或id>")
+                event.stop_event(); return
+        else:
+            name = raw  # 无子命令：整段当作平台名（/平台 NAI）
+
+        if not name:
+            await self._send(event, self._platform_status_text(ps, sid, user_id, is_admin))
+            event.stop_event(); return
+
+        p = ps.get_platform(name)
+        if p is None:
+            await self._send(event,
+                f"未找到平台「{name}」。\n可用平台：\n{self._platform_names_text(ps)}")
+            event.stop_event(); return
+        if not p.get("enabled", True):
+            await self._send(event, f"平台「{p.get('name')}」已停用，无法切换。")
+            event.stop_event(); return
+        if not _can_use(p):
+            await self._send(event,
+                f"你不在平台「{p.get('name')}」的白名单中，无法切换（仅管理员/白名单用户可用）。")
+            event.stop_event(); return
+        ps.set_session_platform(sid, p.get("id"), user_id)
+        await self._send(event,
+            f"✅ 本会话已切换生图平台为「{p.get('name')}」({p.get('type')})，"
+            f"后续绘图默认使用它。\n用 /平台 查看状态，/平台 重置 恢复默认。")
+        event.stop_event(); return
 
     @filter.command("gallery", alias={"图库"})
     async def cmd_gallery(self, event: AstrMessageEvent):

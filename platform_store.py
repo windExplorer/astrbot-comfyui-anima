@@ -194,6 +194,9 @@ class PlatformStore:
     def __init__(self, data_dir, cfg_provider=None):
         self.data_dir = Path(data_dir)
         self.json_path = self.data_dir / "image_platforms.json"
+        # 会话级平台覆盖：单独文件存储（session_id -> {pid,user_id,ts}），
+        # 避免被 WebUI 整包保存 image_platforms.json 时覆盖清空。
+        self._session_path = self.data_dir / "platform_session_override.json"
         self._cfg_provider = cfg_provider if callable(cfg_provider) else None
         self._cache: dict | None = None
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -261,6 +264,51 @@ class PlatformStore:
         cfg["active_platform"] = pid
         self.save(cfg)
 
+    # ---- 会话级平台覆盖（按 session_id 记忆「本会话用哪个平台」）----
+
+    def _load_session_override(self) -> dict:
+        try:
+            if self._session_path.exists():
+                data = json.loads(self._session_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.warning(f"[平台] 读取会话覆盖失败（用空）: {e}")
+        return {}
+
+    def _save_session_override(self, data: dict) -> None:
+        try:
+            tmp = self._session_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._session_path)
+        except Exception as e:
+            logger.warning(f"[平台] 保存会话覆盖失败: {e}")
+
+    def get_session_platform(self, sid: str) -> dict | None:
+        """返回 {pid, user_id, ts} 或 None。"""
+        sid = (sid or "").strip()
+        if not sid:
+            return None
+        return self._load_session_override().get(sid)
+
+    def set_session_platform(self, sid: str, pid: str, user_id: str = "") -> None:
+        sid = (sid or "").strip()
+        pid = (pid or "").strip()
+        if not sid or not pid:
+            return
+        data = self._load_session_override()
+        data[sid] = {"pid": pid, "user_id": user_id or "", "ts": time.time()}
+        self._save_session_override(data)
+
+    def clear_session_platform(self, sid: str) -> None:
+        sid = (sid or "").strip()
+        if not sid:
+            return
+        data = self._load_session_override()
+        if sid in data:
+            del data[sid]
+            self._save_session_override(data)
+
     def all_platforms(self) -> list[dict]:
         return [p for p in (self._cfg().get("platforms") or []) if isinstance(p, dict)]
 
@@ -274,15 +322,24 @@ class PlatformStore:
                 return p
         return None
 
-    def pick_platform(self, pid: str = "", user_id: str = "", is_admin: bool = False) -> dict | None:
+    def pick_platform(self, pid: str = "", user_id: str = "", is_admin: bool = False,
+                      session_id: str = "") -> dict | None:
         """选出本次生图用的平台：
         1) 显式指定 pid（id/名称）且存在 → 用它；
-        2) active_platform 非 comfyui 且存在 → 用它；
-        3) 否则 None（走 ComfyUI）。
+        2) 否则若本会话有平台覆盖（白名单用户切换过）→ 用它；
+        3) 否则 active_platform 非 comfyui 且存在 → 用它；
+        4) 否则 None（走 ComfyUI）。
         权限：第三方平台受 allowed_users 限制——空列表 = 仅管理员；非空 = 管理员 + 名单内
-        用户。无权限时静默回退 ComfyUI（普通用户无感）。"""
+        用户。无权限时静默回退 ComfyUI（普通用户无感）。会话覆盖同样每次按当前用户重验权限。"""
         cfg = self._cfg()
-        target = (pid or "").strip() or self.active_platform()
+        target = (pid or "").strip()
+        if not target and session_id:
+            # 会话级覆盖优先于全局 active（白名单用户切换后，本会话后续绘图默认用它）
+            _so = self.get_session_platform(session_id)
+            if _so:
+                target = (_so.get("pid") or "").strip()
+        if not target:
+            target = self.active_platform()
         if target == "comfyui":
             return None
         p = self.get_platform(target)
