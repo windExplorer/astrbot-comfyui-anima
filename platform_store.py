@@ -78,6 +78,29 @@ def render_template(template: str, variables: dict) -> str:
     return out
 
 
+def build_render_variables(*, prompt: str = "", negative: str = "", width: int = 0,
+                           height: int = 0, seed=None, model: str = "", api_key: str = "",
+                           artist: str = "") -> dict:
+    """占位符渲染变量（custom 模板/请求头/额外参数共用）。
+    额外提供 prompt_encoded（URL 编码后的提示词，供 GET 直链类平台拼 URL）。"""
+    try:
+        from urllib.parse import quote as _quote
+        prompt_encoded = _quote(str(prompt or ""), safe="")
+    except Exception:
+        prompt_encoded = str(prompt or "")
+    return {
+        "prompt": prompt or "",
+        "prompt_encoded": prompt_encoded,
+        "negative": negative or "",
+        "width": width,
+        "height": height,
+        "seed": seed if seed is not None else -1,
+        "model": model or "",
+        "api_key": api_key or "",
+        "artist": artist or "",
+    }
+
+
 def normalize_headers(p: dict, variables: dict | None = None) -> dict:
     """把平台条目的自定义请求头归一为 dict。
 
@@ -308,16 +331,10 @@ class PlatformStore:
                               width: int, height: int, seed, model: str = "") -> tuple[str, str, dict, str]:
         """渲染 custom 平台请求。返回 (method, url, headers, body_json_text)。
         渲染或 JSON 校验失败抛 ValueError。"""
-        variables = {
-            "prompt": prompt or "",
-            "negative": negative or "",
-            "width": width,
-            "height": height,
-            "seed": seed if seed is not None else -1,
-            "model": model or (p.get("model") or ""),
-            "api_key": p.get("api_key") or "",
-            "artist": "",
-        }
+        variables = build_render_variables(
+            prompt=prompt, negative=negative, width=width, height=height,
+            seed=seed, model=model or (p.get("model") or ""), api_key=p.get("api_key") or "",
+        )
         body_text = render_template(p.get("body_template") or "", variables)
         try:
             json.loads(body_text)

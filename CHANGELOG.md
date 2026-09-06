@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.8.9（预设扩充至 12 个：Together/智谱 CogView/xAI/MiniMax/Pollinations；custom 支持 GET 直链）
+
+- 新增预设：Together AI（FLUX 系）、智谱 CogView（cogview-3-flash 免费）、xAI（grok-2-image）、MiniMax image-01（条目式 custom 示例）、Pollinations（免费直链，无需 Key）。
+- custom 平台支持 GET 直链类服务：GET 且无请求体参数时不携带 body；占位符新增 prompt_encoded（URL 编码后的提示词，用于拼 GET URL）。
+- custom 类型放宽 API Key 校验（如 Pollinations 无需 Key）。
+
 ## v5.8.8（添加平台快速预设：NAI 官方/中转站、OpenAI、newapi、硅基流动、豆包一键预填）
 
 - 添加平台弹窗新增「快速预设」：选常见平台模板即自动预填类型/地址/模型/默认参数，只需填 API Key（参考伴侣插件多平台枚举思路，保留条目式自定义能力）。

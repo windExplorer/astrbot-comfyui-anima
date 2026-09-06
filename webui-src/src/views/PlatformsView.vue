@@ -375,6 +375,40 @@ const PLATFORM_PRESETS: Record<string, { label: string; fields: any }> = {
     label: "豆包（火山方舟 Seedream）",
     fields: { type: "openai", base_url: "https://ark.cn-beijing.volces.com", model: "doubao-seedream-3-0-t2i-250415", size: "1024x1024", quality: "", negative: "" },
   },
+  together: {
+    label: "Together AI（FLUX 系）",
+    fields: { type: "openai", base_url: "https://api.together.xyz", model: "black-forest-labs/FLUX.1-schnell-Free", size: "1024x1024", quality: "", negative: "" },
+  },
+  zhipu: {
+    label: "智谱 CogView（cogview-3-flash 免费）",
+    fields: { type: "openai", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "cogview-3-flash", size: "1024x1024", quality: "", negative: "" },
+  },
+  xai: {
+    label: "xAI（Grok 生图）",
+    fields: { type: "openai", base_url: "https://api.x.ai", model: "grok-2-image", size: "1024x1024", quality: "", negative: "" },
+  },
+  minimax: {
+    label: "MiniMax image-01（自定义条目示例）",
+    fields: {
+      type: "custom", url: "https://api.minimax.chat/v1/image_generation", method: "POST",
+      resp_type: "b64_json", resp_path: "data.0.b64_json", body_template: "",
+      model: "image-01",
+      extra_params: [
+        { key: "model", value: "image-01", vtype: "text" },
+        { key: "prompt", value: "{{prompt}}", vtype: "text" },
+        { key: "width", value: "{{width}}", vtype: "number" },
+        { key: "height", value: "{{height}}", vtype: "number" },
+      ],
+    },
+  },
+  pollinations: {
+    label: "Pollinations（免费，无需 Key）",
+    fields: {
+      type: "custom", url: "https://image.pollinations.ai/prompt/{{prompt_encoded}}?width={{width}}&height={{height}}&seed={{seed}}&nologo=true",
+      method: "GET", resp_type: "binary", resp_path: "", body_template: "",
+      model: "flux", extra_params: [],
+    },
+  },
 };
 const presetKey = ref("blank");
 const presetOptions = Object.entries(PLATFORM_PRESETS).map(([k, v]) => ({ label: v.label, value: k }));
@@ -491,7 +525,10 @@ function buildPlatformFromEditing(): any {
   if (editing.type !== "custom" && !String(editing.base_url || "").trim()) {
     throw new Error("请填写接口地址");
   }
-  if (!String(editing.api_key || "").trim()) throw new Error("请填写 API Key / Token");
+  if (editing.type !== "custom" && !String(editing.api_key || "").trim()) {
+    throw new Error("请填写 API Key / Token");
+  }
+  // custom 类型允许无 Key（如 Pollinations 免费直链）
   const item = JSON.parse(JSON.stringify(editing));
   if (!item.id) item.id = `p_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   item.allowed_users = String(item.allowed_users_text || "")

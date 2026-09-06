@@ -351,23 +351,26 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
             )
             headers = {**normalize_headers(p, {"prompt": prompt, "api_key": p.get("api_key") or ""}), **headers}
         else:
-            # 条目式：body_params 每条 {key, value, vtype}，value 支持 {{prompt}} 等占位符
+            # 条目式：extra_params 每条 {key, value, vtype}，value 支持 prompt 等占位符
             method = (p.get("method") or "POST").upper()
             url = str(p.get("url") or "").strip()
             if not url.startswith(("http://", "https://")):
                 raise PlatformError(f"custom 平台 URL 不合法: {url!r}")
             try:
-                from .platform_store import render_extra_params
+                from .platform_store import render_extra_params, build_render_variables
             except ImportError:
-                from platform_store import render_extra_params
-            _vars = {"prompt": prompt, "negative": negative, "model": p.get("model") or "",
-                     "width": width, "height": height, "seed": _seed,
-                     "api_key": p.get("api_key") or "", "artist": ""}
+                from platform_store import render_extra_params, build_render_variables
+            _vars = build_render_variables(
+                prompt=prompt, negative=negative, width=width, height=height,
+                seed=_seed, model=p.get("model") or "", api_key=p.get("api_key") or "",
+            )
             body_obj = render_extra_params(body_params, _vars)
-            body_text = json.dumps(body_obj, ensure_ascii=False)
+            body_text = json.dumps(body_obj, ensure_ascii=False) if body_obj else ""
             headers = normalize_headers(p, _vars)
+        # GET 且无请求体时绝不携带 body（直链类平台，如 Pollinations）
+        _data = body_text.encode("utf-8") if (method == "POST" and body_text) else None
         resp = await _request_with_retry(
-            method, url, headers=headers, data=body_text.encode("utf-8"),
+            method, url, headers=headers, data=_data,
         )
         raw = await resp.read()
         ct = resp.headers.get("Content-Type", "")
