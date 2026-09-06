@@ -336,6 +336,27 @@ def _load_nai_codex_search():
     return mod
 
 
+# 异常文本脱敏：任何可能透传给用户/LLM 的异常消息都先过这里，避免把上游响应体里的
+# 密钥/令牌/请求 id 等敏感信息带出去（平台报错的 PlatformError 会携带上游响应体片段）。
+_KEY_LIKE_RE = re.compile(r"sk-[A-Za-z0-9_\-]{6,}|STA1N-[A-Za-z0-9_\-]{4,}|Bearer\s+\S+", re.I)
+_KV_SECRET_RE = re.compile(
+    r"(api[_-]?key|token|authorization|secret|password)\s*[=:：]\s*[\"']?[^\s\"'，,；;&]{6,}", re.I
+)
+_REQ_ID_RE = re.compile(r"(请求\s*id|request[_-]?id)\s*[:：]?\s*[A-Za-z0-9\-_]{6,}", re.I)
+
+
+def _sanitize_exc_text(text, limit: int = 200) -> str:
+    """打码异常文本里的密钥/令牌/请求 id，压平空白并截断。"""
+    t = str(text or "")
+    t = _KV_SECRET_RE.sub(lambda m: m.group(1) + "=***", t)
+    t = _KEY_LIKE_RE.sub("***", t)
+    t = _REQ_ID_RE.sub(lambda m: m.group(1) + ":***", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) > limit:
+        t = t[:limit] + "…"
+    return t
+
+
 def _safe_llm_tool(func):
     """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
     而是打印完整堆栈到日志并返回一句可读的失败说明，让用户能看到原因而非笼统报错。
@@ -353,8 +374,8 @@ def _safe_llm_tool(func):
                 f"{traceback.format_exc()}"
             )
             return (
-                f"绘图工具执行时出错（{type(e).__name__}）：{e}。"
-                "请勿复述本提示给用户，自然地向用户说明生成遇到问题即可。"
+                f"绘图工具执行时出错（{type(e).__name__}）：{_sanitize_exc_text(str(e))}。"
+                "请勿复述本提示与错误细节给用户，自然地向用户说明生成遇到问题即可。"
             )
     return wrapper
 
@@ -3340,7 +3361,7 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, msg)
             else:
                 logger.warning(f"【绘图·失败】[配置] {e}")
-                await self._send(event, f"绘图配置有误：{e} 请联系管理员调整。")
+                await self._send(event, f"绘图配置有误：{_sanitize_exc_text(str(e), 160)} 请联系管理员调整。")
             return
 
         # —— 无提示词 / 固定提示词工作流支持 ——
@@ -5487,7 +5508,7 @@ class ComfyUIDrawPlugin(Star):
                     lines.append(f"{medal} {name}：{r.get('count', 0)} 张")
             await self._send(event, "\n".join(lines))
         except Exception as e:
-            await self._send(event, f"读取排行失败：{e}")
+            await self._send(event, f"读取排行失败：{_sanitize_exc_text(str(e), 160)}")
         event.stop_event()
 
     # ------------------------------------------------------------------ #
@@ -9713,7 +9734,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             ps = self._platform_store()
         except Exception as e:
-            return f"平台配置读取失败: {e}"
+            return f"平台配置读取失败: {_sanitize_exc_text(str(e), 160)}"
         plats = [p for p in ps.all_platforms() if p.get("enabled", True)]
         active = ps.active_platform()
         if not plats:
@@ -9800,7 +9821,7 @@ class ComfyUIDrawPlugin(Star):
             results = mod.search(keyword, scope=scope, full=bool(full), limit=limit)
         except Exception as e:  # noqa: BLE001
             logger.exception("nai_codex 检索失败")
-            return f"⚠️ nai-codex 检索出错：{e}"
+            return f"⚠️ nai-codex 检索出错：{_sanitize_exc_text(str(e), 160)}"
 
         return mod.format_results(results, keyword, full=bool(full))
 
