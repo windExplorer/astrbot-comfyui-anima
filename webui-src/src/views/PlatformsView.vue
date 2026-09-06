@@ -45,7 +45,7 @@
             </div>
             <div v-if="p.type === 'nai'" class="plat-quota">
               <template v-if="quotaMap[p.id] && quotaMap[p.id].ok">
-                剩余额度 {{ quotaMap[p.id].value }} · 余额 {{ quotaMap[p.id].balance }}
+                余额 {{ quotaMap[p.id].balance }} 点
                 <span v-if="!quotaMap[p.id].enabled" class="quota-warn">⚠️ token 已停用</span>
               </template>
               <template v-else-if="quotaMap[p.id]">
@@ -352,7 +352,7 @@ const cfg = reactive<any>({
 const dirty = ref(false);
 const saving = ref(false);
 const loading = ref(false);
-// NAI 平台余额：quotaMap[平台id] = {ok, value, balance, enabled} 或 {ok:false, message}
+// NAI 平台余额：quotaMap[平台id] = {ok, balance, enabled} 或 {ok:false, message}
 const quotaMap = reactive<Record<string, any>>({});
 const quotaLoading = reactive<Record<string, boolean>>({});
 

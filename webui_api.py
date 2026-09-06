@@ -337,7 +337,7 @@ class WebUIApi:
         """查询 NAI 平台剩余额度（仅 nai 类型）。供 WebUI 生图平台列表展示与手动刷新。
 
         入参 body.platform 为平台条目 dict（取 base_url / api_key）；未保存的编辑值可直接传。
-        返回 nai_client.fetch_quota 的结果：{"ok": True, "value", "balance", "enabled"} 或 {"ok": False, "message"}。"""
+        返回 nai_client.fetch_quota 的结果：{"ok": True, "balance", "enabled"} 或 {"ok": False, "message"}。"""
         try:
             payload = await request.json(default={}) or {}
         except Exception:
