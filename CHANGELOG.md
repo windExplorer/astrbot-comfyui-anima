@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.10（修复图库回收站全局序号 WARN）
+
+- 修复 `[图库] 计算全局序号失败: Incorrect number of bindings supplied. The current statement uses 3, and there are 4 supplied.` 告警。`image_store._gidx_rank` 在 `trash=True` 时把 `where` 设为字面量 `deleted=1` 却给 `args` 多塞了一个无对应占位符的 `1`，导致回收站路径（尤其无 owner 时）SQL 绑定参数数量不匹配、该 warn 刷屏，且回收站条目 gidx 编号回退为 1。改为 `args = []`（deleted 是字面量，无需参数）。
+
 ## v5.10.9（图库回收站卡片支持恢复/彻底删除）
 
 - 修复图库卡片在「回收站」视图下无法删除的问题：此前回收站视图的卡片操作和普通视图完全一致（只有收藏 + 删除(移入回收站)），没有彻底删除入口；点卡片上的🗑只是把已在回收站的图「再移一次回收站」（`image_store.delete` 对 deleted=1 直接返回 True，无可见效果），看起来像是「删不掉」。彻底删除之前只能从大图查看器里点，卡片上找不到。

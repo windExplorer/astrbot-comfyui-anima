@@ -1591,7 +1591,7 @@ class ImageStore:
         与 recall（无 session）和 search（带 session）的列表口径统一。
         """
         where = "deleted=1" if trash else "deleted=0"
-        args: list = [1] if trash else []
+        args: list = []
         where += " AND status=0"
         if owner:
             # 公开图(is_public)与全局图(is_global)所有人可见；私有/非全局图仅本人。
