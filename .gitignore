@@ -213,6 +213,8 @@ AstrBot-master/
 astrbot_plugin_comfyui_hub-master/
 astrbot_plugin_private_companion/
 astrbot_plugin_stealer/
+# 个人 NAI 法典（所长词库，含私人生图 tag 词库，仅本地自用，不入库、不公开）
+skills/nai-codex/
 
 # 构建产物
 astrbot_plugin_comfyui_anima.zip
