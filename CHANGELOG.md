@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.16（修复 NAI 中转站出图尺寸与平台默认配置不符）
+
+- 根因：NAI 中转站（nai.sta1n.cn）只认英文尺寸键（portrait/landscape/square/2k_portrait/2k_landscape/2k_square/4k_portrait/4k_landscape/4k_square），旧版 `_nai_relay_size` 输出的是中文键（竖图/横图/方图…），中继站不识别会回落默认尺寸，导致「未指定尺寸时出的图」与平台「默认尺寸」对不上（对齐 astrbot_plugin_nai_image 的 IMAGE_SIZES）。
+- 修复：`_nai_relay_size` 改为输出中继站识别的英文尺寸键（方向由长宽比定、档位由最长边定：<1400=1K，1400~<2500=2K，>=2500=4K）。NAI 官方直连仍按像素宽高直传，不受影响。
+
 ## v5.10.15（生图平台列表新增 NAI 余额查询）
 
 - 生图平台列表（WebUI 生图平台页）新增 NAI 余额展示：进入/点「刷新」时自动拉取所有 NAI 平台的剩余额度（对齐 astrbot_plugin_nai_image 的 `/api/api/getUser` 查询），每个 NAI 平台卡片显示「剩余额度 / 余额」，token 被停用时标黄警告。

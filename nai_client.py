@@ -234,22 +234,24 @@ def _iter_values(obj):
 
 
 def _nai_relay_size(width: int, height: int) -> str:
-    """把像素宽高映射为 nai.sta1n.cn 中继站识别的中文尺寸键。
+    """把像素宽高映射为 nai.sta1n.cn 中继站识别的尺寸键（英文，对齐 astrbot_plugin_nai_image 的 IMAGE_SIZES）。
 
-    中继站只认中文尺寸值（竖图/横图/方图/2K竖图/2K横图/2K方图/4K...），不认像素宽高。
-    方向由长宽比定，档位由最长边定：<1400=1K，1400~2500=2K，>=2500=4K。"""
+    中继站只认英文尺寸值（portrait/landscape/square/2k_portrait/2k_landscape/2k_square/
+    4k_portrait/4k_landscape/4k_square），不认像素宽高；旧版中文键（竖图/横图…）中继站
+    不识别会回落默认尺寸，导致出图尺寸与平台配置的默认尺寸对不上，故这里统一输出英文键。
+    方向由长宽比定，档位由最长边定：<1400=1K，1400~<2500=2K，>=2500=4K。"""
     if height > width:
-        orient = "竖图"
+        orient = "portrait"
     elif width > height:
-        orient = "横图"
+        orient = "landscape"
     else:
-        orient = "方图"
+        orient = "square"
     mx = max(int(width), int(height))
     tier = ""
     if mx >= 2500:
-        tier = "4K"
+        tier = "4k_"
     elif mx >= 1400:
-        tier = "2K"
+        tier = "2k_"
     return f"{tier}{orient}"
 
 
