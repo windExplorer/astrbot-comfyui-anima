@@ -254,25 +254,29 @@ def _iter_values(obj):
 
 
 def _nai_relay_size(width: int, height: int) -> str:
-    """把像素宽高映射为 nai.sta1n.cn 中继站识别的尺寸键（英文，对齐 astrbot_plugin_nai_image 的 IMAGE_SIZES）。
+    """把像素宽高映射为 NAI 中转站（Nai2API / nai.sta1n.cn 系）识别的尺寸键。
 
-    中继站只认英文尺寸值（portrait/landscape/square/2k_portrait/2k_landscape/2k_square/
-    4k_portrait/4k_landscape/4k_square），不认像素宽高；旧版中文键（竖图/横图…）中继站
-    不识别会回落默认尺寸，导致出图尺寸与平台配置的默认尺寸对不上，故这里统一输出英文键。
-    方向由长宽比定；档位按最长边分：2K 档最长边 1600/1344，4K 档 1984/1728，
-    阈值取 1650（2K 最大 1600 < 1650 ≤ 4K 最小 1728）。"""
+    ★中转站只认【中文】尺寸键：竖图/横图/方图/2K竖图/2K横图/2K方图/4K竖图/
+    4K横图/4K方图（Nai2API 服务端 sizeMap 键即中文；astrbot_plugin_nai_image
+    v2.1.x 修复记录同证：传英文值会导致尺寸被误解、回落站内默认尺寸）。
+    不认像素宽高，实际像素由中转站按键映射（2K=1088x1600/1600x1088/1344x1344，
+    4K=1344x1984/1984x1344/1728x1728，与官方档位一致）。
+
+    方向由长宽比定；档位按最长边分：1K 最大 1216，2K 为 1344/1600，
+    4K 为 1728/1984 → 阈值 1300 分 1K/2K，1650 分 2K/4K
+    （1344x1344 的 2K 方图按旧 1400 阈值会误判成 1K，已修）。"""
     if height > width:
-        orient = "portrait"
+        orient = "竖图"
     elif width > height:
-        orient = "landscape"
+        orient = "横图"
     else:
-        orient = "square"
+        orient = "方图"
     mx = max(int(width), int(height))
     tier = ""
     if mx >= 1650:
-        tier = "4k_"
-    elif mx >= 1400:
-        tier = "2k_"
+        tier = "4K"
+    elif mx >= 1300:
+        tier = "2K"
     return f"{tier}{orient}"
 
 
