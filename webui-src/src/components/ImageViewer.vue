@@ -979,12 +979,81 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-detail-btn:hover { background: rgba(124, 77, 255, 0.28); }
 @media (max-width: 760px) {
-  .iv-body { flex-direction: column; }
-  .iv-info { width: 100%; flex: 0 0 auto; height: auto; max-height: 40vh; overflow: auto; border-left: none; border-top: 1px solid rgba(255,255,255,0.08); }
-  .iv-imgwrap img { max-width: 92vw; max-height: calc(40vh - 40px); }
-  .iv-imgs { padding: 16px 10px; gap: 12px; flex-direction: column; }
-  /* 图生图并排改为纵向堆叠，避免窄屏挤压 */
-  .iv-imgs[data-pair="1"] .iv-fig { flex: 0 0 auto; min-width: 0; max-width: 100%; }
-  .iv-imgs[data-pair="1"] .iv-imgwrap img { max-height: calc(40vh - 40px); }
+  /* 移动端：图片全屏铺满，信息面板改为覆盖在图片上的底部抽屉（参考分享页大图），
+     不挤压图片、可滚动、半透明毛玻璃，操作区加大点击区域。 */
+  .iv-body {
+    flex-direction: column;
+    position: relative;
+  }
+  .iv-imgs {
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    padding: 14px 10px 0;
+    align-items: center;
+    /* 移动端禁用浏览器对手势的接管，避免横向滑动被当成返回手势 */
+    touch-action: none;
+  }
+  .iv-imgwrap { width: 100%; height: 100%; }
+  .iv-imgwrap img { max-width: 100%; max-height: 100%; }
+  /* 图生图：移动端纵向堆叠，参考图在上、结果图在下，各占一半高度 */
+  .iv-imgs[data-pair="1"] { flex-direction: column; gap: 10px; }
+  .iv-imgs[data-pair="1"] .iv-fig { flex: 1 1 50%; min-width: 0; max-width: 100%; min-height: 0; }
+  .iv-imgs[data-pair="1"] .iv-imgwrap { height: 100%; }
+  .iv-imgs[data-pair="1"] .iv-imgwrap img { max-height: 100%; }
+
+  /* 底部抽屉：绝对定位覆盖在图片下方，半透明毛玻璃 */
+  .iv-info {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    flex: 0 0 auto;
+    height: auto;
+    max-height: 64vh;
+    padding: 8px 16px 16px;
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(18, 18, 24, 0.82);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-radius: 18px 18px 0 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* 抽屉顶部拖拽提示条（纯装饰） */
+  .iv-info::before {
+    content: "";
+    display: block;
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.32);
+    margin: 2px auto 10px;
+  }
+  /* 操作按钮加大点击区域，便于手指点按 */
+  .iv-actions { gap: 8px; }
+  .iv-actions :deep(.n-button),
+  .iv-star,
+  .iv-dl,
+  .iv-blur,
+  .iv-detail-btn {
+    min-height: 38px;
+  }
+  .iv-detail-btn { width: 100%; margin: 10px 0 0; text-align: center; }
+  /* 生成信息区在抽屉里收紧高度，避免抽屉过长 */
+  .iv-gen { max-height: 200px; }
+  /* 移动端关闭按钮略放大，更易点 */
+  .iv-close { width: 44px; height: 44px; top: 12px; right: 12px; }
+  /* 左右切换箭头改为绝对定位浮在图片两侧，避免随列布局错位堆叠 */
+  .iv-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 6;
+  }
+  .iv-nav-prev { left: 8px; }
+  .iv-nav-next { right: 8px; }
 }
 </style>
