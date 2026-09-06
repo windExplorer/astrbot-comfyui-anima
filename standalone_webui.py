@@ -59,6 +59,16 @@ class StandaloneWebUI:
         self._site: web.TCPSite | None = None
         self._task: asyncio.Task | None = None
         self._platform_store_inst = None
+        self._lock = asyncio.Lock()
+        # 复用 WebUIApi 的 lora_fetch / lora_upload_image / lora_image / translate_test
+        # （这些方法引用 webui_api 模块级 `request`，需用适配器 + 串行锁避免全局竞态）
+        self._api = None
+        try:
+            self._api = webui_api.WebUIApi(plugin)
+        except Exception:
+            self._api = None
+        self._request_lock = asyncio.Lock()
+        self._saved_request = getattr(webui_api, "request", None)
 
     def _platform_store(self):
         """懒加载平台配置存储（多平台生图，docs/multi-platform-image-plan.md）。"""
@@ -71,16 +81,6 @@ class StandaloneWebUI:
             store = PlatformStore(getattr(self.plugin, "data_dir", None) or Path("data"))
             self._platform_store_inst = store
         return store
-        self._lock = asyncio.Lock()
-        # 复用 WebUIApi 的 lora_fetch / lora_upload_image / lora_image / translate_test
-        # （这些方法引用 webui_api 模块级 `request`，需用适配器 + 串行锁避免全局竞态）
-        self._api = None
-        try:
-            self._api = webui_api.WebUIApi(plugin)
-        except Exception:
-            self._api = None
-        self._request_lock = asyncio.Lock()
-        self._saved_request = getattr(webui_api, "request", None)
 
     # ------------------------------------------------------------------ #
     # 配置

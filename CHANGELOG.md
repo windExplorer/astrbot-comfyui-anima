@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.8.2（紧急修复：独立 WebUI 全部接口报错 / 剧情档案不可用）
+
+- v5.8.1 引入严重回归：给 StandaloneWebUI.__init__ 添加平台存储字段时，把 _platform_store 方法错误插入到 __init__ 中间，导致 self._api（WebUIApi 实例）与 self._request_lock 等关键初始化变成死代码——独立 WebUI 所有 API 报 "'StandaloneWebUI' object has no attribute '_request_lock'"，剧情档案等页面全部不可用。
+- 修复：__init__ 恢复完整初始化顺序，_platform_store 方法移至 __init__ 之后。
+
 ## v5.8.1（第三方生图平台用户白名单：默认仅管理员可用）
 
 - 每个平台条目新增 allowed_users（可用用户列表）：空 = 仅管理员可用；非空 = 管理员 + 名单内用户。
