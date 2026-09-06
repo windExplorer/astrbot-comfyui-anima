@@ -212,10 +212,12 @@
             <div>尺寸 {{ testResult.w }} × {{ testResult.h }} · Seed {{ testResult.seed }}</div>
             <div v-if="testResult.archived">已入库（SHA {{ String(testResult.sha).slice(0, 16) }}，标签「平台测试」，可在图库查看）</div>
             <div v-else class="hint">图库未启用，图片未入库</div>
-            <n-button size="tiny" style="margin-top: 4px" @click="showDebug = !showDebug">{{ showDebug ? "收起详情" : "查看请求详情" }}</n-button>
-            <pre v-if="showDebug && testResult.debug" class="debug-pre">{{ formatDebug(testResult.debug) }}</pre>
           </div>
         </div>
+        <n-space align="center" style="margin-top: 8px">
+          <n-button size="tiny" :disabled="!lastDebug" @click="showDebugModal = true">📋 查看请求详情</n-button>
+          <span class="hint">完整请求流程（含重试）与响应数据；Authorization 已脱敏。成功/失败均可查看。</span>
+        </n-space>
       </div>
       <template #footer>
         <n-space justify="end">
@@ -223,6 +225,11 @@
           <n-button type="primary" @click="applyEdit">确定</n-button>
         </n-space>
       </template>
+    </n-modal>
+
+    <!-- 请求详情弹窗 -->
+    <n-modal v-model:show="showDebugModal" preset="card" title="请求详情（完整流程与响应，Authorization 已脱敏）" style="width: 780px">
+      <pre class="debug-pre">{{ lastDebug ? formatDebug(lastDebug) : "" }}</pre>
     </n-modal>
 
     <!-- 预设编辑弹窗 -->
@@ -593,7 +600,8 @@ const testing = ref(false);
 const testPrompt = ref("1girl, solo, simple background, upper body, looking at viewer, masterpiece");
 const testResult = ref<any>(null);
 const testError = ref("");
-const showDebug = ref(false);
+const lastDebug = ref<any>(null);
+const showDebugModal = ref(false);
 
 function formatDebug(d: any): string {
   try {
@@ -607,6 +615,7 @@ async function runTest() {
   if (testing.value) return;
   testResult.value = null;
   testError.value = "";
+  lastDebug.value = null;
   let item: any;
   try {
     item = buildPlatformFromEditing();
@@ -617,8 +626,13 @@ async function runTest() {
   testing.value = true;
   try {
     const d = await apiPost("platforms/test", { platform: item, prompt: testPrompt.value });
-    testResult.value = d;
-    message.success("测试成功，图片已生成");
+    lastDebug.value = (d && d.debug) || null;
+    if (d && d.ok) {
+      testResult.value = d;
+      message.success("测试成功，图片已生成并入库");
+    } else {
+      testError.value = `测试失败：${(d && d.error) || "未知错误"}`;
+    }
   } catch (e) {
     testError.value = `测试失败：${(e as Error)?.message || e}`;
   } finally {

@@ -102,34 +102,32 @@ async def _request_with_retry(method: str, url: str, *, headers: dict = None,
     capture: 可选 dict，回填最后一次实际请求/响应（headers 脱敏、响应截断 2000 字符）。"""
     last_err = ""
     for attempt in range(len(_RETRY_DELAYS) + 1):
+        cap_entry: dict = {
+            "attempt": attempt + 1,
+            "method": method,
+            "url": url,
+            "headers": _mask_headers(headers or {}),
+        }
+        if params:
+            cap_entry["query_params"] = params
+        if json_body is not None:
+            cap_entry["body"] = json_body
+        elif data is not None:
+            cap_entry["body"] = str(data)[:4000]
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
                     method, url, headers=headers or {}, params=params,
                     json=json_body, data=data,
                 ) as resp:
+                    cap_entry["status"] = resp.status
+                    cap_entry["response"] = (await resp.text())[:2000]
                     if capture is not None:
-                        try:
-                            cap: dict = {
-                                "method": method,
-                                "url": url,
-                                "headers": _mask_headers(headers or {}),
-                                "status": resp.status,
-                                "response": (await resp.text())[:2000],
-                            }
-                            if params:
-                                cap["query_params"] = params
-                            if json_body is not None:
-                                cap["body"] = json_body
-                            elif data is not None:
-                                cap["body"] = str(data)[:4000]
-                            capture.clear()
-                            capture.update(cap)
-                        except Exception:
-                            pass
+                        capture.setdefault("attempts", []).append(cap_entry)
+                        capture["last"] = cap_entry
                     if resp.status < 400:
                         return resp
-                    body_text = (await resp.text())[:500]
+                    body_text = cap_entry["response"][:500]
                     last_err = f"HTTP {resp.status}: {body_text}"
                     if resp.status not in _RETRY_STATUS:
                         raise PlatformError(f"平台请求失败 {last_err}")
@@ -137,8 +135,13 @@ async def _request_with_retry(method: str, url: str, *, headers: dict = None,
             raise
         except asyncio.TimeoutError:
             last_err = "请求超时"
+            cap_entry["error"] = last_err
         except aiohttp.ClientError as e:
             last_err = f"连接错误: {e}"
+            cap_entry["error"] = last_err
+        if capture is not None:
+            capture.setdefault("attempts", []).append(cap_entry)
+            capture["last"] = cap_entry
         if attempt < len(_RETRY_DELAYS):
             delay = _RETRY_DELAYS[attempt]
             logger.warning(f"[平台] 请求失败（{last_err}），{delay}s 后重试 {attempt + 1}/{len(_RETRY_DELAYS)}")

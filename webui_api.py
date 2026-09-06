@@ -106,13 +106,17 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
 
     capture: dict = {}
     t0 = time.time()
-    images = await nai_client.generate(
-        plat, prompt=prompt, negative=negative, width=w, height=h,
-        seed=seed, count=1, artist=artist, capture=capture,
-    )
+    try:
+        images = await nai_client.generate(
+            plat, prompt=prompt, negative=negative, width=w, height=h,
+            seed=seed, count=1, artist=artist, capture=capture,
+        )
+    except Exception as e:
+        # 失败也回传 debug（实际请求流程/响应），前端「查看请求详情」可看
+        return {"ok": False, "error": str(e), "debug": capture}
     cost = time.time() - t0
     if not images:
-        raise ValueError("平台未返回图片")
+        return {"ok": False, "error": "平台未返回图片", "debug": capture}
     data = images[0]
 
     # 入库：临时文件 → archive_image（platform/model/negative/extra 与出图链路同构）
