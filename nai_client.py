@@ -353,7 +353,7 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         extra_headers = {}
 
     resp = await _request_with_retry(
-        "POST", f"{base}/v1/images/generations",
+        "POST", f"{base}/images/generations",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
         json_body=body, capture=capture,
     )

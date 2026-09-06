@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.9（紧急修复：openai 端点归一后拼接重复 /v1，全部地址 404）
+
+- v5.9.4 归一逻辑把 base 补成 /v1 结尾，但实际请求拼接仍用旧代码 base + /v1/images/generations → 双重 /v1（apihub.agnes-ai.com/v1/v1/...），所有填法 404。
+- 修复拼接为 base + /images/generations，并已用与插件同款逻辑的真实验证覆盖 10 种填法全部通过（裸域名/带 /v1/误填完整端点/带 /api 前缀）。
+
 ## v5.9.8（重要修复：热更新依赖重载列表缺失新增模块，导致「前端新版、生图链路旧版」）
 
 - main.py 热更新时只强制重载 webui_api/standalone_webui 两个模块；v5.8.0 新增的 platform_store/nai_client 不在列表中——从 v5.8.x 热更上来的实例，sys.modules 里一直是旧版生图链路代码（无地址归一等修复），表现为「版本号是新的、预设是全的，但请求行为像旧版」（如 /v1/v1 双重拼接）。
