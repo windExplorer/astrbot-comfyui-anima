@@ -3168,7 +3168,9 @@ class ComfyUIDrawPlugin(Star):
 
             # 发送（图文消息 caption 与 ComfyUI 链路同构）
             _cap_text = self._build_image_caption(caption, "") if caption else ""
-            if _cap_text:
+            _plat_tag = self._draw_platform_tag(event)
+            if _cap_text or _plat_tag:
+                _cap_text = (_cap_text + _plat_tag).strip()
                 _cap_result = event.chain_result(
                     [Plain(text=_cap_text), Image.fromFileSystem(_send_img_path)]
                 )
@@ -4229,6 +4231,8 @@ class ComfyUIDrawPlugin(Star):
                             if _rpt:
                                 _report_merged = True
                         _cap_text = self._build_image_caption(caption, _rpt)
+                        _plat_tag = self._draw_platform_tag(event)
+                        _cap_text = (_cap_text + _plat_tag).strip() if (_cap_text or _plat_tag) else ""
                     if not _nsfw_blocked:
                         if _cap_text:
                             _cap_result = event.chain_result(
@@ -6575,6 +6579,27 @@ class ComfyUIDrawPlugin(Star):
             lines.append(f"  {'★' if _can(p) else '⛔'} {p.get('name')}（{p.get('type')}）[{_en}]")
         lines.append("命令：/绘图平台 <名称> 切换本会话 · /绘图平台 重置 恢复默认 · /绘图平台 全局 <名称>（管理员）")
         return "\n".join(lines)
+
+    def _draw_platform_tag(self, event) -> str:
+        """当前会话生图平台的可读标签，用于在出图回执末尾标注。
+
+        默认 ComfyUI 返回空串（不打扰）；切换到第三方平台（NAI/OpenAI/自定义）
+        时返回形如「\\n🖼 平台：NAI（本会话）」的尾巴，让用户在每张出图里
+        都能直接看到本会话用的是哪个平台，无需再发 /绘图平台 查询。
+        """
+        try:
+            ps = self._platform_store()
+            sid = (getattr(event, "session_id", "") or "") if event is not None else ""
+            user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+            is_admin = self._is_admin(event) if event is not None else False
+            plat = ps.pick_platform(user_id=user_id, is_admin=is_admin, session_id=sid)
+            if plat is None:
+                return ""  # ComfyUI（默认），不标注
+            so = ps.get_session_platform(sid)
+            scope = "本会话" if so else "全局"
+            return f"\n🖼 平台：{plat.get('name')}（{scope}）"
+        except Exception:
+            return ""
 
     @filter.command("绘图平台", alias={"平台", "生图平台", "platform", "platforms", "切换平台"})
     async def cmd_platform(self, event: AstrMessageEvent):
