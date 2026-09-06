@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.13（接入「所长 NovelAI 法典」提示词词库：新增 nai_codex 检索工具）
+
+- 新增 LLM 工具 `nai_codex`：封装 `skills/nai-codex/search.py`，检索「所长 NovelAI 法典」全量 tag 词库（常规 5111 条 + 色色 9471 条），返回匹配的 NAI tag 串（含 artist: 画师串、权重记号 `[[]]` `{{}}` `::` 等），供 LLM 原样拼进 NAI 生图提示词。参数：`keyword`（必填）、`scope`（默认 sfw，可选 sfw/nsfw-a/nsfw-b/all）、`full`（是否返回完整 tag 串）、`limit`（条数上限）。
+- `comfyui_draw` 工具描述新增指引：走 NAI 且要「特定画风 / 画师串 / 角色 / 服装 / 体位 / 异种 / 捆绑」等精确效果时，先调 `nai_codex` 拿到现成 tag 串再拼 prompt，避免 LLM 凭记忆乱拼 NAI 标签；普通泛化画面可不查。`scope` 默认 sfw，仅用户明确要涩涩内容才传 `nsfw-a`/`nsfw-b`。
+- 随插件分发用户提供的 `skills/nai-codex/` 技能（SKILL.md + search.py + data/ 三册 TSV 词库），并为其 `search.py` 增加可被插件 import 调用的 `search()` / `format_results()`（CLI 行为不变）。
+- 技能 `skills/nai-params/SKILL.md` 新增「配合 nai-codex 法典拼 NAI tag」小节，说明用 `nai_codex` 工具注入精确画风/画师串；`skills/nai-codex/SKILL.md` 注明在插件内应直接调用 `nai_codex` 工具而非自跑 Python。
+
 ## v5.10.12（平台切换指令加「绘图」前缀 + LLM 可自主定 NAI 生图参数）
 
 ### 1. 生图平台切换指令加「绘图」前缀
@@ -13,7 +20,7 @@
 - `comfyui_draw` 工具新增 4 个可选参数：`cfg`（引导系数 / NAI 的 scale）、`steps`（步数）、`sampler`（采样器）、`noise_schedule`（噪声调度），仅对 nai / openai 类第三方平台生效，ComfyUI 忽略；不传=回落平台配置默认值。参数从 `comfyui_draw → _do_draw → _do_draw_nai_style → nai_client.generate → _gen_nai/_gen_openai` 全链路透传，真正覆盖平台固参参与生图。
 - NAI 出图归档时记录**实际生效**的 cfg/steps/sampler（覆盖优先、否则平台默认），大图详情的「CFG/步数/采样器」行能正确显示本次真实值。
 - 负向提示词保持自动套用「已启用的负向模板」（不传 negative_prompt 时由 `enabled_negative_text()` 合并），无需 LLM 手拼。
-- 新增技能 `skills/nai-codex/SKILL.md`：说明 NAI 各参数含义、取值区间、对画风/速度的影响，以及何时该传/不该传，引导 LLM 在走 NAI 平台时自主、合理地决定参数；`comfyui_draw` 工具描述已指向该技能。
+- 新增技能 `skills/nai-params/SKILL.md`：说明 NAI 各参数含义、取值区间、对画风/速度的影响，以及何时该传/不该传，引导 LLM 在走 NAI 平台时自主、合理地决定参数；`comfyui_draw` 工具描述已指向该技能。
 
 ## v5.10.11（图库大图详情显示 NAI 等平台参数）
 

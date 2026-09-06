@@ -9,6 +9,8 @@ import tempfile
 import traceback
 import uuid
 import asyncio
+import importlib
+import importlib.util
 from functools import wraps
 from pathlib import Path
 
@@ -305,6 +307,33 @@ DRAW_LLM_TOOLS = {"comfyui_draw", "comfyui_img2img", "comfyui_gallery", "comfyui
 # 可能为空串表示未知）。供 on_llm_response 判断：命中画图工具调用后，该会话随后的
 # LLM 调用（画图收尾总结）也一并计入；on_agent_done 时清除，避免污染后续普通对话的统计。
 g_draw_agent_sessions: dict[str, str] = {}
+
+
+# 懒加载「所长 NovelAI 法典」检索模块（skills/nai-codex/search.py）。
+# 用 importlib 按绝对路径加载，避免依赖 skills/ 成为 python 包；
+# DATA_DIR 在 search.py 内部按自身 __file__ 解析，加载后依然正确指向 data/。
+_nai_codex_search_mod = None
+
+
+def _load_nai_codex_search():
+    global _nai_codex_search_mod
+    if _nai_codex_search_mod is not None:
+        return _nai_codex_search_mod
+    p = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "skills", "nai-codex", "search.py",
+    )
+    if not os.path.exists(p):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_nai_codex_search", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:  # noqa: BLE001
+        logger.exception("加载 nai-codex 检索模块失败")
+        return None
+    _nai_codex_search_mod = mod
+    return mod
 
 
 def _safe_llm_tool(func):
@@ -7422,7 +7451,8 @@ class ComfyUIDrawPlugin(Star):
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
             platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。可传 comfyui / nai / openai / custom 或平台显示名来临时指定平台。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。部分平台受管理员设置的用户白名单限制，无权限的用户调用会自动回退 ComfyUI 出图（无需特殊处理）。
-            cfg(number): 引导系数（NAI 官方称 scale；仅对 nai / openai 类第三方平台生效，ComfyUI 忽略）。可选：让画面更贴合提示词（值越大越严格、过高易过饱和/毁图）；不传或 0=用该平台配置的默认引导系数。LLM 想微调 NAI 出图风格时可自主决定（常见 4~12，NAI 默认约 6）。各参数含义/取值/对画风的影响见可用技能「nai-codex」（若你有技能读取能力，决定 NAI 参数前先读它）。
+            ★走 NAI 且要「特定画风 / 画师串 / 角色 / 服装 / 体位 / 异种 / 捆绑」等精确效果时：先调 nai_codex 工具检索「所长 NovelAI 法典」拿到现成 tag 串（含 artist: 画师串与权重记号），再原样拼进本工具的 prompt，不要自己凭记忆拼 NAI 标签（容易缺画师串/权重、画错味）。普通泛化画面（没指定风格）可直接写英文标签，不必查。nai_codex 的 scope 默认 sfw（常规册），仅在用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
+            cfg(number): 引导系数（NAI 官方称 scale；仅对 nai / openai 类第三方平台生效，ComfyUI 忽略）。可选：让画面更贴合提示词（值越大越严格、过高易过饱和/毁图）；不传或 0=用该平台配置的默认引导系数。LLM 想微调 NAI 出图风格时可自主决定（常见 4~12，NAI 默认约 6）。各参数含义/取值/对画风的影响见可用技能「nai-params」（若你有技能读取能力，决定 NAI 参数前先读它）。
             steps(number): 采样步数（仅 nai / openai 类平台生效）。可选：步数越多细节越足、越慢；不传或 0=用平台默认（NAI 默认约 28）。
             sampler(string): 采样器名称（仅 nai / openai 类平台生效，如 k_dpmpp_2m_sde / k_euler_a 等）。可选：不同采样器风格差异明显；不传=用平台默认。不确定具体取值时不要传，避免传错导致报错。
             noise_schedule(string): 噪声调度（仅 nai 类平台生效，如 karras / native / exponential / polyexponential）。可选；不传=用平台默认。
@@ -9625,6 +9655,79 @@ class ComfyUIDrawPlugin(Star):
         lines.append(f"- 真人图生图: {default_i2i_real or '（未设置，回退动漫图生图）'}")
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
+    # LLM 工具：nai_codex（检索「所长 NovelAI 法典」）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="nai_codex")
+    @_safe_llm_tool
+    async def llm_nai_codex(
+        self,
+        event: AstrMessageEvent,
+        keyword: str = "",
+        scope: str = "sfw",
+        full: bool = False,
+        limit: int = 20,
+    ):
+        """检索「所长 NovelAI 法典」，返回匹配的 NAI tag 串，用于拼进 NAI 生图提示词。
+
+        法典是所长整理的全量 NAI tag 词库（常规 5111 条 + 色色 9471 条），覆盖画风 / 画师串 /
+        角色 / 服装 / 体位 / 异种 / 捆绑 / 重口等，每条都是可直接拼进 NovelAI 提示词的完整
+        tag 串（含 artist: 画师串、权重记号 [[]] {{}} :: 等）。底层由插件 skills/nai-codex/
+        search.py 提供检索能力（词库见该技能 SKILL.md）。
+
+        什么时候用本工具（重要）：
+        - 用户要画 NAI 图（comfyui_draw 传 platform=nai，或本会话已切 NAI），且想要
+          【特定画风 / 画师串 / 角色 / 服装 / 体位 / 异种 / 捆绑】等「需要精确 tag」的效果时，
+          ★先调本工具检索出正确的 tag 串，再把命中条目的 tags 原样（保留权重记号）拼进
+          comfyui_draw 的 prompt。不要自己凭记忆拼 NAI 标签——缺画师串/权重会画错或不出味。
+        - 例：「西幻风格」「wlop 画风」「某种捆绑」「某角色名」→ 调本工具拿现成 tag 串再拼。
+        - 普通泛化画面（「画个猫娘」「来张风景」）且用户没指定风格时，可直接写英文 Danbooru
+          标签，不必调本工具。
+
+        怎么用返回结果：拿到「[章节] 条目名 + tag 串」后，把 tag 串原样填入 comfyui_draw 的
+        prompt（与你的画面描述用逗号衔接）；条目内的编者注释（如「需去除其他画师串」「请勿与
+        画师同用」）按原样遵循。多条命中时选最贴合的一条或几条合并。法典无此条目时如实告知用户，
+        不要凭空编造 tag。
+
+        Args:
+            keyword(string): 【必填】检索关键词（中文 / 英文 / 角色原名均可），如「西幻」「wlop」
+                「捆绑」「1girl」。多个词空格分隔 = 全部包含（AND 匹配）。
+            scope(string): 检索范围，默认 sfw（常规册）。可选 sfw / nsfw-a / nsfw-b / all。
+                ★色色册（nsfw-a / nsfw-b）含大量 R18 tag，仅在用户明确要涩涩内容时才传对应范围，
+                普通生图不要传 all / nsfw-*。
+            full(boolean): 是否返回完整 tag 串（默认 false 截断到 300 字，加 true 看完整）。
+                条目 tag 串很长时先 false 预览，确认要用了再 full=true 拿完整串拼提示词。
+            limit(number): 返回条数上限，默认 20。
+        """
+        # LLM 工具开关：与画图类工具一致；关闭时拒绝自动调用。
+        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
+        if plugin is None:
+            plugin = self
+        if not plugin._cfg("enable_llm_tools", True):
+            return "LLM 工具已关闭，无法检索 nai-codex（可在插件配置中开启 enable_llm_tools）。"
+
+        if not keyword or not keyword.strip():
+            return "⚠️ 请传入 keyword 参数（要检索的画风 / 角色 / 服装等关键词）。"
+
+        scope = (scope or "sfw").strip().lower()
+        if scope not in ("sfw", "nsfw-a", "nsfw-b", "all"):
+            scope = "sfw"
+        try:
+            limit = int(limit) if limit else 20
+        except (TypeError, ValueError):
+            limit = 20
+
+        mod = _load_nai_codex_search()
+        if mod is None:
+            return "⚠️ nai-codex 技能模块未找到（插件缺少 skills/nai-codex/search.py）。"
+        try:
+            results = mod.search(keyword, scope=scope, full=bool(full), limit=limit)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("nai_codex 检索失败")
+            return f"⚠️ nai-codex 检索出错：{e}"
+
+        return mod.format_results(results, keyword, full=bool(full))
 
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）
     # ------------------------------------------------------------------ #
