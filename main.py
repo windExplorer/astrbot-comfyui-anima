@@ -2948,6 +2948,44 @@ class ComfyUIDrawPlugin(Star):
             self._platform_store_inst = store
         return store
 
+    # ---- NSFW 检测（出图链路公共助手）----
+    # 出图链路此前每张图跑两遍 onnx 推理：归档内部同步跑一遍（直接阻塞事件循环，
+    # 会卡住整个 bot），发送前群聊再跑一遍。现在只跑一次（to_thread），结果同时
+    # 供归档打标（archive_image 的 nsfw_pre 参数）与群聊拦截复用。
+
+    def _nsfw_should_detect(self, event) -> bool:
+        """是否需要对本图做 NSFW 检测：群聊一律检测（发送拦截），私聊仅在图库
+        NSFW 打标开启时检测（供归档打标）。"""
+        if not self._is_private_event(event):
+            return True
+        try:
+            g = getattr(self, "gallery", None)
+            return bool(g is not None and g._nsfw_enabled())
+        except Exception:
+            return False
+
+    async def _detect_nsfw(self, image_path: str):
+        """跑一次 NSFW 检测（线程池，不阻塞事件循环）。
+
+        返回 (is_nsfw, score, available)；异常时按群聊最严拦截口径返回
+        (True, None, False)——归档侧会因 available=False 保持未打标。"""
+        try:
+            from .nsfw_detector import get_detector
+        except ImportError:
+            from nsfw_detector import get_detector
+        _nsfw_thr = 0.5
+        try:
+            if getattr(self, "gallery", None) is not None:
+                _nsfw_thr = self.gallery._nsfw_threshold()
+        except Exception:
+            pass
+        _det = get_detector(_nsfw_thr)
+        try:
+            return await asyncio.to_thread(_det.detect, image_path)
+        except Exception as _e:
+            logger.warning(f"【NSFW】 出图检测异常: {_e}")
+            return True, None, False
+
     async def _do_draw_nai_style(
         self,
         event: AstrMessageEvent,
@@ -3061,6 +3099,11 @@ class ComfyUIDrawPlugin(Star):
             img_path = str(tmp_path)
             _send_img_path = img_path
 
+            # NSFW 检测：只跑一次（线程池），结果同时供归档打标与群聊拦截复用。
+            _nsfw_pre = None
+            if self._nsfw_should_detect(event):
+                _nsfw_pre = await self._detect_nsfw(img_path)
+
             # 图库归档（platform/model/negative/extra，与 ComfyUI 链路同构）
             if self.gallery is not None:
                 try:
@@ -3132,6 +3175,11 @@ class ComfyUIDrawPlugin(Star):
                         on_dedup=lambda _sha, _uc: self._oplog_dedup(
                             _sha, _uc, user_id, user_name, event
                         ),
+                        nsfw_pre=(
+                            _nsfw_pre
+                            if (_nsfw_pre is not None and self.gallery._nsfw_enabled())
+                            else None
+                        ),
                     )
                     if _final:
                         img_path = _final
@@ -3139,32 +3187,14 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _ge:
                     logger.warning(f"【图库】 平台图归档失败（不影响发送）: {_ge}")
 
-            # 群聊 NSFW 检测（与 ComfyUI 链路同构；拦截则不发也不入库记录）
-            if not self._is_private_event(event):
-                _nsfw_thr = 0.5
-                try:
-                    if getattr(self, "gallery", None) is not None:
-                        _nsfw_thr = self.gallery._nsfw_threshold()
-                except Exception:
-                    pass
-                try:
-                    from .nsfw_detector import get_detector
-                except ImportError:
-                    from nsfw_detector import get_detector
-                _det = get_detector(_nsfw_thr)
-                try:
-                    _is_nsfw, _nsfw_score, _nsfw_avail = (
-                        await asyncio.to_thread(_det.detect, _send_img_path)
-                    )
-                except Exception as _e:
-                    logger.warning(f"【NSFW】 平台出图群聊检测异常: {_e}")
-                    _is_nsfw, _nsfw_avail = True, False
-                if _is_nsfw:
-                    _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
-                    _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_avail else ""
-                    logger.warning(f"【NSFW】 平台出图被拦截{_sc}{_reason} platform={ptype} path={_send_img_path}")
-                    await self._send(event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}")
-                    continue
+            # 群聊 NSFW 拦截（检测结果已在发送前跑过一次，这里直接复用判定）
+            if not self._is_private_event(event) and _nsfw_pre and _nsfw_pre[0]:
+                _nsfw_score = _nsfw_pre[1]
+                _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
+                _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_pre[2] else ""
+                logger.warning(f"【NSFW】 平台出图被拦截{_sc}{_reason} platform={ptype} path={_send_img_path}")
+                await self._send(event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}")
+                continue
 
             # 发送（图文消息 caption 与 ComfyUI 链路同构）
             _cap_text = self._build_image_caption(caption, "") if caption else ""
@@ -4053,6 +4083,11 @@ class ComfyUIDrawPlugin(Star):
                         f.write(data)
                     img_path = str(tmp_path)
 
+                    # NSFW 检测：只跑一次（线程池），结果同时供归档打标与群聊拦截复用。
+                    _nsfw_pre = None
+                    if self._nsfw_should_detect(event):
+                        _nsfw_pre = await self._detect_nsfw(img_path)
+
                     # 图库归档：把成品图按内容寻址永久移入 gallery/（移动转正，不重复占空间）
                     if self.gallery is not None:
                         try:
@@ -4123,6 +4158,11 @@ class ComfyUIDrawPlugin(Star):
                                 on_dedup=lambda _sha, _uc: self._oplog_dedup(
                                     _sha, _uc, user_id, user_name, event
                                 ),
+                                nsfw_pre=(
+                                    _nsfw_pre
+                                    if (_nsfw_pre is not None and self.gallery._nsfw_enabled())
+                                    else None
+                                ),
                             )
                             # T6 自动打标：表情包/漫画出图成功后按功能打分类标签（复用图库 tags 机制，不动表结构）
                             if comic_feature:
@@ -4178,32 +4218,16 @@ class ComfyUIDrawPlugin(Star):
                     # 统一初始化发送者 uid，确保 NSFW 拦截分支（不进入成功日志分支）也能用。
                     _uid = getattr(event, "get_sender_id", lambda: "")() or "anon"
                     # NSFW 检测结果摘要（供出图成功日志展示，私聊/未检测时为「未检测」）。
+                    # 检测已在归档前跑过一次（_nsfw_pre），这里只做日志与群聊拦截判定。
                     _nsfw_log = "（未检测）"
-                    if not self._is_private_event(event):
-                        try:
-                            from .nsfw_detector import get_detector
-                        except ImportError:
-                            from nsfw_detector import get_detector
-                        _nsfw_thr = 0.5
-                        try:
-                            if getattr(self, "gallery", None) is not None:
-                                _nsfw_thr = self.gallery._nsfw_threshold()
-                        except Exception:
-                            pass
-                        _det = get_detector(_nsfw_thr)
-                        try:
-                            _is_nsfw, _nsfw_score, _nsfw_avail = (
-                                await asyncio.to_thread(_det.detect, _send_img_path)
-                            )
-                        except Exception as _e:
-                            logger.warning(f"【NSFW】 出图群聊检测异常: {_e}")
-                            _is_nsfw, _nsfw_score, _nsfw_avail = True, 1.0, False
+                    if _nsfw_pre is not None:
+                        _is_nsfw, _nsfw_score, _nsfw_avail = _nsfw_pre
                         # 无论放行/拦截都把置信度记下来，便于出图日志核对
                         if isinstance(_nsfw_score, (int, float)):
                             _nsfw_log = f"{_nsfw_score:.2f}" + ("(检测不可用)" if not _nsfw_avail else "")
                         else:
                             _nsfw_log = "(检测不可用)" if not _nsfw_avail else "(无分数)"
-                        if _is_nsfw:
+                        if not self._is_private_event(event) and _is_nsfw:
                             _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
                             _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_avail else ""
                             logger.warning(

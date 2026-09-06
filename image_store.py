@@ -589,6 +589,7 @@ class ImageStore:
         trigger_msg: str = "",
         status: int = 0,
         on_dedup=None,
+        nsfw_pre=None,
     ) -> str | None:
         """归档一张图（移动转正，内容寻址去重）。
 
@@ -598,6 +599,8 @@ class ImageStore:
         不要再使用已被移动的旧 src_path。
 
         on_dedup: 可选回调，去重命中（未新增行，仅计数+1）时调用 on_dedup(sha, use_count)。
+        nsfw_pre: 可选 (is_nsfw, score, available) 元组——调用方（出图链路）发送前
+        已做过一次检测的结果，直接复用打标，避免同一张图重复跑 onnx 推理。
         """
         if not self.enabled():
             return None
@@ -711,21 +714,32 @@ class ImageStore:
                 logger.error(f"[图库] 落盘失败: {e}", exc_info=True)
                 return None
 
-        # NSFW 检测：归档时自动打标（模型不可用/失败则标记 nsfw_checked=0，不阻塞归档）
+        # NSFW 检测：归档时自动打标（模型不可用/失败则标记 nsfw_checked=0，不阻塞归档）。
+        # 调用方传了 nsfw_pre（出图链路发送前已检）则直接复用，不重复推理。
         _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
-        try:
-            if self._nsfw_enabled():
-                _det = _get_detector(self._nsfw_threshold())
-                if _det is None:
-                    raise RuntimeError("NSFW 检测器不可用")
-                _is_nsfw, _score, _avail = _det.detect(str(dest))
-                if _avail:
-                    _nsfw = 1 if _is_nsfw else 0
-                    _nsfw_score = _score
+        if nsfw_pre is not None:
+            try:
+                _p_is, _p_score, _p_avail = nsfw_pre
+                if _p_avail:
+                    _nsfw = 1 if _p_is else 0
+                    _nsfw_score = _p_score if isinstance(_p_score, (int, float)) else None
                     _nsfw_checked = 1
-        except Exception as _ne:
-            logger.warning(f"[图库] NSFW 检测异常（忽略，不阻塞归档）: {_ne}")
-            _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
+            except Exception:
+                pass
+        else:
+            try:
+                if self._nsfw_enabled():
+                    _det = _get_detector(self._nsfw_threshold())
+                    if _det is None:
+                        raise RuntimeError("NSFW 检测器不可用")
+                    _is_nsfw, _score, _avail = _det.detect(str(dest))
+                    if _avail:
+                        _nsfw = 1 if _is_nsfw else 0
+                        _nsfw_score = _score
+                        _nsfw_checked = 1
+            except Exception as _ne:
+                logger.warning(f"[图库] NSFW 检测异常（忽略，不阻塞归档）: {_ne}")
+                _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
 
         try:
             conn.execute(

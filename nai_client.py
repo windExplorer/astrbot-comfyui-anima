@@ -41,6 +41,25 @@ _RETRY_STATUS = (408, 429, 502, 503, 504)
 
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=120, connect=60)
 
+# 进程级共享会话：复用连接池（TCP/TLS keep-alive），避免每次请求都重新握手。
+# 此前每个请求（含每次重试）都新建 ClientSession，无连接复用——高延迟网络下
+# 每张图要多花 1~3 秒在 TCP+TLS 握手上。trust_env=True 使 HTTP(S)_PROXY/
+# NO_PROXY 等系统代理环境变量生效（aiohttp 默认忽略，走代理环境的部署会直连
+# 超时→退避重试，表现为「莫名慢」）。
+_SHARED_SESSION: "aiohttp.ClientSession | None" = None
+
+
+def _shared_session() -> aiohttp.ClientSession:
+    global _SHARED_SESSION
+    s = _SHARED_SESSION
+    if s is not None and not s.closed:
+        return s
+    _SHARED_SESSION = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(limit=8, ttl_dns_cache=300, enable_cleanup_closed=True),
+        trust_env=True,
+    )
+    return _SHARED_SESSION
+
 
 class PlatformError(RuntimeError):
     """平台生图失败（文案可直接给用户/LLM）。"""
@@ -153,11 +172,12 @@ async def _request_with_retry(method: str, url: str, *, headers: dict = None,
                     _target = _YarlURL(str(_target), encoded=True)
                 except Exception:
                     _target = url
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.request(
-                    method, _target, headers=headers or {}, params=params,
-                    json=json_body, data=data,
-                ) as resp:
+            # 共享会话（连接复用）；超时按次请求传入，互不影响
+            session = _shared_session()
+            async with session.request(
+                method, _target, headers=headers or {}, params=params,
+                json=json_body, data=data, timeout=timeout,
+            ) as resp:
                     # ★必须在会话关闭前把响应体读出来：此前在 async with 内 return resp、
                     # 调用方在会话关闭后才 read()，大响应体（图片）会 "Connection closed"。
                     try:

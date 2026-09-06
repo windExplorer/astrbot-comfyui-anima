@@ -267,11 +267,20 @@ class PlatformStore:
     # ---- 会话级平台覆盖（按 session_id 记忆「本会话用哪个平台」）----
 
     def _load_session_override(self) -> dict:
+        # mtime 缓存：出图链路每次都会查会话覆盖，避免频繁同步读盘。
+        # 保存走 tmp.replace（mtime 必变），缓存自动失效，无一致性问题。
         try:
-            if self._session_path.exists():
-                data = json.loads(self._session_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
+            if not self._session_path.exists():
+                self._session_cache, self._session_mtime = {}, None
+                return {}
+            mtime = self._session_path.stat().st_mtime_ns
+            if getattr(self, "_session_cache", None) is not None and getattr(self, "_session_mtime", None) == mtime:
+                return self._session_cache
+            data = json.loads(self._session_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                self._session_cache = data
+                self._session_mtime = mtime
+                return data
         except Exception as e:
             logger.warning(f"[平台] 读取会话覆盖失败（用空）: {e}")
         return {}
