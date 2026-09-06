@@ -57,6 +57,8 @@ $includeList = @(
     "story_store.py",
     "quota_store.py",
     "oplog_store.py",
+    "platform_store.py",
+    "nai_client.py",
     "standalone_webui.py",
     "token_store.py",
     "nsfw_detector.py",

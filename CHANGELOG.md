@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.8.3（紧急修复：打包清单缺失 platform_store.py / nai_client.py）
+
+- build_zip.ps1 为显式文件清单模式，v5.8.0 新增的两个平台模块未同步加入清单——导致已发布的 v5.8.0~v5.8.2 包内缺失 platform_store.py 与 nai_client.py，生图平台接口/分流在用户侧全部不可用。
+- 已将两个模块加入打包清单并重新打包；新增顶层模块今后必须同步更新该清单。
+
 ## v5.8.2（紧急修复：独立 WebUI 全部接口报错 / 剧情档案不可用）
 
 - v5.8.1 引入严重回归：给 StandaloneWebUI.__init__ 添加平台存储字段时，把 _platform_store 方法错误插入到 __init__ 中间，导致 self._api（WebUIApi 实例）与 self._request_lock 等关键初始化变成死代码——独立 WebUI 所有 API 报 "'StandaloneWebUI' object has no attribute '_request_lock'"，剧情档案等页面全部不可用。
