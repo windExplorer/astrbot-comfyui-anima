@@ -228,8 +228,42 @@
     </n-modal>
 
     <!-- 请求详情弹窗 -->
-    <n-modal v-model:show="showDebugModal" preset="card" title="请求详情（完整流程与响应，Authorization 已脱敏）" style="width: 780px">
-      <pre class="debug-pre">{{ lastDebug ? formatDebug(lastDebug) : "" }}</pre>
+    <n-modal v-model:show="showDebugModal" preset="card" title="请求详情（完整流程与响应，Authorization 已脱敏）" style="width: 880px">
+      <n-space vertical :size="14">
+        <n-alert v-if="lastDebug && !lastDebug.attempts?.length" type="error">
+          {{ lastDebug.error || "无请求记录（可能在发起请求前就失败，如配置校验未通过）" }}
+        </n-alert>
+        <div v-for="(att, i) in lastDebug?.attempts || []" :key="i" class="dbg-card">
+          <div class="dbg-head">
+            <n-tag size="small" :type="statusTagType(att)">{{ att.method }} {{ att.status || (att.error ? "失败" : "—") }}</n-tag>
+            <span class="dbg-attempt">第 {{ att.attempt }} 次尝试</span>
+            <span class="spacer" />
+            <n-button size="tiny" @click="copyText(att.url)">复制 URL</n-button>
+          </div>
+          <div class="dbg-url">{{ att.url }}</div>
+          <div v-if="att.error" class="dbg-section">
+            <div class="dbg-label">错误</div>
+            <div class="dbg-err">{{ att.error }}</div>
+          </div>
+          <div class="dbg-section">
+            <div class="dbg-label">请求头（Authorization 已脱敏）</div>
+            <div v-for="(v, k) in att.headers" :key="k" class="kv-line"><b>{{ k }}</b>: {{ v }}</div>
+          </div>
+          <div v-if="att.query_params" class="dbg-section">
+            <div class="dbg-label">Query 参数</div>
+            <pre class="dbg-pre">{{ formatDebug(att.query_params) }}</pre>
+          </div>
+          <div v-if="att.body" class="dbg-section">
+            <div class="dbg-label">请求体</div>
+            <pre class="dbg-pre">{{ prettyBody(att.body) }}</pre>
+          </div>
+          <div v-if="att.status" class="dbg-section">
+            <div class="dbg-label">响应（HTTP {{ att.status }}）</div>
+            <pre class="dbg-pre" :class="{ err: att.status >= 400 }">{{ prettyBody(att.response) }}</pre>
+          </div>
+        </div>
+        <div v-if="!lastDebug?.attempts?.length && lastDebug?.error" class="dbg-err">{{ lastDebug.error }}</div>
+      </n-space>
     </n-modal>
 
     <!-- 预设编辑弹窗 -->
@@ -611,6 +645,36 @@ function formatDebug(d: any): string {
   }
 }
 
+function statusTagType(att: any): any {
+  const s = Number(att?.status || 0);
+  if (!s) return "error";
+  if (s < 400) return "success";
+  if (s < 500) return "warning";
+  return "error";
+}
+
+function prettyBody(v: any): string {
+  if (v == null) return "";
+  if (typeof v === "object") {
+    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+  }
+  const s = String(v);
+  const t = s.trim();
+  if (t.startsWith("{") || t.startsWith("[")) {
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
+  }
+  return s;
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success("已复制");
+  } catch {
+    message.error("复制失败，请手动选择复制");
+  }
+}
+
 async function runTest() {
   if (testing.value) return;
   testResult.value = null;
@@ -765,16 +829,61 @@ onMounted(load);
   opacity: 0.85;
 }
 .debug-pre {
-  margin-top: 6px;
-  max-width: 520px;
-  max-height: 260px;
-  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
   background: rgba(0, 0, 0, 0.35);
-  border-radius: 6px;
-  padding: 8px;
-  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
+  max-height: 260px;
+  overflow: auto;
+}
+.debug-pre.err { color: #ff9c9c; }
+.dbg-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.dbg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.dbg-attempt {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.dbg-url {
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  word-break: break-all;
+  opacity: 0.9;
+  margin-bottom: 8px;
+}
+.dbg-section { margin-top: 10px; }
+.dbg-label {
+  font-size: 11px;
+  opacity: 0.55;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dbg-err {
+  color: #ff9c9c;
+  font-size: 12px;
+  word-break: break-all;
+}
+.kv-line {
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  word-break: break-all;
+  line-height: 1.7;
 }
 .kv-row {
   display: flex;
