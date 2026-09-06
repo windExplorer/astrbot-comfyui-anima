@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.34（「用XX」平台/工作流消歧 + Agnes 负面词兼容）
+
+- **「用XX」消歧规则**：`comfyui_draw` 工具说明新增明确规则——用户说「用XX平台」时只按平台处理（先调 `comfyui_platforms`，命中填 platform，绝不当工作流）；只说「用XX」时先查平台列表，命中走平台，没命中再按工作流/LoRA 找；都不命中走默认并告知。此前 LLM 倾向把「用XX」解析成工作流。
+- **Agnes 类严格端点负面词兼容**：部分 OpenAI 兼容端点（如 Agnes）不接受顶层 `negative_prompt` 字段，直接 400 `negative_prompt is not supported by text image queue`。现探测到该类报错时自动去除负面词字段重试一次（负面词丢弃，提示词不受影响），无需改配置。
+
 ## v5.10.33（平台显示名模糊匹配 + 平台列表查询工具）
 
 修复「自然语言点名平台老是找不到」的三个根因：

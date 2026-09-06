@@ -666,12 +666,35 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         logger.warning(f"[平台] 额外参数/自定义头渲染失败（忽略）: {_ep}")
         extra_headers = {}
 
-    _st, _hd, raw = await _request_with_retry(
-        "POST", f"{base}/images/generations",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
-        json_body=body, capture=capture,
-        timeout=timeout or _DEFAULT_TIMEOUT,
-    )
+    try:
+        _st, _hd, raw = await _request_with_retry(
+            "POST", f"{base}/images/generations",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
+            json_body=body, capture=capture,
+            timeout=timeout or _DEFAULT_TIMEOUT,
+        )
+    except PlatformError as _ne:
+        # 部分严格端点（如 Agnes）不接受顶层 negative_prompt，直接 400：
+        # "negative_prompt is not supported by text image queue"。
+        # 探测到该类报错时自动去掉负面词字段重试一次（负面词丢弃；确需负面词的
+        # 端点本就支持该字段，不会走到这里）。
+        _msg = str(_ne)
+        if "negative_prompt" in _msg and "not supported" in _msg.lower():
+            logger.warning("[平台] 端点不接受 negative_prompt，自动去除负面词后重试一次")
+            body.pop("negative_prompt", None)
+            _params = body.get("parameters")
+            if isinstance(_params, dict):
+                _params.pop("negative_prompt", None)
+                if not _params:
+                    body.pop("parameters", None)
+            _st, _hd, raw = await _request_with_retry(
+                "POST", f"{base}/images/generations",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
+                json_body=body, capture=capture,
+                timeout=timeout or _DEFAULT_TIMEOUT,
+            )
+        else:
+            raise
     try:
         data = json.loads(raw.decode("utf-8", "ignore"))
     except Exception as e:

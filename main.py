@@ -7460,7 +7460,7 @@ class ComfyUIDrawPlugin(Star):
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
                 不要留空，也不要用自然语言包裹，直接给出画面描述文本。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。
+            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。★与平台的区分：用户说「用XX平台」时，XX 一律按平台处理（先调 comfyui_platforms，填 platform 参数），绝不要填进 workflow；只有「用XX」未命中任何平台、或用户明确说工作流/画风时才查这里。
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
@@ -7483,7 +7483,13 @@ class ComfyUIDrawPlugin(Star):
                 ①你刚通过 comfyui_loras 看到了该 LoRA 的触发词原文；
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
-            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。★用户提到「用某个平台/用 NAI/用某中转站」出图时：先调 comfyui_platforms 查询平台列表拿到确切名称/id，再填进本参数（不要凭记忆猜名称）；显示名匹配支持模糊（名称包含即命中、忽略大小写），也可传 comfyui / nai / openai / custom 类型名。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。平台不存在/已停用/用户不在白名单时会回退 ComfyUI 并提示用户。
+            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。
+                ★「用XX」的消歧规则（重要，平台与工作流平级）：
+                ① 用户说「用XX平台」→ XX 只按【平台】处理：先调 comfyui_platforms 查列表，命中就填本参数，绝不要当工作流/LoRA/画风；
+                ② 用户只说「用XX」（没带「平台」字样）→ 先调 comfyui_platforms 看有没有名称匹配的平台：有 → 填 platform；没有 → 再按工作流（comfyui_workflows）/LoRA（comfyui_loras）的顺序去找；
+                ③ 都不命中 → 全部留空走默认，并在回复里简短说明没找到「XX」。
+                显示名匹配支持模糊（名称包含即命中、忽略大小写），也可传 comfyui / nai / openai / custom 类型名。
+                ★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。平台不存在/已停用/用户不在白名单时会回退 ComfyUI 并提示用户。
             ★走 NAI 且要「特定画风 / 画师串 / 角色 / 服装 / 体位 / 异种 / 捆绑」等精确效果时：先调 nai_codex 工具检索「所长 NovelAI 法典」拿到现成 tag 串（含 artist: 画师串与权重记号），再原样拼进本工具的 prompt，不要自己凭记忆拼 NAI 标签（容易缺画师串/权重、画错味）。普通泛化画面（没指定风格）可直接写英文标签，不必查。nai_codex 的 scope 默认 sfw（常规册），仅在用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
             cfg(number): 引导系数（NAI 官方称 scale；仅对 nai / openai 类第三方平台生效，ComfyUI 忽略）。可选：让画面更贴合提示词（值越大越严格、过高易过饱和/毁图）；不传或 0=用该平台配置的默认引导系数。LLM 想微调 NAI 出图风格时可自主决定（常见 4~12，NAI 默认约 6）。各参数含义/取值/对画风的影响见可用技能「nai-params」（若你有技能读取能力，决定 NAI 参数前先读它）。
             steps(number): 采样步数（仅 nai / openai 类平台生效）。可选：步数越多细节越足、越慢；不传或 0=用平台默认（NAI 默认约 28）。
