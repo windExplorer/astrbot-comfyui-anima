@@ -184,6 +184,28 @@
           </n-form-item>
         </template>
       </n-form>
+      <!-- 连通性测试：用表单当前值真实生图一张并入库，不必先保存 -->
+      <n-divider style="margin: 8px 0" />
+      <div class="test-area">
+        <n-space align="center" :size="8">
+          <b>连通性测试</b>
+          <span class="hint">用上方当前填写配置真实生图一张（会实际消耗平台额度），成功后自动入库并打「平台测试」标签。</span>
+        </n-space>
+        <n-space align="center" :size="8" style="margin-top: 8px">
+          <n-input v-model:value="testPrompt" size="small" style="flex: 1" placeholder="测试提示词（建议英文标签）" />
+          <n-button size="small" type="info" :loading="testing" @click="runTest">测试生图</n-button>
+        </n-space>
+        <div v-if="testError" class="test-error">{{ testError }}</div>
+        <div v-if="testResult" class="test-result">
+          <img :src="testResult.data_url" class="test-img" alt="测试图" />
+          <div class="test-meta">
+            <div>✅ 生成成功，耗时 {{ testResult.cost_sec }}s</div>
+            <div>尺寸 {{ testResult.w }} × {{ testResult.h }} · Seed {{ testResult.seed }}</div>
+            <div v-if="testResult.archived">已入库（SHA {{ String(testResult.sha).slice(0, 16) }}，标签「平台测试」，可在图库查看）</div>
+            <div v-else class="hint">图库未启用，图片未入库</div>
+          </div>
+        </div>
+      </div>
       <template #footer>
         <n-space justify="end">
           <n-button @click="showEdit = false">取消</n-button>
@@ -396,13 +418,13 @@ function onTypeChange(t: string) {
   Object.assign(editing, emptyPlatform(t), common);
 }
 
-function applyEdit() {
-  if (!editing.name.trim()) { message.error("请填写显示名"); return; }
+function buildPlatformFromEditing(): any {
+  // 表单 → 平台条目（保存与测试共用）；校验失败抛错
+  if (!editing.name.trim()) throw new Error("请填写显示名");
   if (editing.type !== "custom" && !String(editing.base_url || "").trim()) {
-    message.error("请填写接口地址");
-    return;
+    throw new Error("请填写接口地址");
   }
-  if (!String(editing.api_key || "").trim()) { message.error("请填写 API Key / Token"); return; }
+  if (!String(editing.api_key || "").trim()) throw new Error("请填写 API Key / Token");
   const item = JSON.parse(JSON.stringify(editing));
   if (!item.id) item.id = `p_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   item.allowed_users = String(item.allowed_users_text || "")
@@ -418,13 +440,20 @@ function applyEdit() {
   // 额外参数：剔除空 key 行
   item.extra_params = (item.extra_params || []).filter((e: any) => String(e.key || "").trim());
   if (item.type === "custom") {
-    // 条目式为主；若用户保留了旧 JSON 模板则优先级更高（高级兼容）
-    if (String(item.body_template || "").trim() && !(item.extra_params || []).length) {
-      // 只有模板没有条目：允许纯模板用法
-    } else if (!(item.extra_params || []).length) {
-      message.error("请至少添加一条请求体参数（或改用高级 JSON 模板）");
-      return;
+    if (!String(item.body_template || "").trim() && !(item.extra_params || []).length) {
+      throw new Error("请至少添加一条请求体参数（或改用高级 JSON 模板）");
     }
+  }
+  return item;
+}
+
+function applyEdit() {
+  let item: any;
+  try {
+    item = buildPlatformFromEditing();
+  } catch (e) {
+    message.error((e as Error).message);
+    return;
   }
   const idx = cfg.platforms.findIndex((p: any) => p.id === item.id);
   if (idx >= 0) cfg.platforms[idx] = item;
@@ -432,6 +461,35 @@ function applyEdit() {
   showEdit.value = false;
   markDirty();
   message.success("已加入列表，记得点「保存」提交");
+}
+
+// ---- 连通性测试 ----
+const testing = ref(false);
+const testPrompt = ref("1girl, solo, simple background, upper body, looking at viewer, masterpiece");
+const testResult = ref<any>(null);
+const testError = ref("");
+
+async function runTest() {
+  if (testing.value) return;
+  testResult.value = null;
+  testError.value = "";
+  let item: any;
+  try {
+    item = buildPlatformFromEditing();
+  } catch (e) {
+    testError.value = (e as Error).message;
+    return;
+  }
+  testing.value = true;
+  try {
+    const d = await apiPost("platforms/test", { platform: item, prompt: testPrompt.value });
+    testResult.value = d;
+    message.success("测试成功，图片已生成");
+  } catch (e) {
+    testError.value = `测试失败：${(e as Error)?.message || e}`;
+  } finally {
+    testing.value = false;
+  }
 }
 
 function removePlatform(p: any) {
@@ -525,6 +583,34 @@ onMounted(load);
 }
 .kv-editor {
   width: 100%;
+}
+.test-area {
+  border-top: 1px dashed rgba(255, 255, 255, 0.12);
+  padding-top: 10px;
+}
+.test-error {
+  margin-top: 8px;
+  color: #ff8080;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.test-result {
+  margin-top: 10px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.test-img {
+  width: 220px;
+  max-width: 45%;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.test-meta {
+  font-size: 12px;
+  line-height: 1.9;
+  opacity: 0.85;
 }
 .kv-row {
   display: flex;

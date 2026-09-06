@@ -58,6 +58,117 @@ LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
 BASE_MODEL_WHITELIST = ("anima", "z-image-turbo", "krea2", "illustrious")
 
 
+async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
+    """生图平台连通性测试：用传入配置真实生图一张并归档入库（打「平台测试」标签）。
+
+    WebUI 与独立 WebUI 共用；plat 为平台条目 dict（可用表单未保存值直接测试）。
+    返回 {ok, data_url, sha, cost_sec, w, h, seed, platform, model, archived}。
+    """
+    import asyncio as _aio
+    import base64 as _b64
+    import random as _random
+    import uuid as _uuid
+
+    try:
+        from . import nai_client
+    except ImportError:
+        import nai_client
+    try:
+        from .platform_store import resolve_nai_size
+    except ImportError:
+        from platform_store import resolve_nai_size
+
+    ptype = (plat.get("type") or "").strip()
+    if not ptype:
+        raise ValueError("缺少平台类型")
+    model = (plat.get("model") or "").strip()
+    # 尺寸：平台默认档位解析，兜底 nai 竖图 / 其他 1024 方图
+    defaults = plat.get("defaults") if isinstance(plat.get("defaults"), dict) else {}
+    size_key = str(defaults.get("size") or plat.get("size") or ("portrait" if ptype == "nai" else "1024x1024"))
+    w, h = resolve_nai_size(size_key) or ((832, 1216) if ptype == "nai" else (1024, 1024))
+    # 负面词：平台配置 > 启用的负面词模板
+    negative = str(defaults.get("negative") or plat.get("negative") or "").strip()
+    if not negative:
+        try:
+            negative = plugin._platform_store().enabled_negative_text()
+        except Exception:
+            negative = ""
+    # 画师串（NAI）：取第一个启用预设
+    artist = ""
+    if ptype == "nai":
+        try:
+            presets = plugin._platform_store().artist_presets(enabled_only=True)
+            if presets:
+                artist = (presets[0].get("content") or "").strip()
+        except Exception:
+            artist = ""
+    seed = _random.randint(0, 2**31 - 1)
+
+    t0 = time.time()
+    images = await nai_client.generate(
+        plat, prompt=prompt, negative=negative, width=w, height=h,
+        seed=seed, count=1, artist=artist,
+    )
+    cost = time.time() - t0
+    if not images:
+        raise ValueError("平台未返回图片")
+    data = images[0]
+
+    # 入库：临时文件 → archive_image（platform/model/negative/extra 与出图链路同构）
+    sha = ""
+    w_real, h_real = w, h
+    try:
+        temp_dir = getattr(plugin, "temp_dir", None) or Path("temp")
+        tmp_path = Path(temp_dir) / f"platform_test_{_uuid.uuid4().hex}.png"
+        tmp_path.write_bytes(data)
+        g = getattr(plugin, "gallery", None)
+        if g is not None:
+            try:
+                from PIL import Image as _PIL
+                with _PIL.open(tmp_path) as _im:
+                    w_real, h_real = _im.width, _im.height
+            except Exception:
+                pass
+            _final = g.archive_image(
+                str(tmp_path), source="gen", prompt=prompt, prompt_raw=prompt,
+                workflow="", loras=[], seed=seed, w=w_real, h=h_real,
+                is_img2img=False,
+                platform=ptype, model=model, negative=negative,
+                extra={"test": True},
+                size_bytes=len(data), cost_sec=cost,
+                trigger_msg="[平台连通性测试]",
+            )
+            if _final:
+                try:
+                    from .image_store import _sha256_of
+                except ImportError:
+                    from image_store import _sha256_of
+                sha = _sha256_of(_final)
+                try:
+                    g.add_tags(sha, ["平台测试"])
+                except Exception:
+                    pass
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"[平台] 测试图入库失败（不影响测试结果返回）: {e}")
+
+    return {
+        "ok": True,
+        "data_url": f"data:image/png;base64,{_b64.b64encode(data).decode('ascii')}",
+        "sha": sha,
+        "cost_sec": round(cost, 1),
+        "w": w_real,
+        "h": h_real,
+        "seed": seed,
+        "platform": ptype,
+        "model": model,
+        "archived": bool(sha),
+    }
+
+
 def _normalize_base_model(raw) -> str:
     """归一化 C 站底模：转小写、去空格；命中白名单则返回小写名，否则返回空（通用）。"""
     bm = str(raw or "").strip().lower()
@@ -182,6 +293,23 @@ class WebUIApi:
             return error_response(str(e))
         except Exception as e:
             return error_response(f"保存平台配置失败: {e}")
+
+    async def platforms_test(self):
+        """平台连通性测试：用表单当前配置真实生图一张并入库（不必先保存）。"""
+        try:
+            payload = await request.json(default={}) or {}
+            plat = payload.get("platform")
+            prompt = str(payload.get("prompt") or "").strip() or (
+                "1girl, solo, simple background, upper body, looking at viewer, masterpiece"
+            )
+            if not isinstance(plat, dict):
+                return error_response("缺少平台配置")
+            result = await run_platform_test(self.plugin, plat, prompt)
+            return json_response(result)
+        except ValueError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"平台测试失败: {e}")
 
     async def get_schema(self):
         try:
@@ -1881,6 +2009,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/workflows/sampler", _h("workflow_sampler"), ["GET"], "读取工作流采样器参数"),
         (f"{prefix}/platforms", _h("platforms_get"), ["GET"], "读取生图平台配置"),
         (f"{prefix}/platforms/save", _h("platforms_save"), ["POST"], "保存生图平台配置"),
+        (f"{prefix}/platforms/test", _h("platforms_test"), ["POST"], "生图平台连通性测试"),
         (f"{prefix}/share/tokens", _h("share_tokens"), ["GET"], "分享链接管理列表"),
         (f"{prefix}/share/token/invalidate", _h("share_token_invalidate"), ["POST"], "分享链接作废"),
         (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),

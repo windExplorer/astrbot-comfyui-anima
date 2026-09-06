@@ -605,6 +605,20 @@ class StandaloneWebUI:
                 return _err(str(e))
             except Exception as e:
                 return _err(f"保存平台配置失败: {e}")
+        if path == "/platforms/test" and method == "POST":
+            try:
+                payload = await request.json()
+                plat = payload.get("platform") if isinstance(payload, dict) else None
+                prompt = str((payload or {}).get("prompt") or "").strip() or (
+                    "1girl, solo, simple background, upper body, looking at viewer, masterpiece"
+                )
+                if not isinstance(plat, dict):
+                    return _err("缺少平台配置")
+                return _ok(await webui_api.run_platform_test(self.plugin, plat, prompt))
+            except ValueError as e:
+                return _err(str(e))
+            except Exception as e:
+                return _err(f"平台测试失败: {e}")
         if path.startswith("/gallery/"):
             return await self._api_gallery(path, request, g)
 
