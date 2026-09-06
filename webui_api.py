@@ -333,6 +333,30 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"平台测试失败: {e}")
 
+    async def platforms_quota(self):
+        """查询 NAI 平台剩余额度（仅 nai 类型）。供 WebUI 生图平台列表展示与手动刷新。
+
+        入参 body.platform 为平台条目 dict（取 base_url / api_key）；未保存的编辑值可直接传。
+        返回 nai_client.fetch_quota 的结果：{"ok": True, "value", "balance", "enabled"} 或 {"ok": False, "message"}。"""
+        try:
+            payload = await request.json(default={}) or {}
+        except Exception:
+            return error_response("请求体解析失败")
+        plat = payload.get("platform")
+        if not isinstance(plat, dict):
+            return error_response("缺少平台配置")
+        if (plat.get("type") or "") != "nai":
+            return error_response("仅 NAI 平台支持查询余额")
+        try:
+            from .nai_client import fetch_quota
+        except ImportError:
+            from nai_client import fetch_quota
+        try:
+            result = await fetch_quota(plat)
+        except Exception as e:
+            return error_response(f"查询余额异常: {e}")
+        return json_response(result)
+
     async def get_schema(self):
         try:
             schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
@@ -2037,6 +2061,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/platforms", _h("platforms_get"), ["GET"], "读取生图平台配置"),
         (f"{prefix}/platforms/save", _h("platforms_save"), ["POST"], "保存生图平台配置"),
         (f"{prefix}/platforms/test", _h("platforms_test"), ["POST"], "生图平台连通性测试"),
+        (f"{prefix}/platforms/quota", _h("platforms_quota"), ["POST"], "查询 NAI 平台余额"),
         (f"{prefix}/share/tokens", _h("share_tokens"), ["GET"], "分享链接管理列表"),
         (f"{prefix}/share/token/invalidate", _h("share_token_invalidate"), ["POST"], "分享链接作废"),
         (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),

@@ -380,6 +380,43 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
     return results
 
 
+async def fetch_quota(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
+    """查询 NAI 平台剩余额度（对齐 astrbot_plugin_nai_image._fetch_quota）。
+
+    入参 p 为平台配置 dict（取 base_url / api_key）。
+    仅 NAI 官方/中转站可用。返回 {"ok": True, "value": int, "balance": int, "enabled": bool}
+    或 {"ok": False, "message": str}。"""
+    if not isinstance(p, dict):
+        return {"ok": False, "message": "平台配置无效"}
+    base = (p.get("base_url") or "").strip().rstrip("/")
+    key = (p.get("api_key") or "").strip()
+    if not base or not key:
+        return {"ok": False, "message": "平台未配置 base_url 或 api_key"}
+    url = f"{base}/api/api/getUser"
+    try:
+        _st, _hd, raw = await _request_with_retry(
+            "POST", url,
+            json_body={"toUserId": key},
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+    except PlatformError as e:
+        return {"ok": False, "message": str(e)}
+    try:
+        data = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception:
+        return {"ok": False, "message": "上游响应解析失败"}
+    if data.get("status") != "ok":
+        return {"ok": False, "message": str(data.get("message") or "上游返回异常状态")}
+    q = data.get("data") or {}
+    return {
+        "ok": True,
+        "value": int(q.get("value", 0) or 0),
+        "balance": int(q.get("balance", 0) or 0),
+        "enabled": bool(q.get("enabled", True)),
+    }
+
+
 # ---------------------------------------------------------------------- #
 # OpenAI 兼容（/v1/images/generations）
 # ---------------------------------------------------------------------- #

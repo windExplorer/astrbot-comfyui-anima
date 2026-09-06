@@ -20,7 +20,10 @@
       <!-- 平台列表 -->
       <n-card title="生图平台" size="small">
         <template #header-extra>
-          <n-button size="small" type="primary" ghost @click="openAdd">+ 添加平台</n-button>
+          <n-space :size="8">
+            <n-button size="small" @click="load" :loading="loading">刷新</n-button>
+            <n-button size="small" type="primary" ghost @click="openAdd">+ 添加平台</n-button>
+          </n-space>
         </template>
         <n-empty v-if="!cfg.platforms.length" description="还没有第三方平台。点击右上角「添加平台」接入 NAI / OpenAI 兼容 / 自定义生图服务。" style="padding: 24px 0" />
         <n-space vertical :size="10">
@@ -32,12 +35,23 @@
               <span class="spacer" />
               <n-switch v-model:value="p.enabled" size="small" @update:value="saveAll" />
               <span class="hint">{{ p.enabled ? "启用" : "停用" }}</span>
+              <n-button v-if="p.type === 'nai'" size="tiny" :loading="quotaLoading[p.id]" @click="fetchQuota(p)">获取余额</n-button>
               <n-button size="tiny" @click="openEdit(p)">编辑</n-button>
               <n-button size="tiny" type="error" ghost @click="removePlatform(p)">删除</n-button>
             </div>
             <div class="plat-meta">
               模型：{{ p.model || "（未配置）" }}
               <template v-if="p.type === 'nai'"> · 中转模式：{{ p.via_middle_station ? "是" : "否" }}</template>
+            </div>
+            <div v-if="p.type === 'nai'" class="plat-quota">
+              <template v-if="quotaMap[p.id] && quotaMap[p.id].ok">
+                剩余额度 {{ quotaMap[p.id].value }} · 余额 {{ quotaMap[p.id].balance }}
+                <span v-if="!quotaMap[p.id].enabled" class="quota-warn">⚠️ token 已停用</span>
+              </template>
+              <template v-else-if="quotaMap[p.id]">
+                <span class="quota-err">余额查询失败：{{ quotaMap[p.id].message }}</span>
+              </template>
+              <span v-else class="hint">余额未获取（点「获取余额」或刷新）</span>
             </div>
           </div>
         </n-space>
@@ -326,10 +340,36 @@ const cfg = reactive<any>({
 });
 const dirty = ref(false);
 const saving = ref(false);
+const loading = ref(false);
+// NAI 平台余额：quotaMap[平台id] = {ok, value, balance, enabled} 或 {ok:false, message}
+const quotaMap = reactive<Record<string, any>>({});
+const quotaLoading = reactive<Record<string, boolean>>({});
 
 function markDirty() { dirty.value = true; }
 
+// 查询单个 NAI 平台余额（手动按钮 / 自动刷新共用）
+async function fetchQuota(p: any) {
+  if (!p || p.type !== "nai") return;
+  quotaLoading[p.id] = true;
+  try {
+    const d = await apiPost("platforms/quota", { platform: JSON.parse(JSON.stringify(p)) });
+    quotaMap[p.id] = d && typeof d === "object" ? d : { ok: false, message: "空响应" };
+  } catch (e) {
+    quotaMap[p.id] = { ok: false, message: (e as Error)?.message || String(e) };
+  } finally {
+    quotaLoading[p.id] = false;
+  }
+}
+
+// 刷新时自动拉取所有 NAI 平台余额（fire-and-forget，不阻塞列表加载）
+function refreshQuotas() {
+  for (const p of cfg.platforms) {
+    if (p.type === "nai") fetchQuota(p);
+  }
+}
+
 async function load() {
+  loading.value = true;
   try {
     const [d, conf] = await Promise.all([apiGet("platforms"), apiGet("config")]);
     if (d && typeof d === "object") {
@@ -343,8 +383,11 @@ async function load() {
       globalGenTimeout.value = Number(conf.platform_gen_timeout) || 180;
     }
     dirty.value = false;
+    refreshQuotas();
   } catch (e) {
     message.error(`读取平台配置失败：${(e as Error)?.message || e}`);
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -809,6 +852,18 @@ onMounted(load);
   margin-top: 6px;
   font-size: 12px;
   opacity: 0.75;
+}
+.plat-quota {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.quota-warn {
+  color: #ffb84d;
+  margin-left: 4px;
+}
+.quota-err {
+  color: #ff8080;
 }
 .preset-row {
   display: flex;

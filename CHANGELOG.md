@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.15（生图平台列表新增 NAI 余额查询）
+
+- 生图平台列表（WebUI 生图平台页）新增 NAI 余额展示：进入/点「刷新」时自动拉取所有 NAI 平台的剩余额度（对齐 astrbot_plugin_nai_image 的 `/api/api/getUser` 查询），每个 NAI 平台卡片显示「剩余额度 / 余额」，token 被停用时标黄警告。
+- 每个 NAI 平台卡片新增「获取余额」按钮，可手动单独刷新。
+- 后端：新增 `nai_client.fetch_quota(plat)` 与 WebUI 路由 `POST /platforms/quota`（仅 nai 类型，入参为平台条目 dict，取 base_url / api_key）；失败返回 `{ok:false, message}`。
+
 ## v5.10.14（修复新生成图被默认标为收藏 ★ 的 bug）
 
 - 根因：`image_store.archive_image` 的 INSERT 语句 VALUES 列表存在列/值错位——字面量 `1,0` 落在了 `source` / `use_count` 列位，导致整行后移两位：① `source` 被硬编码成 `1`（所有归档图的来源列都错）；② `starred` 列被喂入了 `source` 字符串（`"gen"` / `"nai"` 等），SQLite 以文本存入，`bool("gen")` 为真，于是**每张新生成的图都显示为已收藏**。
