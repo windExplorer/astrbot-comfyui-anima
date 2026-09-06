@@ -3180,7 +3180,9 @@ class ComfyUIDrawPlugin(Star):
         # （NAI / OpenAI 兼容 / 自定义），ComfyUI 主流程一行不动。
         # 第三方平台不支持 LoRA/工作流/图生图，相关参数在此链路自动忽略。
         try:
-            _plat = self._platform_store().pick_platform(platform)
+            _plat = self._platform_store().pick_platform(
+                platform, user_id=user_id, is_admin=self._is_admin(event),
+            )
         except Exception as _pe:
             logger.warning(f"【平台】 平台解析失败（回退 ComfyUI）: {_pe}")
             _plat = None
@@ -7241,7 +7243,7 @@ class ComfyUIDrawPlugin(Star):
                 ①你刚通过 comfyui_loras 看到了该 LoRA 的触发词原文；
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
-            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。可传 comfyui / nai / openai / custom 或平台显示名来临时指定平台。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。
+            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。可传 comfyui / nai / openai / custom 或平台显示名来临时指定平台。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。部分平台受管理员设置的用户白名单限制，无权限的用户调用会自动回退 ComfyUI 出图（无需特殊处理）。
 
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。

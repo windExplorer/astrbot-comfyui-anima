@@ -101,6 +101,9 @@
         <n-form-item label="模型">
           <n-input v-model:value="editing.model" :placeholder="modelPlaceholder" />
         </n-form-item>
+        <n-form-item label="可用用户">
+          <n-input v-model:value="editing.allowed_users_text" placeholder="逗号分隔的 QQ 号；留空 = 仅管理员可用" />
+        </n-form-item>
         <template v-if="editing.type === 'nai'">
           <n-form-item label="走中转站">
             <n-space align="center">
@@ -305,6 +308,7 @@ function emptyPlatform(type: string) {
     api_key: "",
     model: "",
     enabled: true,
+    allowed_users_text: "",
   };
   if (type === "nai") {
     base.via_middle_station = false;
@@ -338,6 +342,7 @@ function openEdit(p: any) {
   if (p.type === "custom" && p.headers && typeof p.headers === "object") {
     copy.headers_text = JSON.stringify(p.headers);
   }
+  copy.allowed_users_text = Array.isArray(p.allowed_users) ? p.allowed_users.join(",") : "";
   Object.assign(editing, copy);
   editIsNew.value = false;
   showEdit.value = true;
@@ -358,6 +363,11 @@ function applyEdit() {
   if (!String(editing.api_key || "").trim()) { message.error("请填写 API Key / Token"); return; }
   const item = JSON.parse(JSON.stringify(editing));
   if (!item.id) item.id = `p_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  item.allowed_users = String(item.allowed_users_text || "")
+    .split(/[,，;；\s]+/)
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+  delete item.allowed_users_text;
   if (item.type === "custom") {
     try {
       item.headers = item.headers_text ? JSON.parse(item.headers_text) : {};

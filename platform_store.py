@@ -183,11 +183,13 @@ class PlatformStore:
                 return p
         return None
 
-    def pick_platform(self, pid: str = "") -> dict | None:
+    def pick_platform(self, pid: str = "", user_id: str = "", is_admin: bool = False) -> dict | None:
         """选出本次生图用的平台：
         1) 显式指定 pid（id/名称）且存在 → 用它；
         2) active_platform 非 comfyui 且存在 → 用它；
-        3) 否则 None（走 ComfyUI）。"""
+        3) 否则 None（走 ComfyUI）。
+        权限：第三方平台受 allowed_users 限制——空列表 = 仅管理员；非空 = 管理员 + 名单内
+        用户。无权限时静默回退 ComfyUI（普通用户无感）。"""
         cfg = self._cfg()
         target = (pid or "").strip() or self.active_platform()
         if target == "comfyui":
@@ -199,6 +201,15 @@ class PlatformStore:
         if not p.get("enabled", True):
             logger.warning(f"[平台] 平台 {p.get('name')!r} 已停用，回退 ComfyUI")
             return None
+        # 平台使用权限：allowed_users 空 = 仅管理员；非空 = 管理员 + 名单内用户
+        if not is_admin:
+            allowed = [str(u).strip() for u in (p.get("allowed_users") or []) if str(u).strip()]
+            if not user_id or user_id not in allowed:
+                logger.info(
+                    f"[平台] 用户 {user_id or '(unknown)'} 无权使用平台 {p.get('name')!r}"
+                    f"（仅管理员/白名单用户），回退 ComfyUI"
+                )
+                return None
         return p
 
     def artist_presets(self, enabled_only: bool = False) -> list[dict]:
