@@ -62,24 +62,38 @@ async def generate(
     count: int = 1,
     artist: str = "",
     capture: dict | None = None,
+    timeout: float | None = None,
 ) -> list[bytes]:
     """按平台类型分发。返回 bytes 列表（每张一项）。
 
-    capture: 可选 dict，用于回填实际请求/响应调试信息（测试功能「查看详情」）。"""
+    capture: 可选 dict，用于回填实际请求/响应调试信息（测试功能「查看详情」）。
+    timeout: 可选总超时（秒）；为 None 时用默认 _DEFAULT_TIMEOUT（total=120, connect=60）。"""
+    # 构造 ClientTimeout：给定数值时 total=timeout，connect 取 min(60, timeout)（连接不应久等）；
+    # 否则沿用默认 _DEFAULT_TIMEOUT（total=120, connect=60）。
+    _ct = _DEFAULT_TIMEOUT
+    if timeout not in (None, "", 0):
+        try:
+            _t = float(timeout)
+            _ct = aiohttp.ClientTimeout(total=_t, connect=min(60.0, _t))
+        except (TypeError, ValueError):
+            _ct = _DEFAULT_TIMEOUT
     ptype = (p.get("type") or "").strip().lower()
     if ptype == "nai":
         return await _gen_nai(p, prompt=prompt, negative=negative, width=width,
                               height=height, seed=seed, count=count, artist=artist,
-                              capture=capture)
+                              capture=capture, timeout=_ct)
     if ptype == "openai":
         return await _gen_openai(p, prompt=prompt, negative=negative, width=width,
-                                 height=height, seed=seed, count=count, capture=capture)
+                                 height=height, seed=seed, count=count, capture=capture,
+                                 timeout=_ct)
     if ptype == "minimax":
         return await _gen_minimax(p, prompt=prompt, negative=negative, width=width,
-                                  height=height, seed=seed, count=count, capture=capture)
+                                  height=height, seed=seed, count=count, capture=capture,
+                                  timeout=_ct)
     if ptype == "custom":
         return await _gen_custom(p, prompt=prompt, negative=negative, width=width,
-                                 height=height, seed=seed, count=count, capture=capture)
+                                 height=height, seed=seed, count=count, capture=capture,
+                                 timeout=_ct)
     raise PlatformError(f"不支持的平台类型: {ptype!r}")
 
 
@@ -216,7 +230,8 @@ def _iter_values(obj):
 
 async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: int,
                    seed, count: int, artist: str = "",
-                   capture: dict | None = None) -> list[bytes]:
+                   capture: dict | None = None,
+                   timeout: float | None = None) -> list[bytes]:
     base = (p.get("base_url") or _NAI_DEFAULT_BASE).rstrip("/")
     api_key = (p.get("api_key") or "").strip()
     if not api_key:
@@ -259,6 +274,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                 "GET", f"{base}/generate",
                 headers={"Authorization": f"Bearer {api_key}", **extra_headers},
                 params=params, capture=capture,
+                timeout=timeout or _DEFAULT_TIMEOUT,
             )
             img = _resp_to_bytes(raw, _hd.get("Content-Type", ""))
         else:
@@ -291,6 +307,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                 "POST", f"{base}/ai/generate-image",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
                 json_body=payload, capture=capture,
+                timeout=timeout or _DEFAULT_TIMEOUT,
             )
             img = _resp_to_bytes(raw, _hd.get("Content-Type", "application/zip"))
         if not img:
@@ -304,7 +321,8 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
 # ---------------------------------------------------------------------- #
 
 async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                      seed, count: int, capture: dict | None = None) -> list[bytes]:
+                      seed, count: int, capture: dict | None = None,
+                      timeout: float | None = None) -> list[bytes]:
     base = (p.get("base_url") or "").strip().rstrip("/")
     # 端点归一：裸域名 / 带 /v1 / 误填完整端点，统一为 <root>/v1/images/generations
     base = re.sub(r"/v1/(?:images/(?:generations|edits))?/?$", "", base, flags=re.I)
@@ -376,6 +394,7 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         "POST", f"{base}/images/generations",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
         json_body=body, capture=capture,
+        timeout=timeout or _DEFAULT_TIMEOUT,
     )
     try:
         data = json.loads(raw.decode("utf-8", "ignore"))
@@ -399,7 +418,7 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
                 pass
         url = item.get("url")
         if url:
-            _s2, _h2, dlr = await _request_with_retry("GET", url)
+            _s2, _h2, dlr = await _request_with_retry("GET", url, timeout=timeout or _DEFAULT_TIMEOUT)
             results.append(dlr)
     if not results:
         raise PlatformError("OpenAI 兼容平台响应里没有可用的图片数据")
@@ -434,7 +453,8 @@ def _aspect_ratio_of(w: int, h: int) -> str:
 
 
 async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                       seed, count: int, capture: dict | None = None) -> list[bytes]:
+                       seed, count: int, capture: dict | None = None,
+                       timeout: float | None = None) -> list[bytes]:
     base = (p.get("base_url") or "https://api.minimaxi.com").strip()
     endpoint = _minimax_endpoint(base)
     api_key = (p.get("api_key") or "").strip()
@@ -478,6 +498,7 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
             "POST", endpoint,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
             json_body=body, capture=capture,
+            timeout=timeout or _DEFAULT_TIMEOUT,
         )
         try:
             resp_data = json.loads(raw.decode("utf-8", "ignore"))
@@ -496,7 +517,7 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
                 pass
         url_list = data.get("image_urls") or []
         if isinstance(url_list, list) and url_list:
-            _s2, _h2, dlr = await _request_with_retry("GET", url_list[0])
+            _s2, _h2, dlr = await _request_with_retry("GET", url_list[0], timeout=timeout or _DEFAULT_TIMEOUT)
             results.append(dlr)
             continue
         raise PlatformError(f"MiniMax 响应里没有图片数据: {str(resp_data)[:300]}")
@@ -508,7 +529,8 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
 # ---------------------------------------------------------------------- #
 
 async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                      seed, count: int, capture: dict | None = None) -> list[bytes]:
+                      seed, count: int, capture: dict | None = None,
+                      timeout: float | None = None) -> list[bytes]:
     # 延迟导入避免循环依赖
     try:
         from .platform_store import render_custom_request, extract_path, normalize_headers
@@ -551,6 +573,7 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
         _data = body_text.encode("utf-8") if (method == "POST" and body_text) else None
         _st, _hd, raw = await _request_with_retry(
             method, url, headers=headers, data=_data, capture=capture,
+            timeout=timeout or _DEFAULT_TIMEOUT,
         )
         ct = _hd.get("Content-Type", "")
 
@@ -577,7 +600,7 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
                     target = v
                     break
         if isinstance(target, str) and target.startswith(("http://", "https://")):
-            _s2, _h2, dlr = await _request_with_retry("GET", target)
+            _s2, _h2, dlr = await _request_with_retry("GET", target, timeout=timeout or _DEFAULT_TIMEOUT)
             results.append(dlr)
         elif isinstance(target, str) and target:
             try:

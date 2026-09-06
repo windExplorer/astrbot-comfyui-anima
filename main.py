@@ -2981,6 +2981,17 @@ class ComfyUIDrawPlugin(Star):
             seed = random.randint(0, 2**31 - 1)
         model = (plat.get("model") or "").strip()
 
+        # 生图请求超时：平台自身 timeout 优先，否则全局 platform_gen_timeout（默认 180s）
+        _plat_to = plat.get("timeout")
+        try:
+            _global_to = int(self._cfg("platform_gen_timeout", 180) or 180)
+        except Exception:
+            _global_to = 180
+        try:
+            _eff_timeout = float(_plat_to) if _plat_to not in (None, "", 0) else _global_to
+        except Exception:
+            _eff_timeout = _global_to
+
         # 提交生成
         try:
             try:
@@ -2990,6 +3001,7 @@ class ComfyUIDrawPlugin(Star):
             images = await nai_client.generate(
                 plat, prompt=positive, negative=negative,
                 width=_w, height=_h, seed=seed, count=1, artist=artist,
+                timeout=_eff_timeout,
             )
         except Exception as e:
             logger.warning(f"【绘图·失败】[平台 {ptype}] {e}")

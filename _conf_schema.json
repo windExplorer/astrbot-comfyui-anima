@@ -739,6 +739,17 @@
     },
     "default": 120
   },
+  "platform_gen_timeout": {
+    "type": "int",
+    "description": "生图平台请求超时(秒)",
+    "hint": "第三方生图平台（NAI / OpenAI 兼容 / MiniMax / 自定义）单次生图请求的 HTTP 总超时。平台自身可在「平台配置」里单独设 timeout 覆盖此项；该项为 0 或不填时平台测试用 180s。前端平台测试也会用该值作为客户端等待上限（独立 WebUI 默认 15s，生图较慢会被截断）。",
+    "slider": {
+      "min": 30,
+      "max": 600,
+      "step": 10
+    },
+    "default": 180
+  },
   "queue_extra_timeout": {
     "type": "int",
     "description": "每队列任务额外超时(秒)",

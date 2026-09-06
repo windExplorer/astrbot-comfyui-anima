@@ -104,12 +104,24 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
             artist = ""
     seed = _random.randint(0, 2**31 - 1)
 
+    # 生图请求超时：优先平台自身配置的 timeout（秒），否则用全局 platform_gen_timeout（默认 180s）
+    _plat_to = plat.get("timeout")
+    try:
+        _global_to = int(plugin._cfg("platform_gen_timeout", 180) or 180)
+    except Exception:
+        _global_to = 180
+    try:
+        eff_timeout = float(_plat_to) if _plat_to not in (None, "", 0) else _global_to
+    except Exception:
+        eff_timeout = _global_to
+
     capture: dict = {}
     t0 = time.time()
     try:
         images = await nai_client.generate(
             plat, prompt=prompt, negative=negative, width=w, height=h,
             seed=seed, count=1, artist=artist, capture=capture,
+            timeout=eff_timeout,
         )
     except Exception as e:
         # 失败也回传 debug（实际请求流程/响应），前端「查看请求详情」可看
@@ -170,6 +182,7 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
         "seed": seed,
         "platform": ptype,
         "model": model,
+        "timeout": eff_timeout,
         "archived": bool(sha),
         # 区分「图库未初始化」与「图库在但归档失败」，避免统一误报「图库未启用」
         "gallery_disabled": g is None,

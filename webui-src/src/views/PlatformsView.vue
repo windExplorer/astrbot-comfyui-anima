@@ -104,6 +104,10 @@
         <n-form-item label="模型">
           <n-input v-model:value="editing.model" :placeholder="modelPlaceholder" />
         </n-form-item>
+        <n-form-item label="请求超时(秒)">
+          <n-input v-model:value="editing.timeout" type="number" :min="0" placeholder="0=用全局默认(180)" style="width:170px" />
+          <span class="hint">0 或留空 → 用全局「生图平台请求超时」；否则覆盖为本平台专属超时（客户端与后端都按此值等待）</span>
+        </n-form-item>
         <n-form-item label="可用用户">
           <n-input v-model:value="editing.allowed_users_text" placeholder="逗号分隔的 QQ 号；留空 = 仅管理员可用" />
         </n-form-item>
@@ -327,12 +331,16 @@ function markDirty() { dirty.value = true; }
 
 async function load() {
   try {
-    const d = await apiGet("platforms");
+    const [d, conf] = await Promise.all([apiGet("platforms"), apiGet("config")]);
     if (d && typeof d === "object") {
       cfg.active_platform = d.active_platform || "comfyui";
       cfg.platforms = Array.isArray(d.platforms) ? d.platforms : [];
       cfg.artist_presets = Array.isArray(d.artist_presets) ? d.artist_presets : [];
       cfg.negative_presets = Array.isArray(d.negative_presets) ? d.negative_presets : [];
+    }
+    // 全局「生图平台请求超时」：平台未单独配置 timeout 时，前端客户端等待上限回落到此值
+    if (conf && typeof conf === "object") {
+      globalGenTimeout.value = Number(conf.platform_gen_timeout) || 180;
     }
     dirty.value = false;
   } catch (e) {
@@ -651,6 +659,8 @@ const testResult = ref<any>(null);
 const testError = ref("");
 const lastDebug = ref<any>(null);
 const showDebugModal = ref(false);
+// 全局「生图平台请求超时」(秒)：由 config 读取；平台自身 timeout 优先，否则客户端等待上限回落到此值
+const globalGenTimeout = ref(180);
 
 function formatDebug(d: any): string {
   try {
@@ -704,7 +714,11 @@ async function runTest() {
   }
   testing.value = true;
   try {
-    const d = await apiPost("platforms/test", { platform: item, prompt: testPrompt.value });
+    // 客户端等待上限：平台专属 timeout > 全局 platform_gen_timeout（默认 180s）。
+    // 之前独立 WebUI 默认仅 15s，生图稍慢就在前端被 abort，报「15s 无响应」。
+    const eff = Number(item.timeout) > 0 ? Number(item.timeout) : (globalGenTimeout.value || 180);
+    const clientMs = Math.max(30000, Math.round(eff * 1000) + 10000);
+    const d = await apiPost("platforms/test", { platform: item, prompt: testPrompt.value }, { timeout: clientMs });
     lastDebug.value = (d && d.debug) || null;
     if (d && d.ok) {
       testResult.value = d;
