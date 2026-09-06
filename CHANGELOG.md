@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.8（重要修复：热更新依赖重载列表缺失新增模块，导致「前端新版、生图链路旧版」）
+
+- main.py 热更新时只强制重载 webui_api/standalone_webui 两个模块；v5.8.0 新增的 platform_store/nai_client 不在列表中——从 v5.8.x 热更上来的实例，sys.modules 里一直是旧版生图链路代码（无地址归一等修复），表现为「版本号是新的、预设是全的，但请求行为像旧版」（如 /v1/v1 双重拼接）。
+- 热重载列表扩展为全部自研模块（webui_api/standalone_webui/platform_store/nai_client/comfyui_client/workflow_builder/comic/danbooru_client/image_store/story_store/quota_store/oplog_store/token_store/nsfw_detector/translate_client），今后新增模块不再遗漏。
+- ★建议装完本版本后完整重启一次 AstrBot（清除本次已被污染的模块缓存）。
+
 ## v5.9.7（修复：openai 平台尺寸未按用户填写值发送）
 
 - openai 类型此前把尺寸强制转成 宽x高 像素格式（非标准值解析失败时回落默认），导致「额外参数」之外填的尺寸（如 2K、1536x1024）未生效。现改为 size 字段原样透传：精确像素与 2K 等档位写法均按填写值发送，由上游自行标准化。

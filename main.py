@@ -758,7 +758,18 @@ class ComfyUIDrawPlugin(Star):
         # 这两个模块，让新代码立即生效，尽可能避免完整重启。
         try:
             import importlib
-            for _dep_name in ("webui_api", "standalone_webui"):
+            # v5.9.8：扩展为全部自研模块——此前只重载 webui_api/standalone_webui，
+            # 新增模块（如 platform_store/nai_client）热更新后 sys.modules 里仍是
+            # 首次加载的旧代码，导致「前端是新版、生图链路是旧版」的隐蔽错位。
+            # 顺序按依赖关系（被依赖者在前）。
+            for _dep_name in (
+                "webui_api", "standalone_webui",
+                "platform_store", "nai_client",
+                "comfyui_client", "workflow_builder", "comic",
+                "danbooru_client", "image_store", "story_store",
+                "quota_store", "oplog_store", "token_store",
+                "nsfw_detector", "translate_client",
+            ):
                 try:
                     _dn = f"{__package__}.{_dep_name}" if __package__ else _dep_name
                     _dep_mod = importlib.import_module(_dn)
