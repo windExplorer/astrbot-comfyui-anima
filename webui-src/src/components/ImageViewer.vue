@@ -79,7 +79,21 @@
             <div v-if="item.platform" class="iv-row"><span class="k">平台</span><span class="v">
               <template v-if="item.platform_name">{{ item.platform_name }}</template><template v-if="item.platform_name && item.platform"> · </template>{{ item.platform }}<template v-if="item.model"> / {{ item.model }}</template>
             </span></div>
-            <button class="iv-detail-btn" @click="showDetail = true">📋 查看生成详情（触发词 / 提示词 / 负面词）</button>
+            <div class="iv-gen">
+              <section v-if="item && item.trigger_msg" class="iv-gen-sec">
+                <div class="gt">触发词</div>
+                <div class="gv">{{ item.trigger_msg }}</div>
+              </section>
+              <section class="iv-gen-sec">
+                <div class="gt">正向提示词</div>
+                <div class="gv">{{ item.prompt_raw || item.prompt || "（无）" }}</div>
+              </section>
+              <section v-if="item && item.negative" class="iv-gen-sec">
+                <div class="gt">负面提示词</div>
+                <div class="gv">{{ item.negative }}</div>
+              </section>
+            </div>
+            <button class="iv-detail-btn" @click="showDetail = true">📋 弹窗查看完整生成详情（触发词 / 提示词 / 负面词 / 工作流）</button>
           </template>
           <div v-else class="iv-loading">加载信息…</div>
         </aside>
@@ -711,7 +725,7 @@ function onPurge(it: any) { emit("purge", it); }
   width: 380px;
   flex: 0 0 380px;
   height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
   padding: 16px 18px;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(20, 20, 28, 0.6);
@@ -858,6 +872,33 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-prompt { flex: 1 1 auto; min-height: 60px; align-items: stretch; }
 .iv-prompt .v { overflow: auto; max-height: 100%; padding-right: 4px; }
+/* 生成信息（触发词/提示词/负面词）：右侧面板固定高度、可滚动，不依赖弹窗 */
+.iv-gen {
+  flex: 0 0 auto;
+  max-height: 280px;
+  margin: 8px 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: auto;
+  padding: 2px 0;
+}
+.iv-gen-sec { padding: 8px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.iv-gen-sec:last-child { border-bottom: none; }
+.iv-gen .gt {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 4px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.iv-gen .gv {
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: #e6e6f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* 生成详情弹窗：独立 teleport 到 body，z-index 高于大图查看器(9999) */
 .iv-detail-mask {
   position: fixed;
