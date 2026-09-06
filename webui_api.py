@@ -171,6 +171,8 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
         "platform": ptype,
         "model": model,
         "archived": bool(sha),
+        # 区分「图库未初始化」与「图库在但归档失败」，避免统一误报「图库未启用」
+        "gallery_disabled": g is None,
         "debug": capture,
     }
 

@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.2（紧急修复：图库 archive_image 写库 SQL 占位符错位，导致所有出图/平台测试均「图片未入库」）
+
+- 根因：v5.8.0 给 images 表加 platform/model/negative/extra 4 列时，archive_image 的 INSERT 列列表（36 列）与 VALUES 占位符（仅 35 个）未对齐，sqlite 报「列数/值数不匹配」→ 每次归档（含 ComfyUI 出图与第三方平台）都写库失败、返回 None，前端显示「图库未启用，图片未入库」（文案误导：实际图库已初始化，只是写库失败）。
+- 修正 INSERT 占位符：36 列 = 34 个 `?` + 2 个常量（use_count=1、starred=0），与参数元组（34 项）严格对齐；已用真实 schema（CREATE 字面列 + ALTER 补列共 40 列）逐条复验全部 INSERT/UPDATE 无缺失列。
+- 平台连通性测试回执文案纠错：区分「图库未启用或初始化失败」(gallery 为 None) 与「图片入库失败（详见后端日志）」(gallery 在但写库异常)，新增 `gallery_disabled` 字段由前端分别展示，不再统一误报「图库未启用」。
+
 ## v5.10.1（修复：下载带签名的临时图片链接 403 SignatureDoesNotMatch）
 
 - 部分平台（如 SenseNova）返回的图片 URL 含已编码的签名参数（X-Amz-Credential 里的 %2F），aiohttp 按未编码处理会二次编码成 %252F，签名失效 → 403 SignatureDoesNotMatch（生图成功、下载失败）。

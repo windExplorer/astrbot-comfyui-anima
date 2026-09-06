@@ -211,7 +211,8 @@
             <div>✅ 生成成功，耗时 {{ testResult.cost_sec }}s</div>
             <div>尺寸 {{ testResult.w }} × {{ testResult.h }} · Seed {{ testResult.seed }}</div>
             <div v-if="testResult.archived">已入库（SHA {{ String(testResult.sha).slice(0, 16) }}，标签「平台测试」，可在图库查看）</div>
-            <div v-else class="hint">图库未启用，图片未入库</div>
+            <div v-else-if="testResult.gallery_disabled" class="hint">图库未启用或初始化失败</div>
+            <div v-else class="hint">图片入库失败（详见后端日志 / 图库写库异常）</div>
           </div>
         </div>
         <n-space align="center" style="margin-top: 8px">
