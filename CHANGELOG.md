@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.11（图库大图详情显示 NAI 等平台参数）
+
+- 修复大图详情不显示 NAI/第三方平台生图参数：此前平台生图入库（`main.py` 平台归档分支）调用 `archive_image` 时没传 `cfg`/`steps`，这两个列默认 NULL，前端 `item.cfg != null`/`item.steps != null` 不成立，故「CFG/步数」行不显示。现从平台 `defaults` 取 `cfg`（NAI 引导系数官方叫 scale，兜底取 `scale`）与 `steps` 写入。
+- 大图详情新增展示 `extra` 里的平台专有参数：采样器、噪声调度、CFG重缩放（`scale` 不重复显示，因已并入顶部 CFG 列）。ComfyUI 链路本就存了 cfg/steps，不受本次改动影响。
+
 ## v5.10.10（修复图库回收站全局序号 WARN）
 
 - 修复 `[图库] 计算全局序号失败: Incorrect number of bindings supplied. The current statement uses 3, and there are 4 supplied.` 告警。`image_store._gidx_rank` 在 `trash=True` 时把 `where` 设为字面量 `deleted=1` 却给 `args` 多塞了一个无对应占位符的 `1`，导致回收站路径（尤其无 owner 时）SQL 绑定参数数量不匹配、该 warn 刷屏，且回收站条目 gidx 编号回退为 1。改为 `args = []`（deleted 是字面量，无需参数）。

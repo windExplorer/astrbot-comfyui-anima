@@ -3054,6 +3054,12 @@ class ComfyUIDrawPlugin(Star):
                     for _k in ("steps", "scale", "cfg_rescale", "sampler", "noise_schedule"):
                         if _defaults.get(_k) is not None:
                             _extra[_k] = _defaults.get(_k)
+                    # 顶部 cfg/steps 列：NAI 引导系数官方叫 scale，defaults 里 cfg/scale 都可能存在，
+                    # 取其一填入 cfg 列（大图详情的「CFG」行即可显示）；steps 同理。
+                    _cfg_val = _defaults.get("cfg")
+                    if _cfg_val is None:
+                        _cfg_val = _defaults.get("scale")
+                    _steps_val = _defaults.get("steps")
                     _final = self.gallery.archive_image(
                         img_path,
                         source=SRC_GEN,
@@ -3065,6 +3071,8 @@ class ComfyUIDrawPlugin(Star):
                         w=_real_w,
                         h=_real_h,
                         is_img2img=False,
+                        cfg=_cfg_val,
+                        steps=_steps_val,
                         platform=ptype,
                         model=model,
                         negative=(negative or ""),

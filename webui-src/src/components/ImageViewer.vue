@@ -74,6 +74,7 @@
             <div v-if="item.cfg != null" class="iv-row"><span class="k">CFG</span><span class="v">{{ item.cfg }}</span></div>
             <div v-if="item.steps != null" class="iv-row"><span class="k">步数</span><span class="v">{{ item.steps }}</span></div>
             <div v-if="item.denoise != null" class="iv-row"><span class="k">Denoise</span><span class="v">{{ item.denoise }}</span></div>
+            <div v-for="ep in extraParams" :key="ep.k" class="iv-row"><span class="k">{{ ep.label }}</span><span class="v">{{ ep.v }}</span></div>
             <div v-if="item.use_count != null" class="iv-row"><span class="k">使用次数</span><span class="v">{{ item.use_count }}</span></div>
             <div v-if="item.platform" class="iv-row"><span class="k">平台</span><span class="v">
               <template v-if="item.platform_name">{{ item.platform_name }}</template><template v-if="item.platform_name && item.platform"> · </template>{{ item.platform }}<template v-if="item.model"> / {{ item.model }}</template>
@@ -154,6 +155,7 @@ interface ViewerImage {
   model?: string;
   negative?: string;
   loras?: string | any[];
+  extra?: string;
   use_count?: number;
   starred?: boolean;
   status?: number;
@@ -234,6 +236,29 @@ const lorasText = computed(() =>
     .map((l: any) => (typeof l === "object" && l ? `${l.name}${l.weight != null ? ":" + l.weight : ""}` : String(l)))
     .join("、 ") || "无"
 );
+
+// 平台专有参数（采样器/噪声调度/CFG重缩放等）：存于 item.extra JSON 字符串，无则空
+const extraParams = computed<Array<{ k: string; label: string; v: any }>>(() => {
+  const raw = item.value?.extra;
+  if (!raw) return [];
+  let obj: any = raw;
+  if (typeof raw === "string") {
+    try { obj = JSON.parse(raw); } catch { return []; }
+  }
+  if (!obj || typeof obj !== "object") return [];
+  const labelMap: Record<string, string> = {
+    sampler: "采样器",
+    noise_schedule: "噪声调度",
+    cfg_rescale: "CFG重缩放",
+  };
+  // scale 不单独显示：NAI 引导系数已填入顶部 cfg 列（「CFG」行）
+  const order = ["sampler", "noise_schedule", "cfg_rescale"];
+  const out: Array<{ k: string; label: string; v: any }> = [];
+  for (const k of order) {
+    if (obj[k] != null && obj[k] !== "") out.push({ k, label: labelMap[k] || k, v: obj[k] });
+  }
+  return out;
+});
 
 async function loadMain(sha: string) {
   mainSrc.value = "";
