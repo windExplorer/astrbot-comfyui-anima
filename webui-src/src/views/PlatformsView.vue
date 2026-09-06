@@ -116,7 +116,15 @@
           <n-input v-model:value="editing.api_key" type="password" show-password-on="click" placeholder="必填" />
         </n-form-item>
         <n-form-item label="模型">
-          <n-input v-model:value="editing.model" :placeholder="modelPlaceholder" />
+          <n-input v-if="editing.type !== 'nai'" v-model:value="editing.model" :placeholder="modelPlaceholder" />
+          <n-select
+            v-else
+            v-model:value="editing.model"
+            :options="naiModelOptions"
+            filterable
+            tag
+            placeholder="nai-diffusion-4-5-full / nai-diffusion-5-full"
+          />
         </n-form-item>
         <n-form-item label="请求超时(秒)">
           <n-input v-model:value="editing.timeout" type="number" :min="0" placeholder="0=用全局默认(180)" style="width:170px" />
@@ -158,7 +166,10 @@
             </n-space>
           </n-form-item>
           <n-form-item label="默认尺寸">
-            <n-select v-model:value="editing.defaults.size" :options="naiSizeOptions" />
+            <div style="width:100%">
+              <n-select v-model:value="editing.defaults.size" :options="naiSizeOptions" style="width:100%" />
+              <div class="hint">括号为 sta1n 中转站点数，随上方「模型」版本变化（V4.5 基础档 1 点 / V5 基础档 5 点，2K=15、4K=25）；仅「走中转站」时显示</div>
+            </div>
           </n-form-item>
           <n-form-item label="步数 steps">
             <n-input-number v-model:value="editing.defaults.steps" :min="1" :max="50" style="width: 160px" />
@@ -424,15 +435,46 @@ const typeOptions = [
   { label: "MiniMax（海螺 image-01）", value: "minimax" },
   { label: "自定义 HTTP（实验）", value: "custom" },
 ];
-const naiSizeOptions = [
-  { label: "竖图 832x1216", value: "portrait" },
-  { label: "横图 1216x832", value: "landscape" },
-  { label: "方图 1024x1024", value: "square" },
-  { label: "2K 竖图 1536x2304", value: "2Kportrait" },
-  { label: "2K 横图 2304x1536", value: "2Klandscape" },
-  { label: "4K 竖图 2048x3072", value: "4Kportrait" },
-  { label: "4K 横图 3072x2048", value: "4Klandscape" },
+// NAI 模型可选项（下拉，可自由输入其它模型名）
+const naiModelOptions = [
+  { label: "nai-diffusion-4-5-full（V4.5 完整版）", value: "nai-diffusion-4-5-full" },
+  { label: "nai-diffusion-4-5-curated（V4.5 精选版）", value: "nai-diffusion-4-5-curated" },
+  { label: "nai-diffusion-5-full（V5 完整版）", value: "nai-diffusion-5-full" },
+  { label: "nai-diffusion-5-curated（V5 精选版）", value: "nai-diffusion-5-curated" },
 ];
+// 由模型名判定家族（决定尺寸点数）：4-5 系列 / 5 系列 / 未知
+function naiModelFamily(model: string): "45" | "5" | "" {
+  const m = (model || "").toLowerCase();
+  if (m.includes("4-5")) return "45";
+  if (m.includes("nai-diffusion-5") || m.startsWith("nai-diffusion-5")) return "5";
+  return "";
+}
+// sta1n 中转站尺寸点数（随模型变化）：4.5 基础档 1 点，5 基础档 5 点；2K=15，4K=25
+const NAI_POINTS: Record<string, Record<string, number>> = {
+  "45": { "1K": 1, "2K": 15, "4K": 25 },
+  "5":  { "1K": 5, "2K": 15, "4K": 25 },
+};
+// 每个尺寸档位归属（1K/2K/4K）
+const SIZE_TIER: Record<string, string> = {
+  portrait: "1K", landscape: "1K", square: "1K",
+  "2Kportrait": "2K", "2Klandscape": "2K", "2Ksquare": "2K",
+  "4Kportrait": "4K", "4Klandscape": "4K", "4Ksquare": "4K",
+};
+// 默认尺寸下拉：走中转站时，按所选模型家族在尺寸后追加点数（括号）
+const naiSizeOptions = computed(() => {
+  const pts = editing.via_middle_station ? NAI_POINTS[naiModelFamily(editing.model)] : null;
+  const base: Array<{ label: string; value: string }> = [
+    { label: "竖图 832x1216", value: "portrait" },
+    { label: "横图 1216x832", value: "landscape" },
+    { label: "方图 1024x1024", value: "square" },
+    { label: "2K 竖图 1536x2304", value: "2Kportrait" },
+    { label: "2K 横图 2304x1536", value: "2Klandscape" },
+    { label: "4K 竖图 2048x3072", value: "4Kportrait" },
+    { label: "4K 横图 3072x2048", value: "4Klandscape" },
+  ];
+  if (!pts) return base;
+  return base.map((o) => ({ ...o, label: `${o.label}（${pts[SIZE_TIER[o.value] || "1K"]}点）` }));
+});
 const openaiSizeOptions = [
   { label: "1024x1024", value: "1024x1024" },
   { label: "1024x1536", value: "1024x1536" },

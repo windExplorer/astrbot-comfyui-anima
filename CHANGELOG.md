@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.17（NAI 平台配置：模型下拉 + 尺寸点数展示）
+
+- NAI 平台「模型」改为下拉选择（V4.5 / V5 完整版与精选版，可自由输入其它模型名）。
+- 「默认尺寸」下拉按 sta1n 中转站点数在尺寸后追加展示（括号）：V4.5 基础档 1 点、V5 基础档 5 点，2K=15 点、4K=25 点；点数随所选模型版本实时联动，且仅在「走中转站」开启时显示。
+- 对齐 astrbot_plugin_nai_image 的模型/尺寸点数说明（V4.5 基础 1 点、V5 基础 5 点，2K/4K 同 15/25）。
+
 ## v5.10.16（修复 NAI 中转站出图尺寸与平台默认配置不符）
 
 - 根因：NAI 中转站（nai.sta1n.cn）只认英文尺寸键（portrait/landscape/square/2k_portrait/2k_landscape/2k_square/4k_portrait/4k_landscape/4k_square），旧版 `_nai_relay_size` 输出的是中文键（竖图/横图/方图…），中继站不识别会回落默认尺寸，导致「未指定尺寸时出的图」与平台「默认尺寸」对不上（对齐 astrbot_plugin_nai_image 的 IMAGE_SIZES）。
