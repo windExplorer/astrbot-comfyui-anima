@@ -165,6 +165,15 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
         ).strip("{} ,")
 
     results: list[bytes] = []
+    # 自定义请求头（条目式）：支持 {{api_key}} 等占位符
+    try:
+        try:
+            from .platform_store import normalize_headers
+        except ImportError:
+            from platform_store import normalize_headers
+        extra_headers = normalize_headers(p, {"api_key": api_key, "model": model})
+    except Exception:
+        extra_headers = {}
     for i in range(max(1, count)):
         _seed = (int(seed) + i) if seed is not None else -1
         if via_middle:
@@ -181,7 +190,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
             }
             resp = await _request_with_retry(
                 "GET", f"{base}/generate",
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": f"Bearer {api_key}", **extra_headers},
                 params=params,
             )
             raw = await resp.read()
@@ -214,7 +223,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
             }
             resp = await _request_with_retry(
                 "POST", f"{base}/ai/generate-image",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
                 json_body=payload,
             )
             raw = await resp.read()
@@ -265,9 +274,23 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
     if quality:
         body["quality"] = quality
 
+    # 额外参数条目：合并进 body 顶层（中转站/模型专属字段，如 response_format、style 等）
+    try:
+        try:
+            from .platform_store import render_extra_params, normalize_headers
+        except ImportError:
+            from platform_store import render_extra_params, normalize_headers
+        _vars = {"prompt": prompt, "negative": negative, "model": model,
+                 "width": width, "height": height, "seed": seed, "api_key": api_key}
+        body.update(render_extra_params(p.get("extra_params"), _vars))
+        extra_headers = normalize_headers(p, _vars)
+    except Exception as _ep:
+        logger.warning(f"[平台] 额外参数/自定义头渲染失败（忽略）: {_ep}")
+        extra_headers = {}
+
     resp = await _request_with_retry(
         "POST", f"{base}/v1/images/generations",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
         json_body=body,
     )
     raw = await resp.read()
@@ -308,20 +331,41 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
                       seed, count: int) -> list[bytes]:
     # 延迟导入避免循环依赖
     try:
-        from .platform_store import render_custom_request, extract_path
+        from .platform_store import render_custom_request, extract_path, normalize_headers
     except ImportError:
-        from platform_store import render_custom_request, extract_path
+        from platform_store import render_custom_request, extract_path, normalize_headers
 
     results: list[bytes] = []
     resp_type = (p.get("resp_type") or "b64_json").strip()
     resp_path = (p.get("resp_path") or "").strip()
+    # 请求体来源：extra_params 条目式（推荐，零 JSON）；body_template 为旧版/高级模式兼容
+    body_template = str(p.get("body_template") or "").strip()
+    body_params = p.get("extra_params") if isinstance(p.get("extra_params"), list) else []
 
     for i in range(max(1, count)):
         _seed = (int(seed) + i) if seed is not None else -1
-        method, url, headers, body_text = render_custom_request(
-            p, prompt=prompt, negative=negative, width=width, height=height,
-            seed=_seed,
-        )
+        if body_template:
+            method, url, headers, body_text = render_custom_request(
+                p, prompt=prompt, negative=negative, width=width, height=height,
+                seed=_seed,
+            )
+            headers = {**normalize_headers(p, {"prompt": prompt, "api_key": p.get("api_key") or ""}), **headers}
+        else:
+            # 条目式：body_params 每条 {key, value, vtype}，value 支持 {{prompt}} 等占位符
+            method = (p.get("method") or "POST").upper()
+            url = str(p.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                raise PlatformError(f"custom 平台 URL 不合法: {url!r}")
+            try:
+                from .platform_store import render_extra_params
+            except ImportError:
+                from platform_store import render_extra_params
+            _vars = {"prompt": prompt, "negative": negative, "model": p.get("model") or "",
+                     "width": width, "height": height, "seed": _seed,
+                     "api_key": p.get("api_key") or "", "artist": ""}
+            body_obj = render_extra_params(body_params, _vars)
+            body_text = json.dumps(body_obj, ensure_ascii=False)
+            headers = normalize_headers(p, _vars)
         resp = await _request_with_retry(
             method, url, headers=headers, data=body_text.encode("utf-8"),
         )

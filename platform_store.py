@@ -78,6 +78,74 @@ def render_template(template: str, variables: dict) -> str:
     return out
 
 
+def normalize_headers(p: dict, variables: dict | None = None) -> dict:
+    """把平台条目的自定义请求头归一为 dict。
+
+    兼容两种存储：
+    - 新格式：列表 [{"key": "X-Foo", "value": "bar"}, ...]（WebUI 条目式编辑）
+    - 旧格式：dict {"X-Foo": "bar"}（v5.8.0 custom 条目）
+    value 支持 {{api_key}} 等占位符渲染。
+    """
+    raw = p.get("headers")
+    out: dict = {}
+    items: list = []
+    if isinstance(raw, dict):
+        items = [{"key": k, "value": v} for k, v in raw.items()]
+    elif isinstance(raw, list):
+        items = [x for x in raw if isinstance(x, dict)]
+    for it in items:
+        k = str(it.get("key") or "").strip()
+        if not k:
+            continue
+        v = str(it.get("value") or "")
+        if variables:
+            v = render_template(v, variables)
+        out[k] = v
+    return out
+
+
+def render_extra_params(items, variables: dict | None = None) -> dict:
+    """把「额外参数」条目列表渲染为 dict（并入请求 body）。
+
+    每条：{"key": 参数名, "value": 值, "vtype": text|number|bool|json}
+    - text（默认）：原样字符串（可含 {{prompt}} 等占位符）
+    - number：转 int/float，失败原样字符串
+    - bool：true/false/1/0/yes/no（不区分大小写），其余原样
+    - json：值本身是 JSON 字符串，解析后并入（失败原样字符串）
+    """
+    out: dict = {}
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        k = str(it.get("key") or "").strip()
+        if not k:
+            continue
+        raw = it.get("value")
+        vtype = str(it.get("vtype") or "text").strip().lower()
+        val = render_template(str(raw if raw is not None else ""), variables) if variables else str(raw if raw is not None else "")
+        if vtype == "number":
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                try:
+                    val = float(val)
+                except (TypeError, ValueError):
+                    pass
+        elif vtype == "bool":
+            low = str(val).strip().lower()
+            if low in ("true", "1", "yes", "on"):
+                val = True
+            elif low in ("false", "0", "no", "off", ""):
+                val = False
+        elif vtype == "json":
+            try:
+                val = json.loads(val)
+            except Exception:
+                pass
+        out[k] = val
+    return out
+
+
 def extract_path(data, path: str):
     """按 'a.b.0.c' 形式的点路径从嵌套结构提取值；失败返回 None。"""
     cur = data

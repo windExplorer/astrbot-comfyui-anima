@@ -104,6 +104,31 @@
         <n-form-item label="可用用户">
           <n-input v-model:value="editing.allowed_users_text" placeholder="逗号分隔的 QQ 号；留空 = 仅管理员可用" />
         </n-form-item>
+        <n-form-item label="自定义请求头">
+          <div class="kv-editor">
+            <div v-for="(h, hi) in editing.headers_list" :key="hi" class="kv-row">
+              <n-input v-model:value="h.key" size="small" placeholder="Header 名，如 X-Region" style="width: 180px" />
+              <n-input v-model:value="h.value" size="small" placeholder="值，可用 api_key 等占位符" style="flex: 1" />
+              <n-button size="tiny" type="error" ghost @click="editing.headers_list.splice(hi, 1)">删</n-button>
+            </div>
+            <n-button size="tiny" dashed @click="editing.headers_list.push({ key: '', value: '' })">+ 添加请求头</n-button>
+            <div class="hint">追加到生图请求的 HTTP 头，可用于鉴权、地区路由等；每条一个头。</div>
+          </div>
+        </n-form-item>
+        <n-form-item v-if="editing.type !== 'nai'" label="额外参数">
+          <div class="kv-editor">
+            <div v-for="(ep, ei) in editing.extra_params" :key="ei" class="kv-row">
+              <n-input v-model:value="ep.key" size="small" placeholder="参数名" style="width: 160px" />
+              <n-input v-model:value="ep.value" size="small" :placeholder="editing.type === 'custom' ? '值，支持 prompt 等占位符' : '值'" style="flex: 1" />
+              <n-select v-model:value="ep.vtype" size="small" :options="vtypeOptions" style="width: 96px" />
+              <n-button size="tiny" type="error" ghost @click="editing.extra_params.splice(ei, 1)">删</n-button>
+            </div>
+            <n-button size="tiny" dashed @click="editing.extra_params.push({ key: '', value: '', vtype: 'text' })">+ 添加参数</n-button>
+            <div class="hint">
+              {{ editing.type === 'openai' ? '并入请求体顶层（中转站/模型专属字段，如 response_format）' : '逐条拼装请求体，无需手写 JSON；value 支持 prompt / negative / width / height / seed 等占位符' }}
+            </div>
+          </div>
+        </n-form-item>
         <template v-if="editing.type === 'nai'">
           <n-form-item label="走中转站">
             <n-space align="center">
@@ -148,17 +173,14 @@
           <n-form-item label="请求方法">
             <n-select v-model:value="editing.method" :options="[{ label: 'POST', value: 'POST' }, { label: 'GET', value: 'GET' }]" />
           </n-form-item>
-          <n-form-item label="请求体模板">
-            <n-input v-model:value="editing.body_template" type="textarea" :rows="5" placeholder='{"prompt":"{{prompt}}","width":{{width}},"height":{{height}}}' />
-          </n-form-item>
           <n-form-item label="响应类型">
             <n-select v-model:value="editing.resp_type" :options="[{ label: 'JSON 内 base64', value: 'b64_json' }, { label: 'JSON 内图片 URL', value: 'url' }, { label: '直接返回图片二进制', value: 'binary' }]" />
           </n-form-item>
           <n-form-item label="提取路径">
             <n-input v-model:value="editing.resp_path" placeholder="如 data.0.b64_json（留空自动探测）" />
           </n-form-item>
-          <n-form-item label="额外 Headers">
-            <n-input v-model:value="editing.headers_text" type="textarea" :rows="2" placeholder='{"Authorization":"Bearer {{api_key}}"}（JSON，可空）' />
+          <n-form-item label="高级模板">
+            <n-input v-model:value="editing.body_template" type="textarea" :rows="3" placeholder="留空即可——请求体由上方「额外参数」条目拼装。仅在需要完整 JSON 模板控制时填写，填写后优先于条目。" />
           </n-form-item>
         </template>
       </n-form>
@@ -282,6 +304,12 @@ const samplerOptions = [
   "k_euler_ancestral", "k_euler", "ddim",
 ].map((s) => ({ label: s, value: s }));
 const noiseOptions = ["karras", "native", "exponential", "polyexponential"].map((s) => ({ label: s, value: s }));
+const vtypeOptions = [
+  { label: "文本", value: "text" },
+  { label: "数字", value: "number" },
+  { label: "布尔", value: "bool" },
+  { label: "JSON", value: "json" },
+];
 
 const baseUrlPlaceholder = computed(() => {
   if (editing.type === "nai") return "https://image.novelai.net 或中转站地址";
@@ -309,6 +337,8 @@ function emptyPlatform(type: string) {
     model: "",
     enabled: true,
     allowed_users_text: "",
+    headers_list: [],
+    extra_params: [],
   };
   if (type === "nai") {
     base.via_middle_station = false;
@@ -339,8 +369,20 @@ function openEdit(p: any) {
   const copy = emptyPlatform(p.type || "openai");
   Object.assign(copy, JSON.parse(JSON.stringify(p)));
   if (!copy.defaults) copy.defaults = emptyPlatform("nai").defaults;
-  if (p.type === "custom" && p.headers && typeof p.headers === "object") {
-    copy.headers_text = JSON.stringify(p.headers);
+  // 自定义请求头：兼容旧 dict（v5.8.0 custom）与新列表 [{key,value}]
+  if (Array.isArray(p.headers)) {
+    copy.headers_list = p.headers.map((h: any) => ({ key: h.key || "", value: h.value || "" }));
+  } else if (p.headers && typeof p.headers === "object") {
+    copy.headers_list = Object.entries(p.headers).map(([k, v]) => ({ key: k, value: String(v) }));
+  } else {
+    copy.headers_list = [];
+  }
+  copy.extra_params = Array.isArray(p.extra_params)
+    ? p.extra_params.map((e: any) => ({ key: e.key || "", value: e.value ?? "", vtype: e.vtype || "text" }))
+    : [];
+  if (p.type === "custom") {
+    // 旧版 JSON 模板字段保留（高级兼容），条目式为默认使用方式
+    copy.headers_text = "";
   }
   copy.allowed_users_text = Array.isArray(p.allowed_users) ? p.allowed_users.join(",") : "";
   Object.assign(editing, copy);
@@ -368,15 +410,21 @@ function applyEdit() {
     .map((s: string) => s.trim())
     .filter(Boolean);
   delete item.allowed_users_text;
+  // 自定义请求头：条目 → dict（后端兼容列表与 dict 两种）
+  item.headers = (item.headers_list || [])
+    .filter((h: any) => String(h.key || "").trim())
+    .reduce((acc: any, h: any) => { acc[String(h.key).trim()] = h.value ?? ""; return acc; }, {} as any);
+  delete item.headers_list;
+  // 额外参数：剔除空 key 行
+  item.extra_params = (item.extra_params || []).filter((e: any) => String(e.key || "").trim());
   if (item.type === "custom") {
-    try {
-      item.headers = item.headers_text ? JSON.parse(item.headers_text) : {};
-    } catch {
-      message.error("额外 Headers 不是合法 JSON");
+    // 条目式为主；若用户保留了旧 JSON 模板则优先级更高（高级兼容）
+    if (String(item.body_template || "").trim() && !(item.extra_params || []).length) {
+      // 只有模板没有条目：允许纯模板用法
+    } else if (!(item.extra_params || []).length) {
+      message.error("请至少添加一条请求体参数（或改用高级 JSON 模板）");
       return;
     }
-    delete item.headers_text;
-    if (!String(item.body_template || "").trim()) { message.error("请填写请求体模板"); return; }
   }
   const idx = cfg.platforms.findIndex((p: any) => p.id === item.id);
   if (idx >= 0) cfg.platforms[idx] = item;
@@ -474,6 +522,15 @@ onMounted(load);
 }
 .spacer {
   flex: 1;
+}
+.kv-editor {
+  width: 100%;
+}
+.kv-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 .hint {
   font-size: 12px;

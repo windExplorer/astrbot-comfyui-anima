@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.8.5（平台自定义请求头与额外参数条目化，参考伴侣插件生图配置）
+
+- 所有平台新增「自定义请求头」条目编辑（逐条 Key/Value，值支持 api_key 等占位符），用于鉴权、地区路由等；兼容 v5.8.0 的 dict 存储。
+- OpenAI 兼容 / 自定义 HTTP 平台新增「额外参数」条目编辑（逐条 参数名/值/类型：文本、数字、布尔、JSON）：OpenAI 平台并入请求体顶层（中转站与模型专属字段，如 response_format、style）；自定义 HTTP 平台逐条拼装请求体（value 支持 prompt/negative/width/height/seed 占位符），彻底告别手写 JSON。
+- 自定义 HTTP 的 JSON 模板降级为高级兼容选项（填写后优先于条目）。
+- NAI 官方接口参数严格校验，不开放额外参数（仅自定义请求头）。
+
 ## v5.8.4（PC 侧边栏补「生图平台」菜单项）
 
 - PC 侧边栏（App.vue menuOptions）与移动端抽屉（nav.ts NAV_ITEMS）是两套菜单数据源，v5.8.0 只加了移动端一套，PC 端菜单缺「生图平台」入口（直接访问 #/platforms 可用）。现已两端同步。
