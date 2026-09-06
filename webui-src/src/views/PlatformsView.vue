@@ -86,6 +86,9 @@
     <!-- 平台编辑弹窗 -->
     <n-modal v-model:show="showEdit" preset="card" :title="editIsNew ? '添加平台' : '编辑平台'" style="width: 620px">
       <n-form label-placement="left" label-width="120" size="small">
+        <n-form-item v-if="editIsNew" label="快速预设">
+          <n-select v-model:value="presetKey" :options="presetOptions" placeholder="选一个预设模板，字段自动填好，只需填 Key" @update:value="applyPresetTemplate" />
+        </n-form-item>
         <n-form-item label="平台类型">
           <n-select v-model:value="editing.type" :options="typeOptions" :disabled="!editIsNew" @update:value="onTypeChange" />
         </n-form-item>
@@ -333,6 +336,69 @@ const vtypeOptions = [
   { label: "JSON", value: "json" },
 ];
 
+// ---- 快速预设模板（添加平台时一键预填，参考常见生图平台） ----
+const NAI_DEFAULTS = {
+  size: "portrait", steps: 28, scale: 6, cfg_rescale: 0.3,
+  sampler: "k_dpmpp_2m_sde", noise_schedule: "karras", negative: "",
+};
+const PLATFORM_PRESETS: Record<string, { label: string; fields: any }> = {
+  blank: { label: "空白（手动填写）", fields: null },
+  nai_official: {
+    label: "NAI 官方（NovelAI 订阅 Token）",
+    fields: {
+      type: "nai", base_url: "https://image.novelai.net",
+      model: "nai-diffusion-4-5-full", via_middle_station: false,
+      defaults: { ...NAI_DEFAULTS },
+    },
+  },
+  nai_middle: {
+    label: "NAI 中转站（nai.sta1n.cn 等）",
+    fields: {
+      type: "nai", base_url: "https://nai.sta1n.cn",
+      model: "nai-diffusion-4-5-full", via_middle_station: true,
+      defaults: { ...NAI_DEFAULTS },
+    },
+  },
+  openai_official: {
+    label: "OpenAI 官方（gpt-image-1 / dall-e-3）",
+    fields: { type: "openai", base_url: "https://api.openai.com", model: "gpt-image-1", size: "1024x1024", quality: "", negative: "" },
+  },
+  newapi: {
+    label: "newapi / one-api 中转（OpenAI 兼容）",
+    fields: { type: "openai", base_url: "", model: "", size: "1024x1024", quality: "", negative: "" },
+  },
+  siliconflow: {
+    label: "硅基流动（SiliconFlow）",
+    fields: { type: "openai", base_url: "https://api.siliconflow.cn", model: "Kwai-Kolors/Kolors", size: "1024x1024", quality: "", negative: "" },
+  },
+  doubao: {
+    label: "豆包（火山方舟 Seedream）",
+    fields: { type: "openai", base_url: "https://ark.cn-beijing.volces.com", model: "doubao-seedream-3-0-t2i-250415", size: "1024x1024", quality: "", negative: "" },
+  },
+};
+const presetKey = ref("blank");
+const presetOptions = Object.entries(PLATFORM_PRESETS).map(([k, v]) => ({ label: v.label, value: k }));
+
+function applyPresetTemplate(key: string) {
+  const preset = PLATFORM_PRESETS[key];
+  if (!preset || !preset.fields) return; // blank 不动
+  const fields = JSON.parse(JSON.stringify(preset.fields));
+  // 保留用户已填内容：Key、名称、白名单、自定义头/参数
+  const keep = {
+    id: editing.id,
+    api_key: editing.api_key,
+    name: editing.name,
+    allowed_users_text: editing.allowed_users_text,
+    headers_list: editing.headers_list,
+    extra_params: editing.extra_params,
+    enabled: editing.enabled,
+  };
+  const fresh = emptyPlatform(fields.type);
+  Object.assign(fresh, fields, keep);
+  if (!String(fresh.name || "").trim()) fresh.name = preset.label.split("（")[0];
+  Object.assign(editing, fresh);
+}
+
 const baseUrlPlaceholder = computed(() => {
   if (editing.type === "nai") return "https://image.novelai.net 或中转站地址";
   if (editing.type === "openai") return "https://api.openai.com 或 newapi 中转地址";
@@ -384,6 +450,7 @@ function emptyPlatform(type: string) {
 function openAdd() {
   Object.assign(editing, emptyPlatform("openai"));
   editIsNew.value = true;
+  presetKey.value = "blank";
   showEdit.value = true;
 }
 
