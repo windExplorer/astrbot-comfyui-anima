@@ -187,15 +187,15 @@ ComfyUI 服务器管理仍在原配置页 `comfyui_servers`。
 ## 8. 第一期实施顺序（checklist）
 
 1. [x] 方案文档（本文）
-2. [ ] `image_store.py`：加 4 列（platform/model/negative/extra）+ archive_image/_row_to_dict/add_failed_record 扩展
-3. [ ] `main.py`：ComfyUI 归档补 `platform/negative`
-4. [ ] `platform_store.py`：平台配置管理（JSON 读写 + 模板渲染 + pick_enabled）
-5. [ ] `nai_client.py`：NaiClient / OpenAIImageClient / CustomHttpClient
-6. [ ] `webui_api.py` + `standalone_webui.py`：/platforms GET+save 路由（双侧）
-7. [ ] `main.py`：_do_draw 分流 + `_do_draw_nai_style` + 归档/失败记录带 platform
-8. [ ] `comfyui_draw` 工具加 platform 参数 + 描述
-9. [ ] `webui-src`：PlatformsView.vue + 路由 + 导航；ImageViewer.vue 加平台/模型/负面词行
-10. [ ] 版本 v5.8.0（新功能 minor 进位）+ CHANGELOG + build_webui + build_zip + commit + push
+2. [x] `image_store.py`：加 4 列（platform/model/negative/extra）+ archive_image/_row_to_dict/add_failed_record 扩展
+3. [x] `main.py`：ComfyUI 归档补 `platform/negative`
+4. [x] `platform_store.py`：平台配置管理（JSON 读写 + 模板渲染 + pick_enabled）
+5. [x] `nai_client.py`：NaiClient / OpenAIImageClient / CustomHttpClient
+6. [x] `webui_api.py` + `standalone_webui.py`：/platforms GET+save 路由（双侧）
+7. [x] `main.py`：_do_draw 分流 + `_do_draw_nai_style` + 归档/失败记录带 platform
+8. [x] `comfyui_draw` 工具加 platform 参数 + 描述
+9. [x] `webui-src`：PlatformsView.vue + 路由 + 导航；ImageViewer.vue 加平台/模型/负面词行
+10. [x] 版本 v5.8.0 + CHANGELOG + build_webui + build_zip + commit + push（commit 03ad4e5，2026-09-06）
 
 版本规则：v5.7.7 → **v5.8.0**（新功能系列，minor 进位）。
 
