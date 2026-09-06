@@ -1616,6 +1616,7 @@ class ImageStore:
         user_filter: str = "",
         nsfw: str = "",
         tag: str = "",
+        platform: str = "",
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
         owner: 用户隔离标识，与 search 保持一致。
@@ -1669,6 +1670,9 @@ class ImageStore:
             sql += " AND nsfw=0"
         elif nsfw_f == "1":
             sql += " AND nsfw=1"
+        if platform and platform.strip():
+            sql += " AND platform=?"
+            args.append(platform.strip())
         try:
             row = conn.execute(sql, args).fetchone()
             return int(row["c"]) if row else 0
@@ -1689,6 +1693,7 @@ class ImageStore:
         user_filter: str = "",
         nsfw: str = "",
         tag: str = "",
+        platform: str = "",
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
@@ -1752,6 +1757,9 @@ class ImageStore:
             sql += " AND nsfw=0"
         elif nsfw_f == "1":
             sql += " AND nsfw=1"
+        if platform and platform.strip():
+            sql += " AND platform=?"
+            args.append(platform.strip())
         sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"
         args.append(int(limit))
         args.append(int(offset))
@@ -2171,6 +2179,16 @@ class ImageStore:
                 ).fetchone()["c"]
             except Exception:
                 nsfw_unchecked = 0
+            # 平台分布：供图库前端「按平台筛选」下拉动态生成选项（仅未删除且 platform 非空）
+            try:
+                _plat_rows = conn.execute(
+                    "SELECT platform, COUNT(*) c FROM images "
+                    "WHERE deleted=0 AND platform IS NOT NULL AND platform<>'' "
+                    "GROUP BY platform ORDER BY c DESC"
+                ).fetchall()
+                platforms = [{"platform": r["platform"], "count": int(r["c"])} for r in _plat_rows]
+            except Exception:
+                platforms = []
         except Exception as e:
             logger.warning(f"[图库] 统计失败: {e}")
             return {"enabled": self.enabled()}
@@ -2193,6 +2211,7 @@ class ImageStore:
             "trash_count": trash_count,
             "nsfw_count": int(nsfw_count),
             "nsfw_unchecked": int(nsfw_unchecked),
+            "platforms": platforms,
         }
 
     def workflow_stats(self, top: int = 3, days: int = 0) -> list[dict]:

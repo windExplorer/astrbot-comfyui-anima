@@ -40,7 +40,7 @@ _NAI_DEFAULT_BASE = "https://image.novelai.net"
 _RETRY_DELAYS = (2, 4, 8)
 _RETRY_STATUS = (408, 429, 502, 503, 504)
 
-_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=120, connect=15)
+_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=120, connect=60)
 
 
 class PlatformError(RuntimeError):

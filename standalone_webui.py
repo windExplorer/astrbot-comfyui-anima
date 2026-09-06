@@ -704,13 +704,14 @@ class StandaloneWebUI:
             trash = self._q(request, "trash", "0") == "1"
             nsfw = self._q(request, "nsfw", "")
             tag = self._q(request, "tag", "")
+            platform = self._q(request, "platform", "") or ""
             page = max(1, self._qint(request, "page", 1))
             size = min(self._qint(request, "size", 40), 200)
             offset = (page - 1) * size
             rows = g.search(keyword=kw, type=stype, starred_only=starred, trash=trash,
-                            limit=size, offset=offset, nsfw=nsfw, tag=tag)
+                            limit=size, offset=offset, nsfw=nsfw, tag=tag, platform=platform)
             total = g.count_search(keyword=kw, type=stype, starred_only=starred,
-                                   trash=trash, nsfw=nsfw, tag=tag)
+                                   trash=trash, nsfw=nsfw, tag=tag, platform=platform)
             for r in rows:
                 r["sha"] = r.get("sha256", "")
                 r.pop("thumb", None)

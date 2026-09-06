@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.3（平台生图连接超时延长 + 图库按平台筛选 / 大图详情显示平台）
+
+- 超时：平台生图连接超时（aiohttp connect）由 15s 提至 60s，慢服务器 / 弱网络不再「15s 就不等了」直接报连接超时；ComfyUI 服务器探测整体超时 15s→60s、握手探测 8s→20s（仅影响「/绘图服务器状态」不可达探测的返回速度，不阻塞正常出图）。
+- 图库平台筛选：images 表本就有 platform 列（`search` / `count_search` 新增 `platform` 过滤，两端 WebUI 的 `gallery/search` 透传）；stats 新增 `platforms` 分布（平台名 + 命中数）。
+- 前端图库页新增「平台」下拉筛选，选项由 `gallery/stats` 的 `platforms` 动态生成（只列出图库里真实存在且有图的平台）。
+- 大图详情：原「平台」行仅在非 comfyui 时显示，改为始终显示（含默认 comfyui），并附带 model（如 NAI 模型名），点击任意图即可看到出自哪个平台。
+
 ## v5.10.2（紧急修复：图库 archive_image 写库 SQL 占位符错位，导致所有出图/平台测试均「图片未入库」）
 
 - 根因：v5.8.0 给 images 表加 platform/model/negative/extra 4 列时，archive_image 的 INSERT 列列表（36 列）与 VALUES 占位符（仅 35 个）未对齐，sqlite 报「列数/值数不匹配」→ 每次归档（含 ComfyUI 出图与第三方平台）都写库失败、返回 None，前端显示「图库未启用，图片未入库」（文案误导：实际图库已初始化，只是写库失败）。

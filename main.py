@@ -5410,8 +5410,8 @@ class ComfyUIDrawPlugin(Star):
         lines = ["🖥️ 绘图服务器状态"]
         for idx, s in enumerate(active, 1):
             url = s["url"].strip()
-            # 探测用较短的超时（不可达时更快返回），整体 15s 上限
-            client = comfyui_client.ComfyUIClient(url, timeout=15, probe_timeout=8)
+            # 探测用较短的超时（不可达时更快返回），整体 60s 上限（连接/握手慢的服务器也给足等待）
+            client = comfyui_client.ComfyUIClient(url, timeout=60, probe_timeout=20)
             # 1) 用根路径探测连通性与 HTTP 往返耗时（不依赖 system_stats 等可能 404 的端点）
             p = await client.probe()
             if not p.get("ok"):
