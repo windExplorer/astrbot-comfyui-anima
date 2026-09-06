@@ -471,12 +471,12 @@ const naiSizeOptions = computed(() => {
     { label: "竖图 832x1216", value: "portrait" },
     { label: "横图 1216x832", value: "landscape" },
     { label: "方图 1024x1024", value: "square" },
-    { label: "2K 竖图 1536x2304", value: "2Kportrait" },
-    { label: "2K 横图 2304x1536", value: "2Klandscape" },
-    { label: "2K 方图 2048x2048", value: "2Ksquare" },
-    { label: "4K 竖图 2048x3072", value: "4Kportrait" },
-    { label: "4K 横图 3072x2048", value: "4Klandscape" },
-    { label: "4K 方图 3072x3072", value: "4Ksquare" },
+    { label: "2K 竖图 1088x1600", value: "2Kportrait" },
+    { label: "2K 横图 1600x1088", value: "2Klandscape" },
+    { label: "2K 方图 1344x1344", value: "2Ksquare" },
+    { label: "4K 竖图 1344x1984", value: "4Kportrait" },
+    { label: "4K 横图 1984x1344", value: "4Klandscape" },
+    { label: "4K 方图 1728x1728", value: "4Ksquare" },
   ];
   if (!pts) return base;
   return base.map((o) => ({ ...o, label: `${o.label}（${pts[SIZE_TIER[o.value] || "1K"]}点）` }));
