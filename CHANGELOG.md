@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.4（接口地址自动归一 + 测试「查看请求详情」）
+
+- openai 平台接口地址智能归一：填裸域名（api.openai.com）、带 /v1、甚至误填完整端点（.../v1/images/generations）都能正确拼出最终请求，不再因多写一段而 404/400。
+- 平台测试新增「查看请求详情」：展开可见实际发出的 method/URL/请求头（Authorization 脱敏）/请求体/HTTP 状态/响应原文（截断 2000 字符），一眼定位 Key 错、地址错、参数错。
+
 ## v5.9.3（修复：OpenAI 兼容平台默认发送 parameters 对象被严格端点 400 拒绝）
 
 - v5.8.x 起 openai 类型默认把 negative/seed 等打包进 parameters 对象（NAI 中转私有扩展），标准 OpenAI 兼容端点（Agnes/SenseNova/newapi 等）对未知字段直接 400：parameters is not supported by text image queue。

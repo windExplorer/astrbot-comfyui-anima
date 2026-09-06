@@ -56,21 +56,25 @@ async def generate(
     seed=None,
     count: int = 1,
     artist: str = "",
+    capture: dict | None = None,
 ) -> list[bytes]:
-    """按平台类型分发。返回 bytes 列表（每张一项）。"""
+    """按平台类型分发。返回 bytes 列表（每张一项）。
+
+    capture: 可选 dict，用于回填实际请求/响应调试信息（测试功能「查看详情」）。"""
     ptype = (p.get("type") or "").strip().lower()
     if ptype == "nai":
         return await _gen_nai(p, prompt=prompt, negative=negative, width=width,
-                              height=height, seed=seed, count=count, artist=artist)
+                              height=height, seed=seed, count=count, artist=artist,
+                              capture=capture)
     if ptype == "openai":
         return await _gen_openai(p, prompt=prompt, negative=negative, width=width,
-                                 height=height, seed=seed, count=count)
+                                 height=height, seed=seed, count=count, capture=capture)
     if ptype == "minimax":
         return await _gen_minimax(p, prompt=prompt, negative=negative, width=width,
-                                  height=height, seed=seed, count=count)
+                                  height=height, seed=seed, count=count, capture=capture)
     if ptype == "custom":
         return await _gen_custom(p, prompt=prompt, negative=negative, width=width,
-                                 height=height, seed=seed, count=count)
+                                 height=height, seed=seed, count=count, capture=capture)
     raise PlatformError(f"不支持的平台类型: {ptype!r}")
 
 
@@ -78,10 +82,24 @@ async def generate(
 # 通用 HTTP 帮助
 # ---------------------------------------------------------------------- #
 
+def _mask_headers(headers: dict) -> dict:
+    """请求头脱敏（Authorization 等只保留前 12 字符），供调试信息展示。"""
+    out = {}
+    for k, v in (headers or {}).items():
+        sv = str(v)
+        if k.lower() in ("authorization", "x-api-key", "api-key") and len(sv) > 12:
+            sv = sv[:12] + "..."
+        out[k] = sv
+    return out
+
+
 async def _request_with_retry(method: str, url: str, *, headers: dict = None,
                               params: dict = None, json_body: dict = None,
-                              data=None, timeout=_DEFAULT_TIMEOUT) -> aiohttp.ClientResponse:
-    """带瞬时错误退避重试的请求。失败抛 PlatformError。"""
+                              data=None, timeout=_DEFAULT_TIMEOUT,
+                              capture: dict | None = None) -> aiohttp.ClientResponse:
+    """带瞬时错误退避重试的请求。失败抛 PlatformError。
+
+    capture: 可选 dict，回填最后一次实际请求/响应（headers 脱敏、响应截断 2000 字符）。"""
     last_err = ""
     for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
@@ -90,6 +108,25 @@ async def _request_with_retry(method: str, url: str, *, headers: dict = None,
                     method, url, headers=headers or {}, params=params,
                     json=json_body, data=data,
                 ) as resp:
+                    if capture is not None:
+                        try:
+                            cap: dict = {
+                                "method": method,
+                                "url": url,
+                                "headers": _mask_headers(headers or {}),
+                                "status": resp.status,
+                                "response": (await resp.text())[:2000],
+                            }
+                            if params:
+                                cap["query_params"] = params
+                            if json_body is not None:
+                                cap["body"] = json_body
+                            elif data is not None:
+                                cap["body"] = str(data)[:4000]
+                            capture.clear()
+                            capture.update(cap)
+                        except Exception:
+                            pass
                     if resp.status < 400:
                         return resp
                     body_text = (await resp.text())[:500]
@@ -153,7 +190,8 @@ def _iter_values(obj):
 # ---------------------------------------------------------------------- #
 
 async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                   seed, count: int, artist: str = "") -> list[bytes]:
+                   seed, count: int, artist: str = "",
+                   capture: dict | None = None) -> list[bytes]:
     base = (p.get("base_url") or _NAI_DEFAULT_BASE).rstrip("/")
     api_key = (p.get("api_key") or "").strip()
     if not api_key:
@@ -195,7 +233,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
             resp = await _request_with_retry(
                 "GET", f"{base}/generate",
                 headers={"Authorization": f"Bearer {api_key}", **extra_headers},
-                params=params,
+                params=params, capture=capture,
             )
             raw = await resp.read()
             img = _resp_to_bytes(raw, resp.headers.get("Content-Type", ""))
@@ -228,7 +266,7 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
             resp = await _request_with_retry(
                 "POST", f"{base}/ai/generate-image",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
-                json_body=payload,
+                json_body=payload, capture=capture,
             )
             raw = await resp.read()
             img = _resp_to_bytes(raw, resp.headers.get("Content-Type", "application/zip"))
@@ -243,8 +281,13 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
 # ---------------------------------------------------------------------- #
 
 async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                      seed, count: int) -> list[bytes]:
-    base = (p.get("base_url") or "").rstrip("/")
+                      seed, count: int, capture: dict | None = None) -> list[bytes]:
+    base = (p.get("base_url") or "").strip().rstrip("/")
+    # 端点归一：裸域名 / 带 /v1 / 误填完整端点，统一为 <root>/v1/images/generations
+    base = re.sub(r"/v1/(?:images/(?:generations|edits))?/?$", "", base, flags=re.I)
+    base = re.sub(r"/images/(?:generations|edits)/?$", "", base, flags=re.I)
+    if not base.endswith("/v1"):
+        base += "/v1"
     api_key = (p.get("api_key") or "").strip()
     if not base:
         raise PlatformError("OpenAI 兼容平台未配置接口地址（base_url）")
@@ -308,7 +351,7 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
     resp = await _request_with_retry(
         "POST", f"{base}/v1/images/generations",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
-        json_body=body,
+        json_body=body, capture=capture,
     )
     raw = await resp.read()
     try:
@@ -368,7 +411,7 @@ def _aspect_ratio_of(w: int, h: int) -> str:
 
 
 async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                       seed, count: int) -> list[bytes]:
+                       seed, count: int, capture: dict | None = None) -> list[bytes]:
     base = (p.get("base_url") or "https://api.minimaxi.com").strip()
     endpoint = _minimax_endpoint(base)
     api_key = (p.get("api_key") or "").strip()
@@ -411,7 +454,7 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
         resp = await _request_with_retry(
             "POST", endpoint,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
-            json_body=body,
+            json_body=body, capture=capture,
         )
         raw = await resp.read()
         try:
@@ -443,7 +486,7 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
 # ---------------------------------------------------------------------- #
 
 async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                      seed, count: int) -> list[bytes]:
+                      seed, count: int, capture: dict | None = None) -> list[bytes]:
     # 延迟导入避免循环依赖
     try:
         from .platform_store import render_custom_request, extract_path, normalize_headers
@@ -485,7 +528,7 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
         # GET 且无请求体时绝不携带 body（直链类平台，如 Pollinations）
         _data = body_text.encode("utf-8") if (method == "POST" and body_text) else None
         resp = await _request_with_retry(
-            method, url, headers=headers, data=_data,
+            method, url, headers=headers, data=_data, capture=capture,
         )
         raw = await resp.read()
         ct = resp.headers.get("Content-Type", "")

@@ -104,10 +104,11 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
             artist = ""
     seed = _random.randint(0, 2**31 - 1)
 
+    capture: dict = {}
     t0 = time.time()
     images = await nai_client.generate(
         plat, prompt=prompt, negative=negative, width=w, height=h,
-        seed=seed, count=1, artist=artist,
+        seed=seed, count=1, artist=artist, capture=capture,
     )
     cost = time.time() - t0
     if not images:
@@ -166,6 +167,7 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
         "platform": ptype,
         "model": model,
         "archived": bool(sha),
+        "debug": capture,
     }
 
 

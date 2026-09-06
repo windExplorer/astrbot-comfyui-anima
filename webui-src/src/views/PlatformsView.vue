@@ -212,6 +212,8 @@
             <div>尺寸 {{ testResult.w }} × {{ testResult.h }} · Seed {{ testResult.seed }}</div>
             <div v-if="testResult.archived">已入库（SHA {{ String(testResult.sha).slice(0, 16) }}，标签「平台测试」，可在图库查看）</div>
             <div v-else class="hint">图库未启用，图片未入库</div>
+            <n-button size="tiny" style="margin-top: 4px" @click="showDebug = !showDebug">{{ showDebug ? "收起详情" : "查看请求详情" }}</n-button>
+            <pre v-if="showDebug && testResult.debug" class="debug-pre">{{ formatDebug(testResult.debug) }}</pre>
           </div>
         </div>
       </div>
@@ -452,8 +454,8 @@ function applyPresetTemplate(key: string) {
 
 const baseUrlPlaceholder = computed(() => {
   if (editing.type === "nai") return "https://image.novelai.net 或中转站地址";
-  if (editing.type === "openai") return "https://api.openai.com 或 newapi 中转地址";
-  return "完整接口地址（含 http(s)://）";
+  if (editing.type === "openai") return "https://api.openai.com（填域名即可，自动补全 /v1/images/generations）";
+  return "完整接口地址（含 http(s)://，URL 支持 prompt 等占位符）";
 });
 const modelPlaceholder = computed(() => {
   if (editing.type === "nai") return "nai-diffusion-4-5-full / nai-diffusion-5-full";
@@ -591,6 +593,15 @@ const testing = ref(false);
 const testPrompt = ref("1girl, solo, simple background, upper body, looking at viewer, masterpiece");
 const testResult = ref<any>(null);
 const testError = ref("");
+const showDebug = ref(false);
+
+function formatDebug(d: any): string {
+  try {
+    return JSON.stringify(d, null, 2);
+  } catch {
+    return String(d);
+  }
+}
 
 async function runTest() {
   if (testing.value) return;
@@ -738,6 +749,18 @@ onMounted(load);
   font-size: 12px;
   line-height: 1.9;
   opacity: 0.85;
+}
+.debug-pre {
+  margin-top: 6px;
+  max-width: 520px;
+  max-height: 260px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .kv-row {
   display: flex;
