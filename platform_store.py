@@ -20,7 +20,7 @@ from pathlib import Path
 logger = logging.getLogger("astrbot")
 
 # 支持的平台类型
-PLATFORM_TYPES = ("nai", "openai", "custom")
+PLATFORM_TYPES = ("nai", "openai", "minimax", "custom")
 
 # NAI 默认请求参数（参考 astrbot_plugin_nai_image）
 NAI_SAMPLERS = (

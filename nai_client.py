@@ -21,6 +21,7 @@ import base64
 import io
 import json
 import logging
+import re
 import zipfile
 from pathlib import Path
 
@@ -64,6 +65,9 @@ async def generate(
     if ptype == "openai":
         return await _gen_openai(p, prompt=prompt, negative=negative, width=width,
                                  height=height, seed=seed, count=count)
+    if ptype == "minimax":
+        return await _gen_minimax(p, prompt=prompt, negative=negative, width=width,
+                                  height=height, seed=seed, count=count)
     if ptype == "custom":
         return await _gen_custom(p, prompt=prompt, negative=negative, width=width,
                                  height=height, seed=seed, count=count)
@@ -320,6 +324,104 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
             results.append(await dl.read())
     if not results:
         raise PlatformError("OpenAI 兼容平台响应里没有可用的图片数据")
+    return results
+
+
+# ---------------------------------------------------------------------- #
+# MiniMax（海螺 image-01 / image-01-live，同步 JSON）
+# ---------------------------------------------------------------------- #
+
+_MINIMAX_ENDPOINT_TAIL_RE = re.compile(
+    r"/v1/(?:image_generation|image/generation|images/generations|images/edits)/?$", re.I,
+)
+
+
+def _minimax_endpoint(base_url: str) -> str:
+    """MiniMax 端点归一：填根域名 / 带 /v1 / 带端点路径，统一为 <root>/v1/image_generation。"""
+    base = (base_url or "").strip().rstrip("/")
+    base = _MINIMAX_ENDPOINT_TAIL_RE.sub("", base)
+    if not base.startswith(("http://", "https://")):
+        raise PlatformError(f"MiniMax 平台地址不合法: {base_url!r}")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base + "/image_generation"
+
+
+def _aspect_ratio_of(w: int, h: int) -> str:
+    """宽高比映射到 MiniMax 支持的最接近档位（image-01-live 只认比例不认像素）。"""
+    ratio = (w / h) if h else 1.0
+    candidates = {"21:9": 21 / 9, "16:9": 16 / 9, "4:3": 4 / 3, "1:1": 1.0, "3:4": 3 / 4, "9:16": 9 / 16}
+    return min(candidates.items(), key=lambda kv: abs(kv[1] - ratio))[0]
+
+
+async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, height: int,
+                       seed, count: int) -> list[bytes]:
+    base = (p.get("base_url") or "https://api.minimaxi.com").strip()
+    endpoint = _minimax_endpoint(base)
+    api_key = (p.get("api_key") or "").strip()
+    if not api_key:
+        raise PlatformError("MiniMax 平台未配置密钥（api_key）")
+    model = (p.get("model") or "image-01").strip()
+
+    try:
+        try:
+            from .platform_store import render_extra_params, normalize_headers
+        except ImportError:
+            from platform_store import render_extra_params, normalize_headers
+        _vars = {"prompt": prompt, "negative": negative, "model": model,
+                 "width": width, "height": height, "seed": seed, "api_key": api_key}
+        extra_headers = normalize_headers(p, _vars)
+    except Exception:
+        extra_headers = {}
+
+    results: list[bytes] = []
+    for i in range(max(1, count)):
+        body: dict = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "response_format": "base64",
+        }
+        # image-01-live 只认比例；image-01 接受宽高像素
+        if "live" in model.lower():
+            body["aspect_ratio"] = _aspect_ratio_of(width, height)
+        else:
+            body["width"] = int(width)
+            body["height"] = int(height)
+        if negative:
+            body["negative_prompt"] = negative
+        try:
+            body.update(render_extra_params(p.get("extra_params"), _vars))
+        except Exception:
+            pass
+
+        resp = await _request_with_retry(
+            "POST", endpoint,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
+            json_body=body,
+        )
+        raw = await resp.read()
+        try:
+            resp_data = json.loads(raw.decode("utf-8", "ignore"))
+        except Exception as e:
+            raise PlatformError(f"MiniMax 响应解析失败: {e}")
+        base_resp = resp_data.get("base_resp") or {}
+        if isinstance(base_resp, dict) and int(base_resp.get("status_code", 0) or 0) != 0:
+            raise PlatformError(f"MiniMax 返回错误 {base_resp.get('status_code')}: {base_resp.get('status_msg', '未知')}")
+        data = resp_data.get("data") or {}
+        b64_list = data.get("image_base64") or []
+        if isinstance(b64_list, list) and b64_list:
+            try:
+                results.append(base64.b64decode(b64_list[0]))
+                continue
+            except Exception:
+                pass
+        url_list = data.get("image_urls") or []
+        if isinstance(url_list, list) and url_list:
+            dl = await _request_with_retry("GET", url_list[0])
+            results.append(await dl.read())
+            continue
+        raise PlatformError(f"MiniMax 响应里没有图片数据: {str(resp_data)[:300]}")
     return results
 
 

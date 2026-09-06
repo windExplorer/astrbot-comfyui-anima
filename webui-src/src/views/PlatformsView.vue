@@ -297,15 +297,16 @@ const activeOptions = computed(() => [
 ]);
 
 function typeLabel(t: string): string {
-  return ({ nai: "NAI", openai: "OpenAI 兼容", custom: "自定义" } as any)[t] || t || "未知";
+  return ({ nai: "NAI", openai: "OpenAI 兼容", minimax: "MiniMax", custom: "自定义" } as any)[t] || t || "未知";
 }
 function typeTag(t: string): any {
-  return ({ nai: "success", openai: "info", custom: "warning" } as any)[t] || "default";
+  return ({ nai: "success", openai: "info", minimax: "error", custom: "warning" } as any)[t] || "default";
 }
 
 const typeOptions = [
   { label: "NAI（NovelAI / 中转站）", value: "nai" },
   { label: "OpenAI 兼容（官方 / newapi / 聚合）", value: "openai" },
+  { label: "MiniMax（海螺 image-01）", value: "minimax" },
   { label: "自定义 HTTP（实验）", value: "custom" },
 ];
 const naiSizeOptions = [
@@ -388,17 +389,10 @@ const PLATFORM_PRESETS: Record<string, { label: string; fields: any }> = {
     fields: { type: "openai", base_url: "https://api.x.ai", model: "grok-2-image", size: "1024x1024", quality: "", negative: "" },
   },
   minimax: {
-    label: "MiniMax image-01（自定义条目示例）",
+    label: "MiniMax（海螺 image-01 / image-01-live）",
     fields: {
-      type: "custom", url: "https://api.minimax.chat/v1/image_generation", method: "POST",
-      resp_type: "b64_json", resp_path: "data.0.b64_json", body_template: "",
+      type: "minimax", base_url: "https://api.minimaxi.com",
       model: "image-01",
-      extra_params: [
-        { key: "model", value: "image-01", vtype: "text" },
-        { key: "prompt", value: "{{prompt}}", vtype: "text" },
-        { key: "width", value: "{{width}}", vtype: "number" },
-        { key: "height", value: "{{height}}", vtype: "number" },
-      ],
     },
   },
   pollinations: {

@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.9.0（新增 MiniMax 协议适配：海螺 image-01 / image-01-live）
+
+- 新增 minimax 平台类型：同步 JSON 协议（POST /v1/image_generation），端点自动归一（填根域名/带 /v1/带端点路径均可），支持 image-01（宽高像素）与 image-01-live（宽高比自动映射最接近档位）、negative_prompt、额外参数并入请求体、自定义请求头，响应兼容 image_base64 与 image_urls 两种格式，base_resp 错误码透出。
+- 快速预设「MiniMax」改为真适配（不再走 custom 条目示例）。
+- 说明：SenseNova 日日新暂未接入（参考插件中未挖到完整请求构造，需官方协议文档确认端点与签名方式后适配）；OpenRouter 文生图无需适配——快速预设选「newapi / one-api 中转」，地址填 https://openrouter.ai/api 即可。
+
 ## v5.8.9（预设扩充至 12 个：Together/智谱 CogView/xAI/MiniMax/Pollinations；custom 支持 GET 直链）
 
 - 新增预设：Together AI（FLUX 系）、智谱 CogView（cogview-3-flash 免费）、xAI（grok-2-image）、MiniMax image-01（条目式 custom 示例）、Pollinations（免费直链，无需 Key）。
