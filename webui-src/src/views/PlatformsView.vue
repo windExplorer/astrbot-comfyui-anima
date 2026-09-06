@@ -228,41 +228,55 @@
     </n-modal>
 
     <!-- 请求详情弹窗 -->
-    <n-modal v-model:show="showDebugModal" preset="card" title="请求详情（完整流程与响应，Authorization 已脱敏）" style="width: 880px">
+    <n-modal v-model:show="showDebugModal" preset="card" title="请求详情（完整流程与响应，Authorization 已脱敏）" style="width: 900px">
+      <div v-if="!lastDebug?.attempts?.length" class="dbg-empty">
+        {{ lastDebug?.error || "无请求记录（可能在发起请求前就失败，如配置校验未通过）" }}
+      </div>
       <n-space vertical :size="14">
-        <n-alert v-if="lastDebug && !lastDebug.attempts?.length" type="error">
-          {{ lastDebug.error || "无请求记录（可能在发起请求前就失败，如配置校验未通过）" }}
-        </n-alert>
-        <div v-for="(att, i) in lastDebug?.attempts || []" :key="i" class="dbg-card">
-          <div class="dbg-head">
-            <n-tag size="small" :type="statusTagType(att)">{{ att.method }} {{ att.status || (att.error ? "失败" : "—") }}</n-tag>
-            <span class="dbg-attempt">第 {{ att.attempt }} 次尝试</span>
-            <span class="spacer" />
-            <n-button size="tiny" @click="copyText(att.url)">复制 URL</n-button>
+        <n-card
+          v-for="(att, i) in lastDebug?.attempts || []"
+          :key="i"
+          size="small"
+          class="dbg-card"
+          :title="`第 ${att.attempt} 次尝试`"
+        >
+          <template #header-extra>
+            <n-tag size="small" round :type="statusTagType(att)">
+              {{ att.method }} {{ att.status || (att.error ? "失败" : "—") }}
+            </n-tag>
+          </template>
+
+          <div class="dbg-url-box">
+            <span class="dbg-mono dbg-url-text">{{ att.url }}</span>
+            <n-button size="tiny" tertiary round @click="copyText(att.url)">复制</n-button>
           </div>
-          <div class="dbg-url">{{ att.url }}</div>
-          <div v-if="att.error" class="dbg-section">
-            <div class="dbg-label">错误</div>
-            <div class="dbg-err">{{ att.error }}</div>
-          </div>
-          <div class="dbg-section">
-            <div class="dbg-label">请求头（Authorization 已脱敏）</div>
-            <div v-for="(v, k) in att.headers" :key="k" class="kv-line"><b>{{ k }}</b>: {{ v }}</div>
-          </div>
-          <div v-if="att.query_params" class="dbg-section">
-            <div class="dbg-label">Query 参数</div>
-            <pre class="dbg-pre">{{ formatDebug(att.query_params) }}</pre>
-          </div>
-          <div v-if="att.body" class="dbg-section">
-            <div class="dbg-label">请求体</div>
-            <pre class="dbg-pre">{{ prettyBody(att.body) }}</pre>
-          </div>
-          <div v-if="att.status" class="dbg-section">
-            <div class="dbg-label">响应（HTTP {{ att.status }}）</div>
-            <pre class="dbg-pre" :class="{ err: att.status >= 400 }">{{ prettyBody(att.response) }}</pre>
-          </div>
-        </div>
-        <div v-if="!lastDebug?.attempts?.length && lastDebug?.error" class="dbg-err">{{ lastDebug.error }}</div>
+
+          <n-alert v-if="att.error" type="error" :bordered="false" style="margin-top: 10px">{{ att.error }}</n-alert>
+
+          <n-collapse default-expanded-names="body" style="margin-top: 10px">
+            <n-collapse-item title="请求头（Authorization 已脱敏）" name="headers">
+              <div v-for="(v, k) in att.headers" :key="k" class="dbg-kv">
+                <span class="dbg-k">{{ k }}</span>
+                <span class="dbg-v">{{ v }}</span>
+              </div>
+            </n-collapse-item>
+            <n-collapse-item v-if="att.query_params" title="Query 参数" name="query">
+              <pre class="dbg-pre">{{ formatDebug(att.query_params) }}</pre>
+            </n-collapse-item>
+            <n-collapse-item v-if="att.body" title="请求体" name="body">
+              <pre class="dbg-pre">{{ prettyBody(att.body) }}</pre>
+              <div class="dbg-actions">
+                <n-button size="tiny" tertiary @click="copyText(prettyBody(att.body))">复制请求体</n-button>
+              </div>
+            </n-collapse-item>
+            <n-collapse-item v-if="att.status" :title="`响应（HTTP ${att.status}）`" name="resp">
+              <pre class="dbg-pre" :class="{ err: att.status >= 400 }">{{ prettyBody(att.response) }}</pre>
+              <div class="dbg-actions">
+                <n-button size="tiny" tertiary @click="copyText(String(att.response))">复制响应</n-button>
+              </div>
+            </n-collapse-item>
+          </n-collapse>
+        </n-card>
       </n-space>
     </n-modal>
 
@@ -293,7 +307,7 @@
 import { ref, reactive, computed, onMounted } from "vue";
 import {
   NCard, NSpace, NButton, NSelect, NSwitch, NTag, NEmpty, NModal,
-  NForm, NFormItem, NInput, NInputNumber, useMessage,
+  NForm, NFormItem, NInput, NInputNumber, NCollapse, NCollapseItem, NAlert, useMessage,
 } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 
@@ -828,62 +842,74 @@ onMounted(load);
   line-height: 1.9;
   opacity: 0.85;
 }
-.debug-pre {
-  margin: 0;
-  padding: 10px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+.dbg-card {
+  border-radius: 10px !important;
+  background: rgba(127, 127, 127, 0.06);
+}
+.dbg-empty {
+  padding: 6px 2px;
+  font-size: 13px;
+  opacity: 0.8;
+}
+.dbg-mono {
   font-family: ui-monospace, Consolas, "Courier New", monospace;
+}
+.dbg-url-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.12);
+}
+.dbg-url-text {
+  flex: 1;
   font-size: 12px;
   line-height: 1.6;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.dbg-kv {
+  display: flex;
+  gap: 8px;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.dbg-k {
+  flex: 0 0 auto;
+  min-width: 130px;
+  opacity: 0.6;
+  word-break: break-all;
+}
+.dbg-v {
+  flex: 1;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+.dbg-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 260px;
+  overflow-wrap: anywhere;
+  max-height: 300px;
   overflow: auto;
 }
-.debug-pre.err { color: #ff9c9c; }
-.dbg-card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.04);
-}
-.dbg-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.dbg-attempt {
-  font-size: 12px;
-  opacity: 0.7;
-}
-.dbg-url {
-  font-family: ui-monospace, Consolas, "Courier New", monospace;
-  font-size: 12px;
-  word-break: break-all;
-  opacity: 0.9;
-  margin-bottom: 8px;
-}
-.dbg-section { margin-top: 10px; }
-.dbg-label {
-  font-size: 11px;
-  opacity: 0.55;
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.dbg-err {
+.dbg-pre.err {
   color: #ff9c9c;
-  font-size: 12px;
-  word-break: break-all;
+  border-color: rgba(255, 120, 120, 0.35);
 }
-.kv-line {
-  font-family: ui-monospace, Consolas, "Courier New", monospace;
-  font-size: 12px;
-  word-break: break-all;
-  line-height: 1.7;
+.dbg-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
 }
 .kv-row {
   display: flex;

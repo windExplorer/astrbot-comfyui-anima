@@ -96,10 +96,12 @@ def _mask_headers(headers: dict) -> dict:
 async def _request_with_retry(method: str, url: str, *, headers: dict = None,
                               params: dict = None, json_body: dict = None,
                               data=None, timeout=_DEFAULT_TIMEOUT,
-                              capture: dict | None = None) -> aiohttp.ClientResponse:
-    """带瞬时错误退避重试的请求。失败抛 PlatformError。
+                              capture: dict | None = None) -> tuple[int, dict, bytes]:
+    """带瞬时错误退避重试的请求。成功返回 (status, headers, body_bytes)；失败抛 PlatformError。
 
-    capture: 可选 dict，回填最后一次实际请求/响应（headers 脱敏、响应截断 2000 字符）。"""
+    ★响应体在会话关闭前已完整读取，调用方直接用返回的 bytes，不要再对响应对象 read()。
+
+    capture: 可选 dict，回填每次尝试的实际请求/响应（headers 脱敏、响应截断 2000 字符）。"""
     last_err = ""
     for attempt in range(len(_RETRY_DELAYS) + 1):
         cap_entry: dict = {
@@ -120,16 +122,23 @@ async def _request_with_retry(method: str, url: str, *, headers: dict = None,
                     method, url, headers=headers or {}, params=params,
                     json=json_body, data=data,
                 ) as resp:
-                    cap_entry["status"] = resp.status
-                    cap_entry["response"] = (await resp.text())[:2000]
+                    # ★必须在会话关闭前把响应体读出来：此前在 async with 内 return resp、
+                    # 调用方在会话关闭后才 read()，大响应体（图片）会 "Connection closed"。
+                    try:
+                        body = await resp.read()
+                    except Exception:
+                        body = b""
+                    status = resp.status
+                    hdrs = {str(k): str(v) for k, v in resp.headers.items()}
+                    cap_entry["status"] = status
+                    cap_entry["response"] = body.decode("utf-8", "ignore")[:2000]
                     if capture is not None:
                         capture.setdefault("attempts", []).append(cap_entry)
                         capture["last"] = cap_entry
-                    if resp.status < 400:
-                        return resp
-                    body_text = cap_entry["response"][:500]
-                    last_err = f"HTTP {resp.status}: {body_text}"
-                    if resp.status not in _RETRY_STATUS:
+                    if status < 400:
+                        return status, hdrs, body
+                    last_err = f"HTTP {status}: {cap_entry['response'][:500]}"
+                    if status not in _RETRY_STATUS:
                         raise PlatformError(f"平台请求失败 {last_err}")
         except PlatformError:
             raise
@@ -233,13 +242,12 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                 "scale": float(p.get("defaults", {}).get("scale", 6)),
                 "seed": _seed,
             }
-            resp = await _request_with_retry(
+            _st, _hd, raw = await _request_with_retry(
                 "GET", f"{base}/generate",
                 headers={"Authorization": f"Bearer {api_key}", **extra_headers},
                 params=params, capture=capture,
             )
-            raw = await resp.read()
-            img = _resp_to_bytes(raw, resp.headers.get("Content-Type", ""))
+            img = _resp_to_bytes(raw, _hd.get("Content-Type", ""))
         else:
             # NAI 官方 /ai/generate-image（zip 响应）
             payload = {
@@ -266,13 +274,12 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                     "negative_prompt": negative or "",
                 },
             }
-            resp = await _request_with_retry(
+            _st, _hd, raw = await _request_with_retry(
                 "POST", f"{base}/ai/generate-image",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
                 json_body=payload, capture=capture,
             )
-            raw = await resp.read()
-            img = _resp_to_bytes(raw, resp.headers.get("Content-Type", "application/zip"))
+            img = _resp_to_bytes(raw, _hd.get("Content-Type", "application/zip"))
         if not img:
             raise PlatformError("NAI 平台返回了空图片")
         results.append(img)
@@ -352,12 +359,11 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         logger.warning(f"[平台] 额外参数/自定义头渲染失败（忽略）: {_ep}")
         extra_headers = {}
 
-    resp = await _request_with_retry(
+    _st, _hd, raw = await _request_with_retry(
         "POST", f"{base}/images/generations",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
         json_body=body, capture=capture,
     )
-    raw = await resp.read()
     try:
         data = json.loads(raw.decode("utf-8", "ignore"))
     except Exception as e:
@@ -380,8 +386,8 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
                 pass
         url = item.get("url")
         if url:
-            dl = await _request_with_retry("GET", url)
-            results.append(await dl.read())
+            _s2, _h2, dlr = await _request_with_retry("GET", url)
+            results.append(dlr)
     if not results:
         raise PlatformError("OpenAI 兼容平台响应里没有可用的图片数据")
     return results
@@ -455,12 +461,11 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
         except Exception:
             pass
 
-        resp = await _request_with_retry(
+        _st, _hd, raw = await _request_with_retry(
             "POST", endpoint,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", **extra_headers},
             json_body=body, capture=capture,
         )
-        raw = await resp.read()
         try:
             resp_data = json.loads(raw.decode("utf-8", "ignore"))
         except Exception as e:
@@ -478,8 +483,8 @@ async def _gen_minimax(p: dict, *, prompt: str, negative: str, width: int, heigh
                 pass
         url_list = data.get("image_urls") or []
         if isinstance(url_list, list) and url_list:
-            dl = await _request_with_retry("GET", url_list[0])
-            results.append(await dl.read())
+            _s2, _h2, dlr = await _request_with_retry("GET", url_list[0])
+            results.append(dlr)
             continue
         raise PlatformError(f"MiniMax 响应里没有图片数据: {str(resp_data)[:300]}")
     return results
@@ -531,11 +536,10 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
             headers = normalize_headers(p, _vars)
         # GET 且无请求体时绝不携带 body（直链类平台，如 Pollinations）
         _data = body_text.encode("utf-8") if (method == "POST" and body_text) else None
-        resp = await _request_with_retry(
+        _st, _hd, raw = await _request_with_retry(
             method, url, headers=headers, data=_data, capture=capture,
         )
-        raw = await resp.read()
-        ct = resp.headers.get("Content-Type", "")
+        ct = _hd.get("Content-Type", "")
 
         if resp_type == "binary" or "image/" in ct:
             results.append(_resp_to_bytes(raw, ct))
@@ -560,8 +564,8 @@ async def _gen_custom(p: dict, *, prompt: str, negative: str, width: int, height
                     target = v
                     break
         if isinstance(target, str) and target.startswith(("http://", "https://")):
-            dl = await _request_with_retry("GET", target)
-            results.append(await dl.read())
+            _s2, _h2, dlr = await _request_with_retry("GET", target)
+            results.append(dlr)
         elif isinstance(target, str) and target:
             try:
                 results.append(base64.b64decode(target))
