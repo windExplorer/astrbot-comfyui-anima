@@ -1,0 +1,287 @@
+{
+  "1": {
+    "inputs": {
+      "model_name": "RealESRGAN_x2plus.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "加载放大模型"
+    }
+  },
+  "2": {
+    "inputs": {
+      "upscale_model": [
+        "1",
+        0
+      ],
+      "image": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "使用模型放大图像"
+    }
+  },
+  "3": {
+    "inputs": {
+      "filename_prefix": "boogu_edit_turbo",
+      "filename_keys": "seed, cfg, steps, %F%H%M%S",
+      "foldername_prefix": "",
+      "foldername_keys": "boogu/",
+      "delimiter": "-",
+      "save_job_data": "disabled",
+      "job_data_per_image": false,
+      "job_custom_text": "",
+      "save_metadata": false,
+      "counter_digits": 4,
+      "counter_position": "last",
+      "one_counter_per_folder": true,
+      "image_preview": true,
+      "output_ext": ".webp",
+      "quality": 99,
+      "images": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "SaveImageExtended",
+    "_meta": {
+      "title": "💾 Save Image Extended"
+    }
+  },
+  "4": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+      "type": "boogu",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "5": {
+    "inputs": {
+      "vae_name": "flux1_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "7": {
+    "inputs": {
+      "anything": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "easy cleanGpuUsed",
+    "_meta": {
+      "title": "清理显存占用"
+    }
+  },
+  "8": {
+    "inputs": {
+      "seed": 8273322536536029877,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "10",
+        0
+      ],
+      "positive": [
+        "11",
+        0
+      ],
+      "negative": [
+        "11",
+        1
+      ],
+      "latent_image": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "10": {
+    "inputs": {
+      "unet_name": "boogu-edit-turbo-dit-Q4_0.gguf"
+    },
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "Unet Loader (GGUF)"
+    }
+  },
+  "11": {
+    "inputs": {
+      "prompt": "保持参考图中的人物、表情、构图、背景完全不变，不要改变人物的\n动作、姿势和表情，不要添加与文字无关的新元素。\n\n在人物头部右上方添加一个云朵形状的白色对话气泡，气泡边缘蓬松\n圆润像棉花糖一样鼓起来，气泡底部有一个小尖角指向人物的嘴，\n气泡内写着深棕色的简体中文“手滑不小心删了你的资料哦~”，字体为圆润卡通体，\n笔画饱满圆头、胖乎乎的可爱字体，笔画粗壮，字号大而醒目，\n文字在气泡内横向居中排列。\n\n在图片底部六分之一的位置再添加一行中文文字“表面在帮忙，实际在毁灭证据”，\n白色圆润卡通体，笔画饱满圆头，带有粗粗的深棕色描边，\n描边边缘柔和，字号很大，横向居中排列，可爱醒目。\n\n整体为可爱卡通风格，配色柔和明快，线条圆润。\n画面其他部分与参考图保持一致，文字清晰可读无错别字。",
+      "negative_prompt": "",
+      "clip": [
+        "4",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ],
+      "images.image_1": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "TextEncodeBooguEdit",
+    "_meta": {
+      "title": "TextEncodeBooguEdit"
+    }
+  },
+  "12": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "13": {
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "14": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "15": {
+    "inputs": {
+      "text": "masterpiece, best quality, whale girl, anthropomorphic whale, orca girl, long hair, tail, fins, sitting at desk, typing on keyboard, deleting files, hidden smile, sly expression, computer screen, file folder, trash can, cute, kawaii, anime style, detailed background, good lighting, dynamic angle",
+      "clip": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "16": {
+    "inputs": {
+      "text": "worst quality, low quality, normal quality, average quality,\nscore_1, score_2, score_3,\nbad anatomy, bad hands, bad feet, extra limbs, missing limbs,\nextra fingers, fewer fingers, mutated hands,\npoorly drawn face, poorly drawn eyes,\nblurry, out of focus, motion blur,\nwatermark, text, logo, signature, cropped, jpeg artifacts,\nugly, deformed, disfigured, gross proportions",
+      "clip": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "17": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "18": {
+    "inputs": {
+      "seed": 6559497342137631566,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "21",
+        0
+      ],
+      "positive": [
+        "15",
+        0
+      ],
+      "negative": [
+        "16",
+        0
+      ],
+      "latent_image": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "19": {
+    "inputs": {
+      "samples": [
+        "18",
+        0
+      ],
+      "vae": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "21": {
+    "inputs": {
+      "unet_name": "anima_turboV11.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  }
+}

@@ -1,0 +1,282 @@
+{
+  "1": {
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "2": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "3": {
+    "inputs": {
+      "text": "masterpiece, best quality, score_9, safe, 1boy 1girl, romantic scene, zero_nte, nanally_\\(nte\\), kissing, night city, anime style, @style_name, @4x0style, @NJSW33T, silver hair, short hair, hairband, ahoge, purple eyes, black cropped jacket, short sleeves, white collared shirt, purple necktie, harness, black pleated skirt, black shorts under skirt, belt, belt pouch, fingerless gloves, arm strap, single sleeve, black boots, cat hair ornament, cat tail, glasses, black choker, black jacket, black gloves, white shirt, red skirt, black shorts, black footwear, kneehighs, nanally \\(fluffy flying tiger\\) \\(nte\\), cat hat, neck bell, white dress, black gloves/ paw gloves, black thighhighs, loose socks, nanally \\(the popular kid\\) \\(nte\\), black hairband, white sweater, pleated skirt, bandaid on knee, black socks",
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "worst quality, low quality, normal quality, average quality,\nscore_1, score_2, score_3,\nbad anatomy, bad hands, bad feet, extra limbs, missing limbs,\nextra fingers, fewer fingers, mutated hands,\npoorly drawn face, poorly drawn eyes,\nblurry, out of focus, motion blur,\nwatermark, text, logo, signature, cropped, jpeg artifacts,\nugly, deformed, disfigured, gross proportions",
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "6": {
+    "inputs": {
+      "seed": 7470962010876743572,
+      "steps": 10,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "19",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "7": {
+    "inputs": {
+      "samples": [
+        "6",
+        0
+      ],
+      "vae": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "8": {
+    "inputs": {
+      "filename_prefix": "animaTurboV11",
+      "filename_keys": "seed, cfg, steps, %F%H%M%S",
+      "foldername_prefix": "",
+      "foldername_keys": "anima/",
+      "delimiter": "-",
+      "save_job_data": "disabled",
+      "job_data_per_image": false,
+      "job_custom_text": "",
+      "save_metadata": false,
+      "counter_digits": 4,
+      "counter_position": "last",
+      "one_counter_per_folder": true,
+      "image_preview": true,
+      "output_ext": ".webp",
+      "quality": 99,
+      "images": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "SaveImageExtended",
+    "_meta": {
+      "title": "💾 Save Image Extended"
+    }
+  },
+  "9": {
+    "inputs": {
+      "unet_name": "anima_turboV11.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "10": {
+    "inputs": {
+      "anything": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "easy cleanGpuUsed",
+    "_meta": {
+      "title": "清理显存占用"
+    }
+  },
+  "11": {
+    "inputs": {
+      "upscale_model": [
+        "12",
+        0
+      ],
+      "image": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "使用模型放大图像"
+    }
+  },
+  "12": {
+    "inputs": {
+      "model_name": "4x-UltraSharp.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "加载放大模型"
+    }
+  },
+  "13": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "mixed_styles_anima-base1_v5.safetensors",
+      "strength_model": 0.6,
+      "model": [
+        "9",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA (Model Only): AI风格淘汰"
+    }
+  },
+  "14": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "鬼猫风格_onineko_v2.2_epoch40.safetensors",
+      "strength_model": 0.2,
+      "model": [
+        "13",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA (Model Only): 鬼猫风格"
+    }
+  },
+  "15": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "NIJI甜点_ANIMA_Niji_Sweet_Spot_v4.safetensors",
+      "strength_model": 0.1,
+      "model": [
+        "14",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA (Model Only): NIJI甜点"
+    }
+  },
+  "16": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "天光02_sky02Lightv4.safetensors",
+      "strength_model": 0.3,
+      "model": [
+        "15",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA (Model Only): 天光02"
+    }
+  },
+  "17": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "如梦_high-contrast aesthetic.safetensors",
+      "strength_model": 0.2,
+      "model": [
+        "16",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA (Model Only): 如梦"
+    }
+  },
+  "18": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "零女_Zero.safetensors",
+      "strength_model": 1.0,
+      "model": [
+        "17",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA (Model Only): 鉴定师"
+    }
+  },
+  "19": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "娜娜莉_nanally_v1.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0,
+      "model": [
+        "18",
+        0
+      ],
+      "clip": [
+        "9",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "Load LoRA: 娜娜莉2"
+    }
+  }
+}

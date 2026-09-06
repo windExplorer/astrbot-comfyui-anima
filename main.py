@@ -2935,8 +2935,13 @@ class ComfyUIDrawPlugin(Star):
         draw_start: float | None = None,
         user_id: str = "",
         user_name: str = "",
+        cfg: float | None = None,
+        steps: int | None = None,
+        sampler: str | None = None,
+        noise_schedule: str | None = None,
     ):
-        """第三方平台（NAI / OpenAI 兼容 / 自定义）出图。yield 契约与 _do_draw 一致。"""
+        """第三方平台（NAI / OpenAI 兼容 / 自定义）出图。yield 契约与 _do_draw 一致。
+        cfg/steps/sampler/noise_schedule 为 LLM 工具可临时覆盖的平台生图参数（None=用平台 defaults）。"""
         ptype = (plat.get("type") or "openai").strip()
         pname = (plat.get("name") or ptype)
         _draw_start = draw_start or time.time()
@@ -3001,6 +3006,7 @@ class ComfyUIDrawPlugin(Star):
             images = await nai_client.generate(
                 plat, prompt=positive, negative=negative,
                 width=_w, height=_h, seed=seed, count=1, artist=artist,
+                cfg=cfg, steps=steps, sampler=sampler, noise_schedule=noise_schedule,
                 timeout=_eff_timeout,
             )
         except Exception as e:
@@ -3051,15 +3057,22 @@ class ComfyUIDrawPlugin(Star):
                         _group_name = ""
                     _extra = {}
                     _defaults = plat.get("defaults") or {}
-                    for _k in ("steps", "scale", "cfg_rescale", "sampler", "noise_schedule"):
-                        if _defaults.get(_k) is not None:
-                            _extra[_k] = _defaults.get(_k)
+                    # 实际生效参数：调用方覆盖（LLM 传入）优先，否则回落平台 defaults；
+                    # 归档时记录真实生效值，大图详情才能显示本次实际用的 cfg/steps/采样器。
+                    _eff_steps = steps if steps is not None else _defaults.get("steps")
+                    _eff_scale = cfg if cfg is not None else _defaults.get("scale")
+                    _eff_cfg = cfg if cfg is not None else _defaults.get("cfg")
+                    _eff_sampler = sampler if sampler else _defaults.get("sampler")
+                    _eff_noise = noise_schedule if noise_schedule else _defaults.get("noise_schedule")
+                    for _k, _v in (("steps", _eff_steps), ("scale", _eff_scale),
+                                   ("cfg_rescale", _defaults.get("cfg_rescale")),
+                                   ("sampler", _eff_sampler), ("noise_schedule", _eff_noise)):
+                        if _v is not None:
+                            _extra[_k] = _v
                     # 顶部 cfg/steps 列：NAI 引导系数官方叫 scale，defaults 里 cfg/scale 都可能存在，
                     # 取其一填入 cfg 列（大图详情的「CFG」行即可显示）；steps 同理。
-                    _cfg_val = _defaults.get("cfg")
-                    if _cfg_val is None:
-                        _cfg_val = _defaults.get("scale")
-                    _steps_val = _defaults.get("steps")
+                    _cfg_val = _eff_cfg if _eff_cfg is not None else _eff_scale
+                    _steps_val = _eff_steps
                     _final = self.gallery.archive_image(
                         img_path,
                         source=SRC_GEN,
@@ -3165,6 +3178,10 @@ class ComfyUIDrawPlugin(Star):
         slot_values: dict | None = None,
         comic_feature: str | None = None,
         caption: str = "",
+        cfg: float | None = None,
+        steps: int | None = None,
+        sampler: str | None = None,
+        noise_schedule: str | None = None,
     ):
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
         # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
@@ -3225,6 +3242,7 @@ class ComfyUIDrawPlugin(Star):
                 notify_pending=notify_pending, source=source,
                 caption=caption, draw_start=_draw_start,
                 user_id=user_id, user_name=user_name,
+                cfg=cfg, steps=steps, sampler=sampler, noise_schedule=noise_schedule,
             ):
                 yield _pn, _pp
             return
@@ -6526,17 +6544,18 @@ class ComfyUIDrawPlugin(Star):
         for p in ps.all_platforms():
             _en = "启用" if p.get("enabled", True) else "停用"
             lines.append(f"  {'★' if _can(p) else '⛔'} {p.get('name')}（{p.get('type')}）[{_en}]")
-        lines.append("命令：/平台 <名称> 切换本会话 · /平台 重置 恢复默认 · /平台 全局 <名称>（管理员）")
+        lines.append("命令：/绘图平台 <名称> 切换本会话 · /绘图平台 重置 恢复默认 · /绘图平台 全局 <名称>（管理员）")
         return "\n".join(lines)
 
-    @filter.command("平台", alias={"生图平台", "platform", "platforms", "切换平台"})
+    @filter.command("绘图平台", alias={"平台", "生图平台", "platform", "platforms", "切换平台"})
     async def cmd_platform(self, event: AstrMessageEvent):
         """生图平台切换（会话级，仅白名单可用）。
-        /平台                查看当前平台与可用平台
-        /平台 <名称或id>     切换本会话生图平台（如 /平台 NAI）
-        /平台 切换 <名称>    同上
-        /平台 重置           恢复本会话为全局默认平台
-        /平台 全局 <名称>    仅管理员：设置全局默认平台
+        /绘图平台                查看当前平台与可用平台
+        /绘图平台 <名称或id>     切换本会话生图平台（如 /绘图平台 NAI）
+        /绘图平台 切换 <名称>    同上
+        /绘图平台 重置           恢复本会话为全局默认平台
+        /绘图平台 全局 <名称>    仅管理员：设置全局默认平台
+        （也支持 /平台、/生图平台 等别名）
         白名单：平台 allowed_users 为空=仅管理员可切；非空=管理员+名单内用户。
         """
         ps = self._platform_store()
@@ -6545,7 +6564,7 @@ class ComfyUIDrawPlugin(Star):
         is_admin = self._is_admin(event)
         # 去掉前导 / 与任一命令词，取剩余参数
         msg = (event.message_str or "").strip()
-        for _w in ("生图平台", "切换平台", "平台", "platforms", "platform"):
+        for _w in ("绘图平台", "生图平台", "切换平台", "平台", "platforms", "platform"):
             _low = msg.lower()
             if _low.startswith("/" + _w) or _low.startswith(_w):
                 msg = msg[len(_w):].lstrip()
@@ -6572,7 +6591,7 @@ class ComfyUIDrawPlugin(Star):
                 event.stop_event(); return
             name = " ".join(rest).strip()
             if not name:
-                await self._send(event, "用法：/平台 全局 <平台名称或id>")
+                await self._send(event, "用法：/绘图平台 全局 <平台名称或id>")
                 event.stop_event(); return
             p = ps.get_platform(name)
             if p is None:
@@ -6595,7 +6614,7 @@ class ComfyUIDrawPlugin(Star):
         if sub in _switch_subs:
             name = " ".join(rest).strip()
             if not name:
-                await self._send(event, "用法：/平台 切换 <平台名称或id>")
+                await self._send(event, "用法：/绘图平台 切换 <平台名称或id>")
                 event.stop_event(); return
         else:
             name = raw  # 无子命令：整段当作平台名（/平台 NAI）
@@ -6619,7 +6638,7 @@ class ComfyUIDrawPlugin(Star):
         ps.set_session_platform(sid, p.get("id"), user_id)
         await self._send(event,
             f"✅ 本会话已切换生图平台为「{p.get('name')}」({p.get('type')})，"
-            f"后续绘图默认使用它。\n用 /平台 查看状态，/平台 重置 恢复默认。")
+            f"后续绘图默认使用它。\n用 /绘图平台 查看状态，/绘图平台 重置 恢复默认。")
         event.stop_event(); return
 
     @filter.command("gallery", alias={"图库"})
@@ -7289,6 +7308,10 @@ class ComfyUIDrawPlugin(Star):
         slot_values: dict | None = None,
         comic_feature: str | None = None,
         caption: str = "",
+        cfg: float = 0,
+        steps: int = 0,
+        sampler: str = "",
+        noise_schedule: str = "",
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
@@ -7399,6 +7422,11 @@ class ComfyUIDrawPlugin(Star):
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
             platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。可传 comfyui / nai / openai / custom 或平台显示名来临时指定平台。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。部分平台受管理员设置的用户白名单限制，无权限的用户调用会自动回退 ComfyUI 出图（无需特殊处理）。
+            cfg(number): 引导系数（NAI 官方称 scale；仅对 nai / openai 类第三方平台生效，ComfyUI 忽略）。可选：让画面更贴合提示词（值越大越严格、过高易过饱和/毁图）；不传或 0=用该平台配置的默认引导系数。LLM 想微调 NAI 出图风格时可自主决定（常见 4~12，NAI 默认约 6）。各参数含义/取值/对画风的影响见可用技能「nai-codex」（若你有技能读取能力，决定 NAI 参数前先读它）。
+            steps(number): 采样步数（仅 nai / openai 类平台生效）。可选：步数越多细节越足、越慢；不传或 0=用平台默认（NAI 默认约 28）。
+            sampler(string): 采样器名称（仅 nai / openai 类平台生效，如 k_dpmpp_2m_sde / k_euler_a 等）。可选：不同采样器风格差异明显；不传=用平台默认。不确定具体取值时不要传，避免传错导致报错。
+            noise_schedule(string): 噪声调度（仅 nai 类平台生效，如 karras / native / exponential / polyexponential）。可选；不传=用平台默认。
+            ★以上四个参数只作用于第三方平台生图，且未传时回落平台配置默认值；想让 NAI 出特定风格时再指定，不要无脑传。负向提示词（negative_prompt）未传时，NAI 会自动套用插件「已启用的负向模板」（管理员在平台配置里勾选的条目），无需你拼负面词。
 
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -7993,6 +8021,11 @@ class ComfyUIDrawPlugin(Star):
                 trigger_words=trigger_words,
                 # 生图平台（""=用默认平台 active_platform；nai/openai/custom=临时指定）
                 platform=platform,
+                # NAI / OpenAI 类平台生图参数（LLM 可自主决定；0/空=用平台默认值）
+                cfg=cfg or None,
+                steps=steps if steps else None,
+                sampler=sampler or None,
+                noise_schedule=noise_schedule or None,
                 # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
                 # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
                 notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),

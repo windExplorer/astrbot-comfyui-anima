@@ -2,6 +2,19 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.12（平台切换指令加「绘图」前缀 + LLM 可自主定 NAI 生图参数）
+
+### 1. 生图平台切换指令加「绘图」前缀
+- 主命令名由 `/平台` 改为 `/绘图平台`（如 `/绘图平台 NAI` 切换本会话平台），更直观、与绘图系指令统一。旧名 `/平台`、`/生图平台`、`platform`、`platforms`、`切换平台` 全部保留为别名，历史用法不受影响。
+- 同步更新指令内部命令词剥离列表、状态提示文案、帮助与用法提示，均为 `/绘图平台`。
+- README 指令表新增 `/绘图平台` 一行说明。
+
+### 2. LLM 生图时可自主决定 NAI / OpenAI 平台参数并透传
+- `comfyui_draw` 工具新增 4 个可选参数：`cfg`（引导系数 / NAI 的 scale）、`steps`（步数）、`sampler`（采样器）、`noise_schedule`（噪声调度），仅对 nai / openai 类第三方平台生效，ComfyUI 忽略；不传=回落平台配置默认值。参数从 `comfyui_draw → _do_draw → _do_draw_nai_style → nai_client.generate → _gen_nai/_gen_openai` 全链路透传，真正覆盖平台固参参与生图。
+- NAI 出图归档时记录**实际生效**的 cfg/steps/sampler（覆盖优先、否则平台默认），大图详情的「CFG/步数/采样器」行能正确显示本次真实值。
+- 负向提示词保持自动套用「已启用的负向模板」（不传 negative_prompt 时由 `enabled_negative_text()` 合并），无需 LLM 手拼。
+- 新增技能 `skills/nai-codex/SKILL.md`：说明 NAI 各参数含义、取值区间、对画风/速度的影响，以及何时该传/不该传，引导 LLM 在走 NAI 平台时自主、合理地决定参数；`comfyui_draw` 工具描述已指向该技能。
+
 ## v5.10.11（图库大图详情显示 NAI 等平台参数）
 
 - 修复大图详情不显示 NAI/第三方平台生图参数：此前平台生图入库（`main.py` 平台归档分支）调用 `archive_image` 时没传 `cfg`/`steps`，这两个列默认 NULL，前端 `item.cfg != null`/`item.steps != null` 不成立，故「CFG/步数」行不显示。现从平台 `defaults` 取 `cfg`（NAI 引导系数官方叫 scale，兜底取 `scale`）与 `steps` 写入。

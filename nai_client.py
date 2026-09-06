@@ -60,6 +60,12 @@ async def generate(
     seed=None,
     count: int = 1,
     artist: str = "",
+    # 调用方覆盖：LLM 工具（comfyui_draw）可临时指定 NAI/OpenAI 类平台的生图参数，
+    # 传 None 时回落平台配置 defaults。cfg 在 NAI 里即引导系数（官方叫 scale）。
+    cfg: float | None = None,
+    steps: int | None = None,
+    sampler: str | None = None,
+    noise_schedule: str | None = None,
     capture: dict | None = None,
     timeout: float | None = None,
 ) -> list[bytes]:
@@ -80,11 +86,15 @@ async def generate(
     if ptype == "nai":
         return await _gen_nai(p, prompt=prompt, negative=negative, width=width,
                               height=height, seed=seed, count=count, artist=artist,
+                              cfg=cfg, steps=steps, sampler=sampler,
+                              noise_schedule=noise_schedule,
                               capture=capture, timeout=_ct)
     if ptype == "openai":
         return await _gen_openai(p, prompt=prompt, negative=negative, width=width,
-                                 height=height, seed=seed, count=count, capture=capture,
-                                 timeout=_ct)
+                                 height=height, seed=seed, count=count,
+                                 cfg=cfg, steps=steps, sampler=sampler,
+                                 noise_schedule=noise_schedule,
+                                 capture=capture, timeout=_ct)
     if ptype == "minimax":
         return await _gen_minimax(p, prompt=prompt, negative=negative, width=width,
                                   height=height, seed=seed, count=count, capture=capture,
@@ -249,6 +259,8 @@ def _nai_relay_size(width: int, height: int) -> str:
 
 async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: int,
                    seed, count: int, artist: str = "",
+                   cfg: float | None = None, steps: int | None = None,
+                   sampler: str | None = None, noise_schedule: str | None = None,
                    capture: dict | None = None,
                    timeout: float | None = None) -> list[bytes]:
     base = (p.get("base_url") or _NAI_DEFAULT_BASE).rstrip("/")
@@ -264,6 +276,24 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
         negative = "{}, lowres, bad anatomy, bad hands, worst quality, low quality".format(
             "username" if "4-full" in model or "5-full" in model else ""
         ).strip("{} ,")
+
+    # 实际生效的生图参数：调用方覆盖（LLM 传入）优先，否则回落平台 defaults。
+    # cfg 即 NAI 引导系数（官方 API 字段名 scale；中转站同时认 cfg/scale）。
+    _d = p.get("defaults", {}) or {}
+    try:
+        _steps = int(steps) if steps is not None else int(_d.get("steps", 28))
+    except (TypeError, ValueError):
+        _steps = 28
+    try:
+        _scale = float(cfg) if cfg is not None else float(_d.get("scale", 6))
+    except (TypeError, ValueError):
+        _scale = 6.0
+    try:
+        _cfg = float(cfg) if cfg is not None else float(_d.get("cfg", 7.0))
+    except (TypeError, ValueError):
+        _cfg = 7.0
+    _sampler = (sampler or _d.get("sampler") or "k_dpmpp_2m_sde")
+    _noise = (noise_schedule or _d.get("noise_schedule") or "karras")
 
     results: list[bytes] = []
     # 自定义请求头（条目式）：支持 {{api_key}} 等占位符
@@ -287,13 +317,13 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                 "model": model,
                 "artist": artist or "",
                 "size": _nai_relay_size(width, height),
-                "steps": int(p.get("defaults", {}).get("steps", 28)),
-                "scale": float(p.get("defaults", {}).get("scale", 6)),
-                "cfg": float(p.get("defaults", {}).get("cfg", 7.0)),
-                "sampler": (p.get("defaults", {}).get("sampler") or "k_dpmpp_2m_sde"),
+                "steps": _steps,
+                "scale": _scale,
+                "cfg": _cfg,
+                "sampler": _sampler,
                 "negative": negative or "",
                 "nocache": 1,
-                "noise_schedule": (p.get("defaults", {}).get("noise_schedule") or "karras"),
+                "noise_schedule": _noise,
             }
             if _seed >= 0:
                 params["seed"] = _seed
@@ -320,9 +350,9 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                 "parameters": {
                     "width": width,
                     "height": height,
-                    "scale": float(p.get("defaults", {}).get("scale", 6)),
-                    "sampler": p.get("defaults", {}).get("sampler", "k_dpmpp_2m_sde"),
-                    "steps": int(p.get("defaults", {}).get("steps", 28)),
+                    "scale": _scale,
+                    "sampler": _sampler,
+                    "steps": _steps,
                     "n_samples": 1,
                     "ucPreset": 0,
                     "qualityToggle": True,
@@ -331,8 +361,8 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
                     "controlnet_strength": 1,
                     "legacy": False,
                     "add_original_image": True,
-                    "cfg_rescale": float(p.get("defaults", {}).get("cfg_rescale", 0.3)),
-                    "noise_schedule": p.get("defaults", {}).get("noise_schedule", "karras"),
+                    "cfg_rescale": float(_d.get("cfg_rescale", 0.3)),
+                    "noise_schedule": _noise,
                     "seed": _seed,
                     "negative_prompt": negative or "",
                 },
@@ -355,7 +385,10 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
 # ---------------------------------------------------------------------- #
 
 async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height: int,
-                      seed, count: int, capture: dict | None = None,
+                      seed, count: int,
+                      cfg: float | None = None, steps: int | None = None,
+                      sampler: str | None = None, noise_schedule: str | None = None,
+                      capture: dict | None = None,
                       timeout: float | None = None) -> list[bytes]:
     base = (p.get("base_url") or "").strip().rstrip("/")
     # 端点归一：裸域名 / 带 /v1 / 误填完整端点，统一为 <root>/v1/images/generations
@@ -383,8 +416,8 @@ async def _gen_openai(p: dict, *, prompt: str, negative: str, width: int, height
         params_obj["negative_prompt"] = negative
     if seed is not None:
         params_obj["seed"] = int(seed)
-    for k in ("steps", "scale", "sampler", "noise_schedule"):
-        v = p.get("defaults", {}).get(k)
+    for k, _ov in (("steps", steps), ("scale", cfg), ("sampler", sampler), ("noise_schedule", noise_schedule)):
+        v = _ov if _ov is not None else p.get("defaults", {}).get(k)
         if v is not None:
             params_obj[k] = v
     body: dict = {
