@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.19（独立 WebUI 补齐 /platforms/quota 路由）
+
+- v5.10.18 修复了余额查询接口本身，但独立 WebUI（18848 端口）的 `_dispatch` 未注册 `/platforms/quota`，导致「获取余额」在独立页报 404。本版补齐该路由，独立页与内嵌页均可正常查余额。
+
 ## v5.10.18（修复 NAI 中转站余额查询接口）
 
 - 余额查询接口由错误的 `POST /api/api/getUser` 改为正确的 `GET /api/me?token=<api_key>`（sta1n 中转站），直接返回 `balance` 字段即剩余点数。

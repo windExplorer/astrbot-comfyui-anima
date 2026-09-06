@@ -619,6 +619,26 @@ class StandaloneWebUI:
                 return _err(str(e))
             except Exception as e:
                 return _err(f"平台测试失败: {e}")
+        if path == "/platforms/quota" and method == "POST":
+            try:
+                payload = await request.json() if request.body_exists else {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                plat = payload.get("platform")
+                if not isinstance(plat, dict):
+                    return _err("缺少平台配置")
+                if (plat.get("type") or "") != "nai":
+                    return _err("仅 NAI 平台支持查询余额")
+                try:
+                    from .nai_client import fetch_quota
+                except ImportError:
+                    from nai_client import fetch_quota
+                result = await fetch_quota(plat)
+                return _ok(result)
+            except ValueError as e:
+                return _err(str(e))
+            except Exception as e:
+                return _err(f"查询余额异常: {e}")
         if path.startswith("/gallery/"):
             return await self._api_gallery(path, request, g)
 
