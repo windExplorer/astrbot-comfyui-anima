@@ -45,7 +45,11 @@
             </div>
             <div v-if="p.type === 'nai'" class="plat-quota">
               <template v-if="quotaMap[p.id] && quotaMap[p.id].ok">
-                余额 {{ quotaMap[p.id].balance }} 点
+                <span class="quota-badge" :class="{ 'quota-badge--off': !quotaMap[p.id].enabled }">
+                  <span class="quota-badge__label">余额</span>
+                  <span class="quota-badge__num">{{ quotaMap[p.id].balance }}</span>
+                  <span class="quota-badge__unit">点</span>
+                </span>
                 <span v-if="!quotaMap[p.id].enabled" class="quota-warn">⚠️ token 已停用</span>
               </template>
               <template v-else-if="quotaMap[p.id]">
@@ -902,9 +906,41 @@ onMounted(load);
   font-size: 12px;
   color: var(--text-secondary);
 }
+.quota-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(82, 196, 26, 0.16);
+  border: 1px solid rgba(82, 196, 26, 0.55);
+  color: #52c41a;
+  font-weight: 600;
+  box-shadow: 0 0 6px rgba(82, 196, 26, 0.25);
+}
+.quota-badge--off {
+  background: rgba(255, 140, 0, 0.16);
+  border-color: rgba(255, 140, 0, 0.55);
+  color: #ffb84d;
+  box-shadow: 0 0 6px rgba(255, 140, 0, 0.25);
+}
+.quota-badge__label {
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+.quota-badge__num {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+.quota-badge__unit {
+  font-size: 12px;
+  opacity: 0.85;
+}
 .quota-warn {
   color: #ffb84d;
-  margin-left: 4px;
+  margin-left: 6px;
 }
 .quota-err {
   color: #ff8080;
