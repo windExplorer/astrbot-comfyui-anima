@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.14（修复新生成图被默认标为收藏 ★ 的 bug）
+
+- 根因：`image_store.archive_image` 的 INSERT 语句 VALUES 列表存在列/值错位——字面量 `1,0` 落在了 `source` / `use_count` 列位，导致整行后移两位：① `source` 被硬编码成 `1`（所有归档图的来源列都错）；② `starred` 列被喂入了 `source` 字符串（`"gen"` / `"nai"` 等），SQLite 以文本存入，`bool("gen")` 为真，于是**每张新生成的图都显示为已收藏**。
+- 修复：`source` 改用占位符取真实来源值，`starred` / `use_count` 显式默认 `0`。新图不再默认收藏。
+- 受影响的历史数据（v5.10.13 及更早）：旧归档行的 `starred` 存的是来源字符串、`source` 存的是 `1`。如需清理，可对 `starred` 为文本值的行执行 `UPDATE images SET starred=0 WHERE typeof(starred)='text'`（只重置错误行、保留真正手动收藏的整型 1），并酌情把 `source=1` 的旧行校正为实际来源；此步为可选数据修复，不影响新图。
+
 ## v5.10.13（接入「所长 NovelAI 法典」提示词词库：新增 nai_codex 检索工具）
 
 - 新增 LLM 工具 `nai_codex`：封装 `skills/nai-codex/search.py`，检索「所长 NovelAI 法典」全量 tag 词库（常规 5111 条 + 色色 9471 条），返回匹配的 NAI tag 串（含 artist: 画师串、权重记号 `[[]]` `{{}}` `::` 等），供 LLM 原样拼进 NAI 生图提示词。参数：`keyword`（必填）、`scope`（默认 sfw，可选 sfw/nsfw-a/nsfw-b/all）、`full`（是否返回完整 tag 串）、`limit`（条数上限）。
