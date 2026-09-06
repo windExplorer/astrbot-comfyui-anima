@@ -149,6 +149,40 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"读取采样器参数失败: {e}")
 
+    # ------------------ 生图平台管理（多平台生图，docs/multi-platform-image-plan.md） ------------------
+
+    def _platform_store(self):
+        """懒加载平台配置存储（挂 plugin.data_dir，热更新 reload 后重建）。"""
+        store = getattr(self, "_platform_store_inst", None)
+        if store is None:
+            try:
+                from .platform_store import PlatformStore
+            except ImportError:
+                from platform_store import PlatformStore
+            store = PlatformStore(getattr(self.plugin, "data_dir", None) or Path("data"))
+            self._platform_store_inst = store
+        return store
+
+    async def platforms_get(self):
+        """读取生图平台配置全量（active_platform + platforms + 预设）。"""
+        try:
+            return json_response(self._platform_store().summary_full())
+        except Exception as e:
+            return error_response(f"读取平台配置失败: {e}")
+
+    async def platforms_save(self):
+        """整包保存生图平台配置。"""
+        try:
+            payload = await request.json(default={})
+            if not isinstance(payload, dict):
+                return error_response("请求体必须是对象")
+            self._platform_store().save(payload)
+            return json_response({"ok": True})
+        except ValueError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"保存平台配置失败: {e}")
+
     async def get_schema(self):
         try:
             schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
@@ -1845,6 +1879,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/lora/image", _h("lora_image"), ["GET"], "LoRA 封面图读取"),
         (f"{prefix}/translate/test", _h("translate_test"), ["POST"], "翻译调试（测试三种翻译模式）"),
         (f"{prefix}/workflows/sampler", _h("workflow_sampler"), ["GET"], "读取工作流采样器参数"),
+        (f"{prefix}/platforms", _h("platforms_get"), ["GET"], "读取生图平台配置"),
+        (f"{prefix}/platforms/save", _h("platforms_save"), ["POST"], "保存生图平台配置"),
         (f"{prefix}/share/tokens", _h("share_tokens"), ["GET"], "分享链接管理列表"),
         (f"{prefix}/share/token/invalidate", _h("share_token_invalidate"), ["POST"], "分享链接作废"),
         (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),

@@ -58,6 +58,19 @@ class StandaloneWebUI:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._task: asyncio.Task | None = None
+        self._platform_store_inst = None
+
+    def _platform_store(self):
+        """懒加载平台配置存储（多平台生图，docs/multi-platform-image-plan.md）。"""
+        store = self._platform_store_inst
+        if store is None:
+            try:
+                from .platform_store import PlatformStore
+            except ImportError:
+                from platform_store import PlatformStore
+            store = PlatformStore(getattr(self.plugin, "data_dir", None) or Path("data"))
+            self._platform_store_inst = store
+        return store
         self._lock = asyncio.Lock()
         # 复用 WebUIApi 的 lora_fetch / lora_upload_image / lora_image / translate_test
         # （这些方法引用 webui_api 模块级 `request`，需用适配器 + 串行锁避免全局竞态）
@@ -576,6 +589,22 @@ class StandaloneWebUI:
             return await self._api_share_admin(path, request, g)
 
         # ---------- 图库 ----------
+        if path == "/platforms" and method == "GET":
+            try:
+                return _ok(self._platform_store().summary_full())
+            except Exception as e:
+                return _err(f"读取平台配置失败: {e}")
+        if path == "/platforms/save" and method == "POST":
+            try:
+                payload = await request.json()
+                if not isinstance(payload, dict):
+                    return _err("请求体必须是对象")
+                self._platform_store().save(payload)
+                return _ok({"ok": True})
+            except ValueError as e:
+                return _err(str(e))
+            except Exception as e:
+                return _err(f"保存平台配置失败: {e}")
         if path.startswith("/gallery/"):
             return await self._api_gallery(path, request, g)
 

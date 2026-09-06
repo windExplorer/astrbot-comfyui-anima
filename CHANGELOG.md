@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.8.0（多平台生图第一期：NAI / OpenAI 兼容 / 自定义 HTTP 平台接入）
+
+- 插件不再仅限 ComfyUI：新增「生图平台」体系，ComfyUI 失联时可切换第三方平台出图（方案见 docs/multi-platform-image-plan.md）。
+- 三类平台：NAI（官方 API 或中转站）、OpenAI 兼容（官方 / newapi 中转 / 聚合平台，/v1/images/generations）、自定义 HTTP（URL + JSON 模板 + 响应提取，实验性）。
+- WebUI 新增「生图平台」页：当前平台切换、平台卡片管理（增删改/启用）、画师串预设、跨平台负面词模板；数据存 data_dir/image_platforms.json（独立 WebUI 与内嵌页双侧桥接）。
+- 图库 images 表新增 platform / model / negative / extra 列（自动迁移）；ComfyUI 出图归档补记负面提示词（历史疏漏修复），大图详情新增「平台/模型」「负面词」展示。
+- comfyui_draw 工具新增 platform 参数（LLM 可临时指定平台，工具描述说明各平台能力差异）。
+- 出图分流：active_platform 非 comfyui 时自动走第三方链路，归档/NSFW 检测/图文消息与 ComfyUI 链路同构；第三方平台自动忽略 LoRA/工作流/图生图参数。
+
 ## v5.7.7（收紧 trigger_words 使用门槛，修复多 LoRA 时触发词不追加）
 
 - v5.7.6 的描述引导导致部分模型过度执行：不查触发词就传空字符串/只传单个 LoRA 的部分触发词，多 LoRA 时触发词大面积丢失。

@@ -5,6 +5,7 @@ import StatsView from "@/views/StatsView.vue";
 import WorkflowsView from "@/views/WorkflowsView.vue";
 import FeaturesView from "@/views/FeaturesView.vue";
 import LorasView from "@/views/LorasView.vue";
+import PlatformsView from "@/views/PlatformsView.vue";
 import GalleryView from "@/views/GalleryView.vue";
 import QuotaView from "@/views/QuotaView.vue";
 import TokenView from "@/views/TokenView.vue";
@@ -29,6 +30,7 @@ const router = createRouter({
     { path: "/workflows", name: "workflows", component: WorkflowsView, meta: { title: "工作流" } },
     { path: "/features", name: "features", component: FeaturesView, meta: { title: "功能配置" } },
     { path: "/loras", name: "loras", component: LorasView, meta: { title: "LoRA" } },
+    { path: "/platforms", name: "platforms", component: PlatformsView, meta: { title: "生图平台" } },
     { path: "/gallery", name: "gallery", component: GalleryView, meta: { title: "图库" } },
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },

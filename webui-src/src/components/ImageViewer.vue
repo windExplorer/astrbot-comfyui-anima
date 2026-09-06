@@ -77,7 +77,9 @@
             <div v-if="item.steps != null" class="iv-row"><span class="k">步数</span><span class="v">{{ item.steps }}</span></div>
             <div v-if="item.denoise != null" class="iv-row"><span class="k">Denoise</span><span class="v">{{ item.denoise }}</span></div>
             <div v-if="item.use_count != null" class="iv-row"><span class="k">使用次数</span><span class="v">{{ item.use_count }}</span></div>
+            <div v-if="item.platform && item.platform !== 'comfyui'" class="iv-row"><span class="k">平台</span><span class="v">{{ item.platform }}<template v-if="item.model"> / {{ item.model }}</template></span></div>
             <div class="iv-row iv-prompt"><span class="k">提示词</span><span class="v">{{ item.prompt_raw || item.prompt || "（无）" }}</span></div>
+            <div v-if="item.negative" class="iv-row iv-prompt"><span class="k">负面词</span><span class="v">{{ item.negative }}</span></div>
           </template>
           <div v-else class="iv-loading">加载信息…</div>
         </aside>
@@ -118,6 +120,9 @@ interface ViewerImage {
   denoise?: number;
   cfg?: number;
   steps?: number;
+  platform?: string;
+  model?: string;
+  negative?: string;
   loras?: string | any[];
   use_count?: number;
   starred?: boolean;

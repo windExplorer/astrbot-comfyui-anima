@@ -2743,7 +2743,8 @@ class ComfyUIDrawPlugin(Star):
         return getattr(wf, "name", "") or ""
 
     def _record_failed(
-        self, event, positive, wf, is_img2img, ref_sha256, draw_start, reason
+        self, event, positive, wf, is_img2img, ref_sha256, draw_start, reason,
+        platform: str = "comfyui",
     ) -> None:
         """出图失败时写一条失败记录到图库（供 WebUI「出图记录」展示）。"""
         try:
@@ -2767,6 +2768,7 @@ class ComfyUIDrawPlugin(Star):
                 user_name=user_name,
                 trigger_msg=trigger,
                 reason=(reason or ""),
+                platform=platform,
             )
         except Exception as e:
             logger.warning(
@@ -2889,6 +2891,226 @@ class ComfyUIDrawPlugin(Star):
             return random.choice(_QUEUE_HINTS_GENERATING)
         return random.choice(_QUEUE_HINTS_QUEUED).format(n=ahead)
 
+    # ------------------------------------------------------------------ #
+    # 多平台生图：第三方平台链路（NAI / OpenAI 兼容 / 自定义）
+    # docs/multi-platform-image-plan.md。ComfyUI 主流程零改动；本协程与主流程
+    # 同构（生成 → 归档 → 群聊 NSFW → 图文消息发送），仅图片来源不同。
+    # ------------------------------------------------------------------ #
+
+    def _platform_store(self):
+        store = getattr(self, "_platform_store_inst", None)
+        if store is None:
+            try:
+                from .platform_store import PlatformStore
+            except ImportError:
+                from platform_store import PlatformStore
+            store = PlatformStore(self.data_dir)
+            self._platform_store_inst = store
+        return store
+
+    async def _do_draw_nai_style(
+        self,
+        event: AstrMessageEvent,
+        plat: dict,
+        positive: str,
+        negative: str,
+        width: int | None,
+        height: int | None,
+        seed: int | None,
+        *,
+        notify_pending: bool = True,
+        source: str = "",
+        caption: str = "",
+        draw_start: float | None = None,
+        user_id: str = "",
+        user_name: str = "",
+    ):
+        """第三方平台（NAI / OpenAI 兼容 / 自定义）出图。yield 契约与 _do_draw 一致。"""
+        ptype = (plat.get("type") or "openai").strip()
+        pname = (plat.get("name") or ptype)
+        _draw_start = draw_start or time.time()
+        _session_id = (getattr(event, "session_id", "") or "") if event is not None else ""
+        logger.info(
+            f"【绘图·开始】平台={ptype}({pname}) session={_session_id} 来源={source or '(原生)'}"
+        )
+
+        # 负面词：用户/调用方没给时，合并「负面词模板」里启用的条目
+        if not (negative or "").strip():
+            negative = self._platform_store().enabled_negative_text()
+        # 画师串（NAI 专属语义；取第一个启用预设）
+        artist = ""
+        if ptype == "nai":
+            _presets = self._platform_store().artist_presets(enabled_only=True)
+            if _presets:
+                artist = (_presets[0].get("content") or "").strip()
+        # 尺寸：显式传参 > 平台默认档位 > NAI 竖图兜底
+        _w, _h = width, height
+        if not _w or not _h:
+            try:
+                try:
+                    from .platform_store import resolve_nai_size
+                except ImportError:
+                    from platform_store import resolve_nai_size
+                defaults = plat.get("defaults") or {}
+                _size_key = str(defaults.get("size") or (plat.get("size") or "portrait"))
+                _resolved = resolve_nai_size(_size_key)
+                if _resolved:
+                    _w = _w or _resolved[0]
+                    _h = _h or _resolved[1]
+            except Exception as _se:
+                logger.warning(f"【平台】 尺寸解析失败（用默认 832x1216）: {_se}")
+        _w = int(_w or 832)
+        _h = int(_h or 1216)
+        # 种子：未指定则随机（归档/日志需要真实种子）
+        try:
+            seed = int(seed) if seed else 0
+        except (TypeError, ValueError):
+            seed = 0
+        if seed <= 0:
+            seed = random.randint(0, 2**31 - 1)
+        model = (plat.get("model") or "").strip()
+
+        # 提交生成
+        try:
+            try:
+                from . import nai_client
+            except ImportError:
+                import nai_client
+            images = await nai_client.generate(
+                plat, prompt=positive, negative=negative,
+                width=_w, height=_h, seed=seed, count=1, artist=artist,
+            )
+        except Exception as e:
+            logger.warning(f"【绘图·失败】[平台 {ptype}] {e}")
+            await self._send(event, self._friendly_error(e, f"平台「{pname}」生图"))
+            self._record_failed(
+                event, positive, {"name": f"[平台 {pname}]"}, False, None,
+                _draw_start, f"平台生图失败: {e}", platform=ptype,
+            )
+            return
+        if not images:
+            await self._send(event, self._cute("no_image"))
+            self._record_failed(
+                event, positive, {"name": f"[平台 {pname}]"}, False, None,
+                _draw_start, "平台未返回图片（无图）", platform=ptype,
+            )
+            return
+
+        for data in images:
+            tmp_path = self.temp_dir / f"{uuid.uuid4().hex}.png"
+            with open(tmp_path, "wb") as f:
+                f.write(data)
+            img_path = str(tmp_path)
+            _send_img_path = img_path
+
+            # 图库归档（platform/model/negative/extra，与 ComfyUI 链路同构）
+            if self.gallery is not None:
+                try:
+                    try:
+                        from .image_store import SRC_GEN, _sha256_of
+                    except ImportError:
+                        from image_store import SRC_GEN, _sha256_of
+                    _real_w, _real_h = _w, _h
+                    if _PILImage is not None:
+                        try:
+                            with _PILImage.open(img_path) as _im:
+                                _real_w, _real_h = _im.width, _im.height
+                        except Exception:
+                            pass
+                    _group_name = ""
+                    try:
+                        _gid = str(getattr(event, "get_group_id", lambda: "")() or "")
+                        _get_group = getattr(event, "get_group", None)
+                        if _gid and callable(_get_group):
+                            _grp = await asyncio.wait_for(_get_group(_gid), timeout=3)
+                            _group_name = str(getattr(_grp, "group_name", "") or "")
+                    except Exception:
+                        _group_name = ""
+                    _extra = {}
+                    _defaults = plat.get("defaults") or {}
+                    for _k in ("steps", "scale", "cfg_rescale", "sampler", "noise_schedule"):
+                        if _defaults.get(_k) is not None:
+                            _extra[_k] = _defaults.get(_k)
+                    _final = self.gallery.archive_image(
+                        img_path,
+                        source=SRC_GEN,
+                        prompt=positive,
+                        prompt_raw=positive,
+                        workflow="",
+                        loras=[],
+                        seed=seed,
+                        w=_real_w,
+                        h=_real_h,
+                        is_img2img=False,
+                        platform=ptype,
+                        model=model,
+                        negative=(negative or ""),
+                        extra=_extra,
+                        size_bytes=(os.path.getsize(img_path) if os.path.exists(img_path) else None),
+                        cost_sec=(time.time() - _draw_start),
+                        user_id=user_id or ((getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""),
+                        user_name=user_name or ((getattr(event, "get_sender_name", lambda: "")() or "") if event is not None else ""),
+                        session_id=_session_id,
+                        group_id=(getattr(event, "get_group_id", lambda: "")() or "") if event is not None else "",
+                        group_name=_group_name,
+                        trigger_msg=(getattr(event, "message_str", "") or "") if event is not None else "",
+                        status=0,
+                        on_dedup=lambda _sha, _uc: self._oplog_dedup(
+                            _sha, _uc, user_id, user_name, event
+                        ),
+                    )
+                    if _final:
+                        img_path = _final
+                        _send_img_path = _final
+                except Exception as _ge:
+                    logger.warning(f"【图库】 平台图归档失败（不影响发送）: {_ge}")
+
+            # 群聊 NSFW 检测（与 ComfyUI 链路同构；拦截则不发也不入库记录）
+            if not self._is_private_event(event):
+                _nsfw_thr = 0.5
+                try:
+                    if getattr(self, "gallery", None) is not None:
+                        _nsfw_thr = self.gallery._nsfw_threshold()
+                except Exception:
+                    pass
+                try:
+                    from .nsfw_detector import get_detector
+                except ImportError:
+                    from nsfw_detector import get_detector
+                _det = get_detector(_nsfw_thr)
+                try:
+                    _is_nsfw, _nsfw_score, _nsfw_avail = (
+                        await asyncio.to_thread(_det.detect, _send_img_path)
+                    )
+                except Exception as _e:
+                    logger.warning(f"【NSFW】 平台出图群聊检测异常: {_e}")
+                    _is_nsfw, _nsfw_avail = True, False
+                if _is_nsfw:
+                    _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
+                    _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_avail else ""
+                    logger.warning(f"【NSFW】 平台出图被拦截{_sc}{_reason} platform={ptype} path={_send_img_path}")
+                    await self._send(event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}")
+                    continue
+
+            # 发送（图文消息 caption 与 ComfyUI 链路同构）
+            _cap_text = self._build_image_caption(caption, "") if caption else ""
+            if _cap_text:
+                _cap_result = event.chain_result(
+                    [Plain(text=_cap_text), Image.fromFileSystem(_send_img_path)]
+                )
+                try:
+                    _cap_result.use_t2i_ = False
+                except Exception:
+                    pass
+                yield _cap_result, _send_img_path
+            else:
+                yield event.image_result(_send_img_path), _send_img_path
+
+        logger.info(
+            f"【绘图·完成】平台={ptype}({pname}) seed={seed} 尺寸={_w}x{_h} "
+            f"耗时={time.time() - _draw_start:.1f}s"
+        )
+
     async def _do_draw(
         self,
         event: AstrMessageEvent,
@@ -2904,6 +3126,7 @@ class ComfyUIDrawPlugin(Star):
         is_img2img: bool = False,
         denoise: float | None = None,
         trigger_words: str | None = None,
+        platform: str = "",
         notify_pending: bool = True,
         source: str = "",
         explicit_default: bool = False,
@@ -2951,6 +3174,24 @@ class ComfyUIDrawPlugin(Star):
         if not _ok:
             logger.info(f"【绘图·解析】 用户 {user_id or '(unknown)'} 触发生图限额，拒绝：{_reason}")
             await self._send(event, _reason)
+            return
+        # ── 多平台生图分流（docs/multi-platform-image-plan.md）────────────
+        # active_platform 非 comfyui 且该平台可用时，走第三方平台链路
+        # （NAI / OpenAI 兼容 / 自定义），ComfyUI 主流程一行不动。
+        # 第三方平台不支持 LoRA/工作流/图生图，相关参数在此链路自动忽略。
+        try:
+            _plat = self._platform_store().pick_platform(platform)
+        except Exception as _pe:
+            logger.warning(f"【平台】 平台解析失败（回退 ComfyUI）: {_pe}")
+            _plat = None
+        if _plat is not None:
+            async for _pn, _pp in self._do_draw_nai_style(
+                event, _plat, positive, negative, width, height, seed,
+                notify_pending=notify_pending, source=source,
+                caption=caption, draw_start=_draw_start,
+                user_id=user_id, user_name=user_name,
+            ):
+                yield _pn, _pp
             return
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
@@ -3778,6 +4019,8 @@ class ComfyUIDrawPlugin(Star):
                                 prompt_raw=positive,
                                 workflow=(wf.get("name") or ""),
                                 loras=_loras_record,
+                                platform="comfyui",
+                                negative=(negative or ""),
                                 seed=(seeds_used[0] if seeds_used else None),
                                 w=_real_w,
                                 h=_real_h,
@@ -6885,6 +7128,7 @@ class ComfyUIDrawPlugin(Star):
         image: str = "",
         denoise: float = -1,
         trigger_words: str | None = None,
+        platform: str = "",
         slot_values: dict | None = None,
         comic_feature: str | None = None,
         caption: str = "",
@@ -6997,6 +7241,7 @@ class ComfyUIDrawPlugin(Star):
                 ①你刚通过 comfyui_loras 看到了该 LoRA 的触发词原文；
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
+            platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。可传 comfyui / nai / openai / custom 或平台显示名来临时指定平台。★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。
 
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时，这些参数可不传，插件自动使用工作流或配置默认值。
@@ -7589,6 +7834,8 @@ class ComfyUIDrawPlugin(Star):
                 denoise=_item_denoise if _item_denoise >= 0 else None,
                 # LLM 筛选后的触发词（None=未传走自动全量追加；""=不追加；非空=只追加这些）
                 trigger_words=trigger_words,
+                # 生图平台（""=用默认平台 active_platform；nai/openai/custom=临时指定）
+                platform=platform,
                 # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
                 # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
                 notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),

@@ -176,7 +176,11 @@ class ImageStore:
                 is_global  INTEGER NOT NULL DEFAULT 0,
                 session_id TEXT DEFAULT '',
                 group_id   TEXT DEFAULT '',
-                group_name TEXT DEFAULT ''
+                group_name TEXT DEFAULT '',
+                platform   TEXT NOT NULL DEFAULT 'comfyui',
+                model      TEXT DEFAULT NULL,
+                negative   TEXT DEFAULT NULL,
+                extra      TEXT DEFAULT NULL
             )""",
         )
         # 兼容已存在的旧库：缺列则补上
@@ -200,6 +204,10 @@ class ImageStore:
             ("group_name", "TEXT DEFAULT ''"),
             ("cfg", "REAL DEFAULT NULL"),
             ("steps", "INTEGER DEFAULT NULL"),
+            ("platform", "TEXT NOT NULL DEFAULT 'comfyui'"),
+            ("model", "TEXT DEFAULT NULL"),
+            ("negative", "TEXT DEFAULT NULL"),
+            ("extra", "TEXT DEFAULT NULL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -564,6 +572,10 @@ class ImageStore:
         steps=None,
         is_img2img: bool = False,
         ref_sha256: str = "",
+        platform: str = "comfyui",
+        model: str = "",
+        negative: str = "",
+        extra: dict | None = None,
         size_bytes: int = None,
         cost_sec: float = None,
         user_id: str = "",
@@ -628,6 +640,14 @@ class ImageStore:
             except Exception:
                 loras_json = ""
 
+        # 平台专有参数（steps/scale/sampler 等各平台差异项）序列化为 JSON 存 extra 列
+        extra_json = ""
+        if extra:
+            try:
+                extra_json = json.dumps(dict(extra), ensure_ascii=False)
+            except Exception:
+                extra_json = ""
+
         if row is not None:
             # 已存在：更新计数，并在缺字段时补齐（如从 ref 升级为带 prompt 的成品）
             try:
@@ -648,7 +668,8 @@ class ImageStore:
                         "UPDATE images SET prompt=?, prompt_raw=?, workflow=?, "
                         "loras=?, seed=?, w=?, h=?, denoise=?, cfg=?, steps=?, is_img2img=?, "
                         "ref_sha256=?, source=?, size_bytes=?, cost_sec=?, "
-                        "user_id=?, user_name=?, session_id=?, trigger_msg=?, status=? "
+                        "user_id=?, user_name=?, session_id=?, trigger_msg=?, status=?, "
+                        "platform=?, model=?, negative=?, extra=? "
                         "WHERE sha256=?",
                         (
                             prompt, prompt_raw, workflow, loras_json,
@@ -656,7 +677,9 @@ class ImageStore:
                             1 if is_img2img else 0, ref_sha256 or "",
                             source, size_bytes, cost_sec,
                             user_id or "", user_name or "", session_id or "",
-                            trigger_msg or "", status, sha,
+                            trigger_msg or "", status,
+                            platform or "comfyui", model or "", negative or "", extra_json,
+                            sha,
                         ),
                     )
                 conn.commit()
@@ -709,9 +732,10 @@ class ImageStore:
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
                  use_count, starred, created_at, size_bytes, cost_sec,
                  user_id, user_name, session_id, group_id, group_name, trigger_msg, status,
-                 nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps)
+                 nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps,
+                 platform, model, negative, extra)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -722,6 +746,7 @@ class ImageStore:
                     user_id or "", user_name or "", session_id or "", group_id or "", group_name or "", trigger_msg or "", status,
                     _nsfw, _nsfw_score, None, _nsfw_checked,
                     cfg, steps,
+                    platform or "comfyui", model or "", negative or "", extra_json,
                 ),
             )
             conn.commit()
@@ -765,6 +790,7 @@ class ImageStore:
         user_name: str = "",
         trigger_msg: str = "",
         reason: str = "",
+        platform: str = "comfyui",
     ) -> None:
         """写入一条**出图失败**记录（status=1，无真实文件，用随机 sha 占位）。
 
@@ -783,8 +809,8 @@ class ImageStore:
                 (sha256, ext, month, prompt, prompt_raw, workflow, loras,
                  seed, w, h, denoise, is_img2img, ref_sha256, source,
                  use_count, starred, created_at, size_bytes, cost_sec,
-                 user_id, user_name, trigger_msg, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,1)
+                 user_id, user_name, trigger_msg, status, platform)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,1,?)
                 """,
                 (
                     sha, "fail", time.strftime("%Y-%m"),
@@ -793,6 +819,7 @@ class ImageStore:
                     1 if is_img2img else 0, ref_sha256 or "", SRC_GEN,
                     time.time(), size_bytes, cost_sec,
                     user_id or "", user_name or "", (trigger_msg or "") + (f" | 失败: {reason}" if reason else ""),
+                    platform or "comfyui",
                 ),
             )
             conn.commit()
@@ -961,6 +988,10 @@ class ImageStore:
             "denoise": row["denoise"],
             "cfg": row["cfg"],
             "steps": row["steps"],
+            "platform": row["platform"] if "platform" in row.keys() else "comfyui",
+            "model": row["model"] if "model" in row.keys() else "",
+            "negative": row["negative"] if "negative" in row.keys() else "",
+            "extra": row["extra"] if "extra" in row.keys() else "",
             "is_img2img": bool(row["is_img2img"]),
             "ref_sha256": row["ref_sha256"],
             "source": row["source"],
