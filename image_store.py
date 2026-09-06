@@ -180,7 +180,8 @@ class ImageStore:
                 platform   TEXT NOT NULL DEFAULT 'comfyui',
                 model      TEXT DEFAULT NULL,
                 negative   TEXT DEFAULT NULL,
-                extra      TEXT DEFAULT NULL
+                extra      TEXT DEFAULT NULL,
+                platform_name TEXT DEFAULT NULL
             )""",
         )
         # 兼容已存在的旧库：缺列则补上
@@ -208,6 +209,7 @@ class ImageStore:
             ("model", "TEXT DEFAULT NULL"),
             ("negative", "TEXT DEFAULT NULL"),
             ("extra", "TEXT DEFAULT NULL"),
+            ("platform_name", "TEXT DEFAULT NULL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -575,6 +577,7 @@ class ImageStore:
         platform: str = "comfyui",
         model: str = "",
         negative: str = "",
+        platform_name: str = "",
         extra: dict | None = None,
         size_bytes: int = None,
         cost_sec: float = None,
@@ -669,7 +672,7 @@ class ImageStore:
                         "loras=?, seed=?, w=?, h=?, denoise=?, cfg=?, steps=?, is_img2img=?, "
                         "ref_sha256=?, source=?, size_bytes=?, cost_sec=?, "
                         "user_id=?, user_name=?, session_id=?, trigger_msg=?, status=?, "
-                        "platform=?, model=?, negative=?, extra=? "
+                        "platform=?, model=?, negative=?, extra=?, platform_name=? "
                         "WHERE sha256=?",
                         (
                             prompt, prompt_raw, workflow, loras_json,
@@ -678,7 +681,7 @@ class ImageStore:
                             source, size_bytes, cost_sec,
                             user_id or "", user_name or "", session_id or "",
                             trigger_msg or "", status,
-                            platform or "comfyui", model or "", negative or "", extra_json,
+                            platform or "comfyui", model or "", negative or "", extra_json, platform_name or "",
                             sha,
                         ),
                     )
@@ -733,9 +736,9 @@ class ImageStore:
                  use_count, starred, created_at, size_bytes, cost_sec,
                  user_id, user_name, session_id, group_id, group_name, trigger_msg, status,
                  nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps,
-                 platform, model, negative, extra)
+                 platform, model, negative, extra, platform_name)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,
-                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -746,7 +749,7 @@ class ImageStore:
                     user_id or "", user_name or "", session_id or "", group_id or "", group_name or "", trigger_msg or "", status,
                     _nsfw, _nsfw_score, None, _nsfw_checked,
                     cfg, steps,
-                    platform or "comfyui", model or "", negative or "", extra_json,
+                    platform or "comfyui", model or "", negative or "", extra_json, platform_name or "",
                 ),
             )
             conn.commit()
@@ -990,6 +993,7 @@ class ImageStore:
             "steps": row["steps"],
             "platform": row["platform"] if "platform" in row.keys() else "comfyui",
             "model": row["model"] if "model" in row.keys() else "",
+            "platform_name": row["platform_name"] if "platform_name" in row.keys() else "",
             "negative": row["negative"] if "negative" in row.keys() else "",
             "extra": row["extra"] if "extra" in row.keys() else "",
             "is_img2img": bool(row["is_img2img"]),

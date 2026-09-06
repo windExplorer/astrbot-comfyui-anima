@@ -3068,6 +3068,7 @@ class ComfyUIDrawPlugin(Star):
                         platform=ptype,
                         model=model,
                         negative=(negative or ""),
+                        platform_name=plat.get("name") or "",
                         extra=_extra,
                         size_bytes=(os.path.getsize(img_path) if os.path.exists(img_path) else None),
                         cost_sec=(time.time() - _draw_start),

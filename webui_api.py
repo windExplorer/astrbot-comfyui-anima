@@ -151,6 +151,7 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
                 workflow="", loras=[], seed=seed, w=w_real, h=h_real,
                 is_img2img=False,
                 platform=ptype, model=model, negative=negative,
+                platform_name=plat.get("name") or "",
                 extra={"test": True},
                 size_bytes=len(data), cost_sec=cost,
                 trigger_msg="[平台连通性测试]",

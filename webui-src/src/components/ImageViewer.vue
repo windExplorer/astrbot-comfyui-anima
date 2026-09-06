@@ -61,8 +61,6 @@
                 <n-input v-model:value="newTag" size="small" placeholder="加标签后回车" style="width:140px" @keyup.enter="addTag" />
               </span>
             </span></div>
-            <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
-            <div v-if="item.trigger_msg" class="iv-row"><span class="k">触发消息</span><span class="v">{{ item.trigger_msg }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
             <div v-if="item.size_bytes != null" class="iv-row"><span class="k">大小</span><span class="v">{{ fmtBytes(item.size_bytes) }}</span></div>
             <div v-if="item.cost_sec != null" class="iv-row"><span class="k">耗时</span><span class="v">{{ fmtDuration(item.cost_sec) }}</span></div>
@@ -77,12 +75,43 @@
             <div v-if="item.steps != null" class="iv-row"><span class="k">步数</span><span class="v">{{ item.steps }}</span></div>
             <div v-if="item.denoise != null" class="iv-row"><span class="k">Denoise</span><span class="v">{{ item.denoise }}</span></div>
             <div v-if="item.use_count != null" class="iv-row"><span class="k">使用次数</span><span class="v">{{ item.use_count }}</span></div>
-            <div v-if="item.platform && item.platform !== 'comfyui'" class="iv-row"><span class="k">平台</span><span class="v">{{ item.platform }}<template v-if="item.model"> / {{ item.model }}</template></span></div>
-            <div class="iv-row iv-prompt"><span class="k">提示词</span><span class="v">{{ item.prompt_raw || item.prompt || "（无）" }}</span></div>
-            <div v-if="item.negative" class="iv-row iv-prompt"><span class="k">负面词</span><span class="v">{{ item.negative }}</span></div>
+            <div v-if="item.platform" class="iv-row"><span class="k">平台</span><span class="v">
+              <template v-if="item.platform_name">{{ item.platform_name }}</template><template v-if="item.platform_name && item.platform"> · </template>{{ item.platform }}<template v-if="item.model"> / {{ item.model }}</template>
+            </span></div>
+            <button class="iv-detail-btn" @click="showDetail = true">📋 查看生成详情（触发词 / 提示词 / 负面词）</button>
           </template>
           <div v-else class="iv-loading">加载信息…</div>
         </aside>
+      </div>
+    </div>
+  </teleport>
+
+  <!-- 生成详情弹窗：独立 teleport 到 body，z-index(10001) 高于大图查看器(9999)，避免被遮挡 -->
+  <teleport to="body">
+    <div v-if="showDetail" class="iv-detail-mask" @click.self="showDetail = false">
+      <div class="iv-detail-box">
+        <div class="iv-detail-head">
+          <span>生成详情</span>
+          <button class="iv-detail-close" @click="showDetail = false" aria-label="关闭">✕</button>
+        </div>
+        <div class="iv-detail-body">
+          <section v-if="item && item.workflow" class="iv-detail-sec">
+            <div class="dt">工作流</div>
+            <div class="dv">{{ item.workflow }}</div>
+          </section>
+          <section v-if="item && item.trigger_msg" class="iv-detail-sec">
+            <div class="dt">触发消息</div>
+            <div class="dv">{{ item.trigger_msg }}</div>
+          </section>
+          <section class="iv-detail-sec">
+            <div class="dt">正向提示词</div>
+            <div class="dv">{{ item.prompt_raw || item.prompt || "（无）" }}</div>
+          </section>
+          <section v-if="item && item.negative" class="iv-detail-sec">
+            <div class="dt">负面提示词</div>
+            <div class="dv">{{ item.negative }}</div>
+          </section>
+        </div>
       </div>
     </div>
   </teleport>
@@ -121,6 +150,7 @@ interface ViewerImage {
   cfg?: number;
   steps?: number;
   platform?: string;
+  platform_name?: string;
   model?: string;
   negative?: string;
   loras?: string | any[];
@@ -164,6 +194,12 @@ const emit = defineEmits<{
 const mainSrc = ref("");
 const refSrc = ref("");
 const item = ref<ViewerImage | null>(null);
+// 生成详情弹窗（触发词/提示词/负面词）：独立 teleport 到 body，z-index 高于大图(9999)避免被遮挡
+const showDetail = ref(false);
+watch(
+  () => props.show,
+  (v) => { if (!v) showDetail.value = false; },
+);
 
 const isPair = computed(() => {
   const rs = props.refSha || (item.value && item.value.ref_sha256);
@@ -500,7 +536,7 @@ function onKeyNav(e: KeyboardEvent) {
   if (!props.show) return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-  if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+  if (e.key === "Escape") { e.preventDefault(); if (showDetail.value) { showDetail.value = false; } else { onClose(); } return; }
   if (!canNav.value) return;
   if (e.key === "ArrowLeft") { e.preventDefault(); onNav(-1); }
   else if (e.key === "ArrowRight") { e.preventDefault(); onNav(1); }
@@ -797,6 +833,85 @@ function onPurge(it: any) { emit("purge", it); }
 }
 .iv-prompt { flex: 1 1 auto; min-height: 60px; align-items: stretch; }
 .iv-prompt .v { overflow: auto; max-height: 100%; padding-right: 4px; }
+/* 生成详情弹窗：独立 teleport 到 body，z-index 高于大图查看器(9999) */
+.iv-detail-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(8, 8, 12, 0.82);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.iv-detail-box {
+  width: min(720px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: #16161e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.iv-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-weight: 700;
+  color: #fff;
+  flex: 0 0 auto;
+}
+.iv-detail-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.iv-detail-close:hover { background: rgba(255, 255, 255, 0.24); }
+.iv-detail-body { overflow: auto; padding: 8px 16px 16px; }
+.iv-detail-sec { padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.iv-detail-sec:last-child { border-bottom: none; }
+.iv-detail-sec .dt {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 6px;
+  font-weight: 700;
+}
+.iv-detail-sec .dv {
+  font-size: 0.86rem;
+  line-height: 1.7;
+  color: #e6e6f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.iv-detail-btn {
+  margin: 8px 0;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--primary-color, #7c4dff);
+  background: rgba(124, 77, 255, 0.14);
+  color: #cbb6ff;
+  transition: all 0.15s;
+  flex: 0 0 auto;
+  text-align: left;
+}
+.iv-detail-btn:hover { background: rgba(124, 77, 255, 0.28); }
 @media (max-width: 760px) {
   .iv-body { flex-direction: column; }
   .iv-info { width: 100%; flex: 0 0 auto; height: auto; max-height: 40vh; overflow: auto; border-left: none; border-top: 1px solid rgba(255,255,255,0.08); }
