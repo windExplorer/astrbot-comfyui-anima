@@ -7,8 +7,7 @@
 实现要点：
 - NAI 官方：POST {base_url}/ai/generate-image（Bearer 持久 token），响应为 zip（内含 png），
   内存解包取第一张图。
-- NAI 中转站（via_middle_station=true）：GET {base_url}/generate?prompt=...&model=...（nai.sta1n.cn 风格），
-  响应为图片二进制或 JSON（b64/二进制自动识别）。移植自参考插件 astrbot_plugin_nai_image。
+- NAI 中转站（via_middle_station=true）：GET {base_url}/generate?tag=...&token=...&size=...&model=...&negative=...&steps=&scale=&cfg=&sampler=&noise_schedule=&nocache=1（nai.sta1n.cn 风格：密钥走 token 查询参数、尺寸用中文键，提示词用 tag=、负向用 negative=），响应为图片二进制；失败返回 SVG 错误页（自动识别并报错）。对齐参考插件 astrbot_plugin_nai_image。
 - OpenAI 兼容：POST {base_url}/v1/images/generations，支持 b64_json / url 两种响应，
   高级参数放 parameters 对象（对齐 NAI 中转 OpenAI 兼容接口）。
 - custom：模板渲染（platform_store.render_custom_request）+ 响应提取。
@@ -224,6 +223,26 @@ def _iter_values(obj):
         yield obj
 
 
+def _nai_relay_size(width: int, height: int) -> str:
+    """把像素宽高映射为 nai.sta1n.cn 中继站识别的中文尺寸键。
+
+    中继站只认中文尺寸值（竖图/横图/方图/2K竖图/2K横图/2K方图/4K...），不认像素宽高。
+    方向由长宽比定，档位由最长边定：<1400=1K，1400~2500=2K，>=2500=4K。"""
+    if height > width:
+        orient = "竖图"
+    elif width > height:
+        orient = "横图"
+    else:
+        orient = "方图"
+    mx = max(int(width), int(height))
+    tier = ""
+    if mx >= 2500:
+        tier = "4K"
+    elif mx >= 1400:
+        tier = "2K"
+    return f"{tier}{orient}"
+
+
 # ---------------------------------------------------------------------- #
 # NAI（官方 / 中转）
 # ---------------------------------------------------------------------- #
@@ -239,8 +258,8 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
     model = (p.get("model") or "nai-diffusion-4-5-full").strip()
     via_middle = bool(p.get("via_middle_station"))
 
-    # 画师串追加到正向提示词前部（NAI 惯例：画师串在最前）
-    full_prompt = f"{artist}, {prompt}" if artist else prompt
+    # 画师串：官方 NAI 拼到 input 前部；中转站走独立 artist 查询参数（见各分支）。
+    base_prompt = prompt
     if not negative:
         negative = "{}, lowres, bad anatomy, bad hands, worst quality, low quality".format(
             "username" if "4-full" in model or "5-full" in model else ""
@@ -259,28 +278,43 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
     for i in range(max(1, count)):
         _seed = (int(seed) + i) if seed is not None else -1
         if via_middle:
-            # 中转站 GET（nai.sta1n.cn /generate 风格）
+            # 中转站 GET（nai.sta1n.cn /generate 风格）：鉴权走 token= 查询参数，
+            # 尺寸用中文尺寸键（竖图/横图/方图/2K...），提示词用 tag=、负向用 negative=。
+            # 与参考插件 astrbot_plugin_nai_image 严格对齐，否则中继站会回「密钥无效或已被禁用」。
             params = {
-                "prompt": full_prompt,
-                "negative_prompt": negative or "",
+                "tag": base_prompt,
+                "token": api_key,
                 "model": model,
-                "width": width,
-                "height": height,
+                "artist": artist or "",
+                "size": _nai_relay_size(width, height),
                 "steps": int(p.get("defaults", {}).get("steps", 28)),
                 "scale": float(p.get("defaults", {}).get("scale", 6)),
-                "seed": _seed,
+                "cfg": float(p.get("defaults", {}).get("cfg", 7.0)),
+                "sampler": (p.get("defaults", {}).get("sampler") or "k_dpmpp_2m_sde"),
+                "negative": negative or "",
+                "nocache": 1,
+                "noise_schedule": (p.get("defaults", {}).get("noise_schedule") or "karras"),
             }
+            if _seed >= 0:
+                params["seed"] = _seed
             _st, _hd, raw = await _request_with_retry(
                 "GET", f"{base}/generate",
-                headers={"Authorization": f"Bearer {api_key}", **extra_headers},
+                headers={**extra_headers},
                 params=params, capture=capture,
                 timeout=timeout or _DEFAULT_TIMEOUT,
             )
-            img = _resp_to_bytes(raw, _hd.get("Content-Type", ""))
+            _ct = _hd.get("Content-Type", "")
+            # 中继站失败会返回 SVG 错误页（如「密钥无效或已被禁用」），不是图片，
+            # 必须识别并报错，否则会把 SVG 当成品图发给用户。
+            if raw.lstrip().startswith(b"<?xml") or "svg" in _ct:
+                _txt = re.sub(r"<[^>]+>", " ", raw.decode("utf-8", "ignore"))
+                _txt = re.sub(r"\s+", " ", _txt).strip()
+                raise PlatformError(f"NAI 中转站返回错误：{_txt[:200]}")
+            img = _resp_to_bytes(raw, _ct)
         else:
             # NAI 官方 /ai/generate-image（zip 响应）
             payload = {
-                "input": full_prompt,
+                "input": f"{artist}, {base_prompt}" if artist else base_prompt,
                 "model": model,
                 "action": "generate",
                 "parameters": {

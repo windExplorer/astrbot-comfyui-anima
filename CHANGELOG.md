@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.7（修复 NAI 中转站请求格式）
+
+- 修复 NAI 中转站（`via_middle_station=true`）生图请求：之前错误地用 `Authorization: Bearer` 头 + `prompt`/`width`/`height` 字段，与 `nai.sta1n.cn` 等中继站接口对不上，导致中继站回「密钥无效或已被禁用」且被当作图片原样发回。
+- 对齐参考插件 `astrbot_plugin_nai_image`：鉴权改为 `token=` 查询参数；提示词用 `tag=`、负向用 `negative=`；尺寸用**中文尺寸键**（竖图/横图/方图/2K竖图…，由像素宽高自动映射，中继站不认像素宽高）；补齐 `model`/`artist`/`steps`/`scale`/`cfg`/`sampler`/`noise_schedule`/`nocache` 字段。
+- 中转站失败时返回 SVG 错误页，现自动识别并报错（不再把 SVG 当成品图发给用户）。
+- 注意：若修复后仍提示「密钥无效或已被禁用」，说明填的 token 本身被中继站拒绝——中转站用的是**中继站自己的 token**（在 nai.sta1n.cn 注册获取），不是你 NovelAI 账号的 API Key。
+
 ## v5.10.6（生图平台：会话级切换 + 白名单）
 
 - 新增 `/平台` 聊天指令，支持**会话级**生图平台切换（多个第三方平台同时启用时，指定本会话用哪个）：
