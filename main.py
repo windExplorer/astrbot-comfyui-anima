@@ -3729,17 +3729,29 @@ class ComfyUIDrawPlugin(Star):
                     None,
                 )
                 if lib_l:
-                    # 底模兼容硬约束：LoRA 底模与工作流底模都标注且不一致时，拒绝注入
-                    # （避免「强行把某 LoRA 塞给不允许它的工作流」）
+                    # 底模兼容硬约束（管理员声明：底模留空=未配置/忘配，没有「通用 LoRA」）：
+                    # 工作流已标注底模时，LoRA 底模必须存在且完全一致，否则拒绝注入。
                     _wf_bm = ((wf.get("base_model") if wf else "") or "").strip().lower()
                     _lb_bm = (lib_l.get("base_model") or "").strip().lower()
-                    if _wf_bm and _lb_bm and _wf_bm != _lb_bm:
+                    if _wf_bm and not _lb_bm:
                         logger.warning(
-                            f"【LoRA】 请求启用「{cmd_name}」被拒绝：LoRA 底模 {_lb_bm!r} 与"
-                            f"工作流「{wf.get('name') or ''}」底模 {_wf_bm!r} 不匹配，本次不注入。"
-                            f"请为该 LoRA 选择同底模的工作流（或把任一方底模留空表示通用）。"
+                            f"【LoRA】 请求启用「{cmd_name}」被拒绝：该 LoRA 未配置底模"
+                            f"（工作流「{wf.get('name') or ''}」底模为 {_wf_bm!r}）。"
+                            f"请在全局 LoRA 库补填 base_model 后再使用。"
                         )
                         continue
+                    if _wf_bm and _lb_bm != _wf_bm:
+                        logger.warning(
+                            f"【LoRA】 请求启用「{cmd_name}」被拒绝：LoRA 底模 {_lb_bm!r} 与"
+                            f"工作流「{wf.get('name') or ''}」底模 {_wf_bm!r} 不一致，本次不注入。"
+                            f"请选择同底模的工作流。"
+                        )
+                        continue
+                    if not _wf_bm:
+                        logger.warning(
+                            f"【LoRA】 工作流「{wf.get('name') or ''}」未配置底模，无法校验"
+                            f"「{cmd_name}」的兼容性，按原样注入。建议在 WebUI 工作流配置里补填底模。"
+                        )
                     w = active_map.get(cmd_name)
                     loras_cfg = list(loras_cfg or []) + [
                         {
@@ -7619,7 +7631,7 @@ class ComfyUIDrawPlugin(Star):
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
                 不要留空，也不要用自然语言包裹，直接给出画面描述文本。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。★与平台的区分：用户说「用XX平台」时，XX 一律按平台处理（先调 comfyui_platforms，填 platform 参数），绝不要填进 workflow；只有「用XX」未命中任何平台、或用户明确说工作流/画风时才查这里。★LoRA 与底模匹配（重要）：comfyui_loras 结果与 comfyui_workflows 列表都带 [底模 xxx] 标记。要启用某个 LoRA 时，必须选「底模相同、或任一方未标注」的工作流：用户指定的工作流底模不匹配该 LoRA → 不要把该 LoRA 填进 loras（插件会拒绝注入），并告知用户；用户未指定工作流 → 从列表里选一个底模匹配的（优先默认动漫/真人文生图中匹配的那个），不要强行把 LoRA 塞给不匹配的默认工作流；找不到任何匹配工作流 → 不出图并告知。
+            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。★与平台的区分：用户说「用XX平台」时，XX 一律按平台处理（先调 comfyui_platforms，填 platform 参数），绝不要填进 workflow；只有「用XX」未命中任何平台、或用户明确说工作流/画风时才查这里。★LoRA 与底模匹配（重要，严格规则）：comfyui_loras 结果与 comfyui_workflows 列表都带 [底模 xxx] 标记。管理员的约定：**底模留空=未配置，不存在「通用 LoRA」**。因此：要启用某个 LoRA 时，工作流底模必须与 LoRA 底模**完全一致**；底模标着「未配置」的 LoRA 一律不要用（插件也会拒绝注入）；工作流未标注底模时无法校验，同样不要往上挂 LoRA。用户指定的工作流底模不匹配该 LoRA → 不要把该 LoRA 填进 loras（插件会拒绝注入），并提醒管理员补配置；用户未指定工作流 → 从列表里选一个底模完全一致的（优先默认动漫/真人文生图中匹配的那个）；找不到底模一致的组合 → 不出图并告知用户（附上两者的底模名，方便管理员修正配置）。
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
@@ -9793,6 +9805,8 @@ class ComfyUIDrawPlugin(Star):
                 line += f" [分类 {l.get('category').strip()}]"
             if lora_bm:
                 line += f" [底模 {lora_bm}]"
+            else:
+                line += " [底模 未配置——不可用，需管理员补填 base_model]"
             if desc:
                 line += f"\n  描述：{desc}"
             if tw:
