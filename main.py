@@ -3730,22 +3730,42 @@ class ComfyUIDrawPlugin(Star):
             # 全局 LoRA 库关键词兜底：用户原话（未翻译的中文名，如「来一张残虹的图」里的
             # 「残虹」）与最终提示词各过一遍库里的名称/别名/关键词，命中即临时启用，
             # 走下方补全链（含底模兼容硬约束）。弥补 LLM 忘传 loras 参数、或提示词被翻译
-            # 成英文导致中文名漏配的情况——LoRA 启用不再完全依赖 LLM 自觉。
+            # 成英文导致中文名漏配的情况。
+            # ★匹配必须严格，否则会「没让加也自动加一堆用不上的 LoRA」：
+            #   - 英文关键词按 \b 词边界整词匹配，且长度 ≥4（别名库里有 "to"/"art" 这类
+            #     碎片词，子串匹配会在任何英文 prompt 里到处命中——v5.10.45 的教训）；
+            #   - 中文关键词子串匹配但长度 ≥2；
+            #   - 单次兜底最多补 2 条，超出按命中顺序丢弃，限制误伤面；
+            #   - 通用词忽略表（masterpiece/1girl/cute 等质量/通用 danbooru 词）不作命中依据。
             _raw_msg = (getattr(event, "message_str", "") or "") if event is not None else ""
+            _raw_low = _raw_msg.lower()
+            _pos_low = (positive or "").lower()
+            _FB_MAX = 2
+
+            def _kw_hit(kw: str) -> bool:
+                if not kw or kw in workflow_builder._KEYWORD_STOP_WORDS:
+                    return False
+                if kw.isascii():
+                    if len(kw) < 4:
+                        return False
+                    pat = rf"\b{re.escape(kw)}\b"
+                    return bool(re.search(pat, _pos_low)) or bool(_raw_low and re.search(pat, _raw_low))
+                return len(kw) >= 2 and (kw in _pos_low or (bool(_raw_low) and kw in _raw_low))
+
             try:
                 _lib = self._lora_library()
+                _fb_count = 0
                 for _l in _lib:
+                    if _fb_count >= _FB_MAX:
+                        break
                     _nm = (_l.get("name") or "").strip()
                     if not _nm or _nm in merged:
                         continue
                     for _kw in (_l.get("aliases") or []):
                         _k = str(_kw or "").strip().lower()
-                        if len(_k) < 2:
-                            continue
-                        if (_k and _k in positive.lower()) or (
-                            _raw_msg and _k in _raw_msg.lower()
-                        ):
+                        if _kw_hit(_k):
                             merged[_nm] = None
+                            _fb_count += 1
                             logger.info(
                                 f"【LoRA】 全局库关键词命中「{_nm}」（关键词：{_k}），临时启用"
                                 f"（LLM 未传 loras 时的兜底，受底模兼容约束）"

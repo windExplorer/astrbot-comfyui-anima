@@ -802,10 +802,27 @@ def apply_loras(
     return enabled_names
 
 
+# 通用词忽略表：这些词出现在提示词里不代表想启用某 LoRA（LLM 翻译出的提示词
+# 几乎必含质量词/通用 danbooru 词），库里即使配了它们作关键词也跳过不作为命中依据
+_KEYWORD_STOP_WORDS = frozenset({
+    "1girl", "2girls", "girl", "girls", "1boy", "boys", "solo", "masterpiece",
+    "best quality", "high quality", "normal quality", "lowest quality", "quality",
+    "absurdres", "highres", "hd", "4k", "8k", "very aesthetic", "aesthetic",
+    "cute", "beautiful", "detailed", "anime", "style", "score_9", "score_8_up",
+    "score_7_up", "score_6_up", "safe", "nsfw", "sensitive", "general",
+})
+
+
 def collect_keyword_loras(
     loras_config: list[dict], text: str
 ) -> set[str]:
-    """根据提示词中的关键词，自动收集应启用的 LoRA 名称。"""
+    """根据提示词中的关键词，自动收集应启用的 LoRA 名称。
+
+    匹配规则（防误命中的教训：LLM 翻译后的提示词满是 1girl/masterpiece 等通用词，
+    纯子串匹配会让泛化关键词天天误命中）：
+    - 通用词忽略表内的关键词一律跳过（masterpiece/1girl/cute 等不该当 LoRA 关键词）；
+    - 英文关键词：按 \\b 词边界整词匹配，且长度 ≥4（"to"/"art" 这类碎片词直接跳过）；
+    - 中文关键词：子串匹配，长度 ≥2。"""
     matched: set[str] = set()
     lower = (text or "").lower()
     for lora in loras_config or []:
@@ -819,7 +836,16 @@ def collect_keyword_loras(
             continue
         for kw in kws:
             kw = kw.lower()
-            if kw and kw in lower:
-                matched.add(name)
-                break
+            if not kw or kw in _KEYWORD_STOP_WORDS:
+                continue
+            if kw.isascii():
+                if len(kw) < 4:
+                    continue
+                if re.search(rf"\b{re.escape(kw)}\b", lower):
+                    matched.add(name)
+                    break
+            else:
+                if len(kw) >= 2 and kw in lower:
+                    matched.add(name)
+                    break
     return matched
