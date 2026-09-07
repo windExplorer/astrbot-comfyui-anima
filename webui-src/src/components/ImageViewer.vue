@@ -27,8 +27,16 @@
         </div>
         <button v-if="canNav" class="iv-nav iv-nav-next" :disabled="navNextDisabled" @click="onNav(1)" aria-label="下一张">›</button>
 
-        <!-- 信息面板 -->
-        <aside class="iv-info">
+        <!-- 信息面板（手机端为底部抽屉：默认收起露把手，点按展开/收起，不再无法收回） -->
+        <aside class="iv-info" :class="{ collapsed: infoCollapsed }">
+          <button
+            class="iv-info-handle"
+            @click.stop="infoCollapsed = !infoCollapsed"
+            aria-label="收起或展开详情"
+          >
+            <span class="iv-info-handle-bar"></span>
+            <span class="iv-info-handle-label">{{ infoCollapsed ? "▲ 展开详情" : "▼ 收起详情" }}</span>
+          </button>
           <template v-if="item">
             <div class="iv-actions">
               <button v-if="!isTrash" class="iv-star" :class="{ on: item.starred }" @click="onStar(item)">★ {{ item.starred ? "已收藏" : "收藏" }}</button>
@@ -213,9 +221,16 @@ const refSrc = ref("");
 const item = ref<ViewerImage | null>(null);
 // 生成详情弹窗（触发词/提示词/负面词）：独立 teleport 到 body，z-index 高于大图(9999)避免被遮挡
 const showDetail = ref(false);
+// 手机端信息抽屉折叠状态：默认收起（先看大图，想看详情再展开），关闭查看器时复位
+const infoCollapsed = ref(true);
 watch(
   () => props.show,
-  (v) => { if (!v) showDetail.value = false; },
+  (v) => {
+    if (!v) {
+      showDetail.value = false;
+      infoCollapsed.value = true;
+    }
+  },
 );
 
 const isPair = computed(() => {
@@ -722,6 +737,8 @@ function onPurge(it: any) { emit("purge", it); }
   padding: 40px;
   font-size: 13px;
 }
+/* 抽屉收起/展开把手：仅手机端（底部抽屉）显示；桌面侧栏隐藏 */
+.iv-info-handle { display: none; }
 .iv-info {
   width: 380px;
   flex: 0 0 380px;
@@ -1023,15 +1040,42 @@ function onPurge(it: any) { emit("purge", it); }
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
-  /* 抽屉顶部拖拽提示条（纯装饰） */
-  .iv-info::before {
-    content: "";
-    display: block;
-    width: 40px;
+  /* 抽屉收起/展开：collapsed 时上移只露把手；桌面端不受影响（规则仅在手机端媒体查询内） */
+  .iv-info {
+    transition: transform 0.28s ease;
+  }
+  .iv-info.collapsed {
+    transform: translateY(calc(100% - 52px));
+  }
+  /* 抽屉顶部把手：替代原纯装饰提示条，点击收起/展开抽屉。
+     sticky 固定在抽屉顶部，内容滚动时始终可见可点 */
+  .iv-info-handle {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 100%;
+    min-height: 40px;
+    padding: 2px 0 4px;
+    background: rgba(18, 18, 24, 0.92);
+    border: none;
+    border-radius: 18px 18px 0 0;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.82);
+  }
+  .iv-info-handle-bar {
+    width: 44px;
     height: 4px;
     border-radius: 2px;
     background: rgba(255, 255, 255, 0.32);
-    margin: 2px auto 10px;
+  }
+  .iv-info-handle-label {
+    font-size: 11px;
+    line-height: 1;
   }
   /* 操作按钮加大点击区域，便于手指点按 */
   .iv-actions { gap: 8px; }
