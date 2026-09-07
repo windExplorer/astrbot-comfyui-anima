@@ -825,6 +825,12 @@
     "hint": "部分适配器（onebot/QQ 等）在 Agent 工具场景下对 webp 图片内联推送失败，可能导致图片没发出来。开启后，出图发送前会用 Pillow 把 webp 转成 png 临时副本再发送（归档仍保留原 webp）。默认关闭。",
     "default": false
   },
+  "lora_keyword_auto": {
+    "type": "bool",
+    "description": "LoRA 关键词自动匹配（默认关）",
+    "hint": "关闭（默认）时，LoRA 只在两种情况下生效：① 工作流里默认启用的；② 显式指定的（/draw --名称、LLM 的 loras 参数，按名称/别名匹配）。开启后才会按提示词与用户原话中的关键词自动匹配挂载 LoRA——LLM 翻译出的提示词满是 1girl/masterpiece 等通用词，此功能历史上容易误挂用不上的 LoRA，慎开。",
+    "default": false
+  },
   "lora_outfit_filter": {
     "type": "object",
     "description": "LoRA 触发词换装过滤",

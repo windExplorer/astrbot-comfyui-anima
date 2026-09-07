@@ -3718,61 +3718,64 @@ class ComfyUIDrawPlugin(Star):
             )
         )
         if lora_map is None:
-            auto = workflow_builder.collect_keyword_loras(loras_cfg, positive)
-            # 默认启用项 + 关键词命中的项
+            # 默认只挂「工作流默认启用」的 LoRA——LoRA 的生效方式就是显式指定
+            # （/draw --名称 / LLM 的 loras 参数 / 工作流默认项），不做任何猜测式自动挂载。
+            # 提示词关键词自动匹配为可选功能（lora_keyword_auto，默认关闭）：开启后
+            # 才会按「工作流引用项的 keywords」与「全局库名称/别名」对提示词和用户原话
+            # 做关键词匹配（该方式历史上容易误挂泛化词，故默认关）。
             merged: dict[str, float | None] = {}
             for lora in loras_cfg:
                 nm = (lora.get("name") or "").strip()
                 if not nm:
                     continue
-                if lora.get("enabled") or nm in auto:
+                if lora.get("enabled"):
                     merged[nm] = None
-            # 全局 LoRA 库关键词兜底：用户原话（未翻译的中文名，如「来一张残虹的图」里的
-            # 「残虹」）与最终提示词各过一遍库里的名称/别名/关键词，命中即临时启用，
-            # 走下方补全链（含底模兼容硬约束）。弥补 LLM 忘传 loras 参数、或提示词被翻译
-            # 成英文导致中文名漏配的情况。
-            # ★匹配必须严格，否则会「没让加也自动加一堆用不上的 LoRA」：
-            #   - 英文关键词按 \b 词边界整词匹配，且长度 ≥4（别名库里有 "to"/"art" 这类
-            #     碎片词，子串匹配会在任何英文 prompt 里到处命中——v5.10.45 的教训）；
-            #   - 中文关键词子串匹配但长度 ≥2；
-            #   - 单次兜底最多补 2 条，超出按命中顺序丢弃，限制误伤面；
-            #   - 通用词忽略表（masterpiece/1girl/cute 等质量/通用 danbooru 词）不作命中依据。
-            _raw_msg = (getattr(event, "message_str", "") or "") if event is not None else ""
-            _raw_low = _raw_msg.lower()
-            _pos_low = (positive or "").lower()
-            _FB_MAX = 2
+            if self._cfg("lora_keyword_auto", False):
+                auto = workflow_builder.collect_keyword_loras(loras_cfg, positive)
+                for nm in auto:
+                    merged.setdefault(nm, None)
+                # 全局库兜底：用户原话（未翻译的中文名）与最终提示词各过一遍库里的
+                # 名称/别名/关键词。匹配规则（历史教训，勿放松）：
+                #   - 英文关键词 \b 词边界整词匹配且长度 ≥4（"to"/"art" 碎片词会到处命中）；
+                #   - 中文关键词子串匹配但长度 ≥2；
+                #   - 通用词忽略表（masterpiece/1girl/cute 等质量/通用 danbooru 词）不作依据；
+                #   - 单次最多补 2 条。
+                _raw_msg = (getattr(event, "message_str", "") or "") if event is not None else ""
+                _raw_low = _raw_msg.lower()
+                _pos_low = (positive or "").lower()
+                _FB_MAX = 2
 
-            def _kw_hit(kw: str) -> bool:
-                if not kw or kw in workflow_builder._KEYWORD_STOP_WORDS:
-                    return False
-                if kw.isascii():
-                    if len(kw) < 4:
+                def _kw_hit(kw: str) -> bool:
+                    if not kw or kw in workflow_builder._KEYWORD_STOP_WORDS:
                         return False
-                    pat = rf"\b{re.escape(kw)}\b"
-                    return bool(re.search(pat, _pos_low)) or bool(_raw_low and re.search(pat, _raw_low))
-                return len(kw) >= 2 and (kw in _pos_low or (bool(_raw_low) and kw in _raw_low))
+                    if kw.isascii():
+                        if len(kw) < 4:
+                            return False
+                        pat = rf"\b{re.escape(kw)}\b"
+                        return bool(re.search(pat, _pos_low)) or bool(_raw_low and re.search(pat, _raw_low))
+                    return len(kw) >= 2 and (kw in _pos_low or (bool(_raw_low) and kw in _raw_low))
 
-            try:
-                _lib = self._lora_library()
-                _fb_count = 0
-                for _l in _lib:
-                    if _fb_count >= _FB_MAX:
-                        break
-                    _nm = (_l.get("name") or "").strip()
-                    if not _nm or _nm in merged:
-                        continue
-                    for _kw in (_l.get("aliases") or []):
-                        _k = str(_kw or "").strip().lower()
-                        if _kw_hit(_k):
-                            merged[_nm] = None
-                            _fb_count += 1
-                            logger.info(
-                                f"【LoRA】 全局库关键词命中「{_nm}」（关键词：{_k}），临时启用"
-                                f"（LLM 未传 loras 时的兜底，受底模兼容约束）"
-                            )
+                try:
+                    _lib = self._lora_library()
+                    _fb_count = 0
+                    for _l in _lib:
+                        if _fb_count >= _FB_MAX:
                             break
-            except Exception as _kwe:
-                logger.warning(f"【LoRA】 全局库关键词兜底失败（忽略）: {_kwe}")
+                        _nm = (_l.get("name") or "").strip()
+                        if not _nm or _nm in merged:
+                            continue
+                        for _kw in (_l.get("aliases") or []):
+                            _k = str(_kw or "").strip().lower()
+                            if _kw_hit(_k):
+                                merged[_nm] = None
+                                _fb_count += 1
+                                logger.info(
+                                    f"【LoRA】 全局库关键词命中「{_nm}」（关键词：{_k}），临时启用"
+                                    f"（lora_keyword_auto 开启，受底模兼容约束）"
+                                )
+                                break
+                except Exception as _kwe:
+                    logger.warning(f"【LoRA】 全局库关键词兜底失败（忽略）: {_kwe}")
             active_map = merged or None
         else:
             # 用户显式指定了 LoRA（指令 --名称 / LLM 工具的 loras 参数）时，
