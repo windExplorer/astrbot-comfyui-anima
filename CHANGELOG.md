@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.42（按底模的提示词规范 + 带字图片不再强制走表情包）
+
+- **按底模的提示词规范**：`comfyui_workflows` 输出新增每工作流的 `[底模 xxx]` 标记；`comfyui_draw` 说明新增「提示词规范」章节——anima/illustrious 系用 danbooru 标签+质量前缀；z-image-turbo 用中/英文自然语言整句（中文尤佳）；krea2/flux/qwen 系用英文自然语言整句；pony 系才用 score_9 质量体系；并列出万能禁令（score_9 等 Pony 词只许 pony 底模）。
+  原理：自然语言模型（krea2/z-image-turbo 等）不认识 danbooru「暗号」，masterpiece/score_9/text_overlay: 这类 token 会被当成「要画在图上的文字」直接渲染出来——这正是图上出现 score_9 等意外文字的原因；画面要出现的文字在自然语言系用引号写清内容即可。
+- **带字图片分流收窄**：只有用户明确要求「表情包/表情/漫画/带气泡的梗图」或点名表情包工作流时才改调 comfyui_comic；普通的「图上有文字」（标题/招牌/海报字）直接用 comfyui_draw 按对应底模的文字写法画。comfyui_comic 触发条件同步收紧。
+
 ## v5.10.41（LLM 工具参数容错：别名归一 + 类型矫正，修复弱模型 TypeError）
 
 - 日志实锤：部分 OpenAI 兼容模型（如 Agnes）不严格遵守工具 schema，编造参数名（`sampler_name`/`workflow_id`/`lora_list`）、数字传字符串、数组传 JSON 字符串，导致 `llm_draw` 连续 TypeError，出图直接失败——这也是「LoRA 一直没用上」的真正根因（调用根本没走到出图那步）。

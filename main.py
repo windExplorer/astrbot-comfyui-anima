@@ -4736,6 +4736,9 @@ class ComfyUIDrawPlugin(Star):
         工作流解析：你传的 workflow > 否则「表情生成(meme_text)」功能绑定的工作流；非漫画工作流直接报错停住。
         确定工作流后，插件用内部 LLM 按你的画面描述自动生成各槽位文字，无需你手动填。
         若你想「图生表情包」（附一张参考图），请改用 comfyui_meme_img 工具。
+        ★触发条件（收窄）：仅当用户【明确】要求「表情包 / 表情 / 漫画 / 带气泡台词的梗图」或点名
+        表情包/漫画工作流时才调用本工具。普通的「图上出现文字」（标题、招牌、海报字等）请用
+        comfyui_draw 正常画（按其提示词规范里对应底模的文字渲染写法），不要改道本工具。
 
         Args:
             prompt(string): 【必填】画面/角色描述（中文或英文）。注意这是「出图提示词」，
@@ -7510,9 +7513,10 @@ class ComfyUIDrawPlugin(Star):
         - 本工具与 comfyui_gallery 职责严格分离：生图归 draw，发旧图归 gallery。
 
         触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时，务必调用此工具。
-        ★★重要分工：若用户要的是「表情包 / 漫画 / 带字梗图 / 气泡台词 / 底部旁白 / 分镜文字」
-        （画面里要出现文字），**不要调本工具**，改调 comfyui_comic（它会自动为槽位生成文字）。
-        即使用户只说"画个表情包/来张漫画"，也应调 comfyui_comic 而非本工具。
+        ★★表情包/漫画分流（已收窄，不要扩大化）：只有当用户【明确】要求「表情包 / 表情 / 漫画 /
+        带气泡台词的梗图」或点名表情包/漫画工作流时，才改调 comfyui_comic。
+        普通的「图上出现文字」（标题、招牌、海报字、墙上的字等）**直接用本工具画**——
+        按下方「提示词规范」里对应底模的文字渲染写法写即可，不要因为画面带文字就改道 comfyui_comic。
         详细的操作细则（数量、图生图判定、LoRA/工作流查询时机、提示词语言等）见可用技能「comfyui-draw」（若你有技能读取能力，先读它再操作）。
         ★直接调用，不要只说不动：用户让我画图/生成图时，**必须立即调用本工具**，并同时把画面描述完整填进 prompt 参数。绝不允许只回复"好/马上/快了"而不调用工具——不调用工具=没有真的画。
         
@@ -7549,7 +7553,24 @@ class ComfyUIDrawPlugin(Star):
         
         图生图判定（重要）：只有当用户**当前消息里附带了参考图**（或明确说"把这张图/参考这张图/这张照片变成XX"）时，才按图生图处理（传 image 或依赖插件自动提取）。**普通文字请求一律文生图**，不要因为群里/历史里有图就当作图生图。
         
-        prompt 语言：动漫/二次元风格（Anima 工作流）用英文 Danbooru 风格标签（如 1girl, solo, white dress, masterpiece）；真人/写实用中文即可。
+        ★★★提示词规范（按目标工作流的底模选写法，写错规范会直接毁图）：
+        调用前先看 comfyui_workflows 返回里的 [底模 xxx] 标记（默认动漫文生图 = anima）：
+        - anima / illustrious / noobai（动漫标签系）：英文 Danbooru 标签堆叠 + 质量前缀
+          （masterpiece, best quality, very aesthetic, absurdres）。禁止自然语言长句，
+          禁止 score_9 等 Pony 系质量词（这些模型不认识，纯污染）。
+        - z-image-turbo（阿里 Z-Image）：用**中文或英文自然语言整句**描述画面（中文理解最好），
+          不写 danbooru 标签与质量词堆叠；要渲染在画面上的文字放进引号
+          （如 画面里的霓虹招牌写着"新东京"）。它的文字渲染很强，引号外的类文字 token 也可能被画出来。
+        - krea2 / flux / qwen 等自然语言系：用**英文自然语言整句**描述；不写任何 danbooru 标签与
+          质量词——masterpiece、score_9、very aesthetic 这类词在自然语言模型里会被当成
+          「要画出来的文字」渲染到图上（这正是图上出现 score_9 等意外文字的第一大原因）；
+          要渲染的文字放英文引号内写清内容。
+        - pony 系：score_9, score_8_up, score_7_up 质量体系 + Danbooru 标签。
+        - 未标注底模 / sd15 / sdxl：质量词（masterpiece, best quality）+ 标签混合。
+        ★万能禁令：score_9 / score_8_up 等 Pony 质量词只允许在 pony 底模使用，其它任何底模出现都是错误。
+        ★画面要出现文字时：自然语言系（z-image-turbo/krea2/flux/qwen）用引号写清文字内容；
+        anima 系文字渲染不可控——用户明确要清晰大字时建议改调 comfyui_comic，否则只能用
+        english text / japanese text 等标签并接受文字内容随机。
         ★★「来一张XX的图」类点名请求的查找链（最高优先级，必须逐步走完，不许跳步）：
         当用户点名一个角色/人物/作品/画风名（如「来一张安魂曲的图」「画个初音未来」「用XX的风格画」）时，
         注意这不是在指定平台（区别于「用XX平台」），按以下顺序查找，逐级降级：
@@ -9848,7 +9869,9 @@ class ComfyUIDrawPlugin(Star):
             anima = " 【Anima】" if w.get("is_anima") else ""
             has_slots = bool(self._normalize_prompt_slots(w.get("prompt_slots")))
             comic_tag = " [漫画/带字]" if has_slots else ""
-            lines.append(f"- {name}{img_tag}{anima}{comic_tag}")
+            bm = (w.get("base_model") or "").strip()
+            bm_tag = f" [底模 {bm}]" if bm else ""
+            lines.append(f"- {name}{img_tag}{anima}{comic_tag}{bm_tag}")
 
         default = self._cfg("default_workflow", "")
         default_real = self._cfg("default_workflow_real", "")
