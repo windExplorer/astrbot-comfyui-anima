@@ -415,6 +415,43 @@ def _sanitize_llm_tool_kwargs(func, kwargs: dict) -> dict:
     return fixed
 
 
+# 换装意图检测 + 服饰类触发词黑名单：LoRA 触发词常混有容貌之外的服装/配件词
+# （如「white kimono」「thighhighs」），用户要求换装时这些词会顶掉新衣服导致画不对。
+# 检测到换装意图时，对自动追加的触发词按黑名单做 token 级剔除（角色/画风核心词保留）。
+_OUTFIT_CHANGE_RE = re.compile(
+    r"(换|改|脱|去|丢)掉?成?一?[套身件条双]?(这|那)?(衣服|服装|衣|装束|套装|穿搭|造型|鞋|靴|袜|帽|裙|裤|泳衣|泳装|和服|洋装|制服|外套|手套|围巾|头饰)"
+    r"|换装|换衣服|换穿搭|换造型|换一套|换一身|改穿|穿上|穿个|穿件|换上"
+    r"|不要(这|那)?[套身件]?(衣服|服装|衣|鞋|靴|袜|帽|裙|裤|泳装|泳衣|和服|制服)"
+)
+_TRIGGER_OUTFIT_WORDS = (
+    # 英文（danbooru 常见服饰/配件）
+    "kimono", "dress", "gown", "sweater", "hoodie", "jacket", "coat", "uniform",
+    "skirt", "pantyhose", "thighhigh", "thighhighs", "stocking", "sock", "shoes",
+    "shoe", "boots", "boot", "footwear", "hat", "cap", "beret", "headwear", "helmet",
+    "gloves", "glove", "scarf", "necktie", "apron", "swimsuit", "bikini", "bodysuit",
+    "outfit", "clothes", "clothing", "shirt", "pants", "shorts", "sleeves", "sleeve",
+    "obi", "sash", "belt", "armor", "cloak", "cape", "vest", "blazer", "pajamas",
+    "lingerie", "skirt_lift", "raincoat", "overalls", "cardigan",
+    # 中文
+    "衣服", "服装", "套装", "外衣", "外套", "上装", "下装", "鞋", "靴", "袜", "帽",
+    "裙", "裤", "泳", "和服", "制服", "手套", "围巾", "领带", "头饰", "披风", "斗篷",
+)
+
+
+def _is_outfit_trigger(token: str) -> bool:
+    """判断单个触发词 token 是否为服饰/配件类（英文按词边界前缀匹配，中文按包含）。"""
+    t = (token or "").lower()
+    if not t:
+        return False
+    for w in _TRIGGER_OUTFIT_WORDS:
+        if w.isascii():
+            if re.search(rf"(^|[^a-z]){re.escape(w)}", t):
+                return True
+        elif w in t:
+            return True
+    return False
+
+
 def _safe_llm_tool(func):
     """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
     而是打印完整堆栈到日志并返回一句可读的失败说明，让用户能看到原因而非笼统报错。
@@ -3891,6 +3928,8 @@ class ComfyUIDrawPlugin(Star):
         #      典型场景：触发词里混着服装词而用户要求换装，LLM 剔除冲突词）→ 只用 LLM 的列表；
         #      传空串 = LLM 明确表示一个触发词都不要追加。
         #   b) 未传（None，/draw 指令、伴侣插件、表情包等路径）→ 维持旧行为：全量自动追加。
+        # 两级来源统一追加「换装自动过滤」（v5.10.46）：用户消息带换装/换衣意图时，
+        # 对触发词按服饰黑名单做 token 级剔除（角色/画风核心词保留），不再赌 LLM 会筛。
         if enabled:
             _lib = self._lora_lib_index()
             _triggers: list[str] = []
@@ -3918,6 +3957,18 @@ class ComfyUIDrawPlugin(Star):
                         _tw = _tw.strip()
                         if _tw and _tw not in _triggers:
                             _triggers.append(_tw)
+            # 换装自动过滤：用户原话带换装/换衣意图 → 剔除服饰类触发词
+            _raw_outfit = (getattr(event, "message_str", "") or "") if event is not None else ""
+            if _triggers and _OUTFIT_CHANGE_RE.search(_raw_outfit):
+                _kept, _dropped = [], []
+                for _t in _triggers:
+                    (_dropped if _is_outfit_trigger(_t) else _kept).append(_t)
+                if _dropped:
+                    logger.info(
+                        f"【LoRA 触发词】 检测到换装意图，已剔除服饰类触发词: {_dropped}"
+                        f"（保留: {_kept}）"
+                    )
+                _triggers = _kept
             # 固定提示词或走 JSON 原值（positive 为空）时不追加触发词，
             # 避免覆盖工作流 JSON 内固化好的提示词
             if _triggers and positive and not _fixed_prompt:
