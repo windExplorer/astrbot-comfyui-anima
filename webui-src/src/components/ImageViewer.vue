@@ -27,11 +27,14 @@
         </div>
         <button v-if="canNav" class="iv-nav iv-nav-next" :disabled="navNextDisabled" @click="onNav(1)" aria-label="下一张">›</button>
 
-        <!-- 信息面板（手机端为底部抽屉：默认收起露把手，点按展开/收起，不再无法收回） -->
-        <aside class="iv-info" :class="{ collapsed: infoCollapsed }">
+        <!-- 信息面板（手机端为底部抽屉：默认收起露把手，点按或下滑手势展开/收起） -->
+        <aside class="iv-info" :class="{ collapsed: infoCollapsed }" ref="infoEl">
           <button
             class="iv-info-handle"
-            @click.stop="infoCollapsed = !infoCollapsed"
+            @click.stop="onHandleTap"
+            @touchstart.passive="onHandleTouchStart"
+            @touchmove.stop.prevent="onHandleTouchMove"
+            @touchend.passive="onHandleTouchEnd"
             aria-label="收起或展开详情"
           >
             <span class="iv-info-handle-bar"></span>
@@ -223,6 +226,35 @@ const item = ref<ViewerImage | null>(null);
 const showDetail = ref(false);
 // 手机端信息抽屉折叠状态：默认收起（先看大图，想看详情再展开），关闭查看器时复位
 const infoCollapsed = ref(true);
+// 抽屉把手下滑手势：展开状态下往下拖超过阈值即收起（跟随手指位移）
+const infoEl = ref<HTMLElement | null>(null);
+let _hTouchY = 0;
+let _hDragDy = 0;
+let _hDragging = false;
+let _hSuppressTap = false;
+function onHandleTap() {
+  if (_hSuppressTap) return;
+  infoCollapsed.value = !infoCollapsed.value;
+}
+function onHandleTouchStart(e: TouchEvent) {
+  _hTouchY = e.touches[0].clientY;
+  _hDragDy = 0;
+  _hDragging = !infoCollapsed.value; // 仅展开状态下支持下滑收起
+}
+function onHandleTouchMove(e: TouchEvent) {
+  if (!_hDragging || !infoEl.value) return;
+  _hDragDy = Math.max(0, e.touches[0].clientY - _hTouchY);
+  infoEl.value.style.transform = `translateY(${_hDragDy}px)`;
+}
+function onHandleTouchEnd() {
+  if (!_hDragging) return;
+  _hDragging = false;
+  if (infoEl.value) infoEl.value.style.transform = "";
+  if (_hDragDy > 56) infoCollapsed.value = true;
+  // 吞掉紧随其后的合成 click，避免二次翻转
+  _hSuppressTap = true;
+  setTimeout(() => { _hSuppressTap = false; }, 400);
+}
 watch(
   () => props.show,
   (v) => {
@@ -1020,7 +1052,7 @@ function onPurge(it: any) { emit("purge", it); }
   .iv-imgs[data-pair="1"] .iv-imgwrap { height: 100%; }
   .iv-imgs[data-pair="1"] .iv-imgwrap img { max-height: 100%; }
 
-  /* 底部抽屉：绝对定位覆盖在图片下方，半透明毛玻璃 */
+  /* 底部抽屉：绝对定位覆盖在图片下方，半透明毛玻璃；展开高度受限（≤46vh），默认收起只露把手 */
   .iv-info {
     position: absolute;
     left: 0;
@@ -1029,7 +1061,7 @@ function onPurge(it: any) { emit("purge", it); }
     width: 100%;
     flex: 0 0 auto;
     height: auto;
-    max-height: 64vh;
+    max-height: 46vh;
     padding: 8px 16px 16px;
     border-left: none;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
@@ -1057,25 +1089,27 @@ function onPurge(it: any) { emit("purge", it); }
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 3px;
+    gap: 4px;
     width: 100%;
-    min-height: 40px;
-    padding: 2px 0 4px;
+    min-height: 48px;
+    padding: 4px 0 6px;
     background: rgba(18, 18, 24, 0.92);
     border: none;
     border-radius: 18px 18px 0 0;
     cursor: pointer;
-    color: rgba(255, 255, 255, 0.82);
+    color: rgba(255, 255, 255, 0.9);
+    touch-action: none; /* 把手区域接管触摸，用于下滑收起手势 */
   }
   .iv-info-handle-bar {
-    width: 44px;
-    height: 4px;
-    border-radius: 2px;
-    background: rgba(255, 255, 255, 0.32);
+    width: 56px;
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.5);
   }
   .iv-info-handle-label {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1;
+    font-weight: 600;
   }
   /* 操作按钮加大点击区域，便于手指点按 */
   .iv-actions { gap: 8px; }

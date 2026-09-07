@@ -3729,6 +3729,17 @@ class ComfyUIDrawPlugin(Star):
                     None,
                 )
                 if lib_l:
+                    # 底模兼容硬约束：LoRA 底模与工作流底模都标注且不一致时，拒绝注入
+                    # （避免「强行把某 LoRA 塞给不允许它的工作流」）
+                    _wf_bm = ((wf.get("base_model") if wf else "") or "").strip().lower()
+                    _lb_bm = (lib_l.get("base_model") or "").strip().lower()
+                    if _wf_bm and _lb_bm and _wf_bm != _lb_bm:
+                        logger.warning(
+                            f"【LoRA】 请求启用「{cmd_name}」被拒绝：LoRA 底模 {_lb_bm!r} 与"
+                            f"工作流「{wf.get('name') or ''}」底模 {_wf_bm!r} 不匹配，本次不注入。"
+                            f"请为该 LoRA 选择同底模的工作流（或把任一方底模留空表示通用）。"
+                        )
+                        continue
                     w = active_map.get(cmd_name)
                     loras_cfg = list(loras_cfg or []) + [
                         {
@@ -7608,7 +7619,7 @@ class ComfyUIDrawPlugin(Star):
             prompt(string): 【必填】图像的正向提示词描述（中文或英文均可）。这是唯一必须填写的参数，
                 不要留空，也不要用自然语言包裹，直接给出画面描述文本。
             negative_prompt(string): 负向提示词，可选，不填则留空。
-            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。★与平台的区分：用户说「用XX平台」时，XX 一律按平台处理（先调 comfyui_platforms，填 platform 参数），绝不要填进 workflow；只有「用XX」未命中任何平台、或用户明确说工作流/画风时才查这里。
+            workflow(string): 文生图工作流名称，可选。用户明确要某画风且你知道对应名称时传入；否则留空用默认。不确定可用名称时可先调 comfyui_workflows 查。仅文生图时使用，图生图不要填这里。★与平台的区分：用户说「用XX平台」时，XX 一律按平台处理（先调 comfyui_platforms，填 platform 参数），绝不要填进 workflow；只有「用XX」未命中任何平台、或用户明确说工作流/画风时才查这里。★LoRA 与底模匹配（重要）：comfyui_loras 结果与 comfyui_workflows 列表都带 [底模 xxx] 标记。要启用某个 LoRA 时，必须选「底模相同、或任一方未标注」的工作流：用户指定的工作流底模不匹配该 LoRA → 不要把该 LoRA 填进 loras（插件会拒绝注入），并告知用户；用户未指定工作流 → 从列表里选一个底模匹配的（优先默认动漫/真人文生图中匹配的那个），不要强行把 LoRA 塞给不匹配的默认工作流；找不到任何匹配工作流 → 不出图并告知。
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
@@ -7632,10 +7643,9 @@ class ComfyUIDrawPlugin(Star):
                 ②触发词里存在与用户本次要求明确冲突的词（典型：触发词含 white dress、black gloves 等服装/配饰词，而用户要求换别的衣服/穿泳装等）。
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
             platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。
-                ★「用XX」的消歧规则（重要，平台与工作流平级）：
-                ① 用户说「用XX平台」→ XX 只按【平台】处理：先调 comfyui_platforms 查列表，命中就填本参数，绝不要当工作流/LoRA/画风；
-                ② 用户只说「用XX」（没带「平台」字样）→ 先调 comfyui_platforms 看有没有名称匹配的平台：有 → 填 platform；没有 → 再按工作流（comfyui_workflows）/LoRA（comfyui_loras）的顺序去找。注意：本条只适用于「用XX」这种指定工具的句式；「来一张XX的图」「画个XX」这种**点名角色/画风**的请求不适用，走上方「查找链」（LoRA → danbooru → 搜索 → 不出图）；
-                ③ 都不命中 → 全部留空走默认，并在回复里简短说明没找到「XX」。
+                ★「用XX」的消歧规则（重要，宁缺勿滥）：
+                ① 仅当 XX 明确指平台时才填本参数：用户说了「平台」二字、点名了平台名（如 agnes / 日日新 / nai）或平台类型（nai/openai/custom）。拿不准时**宁可不填 platform**——错误填写会导致「找不到平台」的打扰性提示。
+                ② 否则「用XX」按顺序找：先 comfyui_loras（查 LoRA，命中按底模选工作流，见 workflow 参数说明）→ 再 comfyui_workflows（查工作流）→ 都不命中留空走默认并简短告知。注意「来一张XX的图」「画个XX」这类点名角色/画风的请求不走本条，走上方「查找链」（LoRA → danbooru → 搜索 → 不出图）。
                 显示名匹配支持模糊（名称包含即命中、忽略大小写），也可传 comfyui / nai / openai / custom 类型名。
                 ★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。平台不存在/已停用/用户不在白名单时会回退 ComfyUI 并提示用户。
             ★走 NAI 且要「特定画风 / 画师串 / 角色 / 服装 / 体位 / 异种 / 捆绑」等精确效果时：先调 nai_codex 工具检索「所长 NovelAI 法典」拿到现成 tag 串（含 artist: 画师串与权重记号），再原样拼进本工具的 prompt，不要自己凭记忆拼 NAI 标签（容易缺画师串/权重、画错味）。普通泛化画面（没指定风格）可直接写英文标签，不必查。nai_codex 的 scope 默认 sfw（常规册），仅在用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
