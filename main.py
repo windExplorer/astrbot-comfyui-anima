@@ -3982,6 +3982,15 @@ class ComfyUIDrawPlugin(Star):
             _outfit_hit = bool(_OUTFIT_CHANGE_RE.search(_raw_outfit)) or any(
                 i in _raw_outfit for i in _of_intents
             )
+            # 追加判定：最终提示词里出现了服饰描述（LLM 按用户要求把新衣服写进 prompt）。
+            # 触发词是 LLM 交回后才由插件追加的，LLM 物理上无法自行剔除；但只要 prompt 里
+            # 已有服饰词，就说明本图要穿「触发词之外」的衣服，服饰类触发词必须让位，
+            # 否则会新旧混穿/被旧词顶掉——检测到即自动剔除，无需 LLM 配合。
+            if not _outfit_hit and positive:
+                for _pt in re.split(r"[\n,，、;；]+", positive):
+                    if _pt.strip() and _is_outfit_trigger(_pt, _of_extra):
+                        _outfit_hit = True
+                        break
             if _triggers and _of_on and _outfit_hit:
                 _kept, _dropped = [], []
                 for _t in _triggers:
