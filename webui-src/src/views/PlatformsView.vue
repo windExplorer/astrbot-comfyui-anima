@@ -190,6 +190,12 @@
           <n-form-item label="噪声调度">
             <n-select v-model:value="editing.defaults.noise_schedule" :options="noiseOptions" />
           </n-form-item>
+          <n-form-item label="默认画师串">
+            <n-input v-model:value="editing.default_artist" placeholder="填画师串预设的名称（如.xxx），出图未点名时自动使用；留空=用第一个启用的预设" />
+          </n-form-item>
+          <n-form-item label="默认负面提示词">
+            <n-input v-model:value="editing.default_negative" type="textarea" :rows="2" placeholder="NAI 平台专属默认负面词，优先于「负面词模板」；留空则使用启用的负面词模板" />
+          </n-form-item>
           <n-form-item label="负面词">
             <n-input v-model:value="editing.defaults.negative" type="textarea" :rows="2" placeholder="留空则使用下方启用的负面词模板" />
           </n-form-item>
@@ -638,6 +644,8 @@ function emptyPlatform(type: string) {
   };
   if (type === "nai") {
     base.via_middle_station = false;
+    base.default_artist = "";
+    base.default_negative = "";
     base.defaults = { size: "portrait", steps: 28, scale: 6, cfg_rescale: 0.3, sampler: "k_dpmpp_2m_sde", noise_schedule: "karras", negative: "" };
   }
   if (type === "openai") {

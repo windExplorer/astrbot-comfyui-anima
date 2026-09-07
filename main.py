@@ -373,6 +373,9 @@ _LLM_TOOL_KW_ALIASES = {
     "negative_prompts": "negative_prompt",
     "prompt_text": "prompt",
     "caption_text": "caption",
+    "artist_name": "artist",
+    "artist_preset": "artist",
+    "artist_string": "artist",
 }
 
 
@@ -3142,9 +3145,10 @@ class ComfyUIDrawPlugin(Star):
         steps: int | None = None,
         sampler: str | None = None,
         noise_schedule: str | None = None,
+        artist: str = "",
     ):
         """第三方平台（NAI / OpenAI 兼容 / 自定义）出图。yield 契约与 _do_draw 一致。
-        cfg/steps/sampler/noise_schedule 为 LLM 工具可临时覆盖的平台生图参数（None=用平台 defaults）。"""
+        cfg/steps/sampler/noise_schedule/artist 为 LLM 工具可临时覆盖的平台生图参数（None/空=用平台 defaults）。"""
         ptype = (plat.get("type") or "openai").strip()
         pname = (plat.get("name") or ptype)
         _draw_start = draw_start or time.time()
@@ -3153,15 +3157,45 @@ class ComfyUIDrawPlugin(Star):
             f"【绘图·开始】平台={ptype}({pname}) session={_session_id} 来源={source or '(原生)'}"
         )
 
-        # 负面词：用户/调用方没给时，合并「负面词模板」里启用的条目
+        # 负面词：用户/调用方没给时 → 平台「默认负面提示词」（default_negative）优先，
+        # 其次合并「负面词模板」里启用的条目
         if not (negative or "").strip():
-            negative = self._platform_store().enabled_negative_text()
-        # 画师串（NAI 专属语义；取第一个启用预设）
-        artist = ""
+            negative = (
+                (plat.get("default_negative") or "").strip()
+                or self._platform_store().enabled_negative_text()
+            )
+        # 画师串（NAI 专属语义）。优先级：
+        #   ① 调用方显式指定（LLM 的 artist 参数/用户点名）——可传画师串预设名（支持包含匹配），
+        #      未命中预设则按原文当作画师 tag 使用；
+        #   ② 平台「默认画师串」（default_artist，填预设名）；
+        #   ③ 第一个启用的画师串预设。
         if ptype == "nai":
-            _presets = self._platform_store().artist_presets(enabled_only=True)
-            if _presets:
-                artist = (_presets[0].get("content") or "").strip()
+            _apresets = self._platform_store().artist_presets(enabled_only=True)
+            _req = (artist or "").strip()
+            _def_an = (plat.get("default_artist") or "").strip()
+            if _req:
+                _hit = next(
+                    (
+                        p
+                        for p in _apresets
+                        if _req.lower() in ((p.get("name") or "").strip().lower() or "###")
+                    ),
+                    None,
+                )
+                artist = ((_hit.get("content") if _hit else _req) or "").strip()
+                logger.info(
+                    f"【画师串】 {_hit.get('name') if _hit else '（未匹配预设，按原文使用）'} → {artist[:60]}"
+                )
+            elif _def_an:
+                _hit = next(
+                    (p for p in _apresets if (p.get("name") or "").strip() == _def_an), None
+                )
+                artist = ((_hit.get("content") if _hit else _def_an) or "").strip()
+                logger.info(
+                    f"【画师串】 平台默认({_def_an}{'' if _hit else '，预设未找到，按原文'}) → {artist[:60]}"
+                )
+            elif _apresets:
+                artist = (_apresets[0].get("content") or "").strip()
         # 尺寸：显式传参 > 平台默认档位 > NAI 竖图兜底
         _w, _h = width, height
         if not _w or not _h:
@@ -3367,6 +3401,7 @@ class ComfyUIDrawPlugin(Star):
         denoise: float | None = None,
         trigger_words: str | None = None,
         platform: str = "",
+        artist: str = "",
         notify_pending: bool = True,
         source: str = "",
         explicit_default: bool = False,
@@ -3447,6 +3482,7 @@ class ComfyUIDrawPlugin(Star):
                 caption=caption, draw_start=_draw_start,
                 user_id=user_id, user_name=user_name,
                 cfg=cfg, steps=steps, sampler=sampler, noise_schedule=noise_schedule,
+                artist=artist,
             ):
                 yield _pn, _pp
             return
@@ -7634,6 +7670,7 @@ class ComfyUIDrawPlugin(Star):
         denoise: float = -1,
         trigger_words: str | None = None,
         platform: str = "",
+        artist: str = "",
         slot_values: dict | None = None,
         comic_feature: str | None = None,
         caption: str = "",
@@ -7797,6 +7834,7 @@ class ComfyUIDrawPlugin(Star):
             steps(number): 采样步数（仅 nai / openai 类平台生效）。可选：步数越多细节越足、越慢；不传或 0=用平台默认（NAI 默认约 28）。
             sampler(string): 采样器名称（仅 nai / openai 类平台生效，如 k_dpmpp_2m_sde / k_euler_a 等）。可选：不同采样器风格差异明显；不传=用平台默认。不确定具体取值时不要传，避免传错导致报错。
             noise_schedule(string): 噪声调度（仅 nai 类平台生效，如 karras / native / exponential / polyexponential）。可选；不传=用平台默认。
+            artist(string): NAI 画师串（仅 nai 类平台生效）。用户说「加xxx画师串」时传入：可传画师串预设的名称（自动匹配到预设内容，支持包含匹配），也可直接传画师串内容；不传=用平台「默认画师串」（WebUI 平台配置的 default_artist），未配置则用第一个启用的画师串预设。
             ★以上四个参数只作用于第三方平台生图，且未传时回落平台配置默认值；想让 NAI 出特定风格时再指定，不要无脑传。负向提示词（negative_prompt）未传时，NAI 会自动套用插件「已启用的负向模板」（管理员在平台配置里勾选的条目），无需你拼负面词。
 
         补充说明：
@@ -8392,6 +8430,8 @@ class ComfyUIDrawPlugin(Star):
                 trigger_words=trigger_words,
                 # 生图平台（""=用默认平台 active_platform；nai/openai/custom=临时指定）
                 platform=platform,
+                # NAI 画师串（仅 nai 平台生效；可传画师串预设名或直接内容）
+                artist=artist or None,
                 # NAI / OpenAI 类平台生图参数（LLM 可自主决定；0/空=用平台默认值）
                 cfg=cfg or None,
                 steps=steps if steps else None,
