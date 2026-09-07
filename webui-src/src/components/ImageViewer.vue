@@ -70,7 +70,8 @@
             <div v-if="item.group_id" class="iv-row"><span class="k">群号</span><span class="v">{{ item.group_id }}</span></div>
             <div v-if="item.group_name" class="iv-row"><span class="k">群名</span><span class="v">{{ item.group_name }}</span></div>
             <div v-if="item.seed != null" class="iv-row"><span class="k">Seed</span><span class="v">{{ item.seed }}</span></div>
-            <div v-if="lorasList.length" class="iv-row"><span class="k">LoRA</span><span class="v">{{ lorasText }}</span></div>
+            <div v-if="item.workflow" class="iv-row"><span class="k">工作流</span><span class="v">{{ item.workflow }}</span></div>
+            <div v-if="lorasList.length || (item.platform || 'comfyui') === 'comfyui'" class="iv-row"><span class="k">LoRA</span><span class="v">{{ lorasList.length ? lorasText : "未使用" }}</span></div>
             <div v-if="item.cfg != null" class="iv-row"><span class="k">CFG</span><span class="v">{{ item.cfg }}</span></div>
             <div v-if="item.steps != null" class="iv-row"><span class="k">步数</span><span class="v">{{ item.steps }}</span></div>
             <div v-if="item.denoise != null" class="iv-row"><span class="k">Denoise</span><span class="v">{{ item.denoise }}</span></div>
