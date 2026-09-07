@@ -7466,8 +7466,12 @@ class ComfyUIDrawPlugin(Star):
         当用户点名一个角色/人物/作品/画风名（如「来一张安魂曲的图」「画个初音未来」「用XX的风格画」）时，
         注意这不是在指定平台（区别于「用XX平台」），按以下顺序查找，逐级降级：
         1. **第一优先：LoRA（必须先查）**：立即调用 comfyui_loras（keyword 用名字，category 可传「角色」）。
-           - 命中多条时选「原版/基础版」：优先选**不带数字/字母后缀**的那条（如「安魂曲」优先于「安魂曲2」「安魂曲v3」「安魂曲XL」），
+           - keyword 第一次查不到时，换更短的关键词、角色英文名或别名**再查一两次**（工具会自动做去版本后缀的近似匹配），
+             不要一次查不到就断定库里没有、更不要直接跳到下一步。
+           - 命中多条时才做版本选择：优先选**不带数字/字母后缀**的那条（如「安魂曲」优先于「安魂曲2」「安魂曲v3」「安魂曲XL」），
              其余同名变体不启用；确实只有带后缀的版本才用最接近的那个。
+             ★这条后缀规则【只用于同一角色的多个版本之间二选一】，绝不能反过来成为「名字不带数字就不启用」的理由——
+             库里任何名称形式的 LoRA 只要语义匹配就该启用。
            - 命中 → 把 LoRA 名填进 loras 参数，**不要**再用 danbooru 标签重复描述该角色外形。
         2. **第二优先：danbooru 标签**：LoRA 没有匹配时，调用 danbooru MCP（「Danbooru tag search / Danbooru 标签搜索」）
            查该角色/作品的标准标签（角色 tag + 作品 tag），把准确英文标签填进 prompt。
@@ -9646,48 +9650,85 @@ class ComfyUIDrawPlugin(Star):
         wf_bm = (base_model or "").strip().lower()
         kw = (keyword or "").strip().lower()
         cat = (category or "").strip()
-        rows = []
-        for l in lib:
+        nkw = workflow_builder._normalize_lora_name(kw) if kw else ""
+
+        def _row(l, check_bm=True) -> str | None:
             name = (l.get("name") or "").strip()
             if not name:
-                continue
+                return None
             lora_bm = (l.get("base_model") or "").strip().lower()
-            if wf_bm and lora_bm and lora_bm != wf_bm:
-                continue  # 底模不匹配的 LoRA 不列出
+            if check_bm and wf_bm and lora_bm and lora_bm != wf_bm:
+                return None  # 底模不匹配的 LoRA 不列出
             if cat and (l.get("category") or "").strip() != cat:
-                continue  # 分类不匹配的 LoRA 不列出
+                return None  # 分类不匹配的 LoRA 不列出
             aliases = l.get("aliases") or []
             desc = (l.get("description") or "").strip()
             tw = (l.get("trigger_words") or "").strip()
             if kw:
                 hay = " ".join([name, *[str(a) for a in aliases], desc, tw]).lower()
                 if kw not in hay:
-                    continue
+                    return None
             alias_str = ", ".join(str(a) for a in aliases) if aliases else name
-            lines = [f"- {name}（别名：{alias_str}）"]
+            line = f"- {name}（别名：{alias_str}）"
             if (l.get("category") or "").strip():
-                lines[0] += f" [分类 {l.get('category').strip()}]"
+                line += f" [分类 {l.get('category').strip()}]"
             if lora_bm:
-                lines[0] += f" [底模 {lora_bm}]"
+                line += f" [底模 {lora_bm}]"
             if desc:
-                lines.append(f"  描述：{desc}")
+                line += f"\n  描述：{desc}"
             if tw:
                 tw_short = tw.replace("\n", " / ")
                 if len(tw_short) > 200:
                     tw_short = tw_short[:200] + "…"
-                lines.append(f"  触发词：{tw_short}")
-            rows.append("\n".join(lines))
+                line += f"\n  触发词：{tw_short}"
+            return line
+
+        def _relaxed_hit(l) -> bool:
+            """宽松二次匹配：忽略底模/分类，名称与别名去掉版本后缀后互相包含。
+
+            避免 LLM 用「安魂曲2」「Requiem v2」等带版本号的词查不到库里的「安魂曲」
+            （反之亦然），导致误判「库里没有这个 LoRA」。"""
+            if not nkw:
+                return False
+            name = (l.get("name") or "").strip().lower()
+            if not name:
+                return False
+            for x in [name, *[(a or "").strip().lower() for a in (l.get("aliases") or [])]]:
+                if not x:
+                    continue
+                nx = workflow_builder._normalize_lora_name(x)
+                if nx and (nkw in nx or nx in nkw):
+                    return True
+            return False
+
+        rows = [r for r in (_row(l) for l in lib) if r]
+        note = ""
+        if not rows and kw:
+            rows = [r for r in (_row(l, check_bm=False) for l in lib if _relaxed_hit(l)) if r]
+            if rows:
+                note = f"（未精确匹配到「{keyword}」，以下为忽略版本后缀/底模/分类后的近似结果）"
+        if not rows and wf_bm:
+            rows = [r for r in (_row(l, check_bm=False) for l in lib) if r]
+            if rows:
+                note = f"（没有底模为「{base_model}」的条目，以下列出全部供参考）"
         if not rows:
             if kw:
-                return f"没有找到匹配「{keyword}」的 LoRA。可先调用本工具（不带 keyword）查看全部 LoRA。"
+                return (
+                    f"没有找到匹配「{keyword}」的 LoRA。注意：keyword 是名称/别名/描述/触发词的"
+                    f"子串匹配，请换更短的关键词、角色英文名或别名再查一次（本工具会自动做"
+                    f"去版本后缀的近似匹配）；不要一次查不到就断定库里没有。"
+                )
             if cat:
                 return f"分类「{category}」下没有可用的 LoRA。"
             return "没有可用的 LoRA。"
-        head = "已配置的 LoRA 列表："
-        if cat:
-            head += f"（分类 {category}）"
-        if wf_bm:
-            head += f"（底模 {base_model}）"
+        if note:
+            head = f"LoRA 近似匹配结果{note}："
+        else:
+            head = "已配置的 LoRA 列表："
+            if cat:
+                head += f"（分类 {category}）"
+            if wf_bm:
+                head += f"（底模 {base_model}）"
         return head + "\n" + "\n".join(rows)
 
     # LLM 工具：comfyui_workflows（查询工作流列表）
