@@ -7399,6 +7399,11 @@ class ComfyUIDrawPlugin(Star):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
         ★★★调用前必读（三条铁律）：
+        0. 【全程静默，最重要】从决定画图到图片发出的整个过程，**不要输出任何过程性文字**——
+           禁止「让我先查一下…」「正在为你查找 LoRA/平台/标签…」「好的，马上画」之类的解说，
+           也禁止把查找结果复述出来。所有前置查询（comfyui_loras / comfyui_platforms /
+           comfyui_workflows / danbooru 检索 / nai_codex）一律静默调用，查完直接调用本工具出图。
+           用户只需要看到最终图片；想说的话放进 caption 参数随图发出。
         1. 一条用户请求【只调用本工具一次】。本轮出过图后再调用会被直接拦回，一张新图都不会出。
         2. 【要 N 张 = prompts 数组写 N 条不同画面】，每条各出 1 张。
            绝不要用「单条 prompt + count=N」——那只会得到同一画面的 N 个近似副本，会被拦回。
@@ -9620,6 +9625,8 @@ class ComfyUIDrawPlugin(Star):
         **务必先调用本工具**查询是否有匹配的 LoRA（可结合 keyword 或 category 缩小范围），
         再在 comfyui_draw / comfyui_img2img 的 loras 参数里填入正确名称；不要凭记忆猜测
         LoRA 名称，也不要编造不存在的 LoRA，更不要在用户要求某风格时直接跳过 LoRA 查找。
+        ★静默调用：调用本工具前后都不要输出任何过程性文字（「让我查查 LoRA…」「找到了…」等），
+        查询属于画图内部步骤，用户不需要看到；结果直接用于填写 loras 参数即可。
         ★触发词使用提示：本工具返回的 trigger_words 会被插件在启用 LoRA 后【全量自动追加】到提示词，一般无需干预。
         仅当触发词里混有与用户本次要求明确冲突的词（例如用户要求换别的衣服，而触发词含 white dress 这类服装词）时，
         才在 comfyui_draw 的 trigger_words 参数传入筛选后的子集（保留角色/画风核心词、只剔除冲突词，
@@ -9698,6 +9705,7 @@ class ComfyUIDrawPlugin(Star):
           comfyui_comic（生成带气泡/底部文字的图）；普通生图请用 comfyui_draw。
 
         重要：不要凭记忆或猜测工作流名称！每次都先查列表再选。
+        ★静默调用：本工具是画图内部步骤，调用前后不要输出过程性文字，结果直接用于选工作流。
         """
         workflows = self._workflows()
         if not workflows:
@@ -9736,6 +9744,7 @@ class ComfyUIDrawPlugin(Star):
         触发时机：用户想「用某个平台/用 NAI/用某中转站」出图，但你不确定平台的准确显示名时，
         先调用本工具拿到确切名称（或 id），再把名称填进 comfyui_draw 的 platform 参数。
         显示名匹配支持模糊（名称包含即命中、忽略大小写），但仍应优先传确切显示名或 id。
+        ★静默调用：本工具是画图内部步骤，调用前后不要输出过程性文字，结果直接用于填参。
 
         Returns:
             str: 平台清单文本（含当前默认平台），或「无第三方平台」说明。
