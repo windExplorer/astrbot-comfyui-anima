@@ -191,10 +191,16 @@
             <n-select v-model:value="editing.defaults.noise_schedule" :options="noiseOptions" />
           </n-form-item>
           <n-form-item label="默认画师串">
-            <n-input v-model:value="editing.default_artist" placeholder="填画师串预设的名称（如.xxx），出图未点名时自动使用；留空=用第一个启用的预设" />
+            <div style="width:100%">
+              <n-select v-model:value="editing.default_artist" :options="artistPresetOptions" filterable placeholder="留空=使用第一个启用的画师串预设" />
+              <div class="hint">出图未点名画师串时自动使用该预设内容；对话里「加xxx画师串」的点名优先级更高</div>
+            </div>
           </n-form-item>
           <n-form-item label="默认负面提示词">
-            <n-input v-model:value="editing.default_negative" type="textarea" :rows="2" placeholder="NAI 平台专属默认负面词，优先于「负面词模板」；留空则使用启用的负面词模板" />
+            <div style="width:100%">
+              <n-select v-model:value="editing.default_negative" :options="negativePresetOptions" filterable placeholder="留空=使用启用的负面词模板" />
+              <div class="hint">选中负面词预设后，其内容优先于下方「启用的负面词模板」合并结果</div>
+            </div>
           </n-form-item>
           <n-form-item label="负面词">
             <n-input v-model:value="editing.defaults.negative" type="textarea" :rows="2" placeholder="留空则使用下方启用的负面词模板" />
@@ -470,6 +476,21 @@ const SIZE_TIER: Record<string, string> = {
   "2Kportrait": "2K", "2Klandscape": "2K", "2Ksquare": "2K",
   "4Kportrait": "4K", "4Klandscape": "4K", "4Ksquare": "4K",
 };
+// NAI 平台「默认画师串 / 默认负面提示词」下拉：选项来自预设列表（含留空项）
+const artistPresetOptions = computed(() => [
+  { label: "（留空=使用第一个启用的画师串预设）", value: "" },
+  ...cfg.artist_presets.map((p: any) => ({
+    label: `${p.name}${p.enabled === false ? "（已停用）" : ""}`,
+    value: p.name,
+  })),
+]);
+const negativePresetOptions = computed(() => [
+  { label: "（留空=使用启用的负面词模板）", value: "" },
+  ...cfg.negative_presets.map((p: any) => ({
+    label: `${p.name}${p.enabled === false ? "（已停用）" : ""}`,
+    value: p.name,
+  })),
+]);
 // 默认尺寸下拉：走中转站时，按所选模型家族在尺寸后追加点数（括号）
 const naiSizeOptions = computed(() => {
   const pts = editing.via_middle_station ? NAI_POINTS[naiModelFamily(editing.model)] : null;

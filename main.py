@@ -3157,13 +3157,26 @@ class ComfyUIDrawPlugin(Star):
             f"【绘图·开始】平台={ptype}({pname}) session={_session_id} 来源={source or '(原生)'}"
         )
 
-        # 负面词：用户/调用方没给时 → 平台「默认负面提示词」（default_negative）优先，
-        # 其次合并「负面词模板」里启用的条目
+        # 负面词：用户/调用方没给时 → 平台「默认负面提示词」（default_negative，存预设名）
+        # 解析为该预设内容（显式默认优先，不要求预设处于启用状态），其次合并「负面词模板」
+        # 里启用的条目；名称匹配不到任何预设时按原文兜底使用
         if not (negative or "").strip():
-            negative = (
-                (plat.get("default_negative") or "").strip()
-                or self._platform_store().enabled_negative_text()
-            )
+            _def_neg = (plat.get("default_negative") or "").strip()
+            if _def_neg:
+                _neg_hit = next(
+                    (
+                        p
+                        for p in self._platform_store().negative_presets()
+                        if (p.get("name") or "").strip() == _def_neg
+                    ),
+                    None,
+                )
+                negative = ((_neg_hit.get("content") if _neg_hit else _def_neg) or "").strip()
+                logger.info(
+                    f"【负面词】 平台默认({_def_neg}{'' if _neg_hit else '，预设未找到，按原文'}) → {negative[:60]}"
+                )
+            if not (negative or "").strip():
+                negative = self._platform_store().enabled_negative_text()
         # 画师串（NAI 专属语义）。优先级：
         #   ① 调用方显式指定（LLM 的 artist 参数/用户点名）——可传画师串预设名（支持包含匹配），
         #      未命中预设则按原文当作画师 tag 使用；
