@@ -438,12 +438,16 @@ _TRIGGER_OUTFIT_WORDS = (
 )
 
 
-def _is_outfit_trigger(token: str) -> bool:
-    """判断单个触发词 token 是否为服饰/配件类（英文按词边界前缀匹配，中文按包含）。"""
+def _is_outfit_trigger(token: str, extra_words=()) -> bool:
+    """判断单个触发词 token 是否为服饰/配件类（英文按词边界前缀匹配，中文按包含）。
+
+    extra_words：配置项追加的自定义服饰词（同规则参与匹配）。"""
     t = (token or "").lower()
     if not t:
         return False
-    for w in _TRIGGER_OUTFIT_WORDS:
+    for w in (*_TRIGGER_OUTFIT_WORDS, *(w.lower() for w in extra_words if w)):
+        if not w:
+            continue
         if w.isascii():
             if re.search(rf"(^|[^a-z]){re.escape(w)}", t):
                 return True
@@ -3957,12 +3961,31 @@ class ComfyUIDrawPlugin(Star):
                         _tw = _tw.strip()
                         if _tw and _tw not in _triggers:
                             _triggers.append(_tw)
-            # 换装自动过滤：用户原话带换装/换衣意图 → 剔除服饰类触发词
+            # 换装自动过滤：用户原话带换装/换衣意图 → 剔除服饰类触发词。
+            # 开关/追加词/自定义意图词均可配置（_conf_schema.json 的 lora_outfit_filter 组），
+            # 改配置即时生效，无需升级版本。
             _raw_outfit = (getattr(event, "message_str", "") or "") if event is not None else ""
-            if _triggers and _OUTFIT_CHANGE_RE.search(_raw_outfit):
+            _of_cfg = self._cfg("lora_outfit_filter", {}) or {}
+            if not isinstance(_of_cfg, dict):
+                _of_cfg = {}
+            _of_on = bool(_of_cfg.get("enabled", True))
+            _of_extra = [
+                w.strip().lower()
+                for w in re.split(r"[,，\n;；]+", str(_of_cfg.get("extra_words") or ""))
+                if w.strip()
+            ]
+            _of_intents = [
+                w.strip()
+                for w in re.split(r"[,，\n;；]+", str(_of_cfg.get("extra_intents") or ""))
+                if w.strip()
+            ]
+            _outfit_hit = bool(_OUTFIT_CHANGE_RE.search(_raw_outfit)) or any(
+                i in _raw_outfit for i in _of_intents
+            )
+            if _triggers and _of_on and _outfit_hit:
                 _kept, _dropped = [], []
                 for _t in _triggers:
-                    (_dropped if _is_outfit_trigger(_t) else _kept).append(_t)
+                    (_dropped if _is_outfit_trigger(_t, _of_extra) else _kept).append(_t)
                 if _dropped:
                     logger.info(
                         f"【LoRA 触发词】 检测到换装意图，已剔除服饰类触发词: {_dropped}"

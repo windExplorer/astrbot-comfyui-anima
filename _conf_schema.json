@@ -825,6 +825,36 @@
     "hint": "部分适配器（onebot/QQ 等）在 Agent 工具场景下对 webp 图片内联推送失败，可能导致图片没发出来。开启后，出图发送前会用 Pillow 把 webp 转成 png 临时副本再发送（归档仍保留原 webp）。默认关闭。",
     "default": false
   },
+  "lora_outfit_filter": {
+    "type": "object",
+    "description": "LoRA 触发词换装过滤",
+    "hint": "用户消息带换装/换衣意图（如「换一套衣服」「穿上女仆装」）时，自动把 LoRA 触发词里的服饰/配件词剔除，只保留角色/画风核心词，避免旧衣服顶掉新衣服。内置 60+ 常见服饰词黑名单，可在下方追加自定义词；改为关闭则始终原样追加触发词。",
+    "default": {
+      "enabled": true,
+      "extra_words": "",
+      "extra_intents": ""
+    },
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用换装触发词过滤",
+        "hint": "检测到换装意图时剔除服饰类触发词。关闭后触发词始终原样追加。",
+        "default": true
+      },
+      "extra_words": {
+        "type": "string",
+        "description": "追加服饰词（自定义黑名单）",
+        "hint": "内置黑名单之外的服饰/配件词，逗号或换行分隔（中英文均可），如：armored_dress, gothic_lolita_dress, 战术背心。命中即从触发词中剔除。",
+        "default": ""
+      },
+      "extra_intents": {
+        "type": "string",
+        "description": "追加换装意图词（自定义）",
+        "hint": "内置意图句式（换一套衣服/穿上XX/脱掉外套等）之外的自定义触发语，逗号或换行分隔，按字面包含匹配，如：变身, 换皮肤, 二周目造型。",
+        "default": ""
+      }
+    }
+  },
   "show_draw_report": {
     "type": "bool",
     "description": "出图完成后输出文件信息",
