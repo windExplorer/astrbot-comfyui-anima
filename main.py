@@ -3686,6 +3686,32 @@ class ComfyUIDrawPlugin(Star):
                     continue
                 if lora.get("enabled") or nm in auto:
                     merged[nm] = None
+            # 全局 LoRA 库关键词兜底：用户原话（未翻译的中文名，如「来一张残虹的图」里的
+            # 「残虹」）与最终提示词各过一遍库里的名称/别名/关键词，命中即临时启用，
+            # 走下方补全链（含底模兼容硬约束）。弥补 LLM 忘传 loras 参数、或提示词被翻译
+            # 成英文导致中文名漏配的情况——LoRA 启用不再完全依赖 LLM 自觉。
+            _raw_msg = (getattr(event, "message_str", "") or "") if event is not None else ""
+            try:
+                _lib = self._lora_library()
+                for _l in _lib:
+                    _nm = (_l.get("name") or "").strip()
+                    if not _nm or _nm in merged:
+                        continue
+                    for _kw in (_l.get("aliases") or []):
+                        _k = str(_kw or "").strip().lower()
+                        if len(_k) < 2:
+                            continue
+                        if (_k and _k in positive.lower()) or (
+                            _raw_msg and _k in _raw_msg.lower()
+                        ):
+                            merged[_nm] = None
+                            logger.info(
+                                f"【LoRA】 全局库关键词命中「{_nm}」（关键词：{_k}），临时启用"
+                                f"（LLM 未传 loras 时的兜底，受底模兼容约束）"
+                            )
+                            break
+            except Exception as _kwe:
+                logger.warning(f"【LoRA】 全局库关键词兜底失败（忽略）: {_kwe}")
             active_map = merged or None
         else:
             # 用户显式指定了 LoRA（指令 --名称 / LLM 工具的 loras 参数）时，
