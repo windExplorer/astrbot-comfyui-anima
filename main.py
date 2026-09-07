@@ -3723,6 +3723,20 @@ class ComfyUIDrawPlugin(Star):
             on_info=lambda m: logger.info(m),
             model_only=True,
         )
+        # 请求了但最终没生效的 LoRA：显式告警，便于排查「库里明明有却没用上」类问题
+        # （常见原因：LLM 实际传的名字与库不一致、全局库缺该条、model_name 为空、注入锚点缺失）
+        for _req in (lora_map or {}):
+            _req_n = (_req or "").strip()
+            if not _req_n:
+                continue
+            if not any(
+                workflow_builder._lora_name_matches(_en, _req_n) for _en in (enabled or [])
+            ):
+                logger.warning(
+                    f"【LoRA】 请求启用「{_req_n}」但最终未生效（本次启用列表: {enabled or '无'}）。"
+                    f"图库该图不会记录此 LoRA。请核对全局 LoRA 库的名称/别名与 model_name，"
+                    f"以及 comfyui_loras 返回的规范名是否被 LLM 正确填入 loras 参数。"
+                )
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
             # 仅记录到日志（含加载的文件名），不再回显给用户。
