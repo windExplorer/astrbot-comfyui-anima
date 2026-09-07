@@ -357,6 +357,64 @@ def _sanitize_exc_text(text, limit: int = 200) -> str:
     return t
 
 
+# LLM 工具参数别名：弱模型（部分 OpenAI 兼容端点）不严格遵守 docstring schema，
+# 常编造参数名（如 sampler_name / workflow_id / lora_list）。这里做常见别名归一，
+# 避免 TypeError 白白浪费一轮对话。
+_LLM_TOOL_KW_ALIASES = {
+    "sampler_name": "sampler",
+    "sampler_type": "sampler",
+    "workflow_id": "workflow",
+    "workflow_name": "workflow",
+    "wf_name": "workflow",
+    "lora_list": "loras",
+    "loras_list": "loras",
+    "lora": "loras",
+    "negative": "negative_prompt",
+    "negative_prompts": "negative_prompt",
+    "prompt_text": "prompt",
+    "caption_text": "caption",
+}
+
+
+def _coerce_llm_tool_value(ann, v):
+    """按参数注解粗略矫正 LLM 传参类型：数字传成字符串、数组/对象传成 JSON 字符串等。"""
+    if v is None:
+        return v
+    try:
+        if ann is int and isinstance(v, str):
+            f = float(v)
+            return int(f) if f.is_integer() else int(round(f))
+        if ann is float and isinstance(v, (str, int)):
+            return float(v)
+    except (TypeError, ValueError):
+        return v
+    if ann in (list, dict) and isinstance(v, str):
+        s = v.strip()
+        if s.startswith(("[", "{")):
+            try:
+                return json.loads(s)
+            except Exception:
+                return v
+    return v
+
+
+def _sanitize_llm_tool_kwargs(func, kwargs: dict) -> dict:
+    """别名归一 + 类型矫正 + 丢弃未知参数（打日志）。"""
+    try:
+        import inspect as _insp
+        params = _insp.signature(func).parameters
+    except Exception:
+        return dict(kwargs)
+    fixed: dict = {}
+    for k, v in kwargs.items():
+        k2 = _LLM_TOOL_KW_ALIASES.get(k, k)
+        if k2 not in params:
+            logger.warning(f"[{getattr(func, '__name__', '?')}] 丢弃 LLM 传入的未知参数 {k!r}={v!r}")
+            continue
+        fixed[k2] = _coerce_llm_tool_value(params[k2].annotation, v)
+    return fixed
+
+
 def _safe_llm_tool(func):
     """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
     而是打印完整堆栈到日志并返回一句可读的失败说明，让用户能看到原因而非笼统报错。
@@ -367,6 +425,10 @@ def _safe_llm_tool(func):
     @wraps(func)
     async def wrapper(self, *args, **kwargs):
         try:
+            try:
+                kwargs = _sanitize_llm_tool_kwargs(func, kwargs)
+            except Exception:
+                pass
             return await func(self, *args, **kwargs)
         except Exception as e:
             logger.error(
@@ -1380,6 +1442,18 @@ class ComfyUIDrawPlugin(Star):
             return None
         out: dict[str, float | None] = {}
         for item in loras:
+            # 对象形式（弱模型常传 [{"name": "残虹", "weight": 1.0}]）
+            if isinstance(item, dict):
+                nm = str(item.get("name") or item.get("lora") or item.get("lora_name") or "").strip()
+                if not nm:
+                    continue
+                w = item.get("weight")
+                try:
+                    weight = float(w) if w is not None else None
+                except (TypeError, ValueError):
+                    weight = None
+                out[nm] = weight
+                continue
             if not isinstance(item, (str, int, float)) or str(item).strip() == "":
                 continue
             tok = str(item).strip()

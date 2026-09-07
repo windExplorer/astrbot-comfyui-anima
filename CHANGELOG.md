@@ -2,6 +2,13 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.10.41（LLM 工具参数容错：别名归一 + 类型矫正，修复弱模型 TypeError）
+
+- 日志实锤：部分 OpenAI 兼容模型（如 Agnes）不严格遵守工具 schema，编造参数名（`sampler_name`/`workflow_id`/`lora_list`）、数字传字符串、数组传 JSON 字符串，导致 `llm_draw` 连续 TypeError，出图直接失败——这也是「LoRA 一直没用上」的真正根因（调用根本没走到出图那步）。
+- `_safe_llm_tool` 调用前统一做参数容错：常见别名归一（`sampler_name→sampler`、`workflow_id/workflow_name→workflow`、`lora_list/loras_list/lora→loras`、`negative→negative_prompt`、`prompt_text→prompt`、`caption_text→caption` 等）；按注解矫正类型（`"768"→768`、`"7"→7.0`、JSON 字符串→list/dict）；未知参数丢弃并打 WARN（此前直接 TypeError）。
+- `_parse_llm_loras` 兼容对象数组 `[{"name":..,"weight":..}]`（此前只认 "名称:权重" 字符串，对象条目会被静默跳过）。
+- 已用日志中 Agnes 的真实传参回归验证：别名归一、类型矫正、lora 对象解析全链通过。
+
 ## v5.10.40（LoRA「请求未生效」显式告警）
 
 - 出图后比对「请求启用的 LoRA」与「实际生效列表」：有请求了但没生效的条目（如 LLM 传参与库不一致、库里缺条、model_name 为空、注入锚点缺失）时打显式 WARN 日志，说明该图不会记录此 LoRA 及排查方向。此前这种情况静默略过，只能靠对比图库记录猜测。
