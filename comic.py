@@ -1172,7 +1172,7 @@ async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, su
     }
 
 
-def merge_feature_lora(self, feature: dict | None, lora_map: dict, negative: str) -> tuple[dict, str]:
+def merge_feature_lora(feature: dict | None, lora_map: dict, negative: str) -> tuple[dict, str]:
     """把 special_features 里功能的 default_lora / default_negative 合并进出图参数。
 
     default_lora 每行格式：名称|权重|0/1（0=禁用）。仅当用户未显式指定同名 LoRA 时补入；

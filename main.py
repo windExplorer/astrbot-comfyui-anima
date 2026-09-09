@@ -3584,6 +3584,21 @@ class ComfyUIDrawPlugin(Star):
             ):
                 yield _pn, _pp
             return
+        # ── 功能默认 LoRA / 负向合并（special_features）────────────────
+        # comic_feature 非空（表情包/漫画：走 comfyui_comic 或其 LLM 工具）时，
+        # 在此统一把该功能的 default_lora / default_negative 合并进本次出图参数。
+        # 此前只在表情包「指令入口」合并，LLM 工具经 llm_draw 进来时漏掉，
+        # 表现为功能默认 LoRA / 负向不生效；现统一在 _do_draw 内处理，两条入口都生效。
+        # 负向：仅当用户未显式给负向时补入（之后工作流 fixed negative 仍可覆盖）。
+        # LoRA：仅当用户/工作流未启用同名时补入（与工作流默认叠加）；
+        #       用户未指定任何 LoRA（lora_map 为 None）也要确保功能默认 LoRA 生效
+        #       （此前 lora_map=None 会导致合并被跳过）。
+        if comic_feature:
+            _feat = self._feature_by_key(comic_feature)
+            if _feat:
+                if (_feat.get("default_lora") or "").strip() and lora_map is None:
+                    lora_map = {}
+                lora_map, negative = comic.merge_feature_lora(_feat, lora_map, negative)
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
@@ -4856,15 +4871,13 @@ class ComfyUIDrawPlugin(Star):
         if _err:
             await self._send(event, _err)
             return
-        _feat = self._feature_by_key("meme_text")
-        lora_map, _neg = comic.merge_feature_lora(_feat, lora_map, "")
         wf = self._find_workflow_by_name(wf_name) or {}
         _vars = self._slot_vars(wf)
         _parts = [p.strip() for p in (args or "").split("::")]
         positive_prompt = _parts[0]
         slot_values = {v: (_parts[i + 1] if i + 1 < len(_parts) else "") for i, v in enumerate(_vars)}
         async for m, _p in self._do_draw(
-            event, wf_name, positive_prompt, _neg, width, height, lora_map, lora_presets, seed,
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=None, is_img2img=False, denoise=denoise,
             slot_values=slot_values, explicit_default=False, comic_feature="meme_text",
         ):
@@ -4893,8 +4906,6 @@ class ComfyUIDrawPlugin(Star):
         if _err:
             await self._send(event, _err)
             return
-        _feat = self._feature_by_key("meme_text")
-        lora_map, _neg = comic.merge_feature_lora(_feat, lora_map, "")
         wf = self._find_workflow_by_name(wf_name) or {}
         # LLM 展开：把一句想法变成 anime 画面提示词 + 表情包文字（受配置开关与 --raw 控制）
         build_prompt = self._cfg("enable_llm_prompt", True) and not _auto_raw
@@ -4913,7 +4924,7 @@ class ComfyUIDrawPlugin(Star):
             if not lora_map and _lora_extracted:
                 lora_map = _lora_extracted
         async for m, _p in self._do_draw(
-            event, wf_name, positive_prompt, _neg, width, height, lora_map, lora_presets, seed,
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=None, is_img2img=False, denoise=denoise,
             slot_values=slot_values, explicit_default=False, comic_feature="meme_text",
         ):
@@ -4946,15 +4957,13 @@ class ComfyUIDrawPlugin(Star):
         if _err:
             await self._send(event, _err)
             return
-        _feat = self._feature_by_key("meme_img")
-        lora_map, _neg = comic.merge_feature_lora(_feat, lora_map, "")
         wf = self._find_workflow_by_name(wf_name) or {}
         _vars = self._slot_vars(wf)
         _parts = [p.strip() for p in (args or "").split("::")]
         positive_prompt = _parts[0]
         slot_values = {v: (_parts[i + 1] if i + 1 < len(_parts) else "") for i, v in enumerate(_vars)}
         async for m, _p in self._do_draw(
-            event, wf_name, positive_prompt, _neg, width, height, lora_map, lora_presets, seed,
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images, is_img2img=True, denoise=denoise,
             slot_values=slot_values, explicit_default=False, comic_feature="meme_img",
         ):
@@ -4986,8 +4995,6 @@ class ComfyUIDrawPlugin(Star):
         if _err:
             await self._send(event, _err)
             return
-        _feat = self._feature_by_key("meme_img")
-        lora_map, _neg = comic.merge_feature_lora(_feat, lora_map, "")
         wf = self._find_workflow_by_name(wf_name) or {}
         build_prompt = self._cfg("enable_llm_prompt", True) and not _auto_raw
         build_slots = self._cfg("enable_llm_slots", True) and not _auto_raw
@@ -5004,7 +5011,7 @@ class ComfyUIDrawPlugin(Star):
             if not lora_map and _lora_extracted:
                 lora_map = _lora_extracted
         async for m, _p in self._do_draw(
-            event, wf_name, positive_prompt, _neg, width, height, lora_map, lora_presets, seed,
+            event, wf_name, positive_prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images, is_img2img=True, denoise=denoise,
             slot_values=slot_values, explicit_default=False, comic_feature="meme_img",
         ):

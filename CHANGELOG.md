@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.11.1（修复：功能默认 LoRA/负向在 AI 调图时不生效）
+
+- **修复功能默认 LoRA/负向丢失**：`special_features` 里配置的 `default_lora` / `default_negative` 仅曾在「表情包指令入口」合并，而 LLM 工具路径（`comfyui_meme_text` / `comfyui_meme_img` → `llm_draw` → `_do_draw`）从未合并，导致 AI 自动调图时功能默认 LoRA/负向不生效。现统一在 `_do_draw` 内、工作流解析前合并，两条入口都生效。
+- 修复 `comic.merge_feature_lora` 函数签名多写的 `self` 形参（模块级函数），此前会导致表情包指令入口在合并时报错；现与全部 3 参数调用点一致。
+- 合并时机：负向仅当用户未显式给负向时补入（工作流固定负向仍可覆盖）；LoRA 仅当用户/工作流未启用同名时补入（与工作流默认叠加），用户未指定任何 LoRA（`lora_map` 为 None）也能确保功能默认 LoRA 生效。
+
 ## v5.11.0（里程碑版本：多平台生图与 LoRA 体系一轮完整重构）
 
 自 v5.10.x 起的补丁累计较多，统一提升中间版本号。本版本涵盖的重大改动：
