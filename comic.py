@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 # 三类带字功能的 key
 COMIC_FEATURE_KEYS = ("meme_text", "meme_img", "comic")
 
-# 表情包/漫画意图关键词：命中即判为用户想出「带文字」的表情包/漫画
+# 表情包意图关键词：仅当用户**明确**想要表情包时才触发表情包工作流，
+# 不再因「气泡/带字/底部文字/漫画/comic」等常见描述词误触发（这些词在正常画图描述里很常见）。
 _COMIC_INTENT_KEYWORDS = (
-    "表情包", "表情图", "梗图", "气泡", "带字", "底部文字",
-    "meme", "sticker", "comic", "漫画",
+    "表情包", "表情图", "梗图", "meme", "sticker",
 )
 
 

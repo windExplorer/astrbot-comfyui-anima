@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.11.3（收敛：表情包工作流仅在用户明确说「表情包」时触发）
+
+- 收窄 `is_comic_intent` 的意图关键词：移除「气泡 / 带字 / 底部文字 / 漫画 / comic」等在正常画图描述里常见的词，避免普通生图被误路由到表情包（带字）工作流、强行注入气泡/字幕。现在只有用户明确表达要表情包（表情包 / 表情图 / 梗图 / meme / sticker）才走表情包工作流；「漫画」风格描述不再触发。用户显式点名表情包工作流、或 LLM 显式调用 comfyui_comic / comfyui_meme_img 不受影响。
+
 ## v5.11.2（修复：comfyui_draw + 漫画意图路径漏合并功能默认 LoRA/负向）
 
 - 补全同类遗漏：用户用 `comfyui_draw` 但意图被识别为表情包/漫画时，llm_draw 内部的意图路由分支此前只注入 `slot_values` 造词、未设置 `comic_feature`，导致该路径下 `special_features` 的功能默认 LoRA/负向同样不生效。现按文生/图生补上对应功能 key（meme_text / meme_img），与 `comfyui_comic` / `comfyui_meme_img` 两条入口行为一致。
