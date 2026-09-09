@@ -5079,6 +5079,11 @@ class ComfyUIDrawPlugin(Star):
         # LLM 工具开关（与 comfyui_draw 一致；伴侣插件等第三方主动调用不受影响）
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/表情包 等）。"
+        # 漫画/表情包 AI 自动配文开关（enable_comic_llm，默认关闭）：
+        # 关闭时漫画功能仅允许通过指令（/漫画、/表情包、/表情包llm）绘制，
+        # 经本工具由 AI 自动出图被禁用，避免误触发。伴侣插件走 _do_draw，不经本工具，不受影响。
+        if not plugin._cfg("enable_comic_llm", False):
+            return "漫画/表情包功能当前仅支持通过指令绘制（/漫画、/表情包、/表情包llm），AI 自动配文出图已关闭。"
         # 按功能解析工作流（meme_text=文生表情包/漫画），--wf 优先；非漫画工作流报错停住
         _wf_name, _err = self._resolve_comic_workflow("meme_text", workflow)
         if _err:
@@ -5151,6 +5156,10 @@ class ComfyUIDrawPlugin(Star):
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/图生表情包 等）。"
+        # 漫画/表情包 AI 自动配文开关（enable_comic_llm，默认关闭）：
+        # 关闭时图生漫画功能仅允许通过指令（/图生表情包 等）绘制，本工具被禁用。
+        if not plugin._cfg("enable_comic_llm", False):
+            return "图生表情包功能当前仅支持通过指令绘制（/图生表情包），AI 自动配文出图已关闭。"
         # 图生表情包必须有参考图（顶层 image 或 prompts 任一项带 image）
         _has_img = bool((image or "").strip()) or any(
             isinstance(_p, dict) and (str(_p.get("image") or "").strip()) for _p in (prompts or [])
@@ -7823,8 +7832,9 @@ class ComfyUIDrawPlugin(Star):
         - 本工具与 comfyui_gallery 职责严格分离：生图归 draw，发旧图归 gallery。
 
         触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时，务必调用此工具。
-        ★★表情包/漫画分流（已收窄，不要扩大化）：只有当用户【明确】要求「表情包 / 表情 / 漫画 /
-        带气泡台词的梗图」或点名表情包/漫画工作流时，才改调 comfyui_comic。
+        ★★表情包/漫画分流（已改为仅指令）：漫画/表情包（带气泡文字）功能当前仅支持指令绘制
+        （/漫画、/表情包、/表情包llm），comfyui_comic / comfyui_meme_img 工具默认关闭（受 enable_comic_llm 控制），
+        不要改调 comfyui_comic；用户要带字漫画时，请直接建议其使用 /漫画 指令。
         普通的「图上出现文字」（标题、招牌、海报字、墙上的字等）**直接用本工具画**——
         按下方「提示词规范」里对应底模的文字渲染写法写即可，不要因为画面带文字就改道 comfyui_comic。
         详细的操作细则（数量、图生图判定、LoRA/工作流查询时机、提示词语言等）见可用技能「comfyui-draw」（若你有技能读取能力，先读它再操作）。
@@ -8381,7 +8391,9 @@ class ComfyUIDrawPlugin(Star):
         # 时不会造词，boogu 节点会直接用工作流里写死的默认提示词——
         # 表现为『巨大字 + 永远有底部字幕 + 固定气泡』，正是用户反复吐槽的丑样子。
         # 已带 slot_values（comfyui_comic 已注入）或第三方 source 调用不触发本路由。
-        if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+        # enable_comic_llm（默认关闭）：关闭时漫画功能仅允许通过指令绘制，
+        # 这里整段「AI 静默造词」路由（意图命中 / 点名漫画工作流）一起跳过，comfyui_draw 不再自动走带字工作流。
+        if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN) and self._cfg("enable_comic_llm", False):
             _intent_text = (getattr(event, "message_str", "") or "").strip()
             _comic_by_intent = self._is_comic_intent(_intent_text, prompt)
             _cwf = None
