@@ -8403,6 +8403,11 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     workflow = _cwf
                 resolved_wf = _cwf
+                # 意图命中的漫画工作流对应 special_features 功能：文生=meme_text，图生=meme_img。
+                # 补上 comic_feature 让 _do_draw 统一合并该功能的功能默认 LoRA/负向；
+                # 否则仅靠 slot_values 造词、功能默认 LoRA/负向不生效（与 comfyui_comic /
+                # comfyui_meme_img 两条入口行为不一致，属同类遗漏）。
+                comic_feature = "meme_img" if is_img2img else "meme_text"
                 # 清理段1：剥离 bot 误写的「气泡文字字段」(text:/气泡:) 与 boogu 形状描述，
                 # 抽到槽位2 的自然语言；同时清掉出图计划里每条 prompt，避免 anima 画错
                 _clean_prompt, _bubble = comic.strip_bubble_field_from_prompt(prompt)

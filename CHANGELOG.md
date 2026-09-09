@@ -2,6 +2,10 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.11.2（修复：comfyui_draw + 漫画意图路径漏合并功能默认 LoRA/负向）
+
+- 补全同类遗漏：用户用 `comfyui_draw` 但意图被识别为表情包/漫画时，llm_draw 内部的意图路由分支此前只注入 `slot_values` 造词、未设置 `comic_feature`，导致该路径下 `special_features` 的功能默认 LoRA/负向同样不生效。现按文生/图生补上对应功能 key（meme_text / meme_img），与 `comfyui_comic` / `comfyui_meme_img` 两条入口行为一致。
+
 ## v5.11.1（修复：功能默认 LoRA/负向在 AI 调图时不生效）
 
 - **修复功能默认 LoRA/负向丢失**：`special_features` 里配置的 `default_lora` / `default_negative` 仅曾在「表情包指令入口」合并，而 LLM 工具路径（`comfyui_meme_text` / `comfyui_meme_img` → `llm_draw` → `_do_draw`）从未合并，导致 AI 自动调图时功能默认 LoRA/负向不生效。现统一在 `_do_draw` 内、工作流解析前合并，两条入口都生效。
