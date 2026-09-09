@@ -1424,7 +1424,7 @@ class ComfyUIDrawPlugin(Star):
                 logger.warning(f"【LoRA】 预设引用：库里找不到 LoRA「{lora_name}」，跳过预设")
                 continue
             found = None
-            for p in self._parse_presets(l.get("presets")):
+            for p in self._lora_presets_of(l):
                 if (p.get("name") or "").strip() == (preset_name or "").strip():
                     found = p
                     break
@@ -1628,15 +1628,25 @@ class ComfyUIDrawPlugin(Star):
         """用内部 LLM 把用户一句想法展开为画面提示词 + 槽位文字 + 识别 LoRA（实现见 comic.py）。"""
         return await comic.comic_build_prompts_llm(self, wf, idea, lora_map, want_prompt, want_slots, subject)
 
+    # 旧式「常驻预设」名称：语义上就是「每次都带」，应归入 trigger_words。
+    # 保留兼容：读取时按触发词处理，并提示管理员迁移。
+    _LEGACY_ALWAYS_PRESET_NAME = "0"
+
     @staticmethod
     def _parse_presets(raw) -> list[dict]:
-        """把 LoRA 预设配置解析成 [{name, prompt}] 列表。
+        """把 LoRA 预设配置解析成 [{name, prompt, is_default, always_on}] 列表。
 
-        两种来源都兼容：
-        - 字符串（textarea，当前格式）：``[名字|提示词] [名字2|提示词, solo, 1girl]``，
+        兼容三种来源：
+        - 字符串（旧 textarea 格式）：``[名字|提示词] [名字2|提示词, solo, 1girl]``，
           按 ``[...]`` 切块；块内以第一个 ``|`` 分隔名称与提示词，提示词里可含逗号。
-        - 列表（旧版对象数组，兼容）：每个元素含 ``name`` + ``prompt``/``positive``，
-          统一映射为 ``{name, prompt}``。
+        - 列表（结构化 presets_list / 旧版对象数组）：每个元素含 ``name`` +
+          ``prompt``/``positive``，可选 ``is_default``（默认预设）。
+        - 旧魔法约定：预设名为 ``0`` = 常驻（always_on），语义上属于触发词。
+
+        语义约定（v5.10.53 起）：
+        - 每次都注入的词 → 放 trigger_words；
+        - 装扮/造型套组 → 放 presets，可多套，标记其中一套 is_default 作为「默认装扮」；
+          未点名预设时自动套用默认预设，检测到换装则不套用。
         """
         if not raw:
             return []
@@ -1650,7 +1660,14 @@ class ComfyUIDrawPlugin(Star):
                 name = name.strip()
                 if not name:
                     continue
-                out.append({"name": name, "prompt": prompt.strip()})
+                out.append(
+                    {
+                        "name": name,
+                        "prompt": prompt.strip(),
+                        "is_default": False,
+                        "always_on": name == ComfyUIDrawPlugin._LEGACY_ALWAYS_PRESET_NAME,
+                    }
+                )
             return out
         if isinstance(raw, list):
             out = []
@@ -1661,9 +1678,77 @@ class ComfyUIDrawPlugin(Star):
                 if not name:
                     continue
                 prompt = (p.get("prompt") or "").strip() or (p.get("positive") or "").strip()
-                out.append({"name": name, "prompt": prompt})
+                out.append(
+                    {
+                        "name": name,
+                        "prompt": prompt,
+                        "is_default": bool(p.get("is_default")),
+                        "always_on": bool(p.get("always_on"))
+                        or name == ComfyUIDrawPlugin._LEGACY_ALWAYS_PRESET_NAME,
+                    }
+                )
             return out
         return []
+
+    @classmethod
+    def _lora_presets_of(cls, lora: dict) -> list[dict]:
+        """取某条 LoRA 的解析后预设列表：优先结构化 presets_list，回退旧 presets 文本。"""
+        if not isinstance(lora, dict):
+            return []
+        lst = lora.get("presets_list")
+        if isinstance(lst, list) and lst:
+            return cls._parse_presets(lst)
+        return cls._parse_presets(lora.get("presets"))
+
+    @classmethod
+    def _default_preset_of(cls, lora: dict):
+        """取该 LoRA 的「默认预设」（默认装扮）：
+
+        ① 预设里标记 is_default 的那套；
+        ② 否则 LoRA 顶层 default_preset 字段指定的名称；
+        ③ 否则约定名（默认装扮 / 默认 / default）；
+        都没有返回 None。always_on（旧 0 号）预设不参与。"""
+        presets = [p for p in cls._lora_presets_of(lora) if not p.get("always_on")]
+        for p in presets:
+            if p.get("is_default"):
+                return p
+        _want = (lora.get("default_preset") or "").strip() if isinstance(lora, dict) else ""
+        if _want:
+            for p in presets:
+                if (p.get("name") or "").strip() == _want:
+                    return p
+        for p in presets:
+            if (p.get("name") or "").strip() in ("默认装扮", "默认", "default"):
+                return p
+        return None
+
+    def _outfit_change_hit(self, event, positive: str) -> bool:
+        """是否检测到「换装/换衣」意图。
+
+        用于两处：① 跳过 LoRA 的默认装扮预设；② 剔除触发词里的服饰词。
+        判定来源：用户原话换装句式 / 自定义意图词 / 最终提示词里的服饰描述。
+        受配置 lora_outfit_filter.enabled 总开关控制。"""
+        of_cfg = self._cfg("lora_outfit_filter", {}) or {}
+        if not isinstance(of_cfg, dict) or not bool(of_cfg.get("enabled", True)):
+            return False
+        extra = [
+            w.strip().lower()
+            for w in re.split(r"[,，\n;；]+", str(of_cfg.get("extra_words") or ""))
+            if w.strip()
+        ]
+        intents = [
+            w.strip()
+            for w in re.split(r"[,，\n;；]+", str(of_cfg.get("extra_intents") or ""))
+            if w.strip()
+        ]
+        raw = (getattr(event, "message_str", "") or "") if event is not None else ""
+        if raw and (_OUTFIT_CHANGE_RE.search(raw) or any(i and i in raw for i in intents)):
+            return True
+        if positive:
+            for t in re.split(r"[\n,，、;；]+", positive):
+                if t.strip() and _is_outfit_trigger(t, extra):
+                    return True
+        return False
 
     @staticmethod
     def _fmt_token(v) -> str:
@@ -3921,11 +4006,15 @@ class ComfyUIDrawPlugin(Star):
                         f"样例键={lib_keys[:8]}）"
                     )
 
-        # 常驻预设：启用的 LoRA 若配置了名为「0」的预设，则无论用户是否指定其它
-        # 预设（--名称/预设名）都自动带上。先排除用户已显式指定「0」的，避免重复。
+        # ── 预设（装扮/造型套组）与旧「0 号常驻预设」处理 ──────────────────────
+        # 语义约定（v5.10.53）：
+        #   - 每次都注入的词 → trigger_words（触发词字段），这里不再有「常驻预设」概念；
+        #   - 旧配置的「0 号预设」语义上就是触发词，按触发词兜底追加并提示迁移；
+        #   - 默认预设（装扮）：未点名预设时自动套用；检测到换装则跳过，让新衣服接手。
         if active_map:
-            always_pre: dict[str, str] = {}
             lib_pre = self._lora_lib_index()
+            _legacy_always_words: list[str] = []
+            _default_pre: dict[str, str] = {}
             for lora_name in active_map:
                 ln = (lora_name or "").strip()
                 l = lib_pre.get(ln) or next(
@@ -3935,22 +4024,38 @@ class ComfyUIDrawPlugin(Star):
                 )
                 if not l:
                     continue
-                for p in self._parse_presets(l.get("presets")):
-                    if (p.get("name") or "").strip() == "0":
-                        if not (lora_presets and (lora_presets.get(ln) or "").strip() == "0"):
-                            always_pre[ln] = "0"
-                        break
-            # 固定提示词或走 JSON 原值（positive 为空）时跳过常驻预设追加，避免污染固定配方
-            if always_pre and positive and not _fixed_prompt:
-                positive, negative = self._apply_lora_presets(
-                    always_pre, positive, negative
-                )
-                logger.info(f"【LoRA】 已追加常驻预设（名为0）：{list(always_pre.keys())}")
-                # positive 已变更，需重写正向提示词节点（上方 565/570 处已写过一次，此处覆盖）
-                workflow_builder.set_text_node(
-                    prompt, wf.get("positive_node"), "text", positive
-                )
-                logger.info(f"正向提示词（含常驻预设）: {positive}")
+                # 旧 0 号预设：按触发词处理（每次都带）
+                for p in self._lora_presets_of(l):
+                    if p.get("always_on"):
+                        _pr = (p.get("prompt") or "").strip()
+                        if _pr and _pr not in _legacy_always_words:
+                            _legacy_always_words.append(_pr)
+                        logger.warning(
+                            f"【LoRA】 「{ln}」使用了旧式「0 号常驻预设」，已按触发词处理。"
+                            f"建议把其内容迁移到该 LoRA 的「触发词」字段（每次都注入的词应放触发词）。"
+                        )
+                # 默认预设：仅当本次没点名该 LoRA 的预设、且未检测到换装时套用
+                _named = (lora_presets or {}).get(ln)
+                if not (_named or "").strip():
+                    _dp = self._default_preset_of(l)
+                    if _dp and (self._outfit_change_hit(event, positive) is False):
+                        _default_pre[ln] = (_dp.get("name") or "").strip()
+            # 固定提示词或走 JSON 原值（positive 为空）时跳过追加，避免污染固定配方
+            if positive and not _fixed_prompt:
+                if _default_pre:
+                    positive, negative = self._apply_lora_presets(
+                        _default_pre, positive, negative
+                    )
+                    logger.info(f"【LoRA】 已套用默认预设（装扮）: {_default_pre}")
+                if _legacy_always_words:
+                    _add_words = [w for w in _legacy_always_words if w not in positive]
+                    if _add_words:
+                        positive = positive.strip() + ", " + ", ".join(_add_words)
+                if _default_pre or _legacy_always_words:
+                    workflow_builder.set_text_node(
+                        prompt, wf.get("positive_node"), "text", positive
+                    )
+                    logger.info(f"正向提示词（含预设）: {positive}")
 
         enabled = workflow_builder.apply_loras(
             prompt, loras_cfg, active_map, anchor=wf.get("lora_anchor") or None,
@@ -4051,18 +4156,12 @@ class ComfyUIDrawPlugin(Star):
                 for w in re.split(r"[,，\n;；]+", str(_of_cfg.get("extra_intents") or ""))
                 if w.strip()
             ]
-            _outfit_hit = bool(_OUTFIT_CHANGE_RE.search(_raw_outfit)) or any(
-                i in _raw_outfit for i in _of_intents
-            )
-            # 追加判定：最终提示词里出现了服饰描述（LLM 按用户要求把新衣服写进 prompt）。
-            # 触发词是 LLM 交回后才由插件追加的，LLM 物理上无法自行剔除；但只要 prompt 里
-            # 已有服饰词，就说明本图要穿「触发词之外」的衣服，服饰类触发词必须让位，
+            # 换装判定复用 _outfit_change_hit：用户原话换装句式 / 自定义意图词 /
+            # 最终提示词里的服饰描述（LLM 把新衣服写进 prompt 也算）。
+            # 触发词是 LLM 交回后才由插件追加的，LLM 物理上无法自行剔除；但 prompt 里
+            # 已有服饰词就说明本图要穿「触发词之外」的衣服，服饰类触发词必须让位，
             # 否则会新旧混穿/被旧词顶掉——检测到即自动剔除，无需 LLM 配合。
-            if not _outfit_hit and positive:
-                for _pt in re.split(r"[\n,，、;；]+", positive):
-                    if _pt.strip() and _is_outfit_trigger(_pt, _of_extra):
-                        _outfit_hit = True
-                        break
+            _outfit_hit = self._outfit_change_hit(event, positive)
             if _triggers and _of_on and _outfit_hit:
                 _kept, _dropped = [], []
                 for _t in _triggers:

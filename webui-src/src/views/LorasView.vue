@@ -103,7 +103,18 @@
         <div class="detail-row"><b>模型文件：</b>{{ detailItem.model_name || "—" }}</div>
         <div class="detail-row"><b>触发词：</b><pre>{{ detailItem.trigger_words || "—" }}</pre></div>
         <div class="detail-row"><b>描述：</b><pre v-if="detailItem.description" v-html="sanitizeHtml(detailItem.description)"></pre><span v-else>—</span></div>
-        <div class="detail-row"><b>提示词预设：</b><pre>{{ detailItem.presets || "—" }}</pre></div>
+        <div class="detail-row"><b>提示词预设：</b>
+          <div v-if="parsedPresets(detailItem).length">
+            <div v-for="(p, i) in parsedPresets(detailItem)" :key="i" class="preset-line">
+              <n-tag size="small" :type="p.always_on ? 'warning' : (p.is_default ? 'success' : 'default')">
+                {{ p.always_on ? "常驻(旧0号→触发词)" : (p.is_default ? "默认" : "按需") }}
+              </n-tag>
+              <b>{{ p.name }}</b>
+              <span class="preset-content">{{ p.prompt }}</span>
+            </div>
+          </div>
+          <span v-else>—</span>
+        </div>
       </div>
     </n-modal>
 
@@ -138,7 +149,21 @@
           <n-form-item label="C 站链接"><n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" /></n-form-item>
           <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="存于 lora_assets/，可上传" /></n-form-item>
         </div>
-        <n-form-item label="提示词预设（每套 [预设名|提示词]，可多套）"><n-input v-model:value="editForm.presets" type="textarea" :rows="3" /></n-form-item>
+        <n-form-item label="提示词预设（装扮/造型套组，可多套）">
+          <div style="width:100%">
+            <n-empty v-if="!editForm.presets_list || !editForm.presets_list.length" description="暂无预设，点下方「+ 添加预设」新增（如 默认装扮 / 女仆装）" style="padding: 8px 0" />
+            <div v-for="(p, i) in (editForm.presets_list || [])" :key="i" class="preset-edit-row">
+              <div class="preset-edit-head">
+                <n-input v-model:value="p.name" placeholder="预设名（如 默认装扮 / 女仆装）" style="width: 220px" />
+                <n-checkbox v-model:checked="p.is_default" @update:checked="onDefaultPreset(i)">默认预设</n-checkbox>
+                <n-button size="small" type="error" quaternary @click="removePresetRow(i)">删除</n-button>
+              </div>
+              <n-input v-model:value="p.prompt" type="textarea" :rows="2" placeholder="该套预设要追加的提示词（可含逗号）" />
+            </div>
+            <n-button size="small" @click="addPresetRow" style="margin-top: 6px">+ 添加预设</n-button>
+            <div class="form-hint">「每次都注入的词」请放上方「触发词」字段；这里只放装扮/造型套组。标记「默认预设」的那套会在未点名预设时自动套用，检测到换装时自动跳过。旧格式（[预设名|提示词]，含 0 号常驻）仍可识别，保存后统一升级为列表。</div>
+          </div>
+        </n-form-item>
         <n-form-item label="仅模型节点">
           <n-switch v-model:value="editForm.model_only" />
           <span class="form-hint">开启时只叠加 MODEL（兼容性最好）；关闭则同时影响 CLIP</span>
@@ -286,7 +311,7 @@ function buildCover(l: any): { fname: string; title: string; fields: ItemViewerF
     { key: "模型", value: l.model_name?.trim() || "—" },
     { key: "默认权重", value: l.weight ?? 1 },
     { key: "触发词", value: l.trigger_words?.trim() || "—" },
-    { key: "提示词预设", value: l.presets?.trim() || "—" },
+    { key: "提示词预设", value: parsedPresets(l).map((p: any) => `${p.name}${p.is_default ? "（默认）" : ""}${p.always_on ? "（常驻/旧0号）" : ""}：${p.prompt}`).join("\n") || "—" },
     { key: "描述", value: l.description?.trim() || "", html: true },
     { key: "封面文件", value: l.image || "—" },
   ];
@@ -343,9 +368,62 @@ function openForm(idx: number, prefill?: any) {
     civitai_url: l.civitai_url || "",
     image: l.image || "",
     presets: l.presets || "",
+    presets_list: normalizePresets(Array.isArray(l.presets_list) && l.presets_list.length ? l.presets_list : l.presets),
     model_only: l.model_only !== false,
   })));
   editShow.value = true;
+}
+
+// 预设归一：结构化列表 / 旧文本 [名|词] → [{name, prompt, is_default}]
+function normalizePresets(raw: any): any[] {
+  const out: any[] = [];
+  const fromList = (arr: any[]) => {
+    for (const p of arr || []) {
+      if (!p || typeof p !== "object") continue;
+      const name = String(p.name || "").trim();
+      if (!name) continue;
+      out.push({
+        name,
+        prompt: String(p.prompt ?? p.positive ?? "").trim(),
+        is_default: !!p.is_default,
+        always_on: !!p.always_on || name === "0",
+      });
+    }
+  };
+  if (Array.isArray(raw)) {
+    fromList(raw);
+    return out;
+  }
+  const s = String(raw || "");
+  for (const m of s.matchAll(/\[([^\[\]]*)\]/g)) {
+    const blk = String(m[1] || "").trim();
+    if (!blk || !blk.includes("|")) continue;
+    const i = blk.indexOf("|");
+    const name = blk.slice(0, i).trim();
+    const prompt = blk.slice(i + 1).trim();
+    if (name) out.push({ name, prompt, is_default: false, always_on: name === "0" });
+  }
+  return out;
+}
+
+function addPresetRow() {
+  if (!Array.isArray(editForm.presets_list)) editForm.presets_list = [];
+  editForm.presets_list.push({ name: "", prompt: "", is_default: false });
+}
+function removePresetRow(i: number) {
+  if (!Array.isArray(editForm.presets_list)) return;
+  editForm.presets_list.splice(i, 1);
+}
+// 「默认预设」同一 LoRA 只允许一个
+function onDefaultPreset(i: number) {
+  if (!Array.isArray(editForm.presets_list)) return;
+  editForm.presets_list.forEach((p: any, j: number) => { p.is_default = j === i; });
+}
+
+// 展示用：解析后的预设（列表优先，回退旧文本）
+function parsedPresets(l: any): any[] {
+  if (!l) return [];
+  return normalizePresets(Array.isArray(l.presets_list) && l.presets_list.length ? l.presets_list : l.presets);
 }
 
 function addLora() { openForm(-1); }
@@ -357,7 +435,15 @@ async function saveEdit() {
   saving.value = true;
   try {
     const tplKey = (loras.value[editIndex.value] && loras.value[editIndex.value].__template_key) || "default";
-    const v = { ...editForm, __template_key: tplKey };
+    // 预设列表：过滤空行；旧的 0 号常驻语义已归触发词，保存时不再写回
+    const plist = (Array.isArray(editForm.presets_list) ? editForm.presets_list : [])
+      .filter((p: any) => String(p?.name || "").trim())
+      .map((p: any) => ({
+        name: String(p.name || "").trim(),
+        prompt: String(p.prompt || "").trim(),
+        is_default: !!p.is_default,
+      }));
+    const v = { ...editForm, __template_key: tplKey, presets_list: plist };
     if (editIndex.value < 0 || editIndex.value >= loras.value.length) {
       loras.value.unshift(v);
     } else {
@@ -541,6 +627,9 @@ onMounted(load);
 .edit-form { max-height: 65vh; overflow: auto; padding-right: 4px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-hint { color: var(--text-sub); font-size: 12px; margin-left: 8px; }
+.preset-edit-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.preset-edit-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.preset-line { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 .detail { display: flex; flex-direction: column; gap: 10px; }
 .detail-row { font-size: 13px; }
 .detail-row pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-family: inherit; color: var(--text-sub); }
