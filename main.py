@@ -3817,6 +3817,19 @@ class ComfyUIDrawPlugin(Star):
         _ratio_w, _ratio_h = self._resolve_ratio_size(_ratio_src, width, height)
         w = _ratio_w if _ratio_w is not None else (width or int(wf.get("default_width", 512) or 512))
         h = _ratio_h if _ratio_h is not None else (height or int(wf.get("default_height", 512) or 512))
+        # 诊断：宽高最终取值与来源。排查「默认宽高不是工作流配置的 / 宽高搞反」时看这行——
+        # 来源优先级：比例预设（draw_ratio 关键词命中）> 用户显式传参 > 工作流默认 > 512 兜底。
+        if _ratio_w is not None:
+            _wh_src = f"比例预设（关键词命中，覆盖工作流默认）"
+        elif width or height:
+            _wh_src = "用户显式传参"
+        else:
+            _wh_src = "工作流默认（default_width/height，未配置则兜底 512）"
+        logger.info(
+            f"【宽高】 决策：{_wh_src} -> {w}x{h}"
+            f"（比例命中={_ratio_w},{_ratio_h}；用户传参={width},{height}；"
+            f"工作流「{wf.get('name')!r}」默认={wf.get('default_width')},{wf.get('default_height')}）"
+        )
         # resolution_mode 决定宽高的注入范围（默认 single，与旧行为逐字一致）：
         #   single：仅注入 resolution_node；留空则自动探测「第一个」EmptyLatentImage
         #   all   ：注入「所有」EmptyLatentImage —— 两阶段串联工作流（如 anima 生图
