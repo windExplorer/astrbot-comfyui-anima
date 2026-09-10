@@ -86,8 +86,9 @@ function Add-ItemToZip($fsPath, $zipEntryPath) {
     if (Test-Path -PathType Container $fsPath) {
         # directory entry must end with /
         $null = $zip.CreateEntry($zipEntryPath + "/")
-        # recurse
-        Get-ChildItem $fsPath | ForEach-Object {
+        # recurse（跳过 Python 缓存：__pycache__ 目录与 .pyc/.pyo 文件。
+        # 本机若用 python -m py_compile 做过语法校验会生成这些，打进发布包属于污染）
+        Get-ChildItem $fsPath | Where-Object { $_.Name -ne "__pycache__" -and $_.Extension -notin @(".pyc", ".pyo") } | ForEach-Object {
             Add-ItemToZip $_.FullName ($zipEntryPath + "/" + $_.Name)
         }
     } else {

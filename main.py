@@ -2592,10 +2592,18 @@ class ComfyUIDrawPlugin(Star):
                 lines.append(f"【拆prompt】[DBG] {tag}段{i // 400}: {seg}")
             return lines
 
+        # 注：正则先算到变量里再进 f-string。3.12 之前 f-string 的表达式部分不允许出现
+        # 反斜杠（PEP 701 才放开），直接写 `f"...{re.search(r'\s', ...)}"` 会让 3.10/3.11 报
+        # SyntaxError、整个模块无法导入。同时这里修正原先误写成两道反斜杠（`\\s`）的问题，
+        # 与下方正式匹配（2605 行）保持一致的单反斜杠语义。
+        _dbg_has_neg = bool(re.search(r"negative\s*prompt\s*[:：]", text, re.IGNORECASE))
+        _dbg_has_avoid = bool(
+            re.search(r"(avoid\b|do not\b|respect[^.]*?exclusions\b)", text, re.IGNORECASE)
+        )
         logger.debug(
             f"【拆prompt】[DBG] 输入长度={len(text)} "
-            f"含Negative标记={bool(re.search(r'negative\\s*prompt\\s*[:：]', text, re.IGNORECASE))} "
-            f"含Avoid/DoNot软信号={bool(re.search(r'(avoid\\b|do not\\b|respect[^.]*?exclusions\\b)', text, re.IGNORECASE))}"
+            f"含Negative标记={_dbg_has_neg} "
+            f"含Avoid/DoNot软信号={_dbg_has_avoid}"
         )
         for ln in _dbg_block("原始输入", text):
             logger.debug(ln)

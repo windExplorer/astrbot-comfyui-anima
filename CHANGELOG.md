@@ -2,6 +2,12 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.11.10（修复：Python 3.10 / 3.11 下整个模块无法导入）
+
+- **修复致命语法兼容问题**：`_do_draw` 前的调试日志用了 `f"...{re.search(r'negative\\s*prompt\\s*[:：]', ...)}"` —— f-string 的表达式部分**含反斜杠**，而 Python 3.12 之前不允许（PEP 701 才放开）。这导致在 **Python 3.10 / 3.11** 上 `main.py` 直接 `SyntaxError: f-string expression part cannot include a backslash`、**插件整体无法导入**（3.12+ 才能跑，故此前未暴露）。现把正则先算到变量再进 f-string。
+- 顺带修正原写法把正则反斜杠误写成两道（`\\s` / `\\b`，语义变成匹配字面反斜杠）的问题，与紧随其后的正式匹配（单反斜杠 `\s` / `\b`）保持一致。
+- 已用 Python 3.10 / 3.11 / 3.12 对全项目 27 个 `.py` 文件做 `-W error::SyntaxWarning` 严格编译，全部零错误零警告。
+
 ## v5.11.9（修复：danbooru 标签链路的三个高频错误）
 
 针对「该用 danbooru MCP 却去抓官网」「括号不转义」「拿到角色 tag 后乱补外貌」三类反复出现的问题：
