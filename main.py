@@ -3331,6 +3331,23 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             _eff_timeout = _global_to
 
+        # 第三方插件调用（source 非空，如伴侣插件）：提示词先经 LLM 整理，与 ComfyUI 主链路同策略。
+        # 此前平台链路完全跳过整理——伴侣的结构化描述（夹带 [User image request] 等标记、中英混杂）
+        # 原样进平台，出图崩坏。NAI 为动漫底模 → 改写为 Anima/Danbooru 英文标签；
+        # 其它平台（openai 兼容 / 自定义）→ 清理结构标记、统一为写实中文描述。
+        # 原生调用（source 为空）不加工；整理失败保留原提示词，不阻断出图。
+        if source and (positive or "").strip():
+            try:
+                if ptype == "nai":
+                    _rewritten = await self._rewrite_to_anima_llm(positive)
+                else:
+                    _rewritten = await self._rewrite_to_real_llm(positive)
+                if _rewritten and _rewritten.strip():
+                    logger.info(f"【平台】 第三方插件调用，提示词已经 LLM 整理（{ptype}）: {_rewritten[:80]}")
+                    positive = _rewritten.strip()
+            except Exception as e:
+                logger.warning(f"【平台】 LLM 整理失败，保留原提示词: {e}")
+
         # 提交生成
         try:
             try:
