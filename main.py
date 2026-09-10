@@ -344,6 +344,32 @@ _KV_SECRET_RE = re.compile(
 )
 _REQ_ID_RE = re.compile(r"(请求\s*id|request[_-]?id)\s*[:：]?\s*[A-Za-z0-9\-_]{6,}", re.I)
 
+# danbooru 角色/作品 tag 的括号兜底：LLM 常写成 `belle (zenless zone zero)`，而 CLIP 把
+# `(` `)` 当注意力权重符号，不转义会被拆坏/权重大乱，需补成 `belle \(zenless zone zero\)`。
+# 窄匹配——只命中「小写标签名 + 空格 + 括号内容（不含冒号）」，不误伤 CLIP 权重写法 `(tag:1.2)`。
+_DANBOORU_PAREN_TAG_RE = re.compile(
+    r"(?<![\\\w>])([a-z][a-z0-9_\-]*)\s+\((?![^()]*:)([a-z0-9_\-]+(?:\s+[a-z0-9_\-]+)*)\)"
+)
+
+
+def _escape_danbooru_tag_parens(text: str) -> str:
+    """把 danbooru 角色/作品 tag 的未转义括号补成 CLIP 安全写法（已转义的保持原样）。
+
+    仅当「标签名含下划线（danbooru 风格，如 hatsune_miku）」或「括号内是多词作品名
+    （如 zenless zone zero）」时才转义，避免把普通英文短语（如 `cat (sitting)`）误转义成
+    会在画面里显出字面括号的写法。
+    """
+    if not text:
+        return text
+
+    def _rep(m: "re.Match") -> str:
+        tag, inner = m.group(1), m.group(2)
+        if "_" in tag or " " in inner:
+            return f"{tag} \\({inner}\\)"
+        return m.group(0)
+
+    return _DANBOORU_PAREN_TAG_RE.sub(_rep, text)
+
 
 def _sanitize_exc_text(text, limit: int = 200) -> str:
     """打码异常文本里的密钥/令牌/请求 id，压平空白并截断。"""
@@ -3825,6 +3851,16 @@ class ComfyUIDrawPlugin(Star):
             if translated:
                 positive = translated
                 logger.info(f"Anima 提示词翻译结果: {positive}")
+
+        # danbooru 角色/作品 tag 的括号兜底（anima 工作流）：LLM 常把角色 tag 写成
+        # `belle (zenless zone zero)`，而 CLIP 把 `(` `)` 当注意力权重符号，不转义会被拆坏、
+        # 权重大乱。这里做窄匹配补转义（只命中「标签名 + 空格 + 无冒号括号内容」这种 danbooru
+        # 角色 tag 形态，不误伤 `(tag:1.2)` 这类 CLIP 权重写法），保证进模型的写法是安全的 `\( \)`。
+        if wf.get("is_anima") and positive:
+            _escaped_pos = _escape_danbooru_tag_parens(positive)
+            if _escaped_pos != positive:
+                logger.info(f"【提示词】danbooru 角色 tag 括号已兜底转义: {_escaped_pos[:120]}")
+                positive = _escaped_pos
 
         # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词。
         # 固定提示词或走 JSON 原值（positive 为空）时跳过，避免污染固定配方。
@@ -7951,14 +7987,28 @@ class ComfyUIDrawPlugin(Star):
              ★这条后缀规则【只用于同一角色的多个版本之间二选一】，绝不能反过来成为「名字不带数字就不启用」的理由——
              库里任何名称形式的 LoRA 只要语义匹配就该启用。
            - 命中 → 把 LoRA 名填进 loras 参数，**不要**再用 danbooru 标签重复描述该角色外形。
-        2. **第二优先：danbooru 标签**：LoRA 没有匹配时，调用 danbooru MCP（「Danbooru tag search / Danbooru 标签搜索」）
+        2. **第二优先：danbooru MCP（查标签的唯一正确来源）**：LoRA 没有匹配时，调用工具列表里的 danbooru MCP
            查该角色/作品的标准标签（角色 tag + 作品 tag），把准确英文标签填进 prompt。
-        3. **第三优先：联网搜索**：danbooru 也查不到时，若你有网页搜索类工具，搜一下「XX 动漫角色 / XX danbooru tag」辅助确认写法。
+           ★先看一遍自己的工具列表确认该 MCP 存在；工具名可能是英文或中文，常见如 `Danbooru tag search` /
+           `Danbooru 标签搜索` / `danbooru_tag_search` / `search_danbooru_tags` 等（名字含 danbooru / tag / 标签 的
+           MCP 工具都属于它）——**只调它**。
+           ⛔【禁止】用联网搜索 / 网页抓取去 danbooru 官网或镜像站查标签：官网会限流 / 403、网页格式也易错，
+           这属于错误行为；danbooru MCP 才是唯一正确来源。
+        3. **第三优先：仅当确认没有 danbooru MCP 时**：确认工具列表里确实不存在任何 danbooru MCP 工具后，
+           才退而用你自己的知识写标准标签（仍须遵守下一条「不补外观」规则）；**不要**为此去抓取 danbooru 网页。
         4. **都不命中 → 不出图**：明确告诉用户「没找到『XX』相关的 LoRA 或标签，没法画」，绝不要凭记忆瞎编标签硬画一个可能完全不对的东西。
-        5. **用具体角色/作品 tag 时不要画蛇添足**：角色 tag（如 hatsune_miku）+ 作品 tag（如 vocaloid）已锁定角色全部设定，
-           **禁止**再叠加 blue_hair、long_hair、white_dress 之类的外观描写标签，否则会与角色原设定冲突导致画错。
-           只有当用户**额外明确要求改变**某外观（如「把头发染成粉色」）时才添加对应标签。没有具体角色、只是泛化人物时，正常按需写外观标签即可。
-        ★动漫标签翻译（重要）：当用户用中文描述动漫/二次元画面，需要把中文翻译/改写为英文 Danbooru 标签时，若你当前的工具列表里有「Danbooru tag search / Danbooru 标签搜索」这类 MCP 工具，**务必优先调用它**去查询/确认标准 Danbooru 标签，再把准确的英文标签填进 prompt，不要仅凭记忆臆造标签、也不要原样透传中文。只有当没有该类 MCP 工具时才退而直接用你自己的翻译能力改写为英文标签。
+        5. **用角色/作品 tag 时严禁画蛇添足补外观（最高频错误）**：角色 tag（如 hatsune_miku、belle \\(zenless zone zero\\)）
+           + 作品 tag（如 vocaloid、zenless_zone_zero）已锁定角色**完整**设定。**禁止**再叠加任何外观标签，包括：
+           发色 / 发型（blue_hair、long_hair、blonde…）、瞳色（blue_eyes…）、耳朵 / 角 / 尾巴 / 兽化特征
+           （cat_ears、horns、elf_ears、tail…）、服装 / 配饰 / 体型。★你凭记忆写的角色外貌**几乎一定是错的**——
+           真实案例：某角色本是绿发，模型却补了 white_hair，直接把角色画错。有角色 tag 时你的记忆一律不作为依据，
+           **拿不准就什么都不写**；写错的外观标签比不写有害得多。只有用户**额外明确要求改变**某外观
+           （如「把头发染成粉色」）时，才添加那一项对应标签。没有具体角色、只是泛化人物时，正常按需写外观标签即可。
+        ★动漫标签翻译（重要）：当用户用中文描述动漫/二次元画面，需要把中文翻译/改写为英文 Danbooru 标签时，
+           若工具列表里有 danbooru MCP（名称见第 2 条），**务必优先调用它**查询/确认标准标签，再把准确的英文标签填进 prompt；
+           不要仅凭记忆臆造、也不要原样透传中文，**更不要联网抓 danbooru 官网**。只有确认没有该类 MCP 工具时才用自己的翻译能力改写。
+           ★括号写法：danbooru 角色/作品 tag 里的 `(` `)` 在 CLIP 提示词里是注意力权重符号，必须写成 `\\(` `\\)`
+           （如 belle \\(zenless zone zero\\)）；MCP 返回什么就照抄什么，不要自行增删括号。
         不确定工作流时留空 workflow，插件会用默认；只有用户明确要某种画风且你有把握时才传 workflow 名称（不确定可先调 comfyui_workflows）。
         
         图生图工作流选择（重要）：当本次为图生图（附了参考图）时，工作流应填在 **img2img_workflow** 参数里，**不要**把文生图工作流名填进 workflow（文生图工作流往往没有图加载节点，无法做图生图会报错）。
@@ -10436,9 +10486,11 @@ class ComfyUIDrawPlugin(Star):
         - 动漫/二次元工作流（is_anima=true）：prompt 必须为英文标签化描述（如
           "1boy, handsome, anime style, sharp eyes, masterpiece"），不得输出中文。
           即使用户用中文描述变换意图，也要翻译改写为英文 Danbooru 风格标签，不要原样透传中文。
-          ★若你当前的工具列表里有「Danbooru tag search / Danbooru 标签搜索」这类 MCP 工具，
-          务必优先调用它查询/确认标准 Danbooru 标签后再填入 prompt，不要仅凭记忆臆造、也不要原样透传中文；
-          没有该类 MCP 工具时才退而用你自己的翻译能力改写。
+          ★若工具列表里有 danbooru MCP（名含 danbooru / tag / 标签，如 `Danbooru tag search` / `Danbooru 标签搜索`），
+          务必优先调用它查询/确认标准 Danbooru 标签后再填入 prompt（**这是唯一正确来源**），不要仅凭记忆臆造、也不要原样透传中文；
+          ⛔禁止联网抓取 danbooru 官网 / 镜像站查标签；确认没有该类 MCP 工具时才退而用你自己的翻译能力改写。
+          ★涉及具体角色时，只写「角色 tag + 作品 tag」，**禁止**再补发色 / 瞳色 / 耳朵 / 角等外观标签（你记忆里的角色外貌常是错的）；
+          括号写成 CLIP 安全形式 `\\(` `\\)`（如 belle \\(zenless zone zero\\)）。
         - 负向提示词（negative_prompt）同样遵循上述语言规则。
 
         工作流选择规则：

@@ -1,10 +1,10 @@
 """Danbooru 标签语义搜索客户端：把中文画面描述翻译为英文 Danbooru 标签。
 
 重要约定（与 ComfyUI/CLIP 提示词语法相关）：
-- 返回的标签串里，**括号 `(` `)` 会被反转义成 `\(` `\)`**。原因：在 ComfyUI/CLIP 的
+- 返回的标签串里，**括号 `(` `)` 会被反转义成 `\\(` `\\)`**。原因：在 ComfyUI/CLIP 的
   提示词里，`( )` 是「注意力权重」符号（如 `(cat:1.2)`），danbooru 角色/作品标签常带括号
   （如 `belle (zenless zone zero)`），不转义会被当成权重调节、把标签拆坏。转义后
-  `belle \(zenless zone zero\)` 才会被当作字面标签整体送进模型。
+  `belle \\(zenless zone zero\\)` 才会被当作字面标签整体送进模型。
 - 角色 / 作品 tag 已包含该角色完整外观设定（发色、瞳色、服装、体型等），调用方拿到后
   **不要**再叠加 `blue_hair` / `long_hair` / `white_dress` / `blue_eyes` 之类的通用外观标签，
   否则会与角色原设定冲突、覆盖角色形象；只有用户明确要改某外观时才追加。
@@ -18,7 +18,7 @@ _PAREN_RE = re.compile(r"(?<!\\)([()])")
 
 
 def _escape_parens(tag_str: str) -> str:
-    """把标签串里未转义的 `(` `)` 反转义成 `\(` `\)`，适配 ComfyUI/CLIP 提示词语法。"""
+    """把标签串里未转义的 `(` `)` 反转义成 `\\(` `\\)`，适配 ComfyUI/CLIP 提示词语法。"""
     if not tag_str:
         return ""
     return _PAREN_RE.sub(lambda m: "\\" + m.group(1), tag_str)
@@ -48,7 +48,7 @@ class DanbooruClient:
     async def search(self, query: str) -> str:
         """返回逗号分隔的标签串（优先 SFW 集合）。
 
-        返回的标签里括号已反转义（`(` `)` → `\(` `\)`），可直接安全送进 ComfyUI/CLIP
+        返回的标签里括号已反转义（`(` `)` → `\\(` `\\)`），可直接安全送进 ComfyUI/CLIP
         提示词（不转义会被当成注意力权重符号，拆坏 danbooru 角色/作品标签）。
         失败时返回空串。
         """
