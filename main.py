@@ -3581,14 +3581,32 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【平台】 平台解析失败（回退 ComfyUI）: {_pe}")
             _plat = None
         # 用户/LLM 显式点名了平台却没走成（不存在/已停用/无白名单权限）：
-        # 给一句可见提示，不再纯静默回退（否则用户只会觉得「bot 没理我」）
+        # 给一句可见提示，不再纯静默回退（否则用户只会觉得「bot 没理我」）。
+        # ★误填兜底：LLM 有时把「用XX画」里的 XX（其实是工作流名）也塞进 platform，
+        #   于是这里会误报「没找到平台」打扰用户（工作流其实已正确命中）。若该名字
+        #   本身能匹配到已配置的工作流（精确名称或别名），说明用户要的是工作流而非平台，
+        #   静默按 ComfyUI + 该工作流走，不打扰。
         _req_plat = (platform or "").strip()
+        _plat_name_is_wf = False
+        if _req_plat and _req_plat.lower() != "comfyui":
+            try:
+                _alias_t = self._alias_workflow_name(_req_plat)
+                _plat_name_is_wf = bool(self._find_workflow_by_name(_req_plat)) or bool(
+                    _alias_t and _alias_t.strip().lower() != _req_plat.lower()
+                )
+            except Exception:
+                _plat_name_is_wf = False
         if _plat is None and _req_plat and _req_plat.lower() != "comfyui":
-            await self._send(
-                event,
-                f"没找到可用的生图平台「{_req_plat}」（可能不存在、已停用或你不在该平台的使用白名单里），"
-                f"这次先用默认方式画。可用指令 /绘图平台 查看平台列表。",
-            )
+            if _plat_name_is_wf:
+                logger.info(
+                    f"【平台】 请求名「{_req_plat}」命中工作流（非平台），按 ComfyUI 工作流处理，跳过平台提示"
+                )
+            else:
+                await self._send(
+                    event,
+                    f"没找到可用的生图平台「{_req_plat}」（可能不存在、已停用或你不在该平台的使用白名单里），"
+                    f"这次先用默认方式画。可用指令 /绘图平台 查看平台列表。",
+                )
         if _plat is not None:
             async for _pn, _pp in self._do_draw_nai_style(
                 event, _plat, positive, negative, width, height, seed,
@@ -7984,7 +8002,7 @@ class ComfyUIDrawPlugin(Star):
                 此时传入筛选后的触发词（逗号分隔，必须来自 comfyui_loras 返回的 trigger_words）：保留角色/画风核心特征词，只剔除与用户要求冲突的词。★启用多个 LoRA 时，必须把所有启用 LoRA 的触发词合并后再筛选，绝不能只传其中一个 LoRA 的。★禁止传空字符串（宁可整词保留也不要全部剔除）。
             platform(string): 生图平台，可选。不传=使用管理员配置的默认平台（通常是 ComfyUI）。
                 ★「用XX」的消歧规则（重要，宁缺勿滥）：
-                ① 仅当 XX 明确指平台时才填本参数：用户说了「平台」二字、点名了平台名（如 agnes / 日日新 / nai）或平台类型（nai/openai/custom）。拿不准时**宁可不填 platform**——错误填写会导致「找不到平台」的打扰性提示。
+                ① 仅当 XX 明确指平台时才填本参数：用户说了「平台」二字、点名了平台名（如 agnes / 日日新 / nai）或平台类型（nai/openai/custom）。拿不准时**宁可不填 platform**——错误填写会导致「找不到平台」的打扰性提示。★若 XX 能在 comfyui_workflows 列表里命中（工作流名/别名），即使不确定，platform 也**必须留空**、只填 workflow（例如「用anime画」而 anime 是工作流名时：platform 留空、workflow=anime）。
                 ② 否则「用XX」按顺序找：先 comfyui_loras（查 LoRA，命中按底模选工作流，见 workflow 参数说明）→ 再 comfyui_workflows（查工作流）→ 都不命中留空走默认并简短告知。注意「来一张XX的图」「画个XX」这类点名角色/画风的请求不走本条，走上方「查找链」（LoRA → danbooru → 搜索 → 不出图）。
                 显示名匹配支持模糊（名称包含即命中、忽略大小写），也可传 comfyui / nai / openai / custom 类型名。
                 ★能力差异：NAI 类平台吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，请直接在提示词里写角色/画风标签）；OpenAI 类平台吃自然语言描述。管理员未配置任何第三方平台时不要传本参数。平台不存在/已停用/用户不在白名单时会回退 ComfyUI 并提示用户。
