@@ -2,6 +2,19 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.12.9（修复：独立 WebUI 配置页分区缺失——permissions/recall 掉进「其他」）
+
+问题：v5.12.7 新增的「权限」「撤回」只加了 schema 顶层分组，**没同步独立 WebUI 配置页的 `GROUP_META` 分区表**——该表没覆盖的顶层键全部掉进兜底的「其他」分区。且历史上已有一批键（已读回执、`draw_auto`、`special_features`、`image_caption`、`webui_standalone`、`lora_keyword_auto` 等）长期堆在「其他」。
+
+- 「权限」「撤回」成为与「工作流列表」「LoRA 列表」「出图行为」同级的独立分区；原「权限与图库」拆为「权限」+「图库」两个分区。
+- 历史遗留键全部归位，52 个顶层键 100% 覆盖，配置页不再出现「其他」：
+  - 已读回执（`draw_ack_*`）、图文消息（`image_caption`）、平台超时（`platform_gen_timeout`）、排队提示（`queue_hint_only_when_queued`）→「出图行为」；
+  - `draw_auto` → 独立分区「AI 对话自动出图」；`special_features` →「特殊功能」；
+  - `lora_keyword_auto` / `lora_outfit_filter` →「LoRA 列表」；`draw_ratio`、`default_comic_workflow` →「默认工作流」；
+  - `enable_llm_prompt` / `enable_llm_slots` / `llm_token_stats` / `llm_rewrite_timeout` →「AI 对话与 LLM」；
+  - `webui_standalone` 并入「WebUI 服务」（与分享 WebUI 同区）。
+- 分区表注释加警示：新增顶层配置键必须同步 `GROUP_META`，否则掉「其他」。
+
 ## v5.12.8（修复：纯符号关键字「-」一次拉起十几个 LoRA）
 
 现象：用户说「画 鸣潮卡提希娅，1girl, solo, …, off-shoulder kimono, …」，日志连续出现十几条 `【LoRA】 用户原话命中关键字「-」→「XX」，自动启用`——十几个不相干的 LoRA 全被挂上。

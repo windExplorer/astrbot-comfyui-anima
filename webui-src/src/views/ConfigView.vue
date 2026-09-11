@@ -87,18 +87,24 @@ const config = reactive<Record<string, any>>({});
 const expanded = ref<string[]>([]); // 默认全部收起
 const baseConfig: Record<string, any> = {};
 
-// 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）
+// 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）。
+// ★新增顶层配置键时必须同步加进对应分区的 keys（或新建分区），
+//   否则会掉进兜底的「其他」分区（v5.12.9 教训：permissions/recall 曾因此埋在「其他」里）。
 const GROUP_META = [
   { name: "服务器与模型", description: "ComfyUI 服务器连接配置", icon: "🖥️", keys: ["comfyui_servers"] },
   { name: "工作流列表", description: "各工作流的启用与参数（含封面/底模等）", icon: "🗂️", keys: ["workflows"] },
-  { name: "LoRA 列表", description: "LoRA 库的启用与分类", icon: "🧩", keys: ["loras"] },
-  { name: "默认工作流", description: "未指定工作流时的默认选择与风格优先级", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback"] },
-  { name: "AI 对话与 LLM", description: "AI 对话调用的 LLM 工具开关与专用模型", icon: "🤖", keys: ["enable_llm_tools", "llm_model"] },
+  { name: "LoRA 列表", description: "LoRA 库的启用、分类与关键字搜索等行为", icon: "🧩", keys: ["loras", "lora_keyword_auto", "lora_outfit_filter"] },
+  { name: "默认工作流", description: "未指定工作流时的默认选择、风格优先级与尺寸比例预设", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "default_comic_workflow", "img2img_fallback", "draw_ratio"] },
+  { name: "AI 对话与 LLM", description: "AI 对话调用的 LLM 工具开关、提示词/文字生成与 token 统计", icon: "🤖", keys: ["enable_llm_tools", "enable_llm_prompt", "enable_llm_slots", "llm_model", "llm_token_stats", "llm_rewrite_timeout"] },
   { name: "Anima 翻译", description: "Anima 工作流中文提示词翻译模式与接口", icon: "🌐", keys: ["translator_mode", "translate_llm_model", "translate_api", "danbooru"] },
-  { name: "出图行为", description: "出图等待、轮询、webp 转换与小报告等行为", icon: "🖼️", keys: ["draw_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "convert_webp_to_png", "show_draw_report", "log_workflow_json"] },
+  { name: "特殊功能", description: "表情包 / 图生表情包 / 漫画等特殊功能", icon: "✨", keys: ["special_features"] },
+  { name: "出图行为", description: "出图等待、轮询、已读回执、图文消息、webp 转换与小报告等行为", icon: "🖼️", keys: ["draw_timeout", "platform_gen_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "queue_hint_only_when_queued", "draw_ack_enabled", "draw_ack_emoji", "draw_ack_emoji_id", "draw_ack_emoji_type", "image_caption", "convert_webp_to_png", "show_draw_report", "log_workflow_json"] },
+  { name: "AI 对话自动出图", description: "AI 对话自动出图控制（防连发）", icon: "📮", keys: ["draw_auto"] },
   { name: "网络与代理", description: "外部网络访问（如 C 站抓取）的代理设置", icon: "🌍", keys: ["http_proxy", "civitai_api_key"] },
-  { name: "权限与图库", description: "发图白名单、绘图黑名单、生图次数限制与图片画廊归档", icon: "🔒", keys: ["allow_draw_users", "blacklist", "draw_limit", "gallery"] },
-  { name: "分享 WebUI", description: "用户级独立分享 WebUI（/萌绘 指令）", icon: "🔗", keys: ["share_webui"] },
+  { name: "权限", description: "发图白名单、绘图黑名单、生图次数限制与功能白名单（撤回 / NSFW 群）", icon: "🔒", keys: ["allow_draw_users", "blacklist", "draw_limit", "permissions", "nsfw_group_whitelist"] },
+  { name: "撤回", description: "出图消息撤回：自动定时撤回（按秒）与 /撤回 手动指令", icon: "↩️", keys: ["recall"] },
+  { name: "图库", description: "图片画廊归档与语义标签召回", icon: "🏞️", keys: ["gallery"] },
+  { name: "WebUI 服务", description: "独立 WebUI 服务与用户级分享（/萌绘 指令）", icon: "🔗", keys: ["webui_standalone", "share_webui"] },
   { name: "剧情模式", description: "剧情模式（仅私聊被动记录）的开关、触发词、白名单与摘要设置", icon: "🎬", keys: ["story_mode"] },
 ];
 
