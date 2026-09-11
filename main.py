@@ -432,6 +432,11 @@ def _coerce_llm_tool_value(ann, v):
                 return json.loads(s)
             except Exception:
                 return v
+        # 裸字符串传给了数组参数（弱模型常见）：包装成单元素列表。
+        # ★绝不能原样返回字符串——下游 `for item in loras` 会逐字符迭代，
+        #   把「娜娜莉2」拆成「娜」「莉」「2」（真实事故）。具体拆分交给解析方。
+        if ann is list:
+            return [s]
     return v
 
 
@@ -1574,11 +1579,27 @@ class ComfyUIDrawPlugin(Star):
           - "安魂曲"        → 权重 None（用配置默认权重）
           - "安魂曲:0.8"    → 权重 0.8（半角/全角冒号均可）
         与 /draw 指令的 --名称:权重 语义一致。返回 None 表示没有可用的 LoRA。
+
+        ★防御：弱模型常把 loras 传成**裸字符串**（如 "娜娜莉2"，或 "a,b"）而不是数组。
+        若直接 `for item in loras`，字符串会被逐字符迭代——「娜娜莉2」会变成
+        「娜」「莉」「2」三个 LoRA 名（真实事故，日志刷一堆「找不到该名称」）。
+        这里先把字符串包装成列表，再按分隔符把「挤在一个字符串里的多个 LoRA」拆开。
         """
         if not loras:
             return None
-        out: dict[str, float | None] = {}
+        # 裸字符串 → 单元素列表（字符串按分隔符再拆；非字符串原样保留）
+        if isinstance(loras, str):
+            loras = [loras]
+        _items: list = []
         for item in loras:
+            if isinstance(item, str):
+                _items.extend(
+                    p.strip() for p in re.split(r"[,，、;；\n\r]+", item) if p.strip()
+                )
+            else:
+                _items.append(item)
+        out: dict[str, float | None] = {}
+        for item in _items:
             # 对象形式（弱模型常传 [{"name": "残虹", "weight": 1.0}]）
             if isinstance(item, dict):
                 nm = str(item.get("name") or item.get("lora") or item.get("lora_name") or "").strip()
