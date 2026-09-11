@@ -96,7 +96,7 @@ const GROUP_META = [
   { name: "LoRA 列表", description: "LoRA 库的启用、分类与关键字搜索等行为", icon: "🧩", keys: ["loras", "lora_keyword_auto", "lora_outfit_filter"] },
   { name: "默认工作流", description: "未指定工作流时的默认选择、风格优先级与尺寸比例预设", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "default_comic_workflow", "img2img_fallback", "draw_ratio"] },
   { name: "AI 对话与 LLM", description: "AI 对话调用的 LLM 工具开关、提示词/文字生成与 token 统计", icon: "🤖", keys: ["enable_llm_tools", "enable_llm_prompt", "enable_llm_slots", "llm_model", "llm_token_stats", "llm_rewrite_timeout"] },
-  { name: "Anima 翻译", description: "Anima 工作流中文提示词翻译模式与接口", icon: "🌐", keys: ["translator_mode", "translate_llm_model", "translate_api", "danbooru"] },
+  { name: "Anima 翻译", description: "Anima 工作流中文提示词翻译模式、兜底与接口", icon: "🌐", keys: ["translator_mode", "translate_fallback_mode", "translate_llm_model", "translate_api", "danbooru"] },
   { name: "特殊功能", description: "表情包 / 图生表情包 / 漫画等特殊功能", icon: "✨", keys: ["special_features"] },
   { name: "出图行为", description: "出图等待、轮询、已读回执、图文消息、webp 转换与小报告等行为", icon: "🖼️", keys: ["draw_timeout", "platform_gen_timeout", "queue_extra_timeout", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "queue_hint_only_when_queued", "draw_ack_enabled", "draw_ack_emoji", "draw_ack_emoji_id", "draw_ack_emoji_type", "image_caption", "convert_webp_to_png", "show_draw_report", "log_workflow_json"] },
   { name: "AI 对话自动出图", description: "AI 对话自动出图控制（防连发）", icon: "📮", keys: ["draw_auto"] },

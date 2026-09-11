@@ -652,6 +652,13 @@
     "default": "",
     "_special": "select_provider"
   },
+  "translate_fallback_mode": {
+    "type": "string",
+    "description": "翻译兜底模式（主翻译无结果/失败时）",
+    "hint": "主翻译模式（translator_mode 或工作流级覆盖）没有返回结果（如 Danbooru 搜不到标签）、或调用失败时，自动改用此模式再翻译一次。可选：off（关闭兜底，保留原文）/ danbooru / llm / api；与主模式相同时视为关闭。主备都失败才保留原文。",
+    "default": "off",
+    "options": ["off", "danbooru", "llm", "api"]
+  },
   "llm_rewrite_timeout": {
     "type": "int",
     "description": "LLM 改写/翻译超时（秒）",

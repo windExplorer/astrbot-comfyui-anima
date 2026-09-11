@@ -2231,12 +2231,23 @@ class ComfyUIDrawPlugin(Star):
             parts.pop()
         return parts
 
-    async def _translate_segment(self, wf: dict | None, seg: str) -> str:
-        """用指定翻译模式翻译单个提示词片段，返回英文标签串。
+    def _resolve_fallback_mode(self, primary: str) -> str:
+        """解析翻译兜底模式（translate_fallback_mode）。
 
-        抛异常时由调用方决定是否回退。seg 应为含中文的片段。
+        off / 非法值 / 与主模式相同 → 返回空串（不兜底），避免同一模式重试自己。
         """
-        mode = self._resolve_translator_mode(wf)
+        fm = (self._cfg("translate_fallback_mode", "") or "").strip().lower()
+        if fm not in ("danbooru", "llm", "api"):
+            return ""
+        return fm if fm != primary else ""
+
+    async def _translate_segment_by_mode(
+        self, wf: dict | None, seg: str, mode: str
+    ) -> str:
+        """按指定模式翻译单个片段。
+
+        danbooru 搜不到标签返回空串（供调用方触发兜底）；配置缺失/网络失败抛异常。
+        """
         if mode == "llm":
             return await self._translate_llm(seg)
         if mode == "api":
@@ -2252,9 +2263,49 @@ class ComfyUIDrawPlugin(Star):
         # 注：danbooru.search 已对标签里的括号反转义（\( \)），可直接安全进 CLIP 提示词；
         # 且角色/作品 tag 已含完整外观设定，调用方（含 LLM 工具链）不要重复叠加
         # blue_hair / white_dress 等外观标签，以免覆盖角色原形象。
-        if tags and self._danbooru_cfg().get("append_original"):
-            return f"{seg}, {tags}"
-        return tags or seg
+        if tags:
+            if self._danbooru_cfg().get("append_original"):
+                return f"{seg}, {tags}"
+            return tags
+        return ""
+
+    async def _translate_segment(
+        self, wf: dict | None, seg: str, use_fallback: bool = True
+    ) -> str:
+        """用指定翻译模式翻译单个提示词片段，返回英文标签串。
+
+        主模式（工作流级 translator_mode > 全局 > danbooru 兼容）无结果
+        （如 Danbooru 搜不到标签、LLM 返回空）或调用失败时，若配置了
+        translate_fallback_mode 且与主模式不同，自动用兜底模式再翻一次；
+        主备都失败则返回原片段（保留中文，绝不阻断出图）。
+        use_fallback=False 时关闭兜底并让异常原样抛出（translate_test 调试用，
+        需要拿到真实错误）。
+        """
+        mode = self._resolve_translator_mode(wf)
+        primary_out = ""
+        try:
+            primary_out = await self._translate_segment_by_mode(wf, seg, mode)
+        except Exception as e:
+            if not use_fallback:
+                raise
+            logger.warning(f"【翻译】 主模式 {mode} 翻译片段「{seg}」失败: {e}")
+        if primary_out.strip():
+            return primary_out
+        if use_fallback:
+            fb = self._resolve_fallback_mode(mode)
+            if fb:
+                try:
+                    fb_out = await self._translate_segment_by_mode(wf, seg, fb)
+                    if fb_out.strip():
+                        logger.info(
+                            f"【翻译】 主模式 {mode} 无结果，片段「{seg}」已用兜底 {fb} 翻译"
+                        )
+                        return fb_out
+                except Exception as e:
+                    logger.warning(
+                        f"【翻译】 兜底模式 {fb} 翻译片段「{seg}」也失败，保留原文: {e}"
+                    )
+        return seg
 
     async def _llm_refine_prompt(
         self, wf: dict, positive: str, source: str, trace_id: str = ""
@@ -2355,7 +2406,8 @@ class ComfyUIDrawPlugin(Star):
         wf = {"translator_mode": mode}  # 用空工作流 + 指定模式覆盖
         start = time.time()
         try:
-            result = await self._translate_segment(wf, text)
+            # 调试入口：关闭兜底并让异常抛出，如实报告该模式本身的结果/错误。
+            result = await self._translate_segment(wf, text, use_fallback=False)
             return {
                 "ok": True,
                 "mode": mode,

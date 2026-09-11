@@ -2,6 +2,16 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.12.10（新增：翻译兜底模式——主翻译无结果/失败时自动换备用翻译）
+
+需求：主翻译为 Danbooru 时经常搜不到标签（返回空 → 片段保留中文原样进提示词），需要一个备用翻译兜底。
+
+- 新增顶层配置 `translate_fallback_mode`（Anima 翻译分区）：可选 `off`（默认，关闭兜底）/ `danbooru` / `llm` / `api`。
+- 触发条件：主翻译模式（`translator_mode` 或工作流级覆盖）**无结果**（Danbooru 搜不到、LLM 返回空）或**调用失败**（未配置、超时、网络错误）时，自动改用兜底模式再翻译一次；兜底也失败才保留原文（与既有"绝不阻断出图"一致）。
+- 主备相同视为关闭（不对同一模式重试自己）；兜底产生的结果照常写入翻译缓存，同一片段下次直接命中。
+- 实现重构：`_translate_segment` 拆出按模式执行的 `_translate_segment_by_mode`（danbooru 无标签现在返回空串供兜底判定），兜底逻辑在 `_translate_segment` 内统一处理，任何情况不抛异常；WebUI 的翻译测试入口（`translate_test`）传 `use_fallback=False` 保持原行为（如实报告单模式错误）。
+- 新顶层键已同步进独立 WebUI 分区表「Anima 翻译」。
+
 ## v5.12.9（修复：独立 WebUI 配置页分区缺失——permissions/recall 掉进「其他」）
 
 问题：v5.12.7 新增的「权限」「撤回」只加了 schema 顶层分组，**没同步独立 WebUI 配置页的 `GROUP_META` 分区表**——该表没覆盖的顶层键全部掉进兜底的「其他」分区。且历史上已有一批键（已读回执、`draw_auto`、`special_features`、`image_caption`、`webui_standalone`、`lora_keyword_auto` 等）长期堆在「其他」。
