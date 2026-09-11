@@ -1149,6 +1149,12 @@
       }
     ]
   },
+  "nsfw_group_whitelist": {
+    "type": "text",
+    "description": "允许发送 NSFW 的群白名单",
+    "hint": "填写允许发出 NSFW 图片的群号，每行一个（也支持逗号分隔）。★默认留空 = 所有群都拦截 NSFW（图片仍会生成并入库，只是不往群里发）；名单内的群不做 NSFW 拦截、照常发图。私聊始终不受影响。请只在确认合规的群填写。",
+    "default": ""
+  },
   "allow_draw_users": {
     "type": "object",
     "description": "发图白名单（按群 / 按人）",

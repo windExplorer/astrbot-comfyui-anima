@@ -3394,6 +3394,35 @@ class ComfyUIDrawPlugin(Star):
     # 会卡住整个 bot），发送前群聊再跑一遍。现在只跑一次（to_thread），结果同时
     # 供归档打标（archive_image 的 nsfw_pre 参数）与群聊拦截复用。
 
+    def _nsfw_group_allowed(self, event) -> bool:
+        """当前群是否在「允许发 NSFW 的群白名单」（配置 nsfw_group_whitelist）内。
+
+        命中 → 群聊不再拦截 NSFW 图，正常发出；留空/未命中 → 按原策略拦截。
+        私聊永远放行（调用方已用 _is_private_event 排除，不进本判断）。
+        """
+        try:
+            raw = str(self._cfg("nsfw_group_whitelist", "") or "").strip()
+        except Exception:
+            return False
+        if not raw:
+            return False
+        gid = ""
+        try:
+            get_g = getattr(event, "get_group_id", None)
+            if callable(get_g):
+                gid = str(get_g() or "").strip()
+        except Exception:
+            gid = ""
+        if not gid:
+            return False
+        try:
+            allowed = {
+                x.strip() for x in re.split(r"[\s,，;；、\n\r]+", raw) if x.strip()
+            }
+        except Exception:
+            return False
+        return gid in allowed
+
     def _nsfw_should_detect(self, event) -> bool:
         """是否需要对本图做 NSFW 检测：群聊一律检测（发送拦截），私聊仅在图库
         NSFW 打标开启时检测（供归档打标）。"""
@@ -3448,6 +3477,7 @@ class ComfyUIDrawPlugin(Star):
         sampler: str | None = None,
         noise_schedule: str | None = None,
         artist: str = "",
+        stats: dict | None = None,
     ):
         """第三方平台（NAI / OpenAI 兼容 / 自定义）出图。yield 契约与 _do_draw 一致。
         cfg/steps/sampler/noise_schedule/artist 为 LLM 工具可临时覆盖的平台生图参数（None/空=用平台 defaults）。"""
@@ -3690,12 +3720,20 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(f"【图库】 平台图归档失败（不影响发送）: {_ge}")
 
             # 群聊 NSFW 拦截（检测结果已在发送前跑过一次，这里直接复用判定）
-            if not self._is_private_event(event) and _nsfw_pre and _nsfw_pre[0]:
+            # 白名单内的群放行（nsfw_group_whitelist）。
+            if (
+                not self._is_private_event(event)
+                and not self._nsfw_group_allowed(event)
+                and _nsfw_pre
+                and _nsfw_pre[0]
+            ):
                 _nsfw_score = _nsfw_pre[1]
                 _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
                 _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_pre[2] else ""
                 logger.warning(f"【NSFW】 平台出图被拦截{_sc}{_reason} platform={ptype} path={_send_img_path}")
                 await self._send(event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。{_reason}")
+                if stats is not None:
+                    stats["nsfw_blocked"] = int(stats.get("nsfw_blocked", 0)) + 1
                 continue
 
             # 发送（图文消息 caption 与 ComfyUI 链路同构）
@@ -3744,7 +3782,13 @@ class ComfyUIDrawPlugin(Star):
         steps: int | None = None,
         sampler: str | None = None,
         noise_schedule: str | None = None,
+        stats: dict | None = None,
     ):
+        # stats：可选的可变字典，供调用方统计本次出图结果。当前用于上报
+        # 「被 NSFW 拦截的图数」——让工具层能把「图已生成、只是被策略拦下」与
+        # 「真的出图失败」区分开，避免模型以为失败而反复重试/换提示词重画。
+        if stats is not None:
+            stats.setdefault("nsfw_blocked", 0)
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
         # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
         _ratio_src = positive or ""
@@ -3833,6 +3877,7 @@ class ComfyUIDrawPlugin(Star):
                 user_id=user_id, user_name=user_name,
                 cfg=cfg, steps=steps, sampler=sampler, noise_schedule=noise_schedule,
                 artist=artist,
+                stats=stats,
             ):
                 yield _pn, _pp
             return
@@ -4906,7 +4951,11 @@ class ComfyUIDrawPlugin(Star):
                             _nsfw_log = f"{_nsfw_score:.2f}" + ("(检测不可用)" if not _nsfw_avail else "")
                         else:
                             _nsfw_log = "(检测不可用)" if not _nsfw_avail else "(无分数)"
-                        if not self._is_private_event(event) and _is_nsfw:
+                        if (
+                            not self._is_private_event(event)
+                            and not self._nsfw_group_allowed(event)
+                            and _is_nsfw
+                        ):
                             _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
                             _reason = "（检测不可用，已按最严策略拦截）" if not _nsfw_avail else ""
                             logger.warning(
@@ -4921,6 +4970,8 @@ class ComfyUIDrawPlugin(Star):
                             # 标记被拦截：不发送、不入图库、不 yield 图片，但继续走
                             # 后续「绘图结束」日志与操作日志（记录为拦截），多图时跳到下一张。
                             _nsfw_blocked = True
+                            if stats is not None:
+                                stats["nsfw_blocked"] = int(stats.get("nsfw_blocked", 0)) + 1
                     # ── 图文消息：把配文 / 出图报告与图片合成【一条】消息 ──────────
                     # 必须在发图前算好（旧逻辑是发图后单独发一条）。报告并入后不再重复发送。
                     _report_merged = False
@@ -7039,7 +7090,11 @@ class ComfyUIDrawPlugin(Star):
                     return False
             # NSFW 护栏：打上了 NSFW 标签的图片禁止发到群聊（私聊可发）。
             # 跨群取图（如「把初音未来那张发我」）同样受此约束，避免涩图外泄到群。
-            if row.get("nsfw") and not self._is_private_event(event):
+            if (
+                row.get("nsfw")
+                and not self._is_private_event(event)
+                and not self._nsfw_group_allowed(event)
+            ):
                 _score = row.get("nsfw_score")
                 _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
                 await self._send(
@@ -8720,6 +8775,8 @@ class ComfyUIDrawPlugin(Star):
         # 没发出去：用户看不到图反复催，重试又被单轮闸门按「已出图」拦回。
         # 现在如实统计，发送成功才计「本轮已出图」，失败由返回值如实告知模型。
         _send_fail = 0
+        # 出图结果统计：当前用于识别「图已生成但被 NSFW 拦下」——这不属于失败。
+        _draw_stats: dict = {}
         for _item in _plan:
             if _remain_items:
                 # 已达单批上限，后续计划全部转入后台续画，避免触发框架超时取消
@@ -8782,6 +8839,7 @@ class ComfyUIDrawPlugin(Star):
                 # 图文消息：配文只加在【第一张】图上（还没出过图 = 这是第一张），
                 # 多张时避免同一句话被重复 N 遍。
                 caption=(caption if not img_paths else ""),
+                stats=_draw_stats,
             ):
                 if p:
                     img_paths.append(p)
@@ -8802,6 +8860,8 @@ class ComfyUIDrawPlugin(Star):
                         _send_fail += 1
                         logger.warning(f"【出图·发送失败】 图片已生成但 event.send 失败: {_e}")
 
+        # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
+        _nsfw_blocked_n = int(_draw_stats.get("nsfw_blocked", 0) or 0)
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析。
@@ -8859,9 +8919,31 @@ class ComfyUIDrawPlugin(Star):
                 f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
                 f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
                 + (_max_hint or "")
+                + (
+                    f"（另有 {_nsfw_blocked_n} 张已生成但被 NSFW 内容策略拦截、未发出，"
+                    f"这不是失败，无需重试。）"
+                    if _nsfw_blocked_n
+                    else ""
+                )
             )
         # 一张都没出：若仍有剩余要画（极少见，如软耗时预算设得过小导致一张都来不及出），
         # 仍转后台续画，不记后端失败以免模型空转重试；其余情况记一次后端失败。
+        # 一张都没出，但图确实生成过、只是被 NSFW 策略拦下 → 这不是失败。
+        # ★必须计「本轮已出图」：否则模型会以为失败，换 prompt / 换 seed 反复重画，
+        #   表现为「自动重试 / 自动纠错」的死循环。
+        if _nsfw_blocked_n > 0:
+            plugin._draw_run_hit(event)
+            logger.info(
+                f"【NSFW】 本次出图全部被拦截（{_nsfw_blocked_n} 张），按「已完成」收尾，"
+                f"不计失败、不触发重试"
+            )
+            return (
+                f"⚠️ 图片已经生成成功，但被 NSFW 内容策略拦截、没有发到聊天窗口"
+                f"（共 {_nsfw_blocked_n} 张；插件已单独告知用户，"
+                f"用户可在私聊用「/图库 取图」取到最近生成的图）。"
+                f"【本次生图流程已正常结束：不要重试、不要改提示词重画、也不要改用其它工具发图】；"
+                f"请用一句话自然收尾（例如告诉用户这张没过审、换个更温和的描述再试）。"
+            )
         if _remain_items:
             try:
                 asyncio.create_task(self._draw_continue(
@@ -10899,6 +10981,8 @@ class ComfyUIDrawPlugin(Star):
         _seq2 = 0
         # 同 llm_draw：主动发图失败的张数，用于如实回传「图已生成但没发出去」。
         _send_fail2 = 0
+        # 同上：识别「图已生成但被 NSFW 拦下」——不属于失败。
+        _draw_stats2: dict = {}
         for _item2 in _plan2:
             _positive2, _parsed_neg2 = plugin._split_external_prompt(_item2["prompt"])
             if not (_positive2 or "").strip():
@@ -10931,6 +11015,7 @@ class ComfyUIDrawPlugin(Star):
                 source=source,
                 # 图文消息：配文只加在【第一张】图上，多张时避免同一句话重复 N 遍
                 caption=(caption if not img_paths else ""),
+                stats=_draw_stats2,
             ):
                 if p:
                     img_paths.append(p)
@@ -10948,6 +11033,8 @@ class ComfyUIDrawPlugin(Star):
                         _send_fail2 += 1
                         logger.warning(f"【出图·发送失败】 comfyui_img2img 图已生成但 event.send 失败: {_e}")
 
+        # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
+        _nsfw_blocked_n2 = int(_draw_stats2.get("nsfw_blocked", 0) or 0)
         if img_paths:
             if is_companion:
                 # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析。
@@ -10985,6 +11072,27 @@ class ComfyUIDrawPlugin(Star):
                 f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
                 f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
                 + (_max_hint2 or "")
+                + (
+                    f"（另有 {_nsfw_blocked_n2} 张已生成但被 NSFW 内容策略拦截、未发出，"
+                    f"这不是失败，无需重试。）"
+                    if _nsfw_blocked_n2
+                    else ""
+                )
+            )
+        # 一张都没出，但图确实生成过、只是被 NSFW 策略拦下 → 这不是失败。
+        # ★必须计「本轮已出图」：否则模型会以为失败而反复重试。
+        if _nsfw_blocked_n2 > 0:
+            plugin._draw_run_hit(event)
+            logger.info(
+                f"【NSFW】 本次图生图全部被拦截（{_nsfw_blocked_n2} 张），按「已完成」收尾，"
+                f"不计失败、不触发重试"
+            )
+            return (
+                f"⚠️ 图片已经生成成功，但被 NSFW 内容策略拦截、没有发到聊天窗口"
+                f"（共 {_nsfw_blocked_n2} 张；插件已单独告知用户，"
+                f"用户可在私聊用「/图库 取图」取到最近生成的图）。"
+                f"【本次生图流程已正常结束：不要重试、不要改提示词重画、也不要改用其它工具发图】；"
+                f"请用一句话自然收尾（例如告诉用户这张没过审、换个更温和的描述再试）。"
             )
         # 一张都没出：记一次后端失败（受失败重试额度约束），仍返回文本让模型收尾。
         plugin._draw_run_fail(event, kind="backend")
