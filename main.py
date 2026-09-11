@@ -2526,6 +2526,28 @@ class ComfyUIDrawPlugin(Star):
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
 
     @staticmethod
+    def _msg_has_image_comp(comp) -> bool:
+        """判断消息组件是否是图片/卡片/引用（含引用本组件即视为可能含图）。
+
+        用于消息前置取图钩子的短路：纯文本消息直接跳过，不浪费提取与日志。
+        """
+        t_raw = getattr(comp, "type", "")
+        ct = getattr(t_raw, "value", None) or getattr(t_raw, "name", None) or str(t_raw)
+        if isinstance(comp, Image) or ct in ("Image", "ComponentType.Image"):
+            return True
+        if (CardImage is not None and isinstance(comp, CardImage)) or ct in (
+            "CardImage",
+            "ComponentType.CardImage",
+        ):
+            return True
+        if (Reply is not None and isinstance(comp, Reply)) or ct in (
+            "Reply",
+            "ComponentType.Reply",
+        ):
+            return True
+        return False
+
+    @staticmethod
     async def _extract_images(event: AstrMessageEvent) -> list[str]:
         """从消息事件中提取所有图片的本地路径，用于图生图。支持多种来源：
         - 消息中直接附带的图片（含「文字 + 图片」混合、纯图片、指令 + 图片）
@@ -2534,7 +2556,7 @@ class ComfyUIDrawPlugin(Star):
         每张图都会打印来源与最终路径；单张失败不影响其它图。
         """
         comps = list(event.get_messages())
-        logger.info(
+        logger.debug(
             f"【取图】 开始：消息组件共 {len(comps)} 个 -> "
             + ", ".join(str(getattr(c, "type", type(c).__name__)) for c in comps)
         )
@@ -8908,6 +8930,11 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if not sid:
                 return
+            # 纯文本消息（无图片/卡片/引用组件）不需要取图，提前跳过，
+            # 避免每条聊天消息都跑一遍图片提取、刷屏【取图】日志。
+            # 仅含图片/卡片或引用(Reply)的消息才进入提取，图生图兜底逻辑不受影响。
+            if not any(self._msg_has_image_comp(c) for c in event.get_messages()):
+                return
             imgs = await self._collect_user_images(event)
             self._record_user_images(sid, imgs)
             if imgs:
@@ -9138,6 +9165,10 @@ class ComfyUIDrawPlugin(Star):
                 return
             sid = getattr(event, "session_id", "") or ""
             if not sid:
+                return
+            # 纯文本消息（无图片/卡片/引用组件）不需要取图，提前跳过，
+            # 避免 AI 对话里每条文字消息都跑一遍图片提取、刷屏【取图】日志。
+            if not any(self._msg_has_image_comp(c) for c in event.get_messages()):
                 return
             imgs = await self._collect_user_images(event)
             self._record_user_images(sid, imgs)

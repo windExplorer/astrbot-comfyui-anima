@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.12.0（优化：取图钩子不再对每条消息空跑）
+
+- 消息前置取图钩子（`_capture_user_images_on_message` 每条消息 ALL 钩子、`_capture_user_images` on_agent_begin 钩子）原先对**每条用户消息**（含纯文本）都跑一遍图片提取，并用 `logger.info` 刷 `【取图】` 日志，刷屏且无意义。
+- 新增 `_msg_has_image_comp` 组件判定：消息不含 `Image`/`CardImage`/`Reply` 组件时直接短路 return，不取图、不打日志。
+- 含图片/卡片/引用的消息仍正常提取并缓存，`g_last_received`/`g_recent_user_images` 图生图兜底逻辑完全不受影响；带 `Reply` 的网络回退保留。
+- 顺带把 `_extract_images` 的「开始」扫描日志从 INFO 降为 DEBUG（仅诊断用）。
+
+注：按版本进位规则，v5.11.11 的 Z 已过 10，本版进位为 v5.12.0。
+
 ## v5.11.11（性能：缩短出图前的「前戏」——减少 LLM 往返与上下文体积）
 
 定位：danbooru / 翻译都部署在本地、很快；前戏慢的真正元凶是**模型的多次工具往返**以及**每次推理都重发的巨大工具说明**。本轮从「工具说明体积」「查询结果体积」「串行等待」三处下手：
