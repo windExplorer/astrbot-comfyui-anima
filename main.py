@@ -3389,6 +3389,22 @@ class ComfyUIDrawPlugin(Star):
             self._platform_store_inst = store
         return store
 
+    def _is_platform_name(self, name: str) -> bool:
+        """该名字是否是「已启用的第三方生图平台」（按 id 或名称匹配）。
+
+        供绘图指令把首 token 识别成平台（如 `/画 nai 1girl`）。命中即返回 True；
+        不存在 / 已停用 / comfyui 返回 False——这样不是平台名的词不会被吞掉，
+        仍按原逻辑当作提示词或工作流名处理。用户权限与白名单校验交给 _do_draw。
+        """
+        n = (name or "").strip()
+        if not n or n.lower() == "comfyui":
+            return False
+        try:
+            p = self._platform_store().get_platform(n)
+            return bool(p and p.get("enabled", True))
+        except Exception:
+            return False
+
     # ---- NSFW 检测（出图链路公共助手）----
     # 出图链路此前每张图跑两遍 onnx 推理：归档内部同步跑一遍（直接阻塞事件循环，
     # 会卡住整个 bot），发送前群聊再跑一遍。现在只跑一次（to_thread），结果同时
@@ -5638,7 +5654,7 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # 「画」系绘图指令（独立新增指令，非 /draw 别名）：
-    #   /画 [工作流名] 提示词   用指定/默认工作流（如 /画 真人 一个女孩）
+    #   /画 [平台名] [工作流名] 提示词   用指定/默认引擎（如 /画 真人 一个女孩、/画 nai 1girl）
     #   /绘图 /绘画 /生图 /画图 /作画 /画画 提示词   均用默认工作流
     # 语法约定：触发词后必须跟空格再写内容（触发词紧贴其它字不视为指令，
     # 例如「画风成熟点」不会触发），以规避把闲聊误判为绘图指令。
@@ -5654,8 +5670,11 @@ class ComfyUIDrawPlugin(Star):
         用法：
          /画 提示词 [...]                      用默认工作流（如 /画 一个女孩）
          /画 工作流名 提示词 [...]             用指定工作流（如 /画 真人 一个女孩）
+         /画 平台名 提示词 [...]               用指定第三方平台（如 /画 nai 1girl）
+         /画 平台名 工作流名 提示词 [...]      平台 + 工作流（如 /画 nai 动漫 1girl）
          /绘图|/绘画|/生图|/画图|/作画|/画画 提示词 [...]   用默认工作流（不解析工作流名）
         /画 触发词下工作流名可选：首 token 命中已知工作流才拆出作为工作流名，
+        /画 首 token 命中「已启用的第三方生图平台」时优先按平台处理（平台名从提示词里摘掉），
         否则一律视为提示词用默认工作流（如 /画 一个女孩 正常作画）。其余触发词
         （绘图/绘画/生图/画图/作画/画画）整句即为提示词。其余参数（--lora / --w /
         --h / --seed / --wf 等）与 /draw 完全一致。"""
@@ -5690,18 +5709,37 @@ class ComfyUIDrawPlugin(Star):
         #    这样「/画 一个女孩」能正常作画；「/画 真人 一个女孩」中「真人」命中才作为工作流名。
         MAX_WF_NAME_LEN = 10
         wf_specified = None
+        platform_arg = ""
         rest_for_parse = rest
         if allow_wf:
             parts = rest.split(None, 1)
             first_tok = parts[0]
             if len(first_tok) <= MAX_WF_NAME_LEN:
-                try:
-                    self._resolve_workflow(first_tok)
-                    wf_specified = first_tok
-                    rest_for_parse = parts[1] if len(parts) > 1 else ""
-                except ValueError:
-                    # 不是已知工作流：静默当作提示词，用默认工作流
+                # ① 先判「第三方生图平台」（如 /画 nai 1girl）：平台决定用哪个后端画，
+                #    优先于工作流名解析；命中后从提示词里摘掉它。
+                if self._is_platform_name(first_tok):
+                    platform_arg = first_tok
+                    rest = parts[1] if len(parts) > 1 else ""
                     rest_for_parse = rest
+                    # 平台之后仍可再跟一个 ComfyUI 工作流名（/画 nai 动漫 1girl）；
+                    # 不是已知工作流就整段当提示词。
+                    parts2 = rest.split(None, 1)
+                    if parts2 and len(parts2[0]) <= MAX_WF_NAME_LEN:
+                        try:
+                            self._resolve_workflow(parts2[0])
+                            wf_specified = parts2[0]
+                            rest_for_parse = parts2[1] if len(parts2) > 1 else ""
+                        except ValueError:
+                            rest_for_parse = rest
+                else:
+                    # ② 不是平台 → 按原逻辑尝试当工作流名
+                    try:
+                        self._resolve_workflow(first_tok)
+                        wf_specified = first_tok
+                        rest_for_parse = parts[1] if len(parts) > 1 else ""
+                    except ValueError:
+                        # 不是已知工作流：静默当作提示词，用默认工作流
+                        rest_for_parse = rest
         prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest_for_parse)
         # 工作流优先级：显式 --wf > 首 token 推断的工作流名 > 默认
         wf_name = wf_arg or wf_specified
@@ -5731,6 +5769,7 @@ class ComfyUIDrawPlugin(Star):
             init_images=images,
             is_img2img=is_img,
             denoise=denoise,
+            platform=platform_arg,
             explicit_default=(wf_name is None),
         ):
             yield out
@@ -6450,7 +6489,7 @@ class ComfyUIDrawPlugin(Star):
             "  · LoRA 预设：--安魂曲/预设1 表示用「安魂曲」的「预设1」提示词（在全局 LoRA 库里配置多套预设，名称与预设名之间用 / 分隔）。\n"
             "  · 若消息带了图片，自动切换为图生图模式并使用图生图默认工作流。\n"
             "/img2img 描述 [--wf 工作流] [...]  图生图（必须附带参考图）\n"
-            "/画 [工作流名] 提示词 [...]   用指定/默认工作流作画（如 /画 真人 一个女孩）；工作流名可选、以空格分隔，找不到该工作流时回复可用列表\n"
+            "/画 [平台名] [工作流名] 提示词 [...]   用指定/默认引擎作画（如 /画 真人 一个女孩、/画 nai 1girl）；平台名/工作流名均可选、以空格分隔，找不到时回复可用列表\n"
             "/绘图 | /绘画 | /生图 | /画图 | /作画 | /画画 [工作流名] 提示词 [...]   以上触发词首 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）；未命中则当提示词用默认工作流\n"
             "  · 无提示词工作流（工作流设置里「锁定提示词=开启」）：可只传图/引用图 + 工作流名，无需写提示词，如 [图片] /绘图 动漫转真人。图生图类锁定工作流必须附图。\n"
             "  · 以上任意中文触发词后跟「帮助/说明/怎么用」（如「画画帮助」「作图帮助」「绘图帮助」）也会显示本帮助。\n"
@@ -6470,7 +6509,7 @@ class ComfyUIDrawPlugin(Star):
         text = (
             "🎨 中文画图指令（简单版）：\n"
             "· 画图：直接说「画一张…」或「画…」，如「画一只猫」；也可说「用 xxx 风格画…」\n"
-            "· /画 [工作流名] 提示词   用默认或指定工作流画（如 /画 真人 一个女孩）\n"
+            "· /画 [平台名] [工作流名] 提示词   用默认或指定引擎画（如 /画 真人 一个女孩、/画 nai 1girl）\n"
             "· /绘图 /绘画 /生图 /画图 /作画 /画画 [工作流名] 提示词   首 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）\n"
             "· 无提示词工作流：可只传图/引用图 + 工作流名（无需提示词；图生图类必须附图）\n"
             "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
