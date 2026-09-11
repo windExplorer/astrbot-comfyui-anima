@@ -371,6 +371,14 @@ def _escape_danbooru_tag_parens(text: str) -> str:
     return _DANBOORU_PAREN_TAG_RE.sub(_rep, text)
 
 
+# 翻译结果内存缓存：(mode, 原文片段) -> 译文。同一段中文（角色名、常见描述）在多次出图中
+# 反复出现，缓存命中后直接省掉整次 danbooru / LLM / HTTP 往返（出图前最耗时的一步）。
+_TRANSLATE_CACHE: dict[tuple[str, str], str] = {}
+_TRANSLATE_CACHE_MAX = 512
+# 翻译并发上限：多中文片段并发翻译，但别把翻译服务 / LLM 打爆。
+_TRANSLATE_CONCURRENCY = 4
+
+
 def _sanitize_exc_text(text, limit: int = 200) -> str:
     """打码异常文本里的密钥/令牌/请求 id，压平空白并截断。"""
     t = str(text or "")
@@ -2138,36 +2146,93 @@ class ComfyUIDrawPlugin(Star):
             return f"{seg}, {tags}"
         return tags or seg
 
+    async def _llm_refine_prompt(
+        self, wf: dict, positive: str, source: str, trace_id: str = ""
+    ) -> str:
+        """出图前的 LLM 提示词整理（原内联逻辑抽成方法，便于与参考图上传并行调度）。
+
+        - source 非空（第三方插件调用）：动漫工作流改写为 Anima/Danbooru 提示词，其它清理为写实中文；
+        - source 为空且动漫工作流含中文：按翻译模式翻译中文片段。
+        任何失败都保留原提示词，绝不阻断出图。
+        """
+        try:
+            if source:
+                if wf.get("is_anima"):
+                    logger.info(f"【绘图·LLM①】trace={trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
+                    rewritten = await self._rewrite_to_anima_llm(positive)
+                    if rewritten and rewritten.strip():
+                        logger.info(f"【Anima】 第三方插件调用，LLM 改写为 Anima 提示词: {rewritten}")
+                        return rewritten
+                else:
+                    logger.info(f"【绘图·LLM②】trace={trace_id} 阶段=清理为写实提示词 第三方插件调用进入LLM")
+                    rewritten = await self._rewrite_to_real_llm(positive)
+                    if rewritten and rewritten.strip():
+                        logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {rewritten}")
+                        return rewritten
+            elif wf.get("is_anima") and self._has_chinese(positive):
+                logger.info(f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词 原生调用含中文进入LLM")
+                translated = await self._translate_prompt(wf, positive)
+                if translated:
+                    logger.info(f"Anima 提示词翻译结果: {translated}")
+                    return translated
+        except Exception as e:
+            logger.warning(f"【提示词】 LLM 改写/翻译失败，保留原提示词: {e}")
+        return positive
+
     async def _translate_prompt(self, wf: dict | None, positive: str) -> str:
         """按翻译模式翻译提示词中「含中文的片段」，已有英文片段原样保留。
 
         逐段切分后仅对含中文字符的片段调用翻译，其余英文片段不动，最后按原顺序
         用逗号拼接。避免整段替换导致英文描述被丢。单个片段翻译失败时该片段
         保留原文（不影响其余片段）。
+
+        性能（v5.11.11）：
+        - 多个中文片段**并发**翻译（原先逐段串行，N 个片段就是 N 次串行网络往返，
+          是「出图前戏很久」的主因之一）；
+        - 结果进内存缓存 `_TRANSLATE_CACHE`，同一片段下次直接命中、零网络开销。
         """
         if not self._has_chinese(positive):
             return positive
         mode = self._resolve_translator_mode(wf)
-        logger.info(f"【翻译】 Anima 工作流，翻译模式={mode}，仅翻译中文片段")
         segments = self._split_prompt_segments(positive)
-        out_segments = []
-        changed = False
-        for seg in segments:
-            if self._has_chinese(seg):
-                try:
-                    translated = await self._translate_segment(wf, seg)
-                    if translated and translated.strip():
-                        out_segments.append(translated)
-                        changed = True
-                        continue
-                except Exception as e:
-                    logger.warning(f"【翻译】 片段「{seg}」翻译失败，保留原文: {e}")
-            out_segments.append(seg)
+        _results: dict[int, str] = {}
+        _todo: list[tuple[int, str]] = []
+        for _i, seg in enumerate(segments):
+            if not self._has_chinese(seg):
+                continue
+            _hit = _TRANSLATE_CACHE.get((mode, seg))
+            if _hit:
+                _results[_i] = _hit
+            else:
+                _todo.append((_i, seg))
+        logger.info(
+            f"【翻译】 Anima 工作流，翻译模式={mode}，"
+            f"含中文片段={len(_todo) + len(_results)} 个"
+            f"（缓存命中={len(_results)}，待翻译={len(_todo)}）"
+        )
+        if _todo:
+            _sem = asyncio.Semaphore(max(1, _TRANSLATE_CONCURRENCY))
+
+            async def _one(idx: int, seg: str) -> tuple[int, str | None]:
+                async with _sem:
+                    try:
+                        _t = await self._translate_segment(wf, seg)
+                        return idx, (_t if (_t and _t.strip()) else None)
+                    except Exception as e:
+                        logger.warning(f"【翻译】 片段「{seg}」翻译失败，保留原文: {e}")
+                        return idx, None
+
+            for _idx, _t in await asyncio.gather(*(_one(_i, _s) for _i, _s in _todo)):
+                if not _t:
+                    continue
+                _results[_idx] = _t
+                if len(_TRANSLATE_CACHE) >= _TRANSLATE_CACHE_MAX:
+                    _TRANSLATE_CACHE.clear()
+                _TRANSLATE_CACHE[(mode, segments[_idx])] = _t
+        if not _results:
+            return positive
         # 片段列表已含逗号/空格分隔符，直接拼接即可保持原格式
-        result = "".join(out_segments)
-        if changed:
-            return result
-        return positive
+        return "".join((_results.get(_i) or seg) for _i, seg in enumerate(segments))
 
     async def translate_test(self, mode: str, text: str) -> dict:
         """调试用：用指定模式翻译单段文本，返回结构化结果（结果/耗时/错误）。
@@ -3743,7 +3808,12 @@ class ComfyUIDrawPlugin(Star):
             logger.info(f"【提示词】 用户未提供负向提示词，使用工作流固定负向提示词")
 
         # 加载工作流 JSON
-        self._cleanup_temp()
+        # temp 清理做节流：同步扫 temp 目录 + 图库 LRU 不必每次出图都跑（大图库下会阻塞
+        # 事件循环、拖慢整个出图准备阶段）。默认至少间隔 600s 才真正清一次。
+        _now_clean = time.time()
+        if _now_clean - float(getattr(self, "_last_cleanup_ts", 0.0) or 0.0) >= 600.0:
+            self._last_cleanup_ts = _now_clean
+            self._cleanup_temp()
         client = self._build_client(server)
         try:
             prompt = workflow_builder.load_workflow(
@@ -3752,6 +3822,15 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             await self._send(event, self._friendly_error(e, "工作流加载", "workflow"))
             return
+
+        # LLM 改写/翻译提前发起：这是出图前最耗时的一步（动辄数秒）。提前起 task 后可与
+        # 下方「参考图上传」并行，少等一段串行时间；结果在提示词定稿处统一 await。
+        _t_llm0 = time.time()
+        _llm_task = None
+        if not _fixed_prompt and (source or (wf.get("is_anima") and self._has_chinese(positive))):
+            _llm_task = asyncio.create_task(
+                self._llm_refine_prompt(wf, positive, source, _trace_id)
+            )
 
         # 图生图：把参考图注入到工作流的 LoadImage 节点
         if init_images:
@@ -3788,8 +3867,15 @@ class ComfyUIDrawPlugin(Star):
                     _init_images.append(_raw)
                 init_images = _init_images
 
-                for img_path in init_images:
-                    info = await client.upload_image(img_path)
+                # 多张参考图**并行**上传（原先逐张串行，网络往返叠加；并发后≈最慢一张的耗时）
+                _uploads = await asyncio.gather(
+                    *(client.upload_image(_p) for _p in init_images),
+                    return_exceptions=True,
+                )
+                for img_path, info in zip(init_images, _uploads):
+                    if isinstance(info, Exception):
+                        raise info  # 交给外层 except 统一给友好提示
+                    info = info or {}
                     # ComfyUI 标准 LoadImage 节点在 /prompt API 下，image 输入期望「字符串文件名」
                     # （不是 [name, subfolder, type] 三元组——三元组是节点间连线的引用格式，
                     # 当作单个 image 输入框的值会直接导致 400 Bad Request）。
@@ -3804,6 +3890,8 @@ class ComfyUIDrawPlugin(Star):
                         f"已注入参考图到节点 {load_node}: {img_path} -> {image_name}"
                     )
             except Exception as e:
+                if _llm_task is not None and not _llm_task.done():
+                    _llm_task.cancel()  # 提前失败就别再白跑一次 LLM
                 await self._send(event, self._friendly_error(e, "上传参考图"))
                 return
             logger.info(f"图生图：已注入 {len(init_images)} 张参考图")
@@ -3830,35 +3918,17 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _re:
                     logger.warning(f"【图库】 参考图归档失败（不影响出图）: {_re}")
 
-        # 第三方插件调用（source 非空，如伴侣插件）：提示词往往是中英混杂的结构化
-        # 描述（夹带 [User image request] 等标记），需要 LLM 清理/改写为对应风格。
-        # - 动漫工作流（is_anima=true）：改写为纯英文 Anima 标签（强制动漫风格）。
-        # - 真人/写实工作流（is_anima=false）：清理结构标记、统一为中文写实提示词。
-        # 原生调用（source 为空）：仅动漫工作流含中文时按翻译模式处理中文片段。
-        # 固定提示词（来自 default_positive，_fixed_prompt=True）跳过改写/翻译，
-        # 视为作者精心写好的内容，不做任何动态加工。
-        if source and not _fixed_prompt:
-            try:
-                if wf.get("is_anima"):
-                    logger.info(f"【绘图·LLM①】trace={_trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
-                    rewritten = await self._rewrite_to_anima_llm(positive)
-                    if rewritten and rewritten.strip():
-                        positive = rewritten
-                        logger.info(f"【Anima】 第三方插件调用，LLM 改写为 Anima 提示词: {positive}")
-                else:
-                    logger.info(f"【绘图·LLM②】trace={_trace_id} 阶段=清理为写实提示词 第三方插件调用进入LLM")
-                    rewritten = await self._rewrite_to_real_llm(positive)
-                    if rewritten and rewritten.strip():
-                        positive = rewritten
-                        logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {positive}")
-            except Exception as e:
-                logger.warning(f"【提示词】 LLM 改写失败，保留原提示词: {e}")
-        elif not _fixed_prompt and wf.get("is_anima") and self._has_chinese(positive):
-            logger.info(f"【绘图·LLM③】trace={_trace_id} 阶段=翻译中文提示词 原生调用含中文进入LLM")
-            translated = await self._translate_prompt(wf, positive)
-            if translated:
-                positive = translated
-                logger.info(f"Anima 提示词翻译结果: {positive}")
+        # 出图前最重要的 LLM 整理已在上方【提前发起】（_llm_task），这里只等结果。
+        # 逻辑与旧的串行版本完全一致，只是改成可并行调度：
+        # - 第三方插件调用（source 非空，如伴侣插件）：提示词往往是中英混杂的结构化
+        #   描述（夹带 [User image request] 等标记），需要 LLM 清理/改写为对应风格。
+        # - 原生调用（source 为空）：仅动漫工作流含中文时按翻译模式处理中文片段。
+        # - 固定提示词（_fixed_prompt=True）跳过改写/翻译，视为作者精心写好的内容。
+        if _llm_task is not None:
+            positive = await _llm_task
+            logger.info(
+                f"【耗时】 出图前 LLM 整理（改写/翻译）耗时 {time.time() - _t_llm0:.1f}s"
+            )
 
         # danbooru 角色/作品 tag 的括号兜底（anima 工作流）：LLM 常把角色 tag 写成
         # `belle (zenless zone zero)`，而 CLIP 把 `(` `)` 当注意力权重符号，不转义会被拆坏、
@@ -4503,6 +4573,11 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 logger.warning("【绘图·工作流JSON】 打印失败: %s", e)
         try:
+            # 出图前「前戏」总耗时（提示词整理 + 参考图上传 + 工作流准备），便于排查慢在哪段
+            logger.info(
+                f"【耗时】 前序准备合计 {time.time() - _draw_start:.1f}s"
+                f"（其中 LLM 整理 {max(0.0, time.time() - _t_llm0):.1f}s，已与参考图上传重叠）"
+            )
             try:
                 result = await client.queue_prompt(prompt)
                 prompt_id = result.get("prompt_id")
@@ -8092,7 +8167,8 @@ class ComfyUIDrawPlugin(Star):
         # 已读回执：用户用自然语言触发生图（comfyui_draw）时，给原消息贴表情表示「已读」。
         # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            await self._react_ack(event)
+            # 贴表情是平台网络往返，丢后台执行，不占出图关键路径
+            self._react_ack_bg(event)
 
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
@@ -8953,6 +9029,24 @@ class ComfyUIDrawPlugin(Star):
             logger.info(
                 f"【绘图·已读】 已读回执覆盖 {len(names)} 个指令、{len(pats)} 个正则触发"
             )
+
+    def _react_ack_bg(self, event: AstrMessageEvent) -> None:
+        """非阻塞版已读回执：丢到后台任务执行，不占出图主流程的串行时间。
+
+        贴表情是一次平台网络往返（数百毫秒级），放在出图关键路径上属于白等；
+        异常只在 DEBUG 记一笔，绝不影响出图。
+        """
+
+        async def _run() -> None:
+            try:
+                await self._react_ack(event)
+            except Exception as _e:
+                logger.debug(f"【绘图·已读】 回执失败（可忽略）: {_e}")
+
+        try:
+            asyncio.create_task(_run())
+        except Exception:
+            pass
 
     # 已读回执：本插件任意指令（含中文，如 /绘图状态 /图库 /萌绘 /图生图 /绘图统计）到达时，
     # 在指令 handler 执行之前先给原消息贴个表情，让用户知道「收到了、在处理」。
@@ -10555,7 +10649,8 @@ class ComfyUIDrawPlugin(Star):
         # 已读回执：用户用自然语言触发生图（comfyui_img2img）时，给原消息贴表情表示「已读」。
         # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
         if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
-            await self._react_ack(event)
+            # 贴表情是平台网络往返，丢后台执行，不占出图关键路径
+            self._react_ack_bg(event)
 
         # 与 llm_draw 同样的兜底处理
         if not isinstance(event, AstrMessageEvent):
