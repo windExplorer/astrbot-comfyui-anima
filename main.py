@@ -1427,6 +1427,23 @@ class ComfyUIDrawPlugin(Star):
                             break
         except Exception as e:
             logger.warning(f"【LoRA】 名称/关键字匹配失败（忽略）: {e}")
+
+        # 「最长优先」消歧：库里同时存在「娜娜莉」与「娜娜莉2」这类近似名时，
+        # 若原话说的是更长、更具体的那个，短名也会因子串命中——此时丢弃短名，
+        # 只保留最具体的一个，避免一次把同系列的两个 LoRA 都挂上。
+        # 例：原话「画一张娜娜莉」→ 只命中「娜娜莉」（不含「娜娜莉2」）；
+        #     原话「画一张娜娜莉2」→ 丢弃「娜娜莉」，只留「娜娜莉2」。
+        for _a in list(hit.keys()):
+            if _a not in hit:
+                continue
+            _al = _a.lower()
+            for _b in list(hit.keys()):
+                if _b != _a and _al in _b.lower():
+                    hit.pop(_a, None)
+                    logger.info(
+                        f"【LoRA】 「{_a}」与「{_b}」同时命中用户原话，只保留更具体的「{_b}」"
+                    )
+                    break
         return hit
 
     def _loras_of(self, wf: dict) -> list[dict]:
@@ -4142,16 +4159,27 @@ class ComfyUIDrawPlugin(Star):
             nm = (lora.get("name") or "").strip()
             if nm and lora.get("enabled"):
                 merged[nm] = None
-        merged.update(
-            self._match_loras_by_raw_message(
-                event, include_keywords=bool(self._cfg("lora_keyword_auto", False))
-            )
+        _raw_hits = self._match_loras_by_raw_message(
+            event, include_keywords=bool(self._cfg("lora_keyword_auto", False))
         )
+        merged.update(_raw_hits)
         if lora_map is not None:
             for nm, w in lora_map.items():
                 nm = (nm or "").strip()
-                if nm:
-                    merged[nm] = w
+                if not nm:
+                    continue
+                # 原话优先：用户原话已点名了另一个「同系列」LoRA（互为包含关系，
+                # 如原话是「娜娜莉」而 LLM 填了「娜娜莉2」）→ 以用户原话为准，
+                # 忽略 LLM 这个，避免同系列两个版本一起上。
+                if nm not in _raw_hits and any(
+                    nm != h and (nm.lower() in h.lower() or h.lower() in nm.lower())
+                    for h in _raw_hits
+                ):
+                    logger.info(
+                        f"【LoRA】 用户原话已点名同系列 LoRA，忽略 LLM 指定的「{nm}」"
+                    )
+                    continue
+                merged[nm] = w
         active_map = merged or None
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
 
