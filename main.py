@@ -1305,13 +1305,13 @@ class ComfyUIDrawPlugin(Star):
         return self._cfg("workflows", []) or []
 
     @staticmethod
-    def _split_lora_aliases(raw: str) -> list[str]:
-        """把 LoRA 的「别名 / keywords」字段拆成干净的独立别名列表。
+    def _split_lora_keywords(raw: str) -> list[str]:
+        """把 LoRA 的「关键字」字段拆成干净的独立词列表。
 
         支持多种分隔符：逗号、全角逗号、竖线 ``|``（含 ``||``）、``&``（含 ``&&``）、
         斜杠、顿号、空白；并去掉圆括号 / 全角括号内的注释（如 ``(角色&&画风lora)``）。
         这样「菲比啾比, phoebe_chibi || 菲比丘比 && phoebe || 菲比 (角色&&画风lora)菲比啾比」
-        能正确拆出 phoebe_chibi / 菲比丘比 / phoebe / 菲比 等独立别名，供出图按别名匹配。
+        能正确拆出 phoebe_chibi / 菲比丘比 / phoebe / 菲比 等独立关键字。
         """
         if not raw:
             return []
@@ -1327,28 +1327,34 @@ class ComfyUIDrawPlugin(Star):
         return out
 
     def _lora_library(self) -> list[dict]:
-        """全局 LoRA 库（配置顶层 loras）。返回项附带 aliases（供 LLM 区分/引用）。"""
+        """全局 LoRA 库（配置顶层 loras）。返回项附带 keywords_list / aliases。
+
+        - keywords_list：仅「关键字」字段拆出的词（不含名称），供自动匹配按开关使用；
+        - aliases：名称 + 关键字，供索引 / 指令 / LLM 工具做名称等价匹配。
+        """
         out = []
         for l in (self._cfg("loras", []) or []):
             item = dict(l)
             name = (item.get("name") or "").strip()
             kws = (item.get("keywords") or "").strip()
-            aliases = []
-            if name:
-                aliases.append(name)
-            for a in self._split_lora_aliases(kws):
-                if a and a not in aliases:
+            keywords_list = [
+                a for a in self._split_lora_keywords(kws) if a and a != name
+            ]
+            item["keywords_list"] = keywords_list
+            aliases = [name] if name else []
+            for a in keywords_list:
+                if a not in aliases:
                     aliases.append(a)
             item["aliases"] = aliases
             out.append(item)
         return out
 
     def _lora_lib_index(self) -> dict[str, dict]:
-        """全局 LoRA 库按「名称 + 全部别名」建索引（键 -> 库条目）。
+        """全局 LoRA 库按「名称 + 全部关键字」建索引（键 -> 库条目）。
 
-        供命令 / LLM 工具用别名（如 phoebe_chibi）也能定位到真实 LoRA，
-        解决「comfyui_loras 查到别名、出图却匹配不到」的问题：补全临时启用
-        的 LoRA 时，除精确 name 外也应命中别名。
+        供命令 / LLM 工具用关键字（如 phoebe_chibi）也能定位到真实 LoRA，
+        解决「comfyui_loras 查到关键字、出图却匹配不到」的问题：补全临时启用
+        的 LoRA 时，除精确 name 外也应命中关键字。
         """
         idx: dict[str, dict] = {}
         for l in self._lora_library():
@@ -1364,6 +1370,59 @@ class ComfyUIDrawPlugin(Star):
                 idx.setdefault(k, l)
                 idx.setdefault(k.lower(), l)
         return idx
+
+    @staticmethod
+    def _text_has_word(word: str, hay_low: str) -> bool:
+        """判断某词是否出现在（已小写化的）用户原话里。
+
+        英文用 \\b 词边界整词匹配（避免 art 误命中 party）；中文等直接子串匹配。
+        """
+        w = (word or "").strip().lower()
+        if not w or not hay_low:
+            return False
+        if w.isascii():
+            return bool(re.search(rf"\b{re.escape(w)}\b", hay_low))
+        return w in hay_low
+
+    def _match_loras_by_raw_message(
+        self, event, include_keywords: bool = False
+    ) -> dict[str, float | None]:
+        """按「用户原话」匹配 LoRA 库，返回 {规范名称: None}。
+
+        - 匹配对象只有用户原话（event.message_str，未翻译），**绝不用翻译后的提示词**——
+          LoRA 叫什么就认什么，避免翻译把名字改掉后匹配不上；
+        - 名称匹配始终执行；
+        - 关键字匹配仅在 include_keywords=True 时执行（由配置 lora_keyword_auto 控制），
+          且只在名称未命中时才看关键字。
+        """
+        raw_low = ""
+        try:
+            raw_low = (getattr(event, "message_str", "") or "").lower()
+        except Exception:
+            raw_low = ""
+        if not raw_low:
+            return {}
+        hit: dict[str, float | None] = {}
+        try:
+            for l in self._lora_library():
+                nm = (l.get("name") or "").strip()
+                if not nm:
+                    continue
+                if self._text_has_word(nm, raw_low):
+                    hit[nm] = None
+                    logger.info(f"【LoRA】 用户原话命中名称「{nm}」，自动启用")
+                    continue
+                if include_keywords:
+                    for kw in (l.get("keywords_list") or []):
+                        if self._text_has_word(kw, raw_low):
+                            hit[nm] = None
+                            logger.info(
+                                f"【LoRA】 用户原话命中关键字「{kw}」→「{nm}」，自动启用"
+                            )
+                            break
+        except Exception as e:
+            logger.warning(f"【LoRA】 名称/关键字匹配失败（忽略）: {e}")
+        return hit
 
     def _loras_of(self, wf: dict) -> list[dict]:
         """解析本工作流实际生效的 LoRA 列表。
@@ -1381,7 +1440,7 @@ class ComfyUIDrawPlugin(Star):
             name = (l.get("name") or "").strip()
             if not name:
                 continue
-            # 先按精确名/别名/小写命中；命中不上再用 _lora_name_matches 做
+            # 先按精确名/关键字/小写命中；命中不上再用 _lora_name_matches 做
             # 前缀/版本后缀模糊匹配，避免工作流预设名与库名有微小差异时丢掉 model_name。
             lib_l = lib.get(name) or next(
                 (v for k, v in lib.items() if workflow_builder._lora_name_matches(k, name)),
@@ -4049,83 +4108,30 @@ class ComfyUIDrawPlugin(Star):
                 ensure_ascii=False,
             )
         )
-        if lora_map is None:
-            # 默认只挂「工作流默认启用」的 LoRA——LoRA 的生效方式就是显式指定
-            # （/draw --名称 / LLM 的 loras 参数 / 工作流默认项），不做任何猜测式自动挂载。
-            # 提示词关键词自动匹配为可选功能（lora_keyword_auto，默认关闭）：开启后
-            # 才会按「工作流引用项的 keywords」与「全局库名称/别名」对提示词和用户原话
-            # 做关键词匹配（该方式历史上容易误挂泛化词，故默认关）。
-            merged: dict[str, float | None] = {}
-            for lora in loras_cfg:
-                nm = (lora.get("name") or "").strip()
-                if not nm:
-                    continue
-                if lora.get("enabled"):
-                    merged[nm] = None
-            if self._cfg("lora_keyword_auto", False):
-                auto = workflow_builder.collect_keyword_loras(loras_cfg, positive)
-                for nm in auto:
-                    merged.setdefault(nm, None)
-                # 全局库兜底：用户原话（未翻译的中文名）与最终提示词各过一遍库里的
-                # 名称/别名/关键词。匹配规则（历史教训，勿放松）：
-                #   - 英文关键词 \b 词边界整词匹配且长度 ≥4（"to"/"art" 碎片词会到处命中）；
-                #   - 中文关键词子串匹配但长度 ≥2；
-                #   - 通用词忽略表（masterpiece/1girl/cute 等质量/通用 danbooru 词）不作依据；
-                #   - 单次最多补 2 条。
-                _raw_msg = (getattr(event, "message_str", "") or "") if event is not None else ""
-                _raw_low = _raw_msg.lower()
-                _pos_low = (positive or "").lower()
-                _FB_MAX = 2
-
-                def _kw_hit(kw: str) -> bool:
-                    if not kw or kw in workflow_builder._KEYWORD_STOP_WORDS:
-                        return False
-                    if kw.isascii():
-                        if len(kw) < 4:
-                            return False
-                        pat = rf"\b{re.escape(kw)}\b"
-                        return bool(re.search(pat, _pos_low)) or bool(_raw_low and re.search(pat, _raw_low))
-                    return len(kw) >= 2 and (kw in _pos_low or (bool(_raw_low) and kw in _raw_low))
-
-                try:
-                    _lib = self._lora_library()
-                    _fb_count = 0
-                    for _l in _lib:
-                        if _fb_count >= _FB_MAX:
-                            break
-                        _nm = (_l.get("name") or "").strip()
-                        if not _nm or _nm in merged:
-                            continue
-                        for _kw in (_l.get("aliases") or []):
-                            _k = str(_kw or "").strip().lower()
-                            if _kw_hit(_k):
-                                merged[_nm] = None
-                                _fb_count += 1
-                                logger.info(
-                                    f"【LoRA】 全局库关键词命中「{_nm}」（关键词：{_k}），临时启用"
-                                    f"（lora_keyword_auto 开启，受底模兼容约束）"
-                                )
-                                break
-                except Exception as _kwe:
-                    logger.warning(f"【LoRA】 全局库关键词兜底失败（忽略）: {_kwe}")
-            active_map = merged or None
-        else:
-            # 用户显式指定了 LoRA（指令 --名称 / LLM 工具的 loras 参数）时，
-            # 默认行为：在「工作流自带且已启用」的 LoRA 基础上【叠加】用户请求的 LoRA，
-            # 而非整体替换。工作流预设的 LoRA 是其风格配方的一部分，不应被一票否决。
-            # （用户请求的权重若与自带项同名，则覆盖自带权重；其余自带项保留。）
-            active_map = {}
-            for lora in loras_cfg:
-                nm = (lora.get("name") or "").strip()
-                if not nm:
-                    continue
-                if lora.get("enabled"):
-                    active_map.setdefault(nm, None)
+        # ── 决定本次启用的 LoRA ─────────────────────────────────────────────
+        # 语义：
+        #   ① 工作流默认启用项（loras_text 里 enabled=1）：始终生效；
+        #   ② 名称匹配：用户原话里出现了某 LoRA 的**完整名称** → 自动启用。
+        #      ★匹配对象只有用户原话（未翻译），绝不用翻译后的提示词——LoRA 叫什么就认什么；
+        #   ③ 关键字匹配：仅当开启配置 `lora_keyword_auto` 时，额外用每条 LoRA 的
+        #      「关键字」字段匹配用户原话（默认关闭，避免泛化词误挂）；
+        #   ④ 显式指定（/draw --名称、LLM 的 loras 参数）：叠加在 ①~③ 之上并覆盖权重。
+        merged: dict[str, float | None] = {}
+        for lora in loras_cfg:
+            nm = (lora.get("name") or "").strip()
+            if nm and lora.get("enabled"):
+                merged[nm] = None
+        merged.update(
+            self._match_loras_by_raw_message(
+                event, include_keywords=bool(self._cfg("lora_keyword_auto", False))
+            )
+        )
+        if lora_map is not None:
             for nm, w in lora_map.items():
                 nm = (nm or "").strip()
-                if not nm:
-                    continue
-                active_map[nm] = w
+                if nm:
+                    merged[nm] = w
+        active_map = merged or None
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
 
         # 补全：--名称 临时请求的 LoRA，若工作流未预引用（loras_config 里没有该项），
@@ -4273,7 +4279,7 @@ class ComfyUIDrawPlugin(Star):
             ):
                 logger.warning(
                     f"【LoRA】 请求启用「{_req_n}」但最终未生效（本次启用列表: {enabled or '无'}）。"
-                    f"图库该图不会记录此 LoRA。请核对全局 LoRA 库的名称/别名与 model_name，"
+                    f"图库该图不会记录此 LoRA。请核对全局 LoRA 库的名称/关键字与 model_name，"
                     f"以及 comfyui_loras 返回的规范名是否被 LLM 正确填入 loras 参数。"
                 )
         if enabled:
@@ -5238,7 +5244,7 @@ class ComfyUIDrawPlugin(Star):
             prompt(string): 【必填】画面/角色描述（中文或英文）；这是出图提示词，不是气泡文字。
             negative_prompt(string): 负向提示词，可选。
             workflow(string): 漫画工作流名，可选；须配了 prompt_slots（不填用功能默认，可先调 comfyui_workflows）。
-            loras(array[string]): 要启用的 LoRA 名/别名；规则同 comfyui_draw（先调 comfyui_loras 拿规范名）。
+            loras(array[string]): 要启用的 LoRA 名/关键字；规则同 comfyui_draw（先调 comfyui_loras 拿规范名）。
             width、height(number): 宽高，0/不填=工作流默认。
             seed(number): 随机种子，0/不填=随机。
             prompts(array): 多条出图项，要几张传几条。
@@ -5309,7 +5315,7 @@ class ComfyUIDrawPlugin(Star):
             negative_prompt(string): 负向提示词，可选。
             workflow(string): 图生表情包工作流名，可选；须配 prompt_slots + image_node（不填用功能默认）。
             image(string): 【必填】参考图 URL。
-            loras(array[string]): 要启用的 LoRA 名/别名；规则同 comfyui_draw。
+            loras(array[string]): 要启用的 LoRA 名/关键字；规则同 comfyui_draw。
             width、height(number): 宽高，0/不填=工作流默认。
             seed(number): 随机种子，0/不填=随机。
             prompts(array): 多条出图项（需图生图时每项带 image），要几张传几条。
@@ -8048,7 +8054,7 @@ class ComfyUIDrawPlugin(Star):
         ★要在画面里出现文字：自然语言系用引号写清内容；anima 系文字渲染不可控
           （用户明确要清晰大字时建议改用 /漫画 指令），否则只能用 english text / japanese text 等标签。
         ★★点名角色/作品/画风（「来一张XX的图」「画个初音未来」「用XX风格画」）的查找链，逐级降级、不许跳步：
-        1) **先查 LoRA**：调 comfyui_loras（keyword=名字，category 可传「角色」）。查不到就换更短关键词 / 英文名 / 别名再查一两次
+        1) **先查 LoRA**：调 comfyui_loras（keyword=名字，category 可传「角色」）。查不到就换更短关键词 / 英文名 / 关键字再查一两次
            （工具会做去版本后缀的近似匹配），不要一次查不到就跳下一步。命中多条同名版本时优先**不带后缀的原版**。
            命中就填进 loras 参数，**不要**再用 danbooru 标签重复描述该角色外形。
         2) **再查 danbooru MCP（查标签的唯一正确来源）**：工具名可能中/英文，名字含 danbooru / tag / 标签 的 MCP 都属于它，**只调它**。
@@ -8085,7 +8091,7 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
-            loras(array[string]): 要启用的 LoRA 名/别名，每项可带权重（"catgirl:0.8" = 0.8 强度）。★硬规则：用户提到某 LoRA 的名字/别名
+            loras(array[string]): 要启用的 LoRA 名/关键字，每项可带权重（"catgirl:0.8" = 0.8 强度）。★硬规则：用户提到某 LoRA 的名字/关键字
                 （含"用XX lora画""你没用lora"这类纠正）必须先调 comfyui_loras 拿规范名——只写进 prompt 不会加载权重，角色会画错；
                 用户要求某风格/画风/角色/人物时，即使没给名字也应先调 comfyui_loras（keyword/category，角色传「角色」）查匹配项。
                 同名多版本优先**不带后缀的原版**。确认无匹配、或用户明确不要 LoRA 时才留空。（角色优先于 danbooru 标签，见上方查找链。）
@@ -8224,7 +8230,7 @@ class ComfyUIDrawPlugin(Star):
                     "negative_prompt(string): 负向提示词，可选。\n"
                     "workflow(string): 文生图工作流名，可选。\n"
                     "img2img_workflow(string): 图生图工作流名，可选。\n"
-                    "loras(string): LoRA 名称/别名列表，可选，每项可带权重如 \"catgirl:0.8\"。\n"
+                    "loras(string): LoRA 名称/关键字列表，可选，每项可带权重如 \"catgirl:0.8\"。\n"
                     "width(int): 宽度，可选。height(int): 高度，可选。\n"
                     "seed(int): 随机种子，可选。denoise(float): 降噪幅度0~1，可选。",
                 )
@@ -10231,7 +10237,7 @@ class ComfyUIDrawPlugin(Star):
         keyword: str = "",
         category: str = "",
     ):
-        """查询已配置的 LoRA 库。返回每个 LoRA 的名称、别名、分类、底模；仅在带 keyword 且命中很少时\n        才展开「描述/触发词」，否则精简列出（避免返回值过大灌进上下文、拖慢后续每一轮推理）。
+        """查询已配置的 LoRA 库。返回每个 LoRA 的名称、关键字、分类、底模；仅在带 keyword 且命中很少时\n        才展开「描述/触发词」，否则精简列出（避免返回值过大灌进上下文、拖慢后续每一轮推理）。
 
         触发时机：当用户提到要用某种风格/画风/人物/角色来画，或指定了某个效果时，
         **务必先调用本工具**查询是否有匹配的 LoRA（可结合 keyword 或 category 缩小范围），
@@ -10246,7 +10252,7 @@ class ComfyUIDrawPlugin(Star):
 
         Args:
             base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
-            keyword(string): 可选。按名称/别名/描述/触发词模糊匹配查找某个 LoRA。
+            keyword(string): 可选。按名称/关键字模糊匹配查找某个 LoRA（描述、触发词不参与查找）。
             category(string): 可选。按分类过滤（角色 / 风格 / 工具）。当用户提到"某某角色/人物"、"某某风格/画风"或"某某工具类效果（如加速、细节增强、图像质量增强）"时，可传入 角色 / 风格 / 工具 缩小范围。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
@@ -10270,8 +10276,8 @@ class ComfyUIDrawPlugin(Star):
             if cat and (l.get("category") or "").strip() != cat:
                 return False  # 分类不匹配的 LoRA 不列出
             if kw:
-                hay = " ".join([name, *[str(a) for a in (l.get("aliases") or [])],
-                                (l.get("description") or ""), (l.get("trigger_words") or "")]).lower()
+                # 只按「名称 + 关键字」查找：描述 / 触发词不参与搜索（它们只用于展示与理解）。
+                hay = " ".join([name, *[str(a) for a in (l.get("aliases") or [])]]).lower()
                 if kw not in hay:
                     return False
             return True
@@ -10279,9 +10285,9 @@ class ComfyUIDrawPlugin(Star):
         def _fmt(l, verbose: bool) -> str:
             name = (l.get("name") or "").strip()
             lora_bm = (l.get("base_model") or "").strip().lower()
-            aliases = l.get("aliases") or []
-            alias_str = ", ".join(str(a) for a in aliases) if aliases else name
-            line = f"- {name}（别名：{alias_str}）"
+            kws = l.get("keywords_list") or []
+            kw_str = ", ".join(str(a) for a in kws) if kws else "无"
+            line = f"- {name}（关键字：{kw_str}）"
             if (l.get("category") or "").strip():
                 line += f" [分类 {l.get('category').strip()}]"
             if lora_bm:
@@ -10334,8 +10340,8 @@ class ComfyUIDrawPlugin(Star):
         if not _hits:
             if kw:
                 return (
-                    f"没有找到匹配「{keyword}」的 LoRA。注意：keyword 是名称/别名/描述/触发词的"
-                    f"子串匹配，请换更短的关键词、角色英文名或别名再查一次（本工具会自动做"
+                    f"没有找到匹配「{keyword}」的 LoRA。注意：keyword 是名称/关键字的"
+                    f"子串匹配，请换更短的关键词、角色英文名或关键字再查一次（本工具会自动做"
                     f"去版本后缀的近似匹配）；不要一次查不到就断定库里没有。"
                 )
             if cat:
@@ -10579,7 +10585,7 @@ class ComfyUIDrawPlugin(Star):
             negative_prompt(string): 负向提示词，可选。
             img2img_workflow(string): 图生图工作流名。★用户要特定画风时必须先调 comfyui_workflows 查真实列表再填确切名，禁止凭记忆猜；
                 用户完全没指定画风时才留空（用默认图生图工作流）。
-            loras(array[string]): 要启用的 LoRA 名/别名，每项可带权重（"catgirl:0.8"）。★硬规则：用户要求某风格/画风/角色时，
+            loras(array[string]): 要启用的 LoRA 名/关键字，每项可带权重（"catgirl:0.8"）。★硬规则：用户要求某风格/画风/角色时，
                 即使没给名字也先调 comfyui_loras（可 keyword/category 缩小）查匹配项；指定前必须查真实列表，禁止凭记忆猜名。
                 确认无匹配或用户明确不要时才留空（留空用配置里默认启用的 LoRA）。
             seed(number): 随机种子，0/不填=每次随机；用户要"固定/复现"时传具体数字。
@@ -10655,7 +10661,7 @@ class ComfyUIDrawPlugin(Star):
                     "prompt(string): 基于参考图的变换/生成描述（必填）。\n"
                     "negative_prompt(string): 负向提示词，可选。\n"
                     "img2img_workflow(string): 图生图工作流名，可选。\n"
-                    "loras(string): LoRA 名称/别名列表，可选，每项可带权重如 \"catgirl:0.8\"。\n"
+                    "loras(string): LoRA 名称/关键字列表，可选，每项可带权重如 \"catgirl:0.8\"。\n"
                     "seed(int): 随机种子，可选。denoise(float): 降噪幅度0~1，可选。",
                 )
                 if extracted and extracted.get("prompt"):

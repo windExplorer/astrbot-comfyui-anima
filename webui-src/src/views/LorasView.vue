@@ -3,7 +3,7 @@
     <div class="view-head">
       <div>
         <h2>LoRA 库</h2>
-        <p>卡片式查看 LoRA：封面图、别名、底模、触发词、描述；可编辑、上传封面或从 C 站链接抓取。</p>
+        <p>卡片式查看 LoRA：封面图、关键字、底模、触发词、描述；可编辑、上传封面或从 C 站链接抓取。</p>
       </div>
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
@@ -35,7 +35,7 @@
           <n-radio-button value="__none__">未分类 ({{ countByCategory("__none__") }})</n-radio-button>
         </n-radio-group>
       </div>
-      <!-- 关键词搜索：名称 / 别名 / 分类 / 模型文件名 / 触发词 / 描述；与底模、分类筛选叠加生效 -->
+      <!-- 关键词搜索：名称 / 关键字 / 分类 / 模型文件名 / 触发词 / 描述；与底模、分类筛选叠加生效 -->
       <div class="filter-bar">
         <span class="filter-label">搜索：</span>
         <n-input
@@ -43,7 +43,7 @@
           size="small"
           clearable
           class="filter-search"
-          placeholder="搜索名称 / 别名 / 分类 / 模型文件 / 触发词…"
+          placeholder="搜索名称 / 关键字 / 分类 / 模型文件 / 触发词…"
         />
         <span v-if="searchText.trim()" class="filter-hint">
           匹配 {{ filteredIndexes.length }} / {{ loras.length }} 条
@@ -74,7 +74,7 @@
           </div>
           <div class="card-body">
             <div class="card-title">{{ loras[idx].name || "(未命名)" }}</div>
-            <div class="card-alias">别名：{{ aliasFirst(loras[idx].keywords) }}</div>
+            <div class="card-alias">关键字：{{ aliasFirst(loras[idx].keywords) }}</div>
             <div class="card-meta">
               <n-tag size="tiny" :bordered="false">{{ loras[idx].base_model?.trim() || "通用" }}</n-tag>
               <n-tag v-if="loras[idx].category" size="tiny" type="info" :bordered="false">{{ loras[idx].category }}</n-tag>
@@ -99,7 +99,7 @@
         <div class="detail-row"><b>名称：</b>{{ detailItem.name }}</div>
         <div class="detail-row"><b>分类：</b>{{ detailItem.category || "未分类" }}</div>
         <div class="detail-row"><b>底模：</b>{{ detailItem.base_model?.trim() || "通用" }}</div>
-        <div class="detail-row"><b>别名：</b>{{ detailItem.keywords || "—" }}</div>
+        <div class="detail-row"><b>关键字：</b>{{ detailItem.keywords || "—" }}</div>
         <div class="detail-row"><b>模型文件：</b>{{ detailItem.model_name || "—" }}</div>
         <div class="detail-row"><b>触发词：</b><pre>{{ detailItem.trigger_words || "—" }}</pre></div>
         <div class="detail-row"><b>描述：</b><pre v-if="detailItem.description" v-html="sanitizeHtml(detailItem.description)"></pre><span v-else>—</span></div>
@@ -142,7 +142,7 @@
         <div class="form-grid">
           <n-form-item label="默认权重"><n-input-number v-model:value="editForm.weight" style="width:100%" /></n-form-item>
         </div>
-        <n-form-item label="别名（每行一个，供 LLM 区分）"><n-input v-model:value="editForm.keywords" type="textarea" :rows="3" /></n-form-item>
+        <n-form-item label="关键字（每行一个，可选；开启关键字搜索后才会用于匹配）"><n-input v-model:value="editForm.keywords" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="触发词（每行一个）"><n-input v-model:value="editForm.trigger_words" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="描述（供 LLM 理解）"><n-input v-model:value="editForm.description" type="textarea" :rows="3" /></n-form-item>
         <div class="form-grid">
@@ -207,7 +207,7 @@ const filterModel = ref("all");
 // 分类筛选：all=全部；__none__=未分类；其余=对应分类
 const filterCategory = ref("all");
 
-// 关键词搜索（LoRA 越来越多，靠翻页找太慢）：匹配名称、别名(keywords)、分类、
+// 关键词搜索（LoRA 越来越多，靠翻页找太慢）：匹配名称、关键字(keywords)、分类、
 // 模型文件名、触发词、描述、底模。与底模 / 分类筛选叠加生效。
 const searchText = ref("");
 // 单条 LoRA 是否命中搜索词（空词视为全命中）
@@ -306,7 +306,7 @@ function buildCover(l: any): { fname: string; title: string; fields: ItemViewerF
   const fields: ItemViewerField[] = [
     { key: "名称", value: l.name },
     { key: "分类", value: l.category?.trim() || "未分类" },
-    { key: "别名", value: parseAliases(l.keywords || "").join(" / ") || "—" },
+    { key: "关键字", value: parseAliases(l.keywords || "").join(" / ") || "—" },
     { key: "底模", value: l.base_model?.trim() || "通用" },
     { key: "模型", value: l.model_name?.trim() || "—" },
     { key: "默认权重", value: l.weight ?? 1 },
@@ -511,7 +511,7 @@ function fetchLora(idx: number) {
     if (d.trigger_words) updates.trigger_words = d.trigger_words;
     if (d.description) updates.description = d.description;
     if (d.base_model) updates.base_model = d.base_model;
-    // C 站标题并入别名（若不存在）：别名可能为换行/逗号分隔，避免重复
+    // C 站标题并入关键字（若不存在）：关键字可能为换行/逗号分隔，避免重复
     if (d.title) {
       const oldKw = String(l.keywords || "").trim();
       const kwList = oldKw ? oldKw.split(/[,，\n\r]+/).map((s) => s.trim()).filter(Boolean) : [];

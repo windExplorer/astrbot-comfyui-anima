@@ -96,8 +96,8 @@
           },
           "keywords": {
             "type": "string",
-            "description": "别名（触发关键词，可选）",
-            "hint": "逗号分隔。这是该 LoRA 的别名/触发词，用户输入提示词命中这些词时自动启用该 LoRA（即便工作流默认未启用）；LLM 也用这些别名来区分和引用 LoRA。",
+            "description": "关键字（可选）",
+            "hint": "逗号/换行分隔。仅当开启上方「LoRA 关键字搜索」后，才会用这些词去匹配用户消息并自动启用该 LoRA；默认只用「名称」匹配。LLM 也会用这些关键字来区分和引用该 LoRA。",
             "default": ""
           },
           "trigger_words": {
@@ -864,8 +864,8 @@
   },
   "lora_keyword_auto": {
     "type": "bool",
-    "description": "LoRA 关键词自动匹配（默认关）",
-    "hint": "关闭（默认）时，LoRA 只在两种情况下生效：① 工作流里默认启用的；② 显式指定的（/draw --名称、LLM 的 loras 参数，按名称/别名匹配）。开启后才会按提示词与用户原话中的关键词自动匹配挂载 LoRA——LLM 翻译出的提示词满是 1girl/masterpiece 等通用词，此功能历史上容易误挂用不上的 LoRA，慎开。",
+    "description": "LoRA 关键字搜索（默认关）",
+    "hint": "默认关闭：只用 LoRA 的「名称」匹配用户原话（如用户说「画一个鉴定师」，且库里有名为「鉴定师」的 LoRA，就会自动启用）。开启后：额外用每条 LoRA 的「关键字」字段匹配，命中即启用——关键字配得太泛时容易误挂，慎开。两种匹配都只认用户原话、不认翻译后的提示词。",
     "default": false
   },
   "lora_outfit_filter": {

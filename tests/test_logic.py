@@ -66,10 +66,6 @@ def test_workflow_logic():
     assert set(enabled2) == {"catgirl", "anime"}
     assert prompt2["10"]["inputs"]["strength_model"] == 0.8
     assert prompt2["11"]["inputs"]["strength_model"] == 0.6  # 用默认权重
-
-    kw = workflow_builder.collect_keyword_loras(LORAS, "画一只猫娘少女")
-    print("   关键词匹配:", kw)
-    assert kw == {"catgirl"}
     print("   OK")
 
 
