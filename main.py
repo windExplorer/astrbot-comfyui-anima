@@ -1317,6 +1317,10 @@ class ComfyUIDrawPlugin(Star):
         斜杠、顿号、空白；并去掉圆括号 / 全角括号内的注释（如 ``(角色&&画风lora)``）。
         这样「菲比啾比, phoebe_chibi || 菲比丘比 && phoebe || 菲比 (角色&&画风lora)菲比啾比」
         能正确拆出 phoebe_chibi / 菲比丘比 / phoebe / 菲比 等独立关键字。
+
+        ★纯符号 token 一律丢弃（不含任何字母/数字/汉字等文字字符）：
+        「xx - yy」按空白拆分会产生孤立的「-」，而它曾作为关键字命中所有含
+        连字符的提示词（如 off-shoulder），一次拉起十几个 LoRA（真实事故）。
         """
         if not raw:
             return []
@@ -1326,7 +1330,10 @@ class ComfyUIDrawPlugin(Star):
         seen: set[str] = set()
         for p in parts:
             p = p.strip()
-            if p and p not in seen:
+            # 丢弃纯符号 token（isalnum 对汉字/假名/谚文等均返回 True）
+            if not p or not any(ch.isalnum() for ch in p):
+                continue
+            if p not in seen:
                 seen.add(p)
                 out.append(p)
         return out
@@ -1380,13 +1387,19 @@ class ComfyUIDrawPlugin(Star):
     def _text_has_word(word: str, hay_low: str) -> bool:
         """判断某词是否出现在（已小写化的）用户原话里。
 
-        英文用 \\b 词边界整词匹配（避免 art 误命中 party）；中文等直接子串匹配。
+        英文用环视边界整词匹配（``(?<!\\w)词(?!\\w)``，语义同 \\b 但对「纯符号关键字」
+        安全：\\b-\\b 能卡进 off-shoulder 的连字符两侧，环视则被前面的字母挡住）；
+        中文等直接子串匹配。
+        ★纯符号词（不含任何字母/数字/汉字）一律不匹配——「-」这类垃圾关键字曾
+        一次命中十几条 LoRA（真实事故）。
         """
         w = (word or "").strip().lower()
         if not w or not hay_low:
             return False
+        if not any(ch.isalnum() for ch in w):
+            return False
         if w.isascii():
-            return bool(re.search(rf"\b{re.escape(w)}\b", hay_low))
+            return bool(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", hay_low))
         return w in hay_low
 
     def _match_loras_by_raw_message(
