@@ -1149,11 +1149,61 @@
       }
     ]
   },
+  "permissions": {
+    "type": "object",
+    "description": "权限",
+    "hint": "需要单独授权的功能白名单，统一放这里。管理员一律豁免，无需列入名单。",
+    "items": {
+      "recall_whitelist": {
+        "type": "text",
+        "description": "撤回功能白名单（用户 ID）",
+        "hint": "只有管理员与名单内的用户可以使用 /撤回 指令（QQ 号，每行一个或逗号分隔）。留空 = 仅管理员可用。",
+        "default": ""
+      },
+      "nsfw_group_whitelist": {
+        "type": "text",
+        "description": "允许发送 NSFW 的群白名单",
+        "hint": "填写允许发出 NSFW 图片的群号，每行一个（也支持逗号分隔）。★默认留空 = 所有群都拦截 NSFW（图片仍会生成并入库，只是不往群里发）；名单内的群不做 NSFW 拦截、照常发图。私聊始终不受影响。请只在确认合规的群填写。",
+        "default": ""
+      }
+    }
+  },
+  "recall": {
+    "type": "object",
+    "description": "撤回",
+    "hint": "出图消息撤回：① 自动定时撤回（按秒）；② /撤回 指令手动撤回（回复机器人发的那张图）。两者可各自开关；手动撤回还受「权限 → 撤回功能白名单」限制。注意：QQ 群机器人撤回自己的消息有时间窗限制（约 2 分钟），超时撤回必定失败。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用撤回功能",
+        "hint": "总开关。关闭后自动撤回与 /撤回 指令都不生效。",
+        "default": false
+      },
+      "auto_seconds": {
+        "type": "int",
+        "description": "自动撤回延时（秒）",
+        "hint": "出图后多少秒自动撤回机器人发出的图片。0 = 不自动撤回。上限 120 秒（QQ 群撤回时间窗只有约 2 分钟，填更大也会被硬性截断到 120）。",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 120,
+          "step": 1
+        }
+      },
+      "manual_enabled": {
+        "type": "bool",
+        "description": "启用 /撤回 指令",
+        "hint": "开启后，用户「回复」机器人发出的图片并发送 /撤回 即可撤回该图（需同时开启上方「启用撤回功能」）。",
+        "default": true
+      }
+    }
+  },
   "nsfw_group_whitelist": {
     "type": "text",
-    "description": "允许发送 NSFW 的群白名单",
-    "hint": "填写允许发出 NSFW 图片的群号，每行一个（也支持逗号分隔）。★默认留空 = 所有群都拦截 NSFW（图片仍会生成并入库，只是不往群里发）；名单内的群不做 NSFW 拦截、照常发图。私聊始终不受影响。请只在确认合规的群填写。",
-    "default": ""
+    "description": "允许发送 NSFW 的群白名单（旧位置）",
+    "hint": "已迁移到上方「权限」分组。此项仅用于兼容旧配置，请勿填写（插件会自动把旧值迁移过去）。",
+    "default": "",
+    "invisible": true
   },
   "allow_draw_users": {
     "type": "object",

@@ -2856,6 +2856,252 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【发送】 主动发送文本失败（忽略，不中断主流程）: {_e}")
 
     # ------------------------------------------------------------------ #
+    # 撤回：自动定时撤回（按秒） + /撤回 指令（回复图片撤回）
+    # ------------------------------------------------------------------ #
+    # 技术背景（AstrBot 4.27/4.28 实测）：
+    #   - AstrBot 平台基类【没有】任何撤回 API；
+    #   - event.send() 返回 None，【拿不到】机器人自己发出消息的 message_id；
+    #   - 撤回只能走协议端 call_action("delete_msg", message_id=...)，而该 id 必须在
+    #     【发送时】由协议端返回值捕获。
+    #   因此自动撤回开启时，出图发送改为直接调用 send_group_msg / send_private_msg
+    #   并记录返回的 message_id；关闭自动撤回时保持原 event.send 路径，行为零变化。
+    # ------------------------------------------------------------------ #
+    def _recall_cfg(self) -> dict:
+        """撤回分组配置（recall）。"""
+        try:
+            return dict(self._cfg("recall", {}) or {})
+        except Exception:
+            return {}
+
+    def _recall_auto_seconds(self) -> int:
+        """自动撤回延时（秒）；0 = 不自动撤回。
+
+        上限硬截断到 120 秒：QQ 群机器人撤回「自己发的消息」的时间窗只有约 2 分钟，
+        填再大也必定失败，只会刷一堆撤回失败日志。
+        """
+        cfg = self._recall_cfg()
+        if not cfg.get("enabled", False):
+            return 0
+        try:
+            sec = int(float(cfg.get("auto_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+        if sec <= 0:
+            return 0
+        return min(sec, 120)
+
+    def _recall_allowed(self, event) -> bool:
+        """当前用户能否使用 /撤回：管理员，或「权限 → 撤回功能白名单」内用户。
+
+        白名单留空 = 仅管理员可用（与平台 allowed_users 的语义保持一致）。
+        """
+        try:
+            if self._is_admin(event):
+                return True
+        except Exception:
+            pass
+        try:
+            wl = str(self._permissions_cfg().get("recall_whitelist", "") or "").strip()
+        except Exception:
+            wl = ""
+        if not wl:
+            return False
+        uid = ""
+        try:
+            uid = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
+        except Exception:
+            uid = ""
+        if not uid:
+            return False
+        allowed = {x.strip() for x in re.split(r"[\s,，;；、\n\r]+", wl) if x.strip()}
+        return uid in allowed
+
+    @staticmethod
+    def _recall_call_action(event):
+        """取出协议端 call_action（aiocqhttp）；当前平台不支持时返回 None。"""
+        bot = getattr(event, "bot", None)
+        ca = getattr(bot, "call_action", None)
+        if callable(ca):
+            return ca
+        api = getattr(bot, "api", None)
+        ca = getattr(api, "call_action", None)
+        return ca if callable(ca) else None
+
+    async def _try_recall(self, event, message_id: str) -> bool:
+        """撤回指定 message_id；失败只记日志并返回 False（绝不抛异常）。"""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return False
+        ca = self._recall_call_action(event)
+        if ca is None:
+            logger.info("【撤回】 当前平台/适配器不支持撤回（需要 aiocqhttp），已跳过")
+            return False
+        payload = {"message_id": int(mid) if mid.lstrip("-").isdigit() else mid}
+        try:
+            await ca("delete_msg", **payload)
+            logger.info(f"【撤回】 已撤回消息 message_id={mid}")
+            return True
+        except Exception as e:
+            logger.warning(
+                f"【撤回】 撤回失败 message_id={mid}: {_sanitize_exc_text(str(e), 160)}"
+            )
+            return False
+
+    async def _send_chain_keep_id(self, event, chain) -> str:
+        """发送消息链并返回平台 message_id（拿不到则返回 ""）。
+
+        只有自动撤回场景才需要 message_id，所以本方法只在撤回开启时被调用；
+        发送失败会回退到 event.send，保证图一定发得出去。
+        """
+        if not isinstance(chain, MessageChain):
+            chain = MessageChain([chain])
+        ca = self._recall_call_action(event)
+        if ca is None:
+            await event.send(chain)
+            return ""
+        try:
+            segs = []
+            for comp in chain.chain:
+                d = comp.to_dict()
+                if asyncio.iscoroutine(d):
+                    d = await d
+                segs.append(d)
+            is_group = not self._is_private_event(event)
+            ret = None
+            if is_group:
+                gid = str(getattr(event, "get_group_id", lambda: "")() or "").strip()
+                if not gid:
+                    await event.send(chain)
+                    return ""
+                ret = await ca(
+                    "send_group_msg",
+                    group_id=int(gid) if gid.isdigit() else gid,
+                    message=segs,
+                )
+            else:
+                uid = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
+                if not uid:
+                    await event.send(chain)
+                    return ""
+                ret = await ca(
+                    "send_private_msg",
+                    user_id=int(uid) if uid.isdigit() else uid,
+                    message=segs,
+                )
+            if isinstance(ret, dict):
+                mid = ret.get("message_id")
+                if not mid:
+                    mid = (ret.get("data") or {}).get("message_id")
+                return str(mid or "")
+            return ""
+        except Exception as e:
+            logger.warning(
+                f"【撤回】 带 id 发送失败，回退 event.send: {_sanitize_exc_text(str(e), 160)}"
+            )
+            try:
+                await event.send(chain)
+            except Exception as _e2:
+                logger.warning(f"【撤回】 回退 event.send 也失败: {_e2}")
+            return ""
+
+    async def _send_image_with_recall(self, event, chain) -> None:
+        """出图发送统一入口：不需要自动撤回时等价于 event.send；需要时登记定时撤回。"""
+        sec = self._recall_auto_seconds()
+        if sec <= 0:
+            await event.send(chain)
+            return
+        mid = await self._send_chain_keep_id(event, chain)
+        if not mid:
+            logger.info("【撤回】 未取到消息 id，本次不自动撤回")
+            return
+        try:
+            asyncio.create_task(self._auto_recall_later(event, mid, sec))
+            logger.info(f"【撤回】 已登记自动撤回：message_id={mid}，{sec} 秒后撤回")
+        except Exception as e:
+            logger.warning(f"【撤回】 登记自动撤回任务失败: {e}")
+
+    async def _auto_recall_later(self, event, message_id: str, seconds: int) -> None:
+        """后台任务：延时自动撤回。"""
+        try:
+            await asyncio.sleep(seconds)
+            await self._try_recall(event, message_id)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"【撤回】 自动撤回任务异常: {e}")
+
+    @staticmethod
+    def _extract_replied_message_id(event) -> str:
+        """从当前消息的「引用/回复」组件里取出被回复消息的 message_id。
+
+        AstrBot 的 Reply 组件带 id 字段（aiocqhttp 适配器从被回复消息的
+        message_id 填充），用它即可撤回被回复的那条消息。
+        """
+        try:
+            chain = getattr(getattr(event, "message_obj", None), "message", None) or []
+        except Exception:
+            chain = []
+        for comp in chain:
+            if comp is None:
+                continue
+            if type(comp).__name__ != "Reply":
+                continue
+            cid = getattr(comp, "id", None)
+            if cid:
+                return str(cid)
+        return ""
+
+    # ------------------------------------------------------------------ #
+    # 指令：/撤回（回复机器人发的图 → 撤回）
+    # ------------------------------------------------------------------ #
+    @filter.command("撤回", alias={"recall", "撤回图片"})
+    async def cmd_recall(self, event: AstrMessageEvent):
+        """手动撤回机器人发出的图片：用户「回复」那张图并发送 /撤回 即可。
+
+        权限：仅管理员，或「权限 → 撤回功能白名单」内的用户可用（白名单留空 = 仅管理员）。
+        平台：当前仅 aiocqhttp（OneBot V11）支持撤回机器人自己发出的消息。
+        """
+        cfg = self._recall_cfg()
+        if not cfg.get("enabled", False):
+            await self._send(
+                event,
+                "撤回功能未启用（在插件配置的「撤回」分组开启「启用撤回功能」）。",
+            )
+            event.stop_event()
+            return
+        if not cfg.get("manual_enabled", True):
+            await self._send(
+                event,
+                "手动撤回指令未启用（在插件配置的「撤回」分组开启「启用 /撤回 指令」）。",
+            )
+            event.stop_event()
+            return
+        if not self._recall_allowed(event):
+            await self._send(
+                event,
+                "你暂无权限使用撤回功能：仅管理员与「权限 → 撤回功能白名单」内的用户可用。",
+            )
+            event.stop_event()
+            return
+        mid = self._extract_replied_message_id(event)
+        if not mid:
+            await self._send(
+                event,
+                "请先「回复」机器人发出的那张图片，再发送 /撤回（需回复图片本身，而非普通文字）。",
+            )
+            event.stop_event()
+            return
+        ok = await self._try_recall(event, mid)
+        if ok:
+            await self._send(event, "已撤回～")
+        else:
+            await self._send(
+                event,
+                "撤回失败：可能已超过平台撤回时限（QQ 群约 2 分钟），或当前平台不支持撤回。",
+            )
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
     # 图文消息：把「配文 / 出图报告」与图片合成一条消息发送
     # ------------------------------------------------------------------ #
     def _cfg_image_caption(self) -> dict:
@@ -3410,14 +3656,29 @@ class ComfyUIDrawPlugin(Star):
     # 会卡住整个 bot），发送前群聊再跑一遍。现在只跑一次（to_thread），结果同时
     # 供归档打标（archive_image 的 nsfw_pre 参数）与群聊拦截复用。
 
+    def _permissions_cfg(self) -> dict:
+        """「权限」分组配置（含旧版顶层键的兼容读取）。
+
+        v5.12.5 曾把 nsfw_group_whitelist 放在顶层；v5.12.7 起收进 permissions 分组
+        （顶层旧键仅作隐藏的迁移来源保留），这里做合并读取，避免升级后旧配置失效。
+        """
+        out = dict(self._cfg("permissions", {}) or {})
+        if not str(out.get("nsfw_group_whitelist") or "").strip():
+            _legacy = str(self._cfg("nsfw_group_whitelist", "") or "").strip()
+            if _legacy:
+                out["nsfw_group_whitelist"] = _legacy
+        return out
+
     def _nsfw_group_allowed(self, event) -> bool:
-        """当前群是否在「允许发 NSFW 的群白名单」（配置 nsfw_group_whitelist）内。
+        """当前群是否在「允许发 NSFW 的群白名单」（权限分组内）内。
 
         命中 → 群聊不再拦截 NSFW 图，正常发出；留空/未命中 → 按原策略拦截。
         私聊永远放行（调用方已用 _is_private_event 排除，不进本判断）。
         """
         try:
-            raw = str(self._cfg("nsfw_group_whitelist", "") or "").strip()
+            raw = str(
+                self._permissions_cfg().get("nsfw_group_whitelist", "") or ""
+            ).strip()
         except Exception:
             return False
         if not raw:
@@ -8894,7 +9155,9 @@ class ComfyUIDrawPlugin(Star):
                     # 【返回给模型的文案】（如实告知，不谎报成功），不影响闸门计数。
                     plugin._draw_run_hit(event)
                     try:
-                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                        await plugin._send_image_with_recall(
+                            event, node if isinstance(node, MessageChain) else MessageChain([node])
+                        )
                     except Exception as _e:
                         _send_fail += 1
                         logger.warning(f"【出图·发送失败】 图片已生成但 event.send 失败: {_e}")
@@ -9049,7 +9312,9 @@ class ComfyUIDrawPlugin(Star):
                         # 发送失败只记日志，不影响闸门计数。
                         self._draw_run_hit(event)
                         try:
-                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                            await self._send_image_with_recall(
+                                event, node if isinstance(node, MessageChain) else MessageChain([node])
+                            )
                         except Exception as _e:
                             logger.warning(f"【续画·发送】 失败: {_e}")
             try:
@@ -9911,7 +10176,9 @@ class ComfyUIDrawPlugin(Star):
                         if _paths:
                             await self._story_send_as_bot(event, images=_paths)
                         else:
-                            await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                            await self._send_image_with_recall(
+                                event, node if isinstance(node, MessageChain) else MessageChain([node])
+                            )
                     except Exception as e:
                         logger.warning(f"[剧情] 出图发送失败: {e}")
         except Exception as e:
@@ -11067,7 +11334,9 @@ class ComfyUIDrawPlugin(Star):
                     # 发送失败累加 _send_fail2，只影响返回给模型的文案。
                     plugin._draw_run_hit(event)
                     try:
-                        await event.send(node if isinstance(node, MessageChain) else MessageChain([node]))
+                        await plugin._send_image_with_recall(
+                            event, node if isinstance(node, MessageChain) else MessageChain([node])
+                        )
                     except Exception as _e:
                         _send_fail2 += 1
                         logger.warning(f"【出图·发送失败】 comfyui_img2img 图已生成但 event.send 失败: {_e}")
