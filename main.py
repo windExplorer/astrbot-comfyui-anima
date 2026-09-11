@@ -5298,7 +5298,7 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0/不填=随机。
             prompts(array): 多条出图项，要几张传几条。
             image、denoise：本工具为文生，图生请用 comfyui_meme_img。
-            caption(string): 想和图片发在同一条消息里的那句话（20 字内）；★发出后别在回复里复述一遍。
+            caption(string): 想和图片发在同一条消息里的那句话（20 字内）；★发出后别在回复里复述一遍；★禁止提 LoRA / 模型 / 工作流 / 参数等技术细节。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         # LLM 工具开关（与 comfyui_draw 一致；伴侣插件等第三方主动调用不受影响）
@@ -5369,7 +5369,7 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0/不填=随机。
             prompts(array): 多条出图项（需图生图时每项带 image），要几张传几条。
             denoise(number): 降噪/重绘强度（0~1），可选。
-            caption(string): 想和图片发在同一条消息里的那句话（20 字内）；★发出后别复述一遍。
+            caption(string): 想和图片发在同一条消息里的那句话（20 字内）；★发出后别复述一遍；★禁止提 LoRA / 模型 / 工作流 / 参数等技术细节。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
@@ -8077,6 +8077,9 @@ class ComfyUIDrawPlugin(Star):
           否则用户会看到两遍。配文已经表达过的部分，后续回复直接略过或换个角度接续即可。
         - 一次出多张（prompts 多条）时，配文只会加在【第一张】图上，其余图片不带文字。
         - 不想配文就留空（默认），图片照常单独发出。
+        - ★禁止技术细节：配文与收尾回复里【绝不】出现 LoRA / 模型 / 工作流 / 底模 / 种子(seed) /
+          采样参数这类词（反面例子：「用娜娜莉 LoRA 画好啦～」），也不要解释"我是怎么画的"——
+          用户只关心画面本身，报这些技术名词很出戏。
 
         数量（重要）：【张数 = prompts 的条数】
         - 1 张（"画张图"）→ 用 prompt 单条，不传 count。
@@ -8123,6 +8126,7 @@ class ComfyUIDrawPlugin(Star):
         都不匹配就留空用默认，别硬猜。
         
         重要：不要依赖历史记忆复用旧图。用户再次要图就重新生成。画完就自然收尾，不要不停追问或重复画。
+        ★收尾话也说人话：只自然聊画面 / 情绪，禁止罗列 LoRA、模型、工作流、底模、seed、参数等技术信息。
         ★★一条用户请求只调一次本工具（最重要）：用户要 N 张就用 prompts 一次传 N 条不同画面，画完立刻自然收尾。
         插件对「同一条用户消息」有硬性出图闸门：本轮出过图后再调用会被直接拦回、出不了图，
         只会白费一轮。只有用户发来【下一条新消息】明确要求再画时才可再次调用。
@@ -8849,6 +8853,9 @@ class ComfyUIDrawPlugin(Star):
             return (
                 f"✅ 图片已成功生成并发送到聊天窗口，用户已经能看到，你无需再做任何发送动作。"
                 f"请用一句话自然告诉用户图已发给他即可；"
+                f"★这句话只聊画面本身（用 caption 那种轻松口吻），"
+                f"【绝对不要】提 LoRA / 模型 / 工作流 / 底模 / seed / 参数等技术细节"
+                f"（反面例子：「用娜娜莉 LoRA 画好啦～」），那会让回复很出戏；"
                 f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
                 f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
                 + (_max_hint or "")
@@ -10647,6 +10654,7 @@ class ComfyUIDrawPlugin(Star):
                 与 prompt 二选一，都传以 prompts 为准。
 
         补充：用户没要求 lora/seed/denoise 时都不用传（插件用工作流/配置默认）；参考图附在消息里即可（插件自动提取）。
+        ★收尾话只说人话：只自然聊画面，禁止提 LoRA / 模型 / 工作流 / 底模 / seed / 参数等技术细节。
         ★★一条用户请求只调一次本工具：要 N 张就用 prompts 一次传 N 条；本轮出过图后再调会被拦回、白费一轮，
         只有用户发【下一条新消息】明确要求再改时才可再次调用。
         """
@@ -10971,6 +10979,9 @@ class ComfyUIDrawPlugin(Star):
             return (
                 f"✅ 图片已成功生成并发送到聊天窗口，用户已经能看到，你无需再做任何发送动作。"
                 f"请用一句话自然告诉用户图已发给他即可；"
+                f"★这句话只聊画面本身（用 caption 那种轻松口吻），"
+                f"【绝对不要】提 LoRA / 模型 / 工作流 / 底模 / seed / 参数等技术细节"
+                f"（反面例子：「用娜娜莉 LoRA 画好啦～」），那会让回复很出戏；"
                 f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
                 f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
                 + (_max_hint2 or "")
