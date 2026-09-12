@@ -412,6 +412,11 @@ _LLM_TOOL_KW_ALIASES = {
     "artist_string": "artist",
 }
 
+# NAI 指令画师串哨兵：表示「明确不用任何画师串」（指令路径专用）。
+# 区别于 ""（未指定 → 沿用平台默认画师串，LLM 链路的既有行为）。
+# 指令规则（NAI 专属）：--画师串名=用该预设；裸 -- 或不带 --=不用默认画师串。
+_NAI_ARTIST_NONE = "__no_artist__"
+
 
 def _coerce_llm_tool_value(ann, v):
     """按参数注解粗略矫正 LLM 传参类型：数字传成字符串、数组/对象传成 JSON 字符串等。"""
@@ -3894,15 +3899,21 @@ class ComfyUIDrawPlugin(Star):
             if not (negative or "").strip():
                 negative = self._platform_store().enabled_negative_text()
         # 画师串（NAI 专属语义）。优先级：
+        #   ⓪ 哨兵 _NAI_ARTIST_NONE（指令路径传的「明确不用画师串」）→ 不补任何默认；
         #   ① 调用方显式指定（LLM 的 artist 参数/用户点名）——可传画师串预设名（支持包含匹配），
         #      未命中预设则按原文当作画师 tag 使用；
         #   ② 平台「默认画师串」（default_artist，填预设名）；
         #   ③ 第一个启用的画师串预设。
+        #   ②③ 仅 LLM/对话链路生效：artist 为空 = 未指定，沿用平台默认；指令路径
+        #   始终传显式值（画师串名或哨兵），NAI 指令画图绝不擅自补默认画师串。
         if ptype == "nai":
             _apresets = self._platform_store().artist_presets(enabled_only=True)
             _req = (artist or "").strip()
             _def_an = (plat.get("default_artist") or "").strip()
-            if _req:
+            if _req == _NAI_ARTIST_NONE:
+                artist = ""
+                logger.info("【画师串】 NAI 指令未指定画师串，不使用默认画师串")
+            elif _req:
                 _hit = next(
                     (
                         p
@@ -6041,11 +6052,16 @@ class ComfyUIDrawPlugin(Star):
          /画 平台名 提示词 [...]               用指定第三方平台（如 /画 nai 1girl）
          /画 平台名 工作流名 提示词 [...]      平台 + 工作流（如 /画 nai 动漫 1girl）
          /绘图|/绘画|/生图|/画图|/作画|/画画 提示词 [...]   用默认工作流（不解析工作流名）
+        NAI 专属画师串（仅 /画 nai ... 时生效；指令绝不自动补默认画师串）：
+         /画 nai --画师串1 提示词              用「画师串1」预设（不用默认）
+         /画 nai -- 提示词                     不用画师串
+         /画 nai 提示词                        也不用默认画师串
         /画 触发词下工作流名可选：首 token 命中已知工作流才拆出作为工作流名，
         /画 首 token 命中「已启用的第三方生图平台」时优先按平台处理（平台名从提示词里摘掉），
         否则一律视为提示词用默认工作流（如 /画 一个女孩 正常作画）。其余触发词
         （绘图/绘画/生图/画图/作画/画画）整句即为提示词。其余参数（--lora / --w /
-        --h / --seed / --wf 等）与 /draw 完全一致。"""
+        --h / --seed / --wf 等）与 /draw 完全一致；走 NAI 平台时 --token 专属解释为
+        画师串（NAI 无 LoRA 概念）。"""
         text = (event.message_str or "").strip()
         # 归一化换行：用户经常把提示词写成多行（含 \n/\r），
         # @filter.regex 预匹配及后续参数解析都按单行处理，否则会被换行截断，
@@ -6109,6 +6125,29 @@ class ComfyUIDrawPlugin(Star):
                         # 不是已知工作流：静默当作提示词，用默认工作流
                         rest_for_parse = rest
         prompt, lora_map, lora_presets, width, height, wf_arg, seed, denoise = self._parse_draw_args(rest_for_parse)
+        # ── NAI 专属画师串规则（指令）──────────────────────────────────
+        #   --画师串名  → 用该画师串预设（不用默认）
+        #   --（裸）    → 不用画师串
+        #   不带 --     → 也不用默认画师串（NAI 指令绝不擅自补默认；
+        #                 LLM 对话链路不受影响，不传仍沿用平台默认）
+        # 实现：NAI 平台时把 --token（原 LoRA 简写语义）重解释为画师串名——
+        # NAI 没有 LoRA 概念，lora_map 直接清空。
+        artist_arg = ""
+        if platform_arg:
+            try:
+                _pcfg = self._platform_store().get_platform(platform_arg)
+            except Exception:
+                _pcfg = None
+            if _pcfg and (_pcfg.get("type") or "").strip().lower() == "nai":
+                if re.search(r"(?:^|\s)--(?=\s|$)", rest_for_parse):
+                    artist_arg = _NAI_ARTIST_NONE  # 裸 --：明确不用画师串
+                elif lora_map:
+                    # 取第一个 --token 的名字（add_lora 已剥掉 :权重 部分）
+                    artist_arg = next(iter(lora_map), "").strip() or _NAI_ARTIST_NONE
+                    logger.info(f"【画师串】 NAI 指令指定画师串：{artist_arg}")
+                else:
+                    artist_arg = _NAI_ARTIST_NONE  # 不带 --：不用默认画师串
+                lora_map = None  # NAI 无 LoRA，--token 已改作画师串语义
         # 工作流优先级：显式 --wf > 首 token 推断的工作流名 > 默认
         wf_name = wf_arg or wf_specified
         # 空提示词拦截：仅当「既无提示词又未指定工作流」时才提示用法。
@@ -6138,6 +6177,7 @@ class ComfyUIDrawPlugin(Star):
             is_img2img=is_img,
             denoise=denoise,
             platform=platform_arg,
+            artist=artist_arg,
             explicit_default=(wf_name is None),
         ):
             yield out
@@ -6858,6 +6898,7 @@ class ComfyUIDrawPlugin(Star):
             "  · 若消息带了图片，自动切换为图生图模式并使用图生图默认工作流。\n"
             "/img2img 描述 [--wf 工作流] [...]  图生图（必须附带参考图）\n"
             "/画 [平台名] [工作流名] 提示词 [...]   用指定/默认引擎作画（如 /画 真人 一个女孩、/画 nai 1girl）；平台名/工作流名均可选、以空格分隔，找不到时回复可用列表\n"
+            "  · NAI 专属画师串：/画 nai --画师串1 提示词 = 用「画师串1」预设；/画 nai -- 提示词 或不带 -- = 不用默认画师串\n"
             "/绘图 | /绘画 | /生图 | /画图 | /作画 | /画画 [工作流名] 提示词 [...]   以上触发词首 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）；未命中则当提示词用默认工作流\n"
             "  · 无提示词工作流（工作流设置里「锁定提示词=开启」）：可只传图/引用图 + 工作流名，无需写提示词，如 [图片] /绘图 动漫转真人。图生图类锁定工作流必须附图。\n"
             "  · 以上任意中文触发词后跟「帮助/说明/怎么用」（如「画画帮助」「作图帮助」「绘图帮助」）也会显示本帮助。\n"
@@ -6878,6 +6919,7 @@ class ComfyUIDrawPlugin(Star):
             "🎨 中文画图指令（简单版）：\n"
             "· 画图：直接说「画一张…」或「画…」，如「画一只猫」；也可说「用 xxx 风格画…」\n"
             "· /画 [平台名] [工作流名] 提示词   用默认或指定引擎画（如 /画 真人 一个女孩、/画 nai 1girl）\n"
+            "· NAI 画师串：/画 nai --画师串1 提示词 = 用「画师串1」；/画 nai -- 提示词 = 不用画师串\n"
             "· /绘图 /绘画 /生图 /画图 /作画 /画画 [工作流名] 提示词   首 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）\n"
             "· 无提示词工作流：可只传图/引用图 + 工作流名（无需提示词；图生图类必须附图）\n"
             "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
