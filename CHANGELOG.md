@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.13.0（修复：独立 WebUI 图库「按 QQ / 昵称筛选」不生效）
+
+现象：独立 WebUI 图库页的「筛选用户昵称 / QQ…」输入框填了没反应，始终返回全部图片。
+
+根因：两条 WebUI 通道只有内嵌通道接了这个参数——独立 WebUI 的 `/gallery/search`（`standalone_webui.py`）**没读取 `user` 查询参数，也没向 `image_store.search/count_search` 传 `user_filter`**，于是 `user_filter` 恒为空串、SQL 里 `AND (user_id LIKE ? OR user_name LIKE ?)` 分支被整段跳过（前端一直在正常发送 `user`，数据层也一直支持按 `user_id`(QQ) / `user_name`(昵称) 模糊查，唯独这一环断了）。
+
+- `standalone_webui.py` 的 `/gallery/search` 补上 `user_filter = self._q(request, "user", "")`，并在 `search()` / `count_search()` 调用中传入，行为与内嵌通道（`webui_api.gallery_search`）对齐。
+- 纯后端修复，前端无需改动（`user` 一早已在发送）。
+
 ## v5.12.10（新增：翻译兜底模式——主翻译无结果/失败时自动换备用翻译）
 
 需求：主翻译为 Danbooru 时经常搜不到标签（返回空 → 片段保留中文原样进提示词），需要一个备用翻译兜底。

@@ -717,6 +717,10 @@ class StandaloneWebUI:
             return _ok(g.stats())
         if path == "/gallery/search":
             kw = self._q(request, "keyword", "")
+            # 昵称 / QQ 过滤：与内嵌通道（webui_api.gallery_search）保持一致。
+            # ★曾漏读该参数，导致独立 WebUI 的「筛选用户昵称 / QQ」静默失效
+            #   （user_filter 恒为空 → SQL 里对应的 LIKE 分支被整段跳过）。
+            user_filter = self._q(request, "user", "")
             stype = self._q(request, "type", "") or None
             if stype in ("", "all"):
                 stype = None
@@ -729,9 +733,11 @@ class StandaloneWebUI:
             size = min(self._qint(request, "size", 40), 200)
             offset = (page - 1) * size
             rows = g.search(keyword=kw, type=stype, starred_only=starred, trash=trash,
-                            limit=size, offset=offset, nsfw=nsfw, tag=tag, platform=platform)
+                            limit=size, offset=offset, user_filter=user_filter,
+                            nsfw=nsfw, tag=tag, platform=platform)
             total = g.count_search(keyword=kw, type=stype, starred_only=starred,
-                                   trash=trash, nsfw=nsfw, tag=tag, platform=platform)
+                                   trash=trash, user_filter=user_filter,
+                                   nsfw=nsfw, tag=tag, platform=platform)
             for r in rows:
                 r["sha"] = r.get("sha256", "")
                 r.pop("thumb", None)
