@@ -3096,11 +3096,11 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【撤回】 自动撤回任务异常: {e}")
 
     @staticmethod
-    def _extract_replied_message_id(event) -> str:
-        """从当前消息的「引用/回复」组件里取出被回复消息的 message_id。
+    def _extract_replied_message(event) -> tuple[str, str]:
+        """从当前消息的「引用/回复」组件里取出 (被回复消息的 message_id, 其发送者 ID)。
 
-        AstrBot 的 Reply 组件带 id 字段（aiocqhttp 适配器从被回复消息的
-        message_id 填充），用它即可撤回被回复的那条消息。
+        AstrBot 的 Reply 组件带 id / sender_id 字段（aiocqhttp 适配器从被回复
+        消息填充），id 用于撤回，sender_id 用于校验「只能撤回机器人自己的消息」。
         """
         try:
             chain = getattr(getattr(event, "message_obj", None), "message", None) or []
@@ -3113,57 +3113,99 @@ class ComfyUIDrawPlugin(Star):
                 continue
             cid = getattr(comp, "id", None)
             if cid:
-                return str(cid)
-        return ""
+                sender = ""
+                try:
+                    sender = str(getattr(comp, "sender_id", "") or "")
+                except Exception:
+                    sender = ""
+                return str(cid), sender
+        return "", ""
 
     # ------------------------------------------------------------------ #
     # 指令：/撤回（回复机器人发的图 → 撤回）
     # ------------------------------------------------------------------ #
+    async def _do_recall_flow(self, event) -> str:
+        """执行一次「回复图片 → 撤回」流程，返回 ""（成功）或失败原因文本。
+
+        ★撤回成功【静默】收尾，不再多发一条「已撤回」——图消失本身就是最直接的
+        反馈（用户明确要求）。只有失败时才回话，由调用方决定是否发送。
+        """
+        cfg = self._recall_cfg()
+        if not cfg.get("enabled", False):
+            return "撤回功能未启用（在插件配置的「撤回」分组开启「启用撤回功能」）。"
+        if not cfg.get("manual_enabled", True):
+            return "手动撤回未启用（在插件配置的「撤回」分组开启「启用 /撤回 指令」）。"
+        if not self._recall_allowed(event):
+            return "你暂无权限使用撤回功能：仅管理员与「权限 → 撤回功能白名单」内的用户可用。"
+        mid, mid_sender = self._extract_replied_message(event)
+        if not mid:
+            return "请先「回复」机器人发出的那张图片，再发送撤回指令。"
+        # ★只允许撤回机器人自己发出的消息：bot 在群里是管理员时，OneBot 的
+        # delete_msg 其实能撤回成员的消息——不加这层校验，引用别人消息说
+        # 「撤回」就会误删别人的发言。
+        try:
+            self_id = str(getattr(event, "get_self_id", lambda: "")() or "")
+        except Exception:
+            self_id = ""
+        if self_id and mid_sender and mid_sender != self_id:
+            return "只能撤回机器人自己发出的消息。"
+        ok = await self._try_recall(event, mid)
+        if ok:
+            return ""
+        return "撤回失败：可能已超过平台撤回时限（QQ 群约 2 分钟），或当前平台不支持撤回。"
+
     @filter.command("撤回", alias={"recall", "撤回图片"})
     async def cmd_recall(self, event: AstrMessageEvent):
         """手动撤回机器人发出的图片：用户「回复」那张图并发送 /撤回 即可。
 
         权限：仅管理员，或「权限 → 撤回功能白名单」内的用户可用（白名单留空 = 仅管理员）。
         平台：当前仅 aiocqhttp（OneBot V11）支持撤回机器人自己发出的消息。
+        成功时静默（不回话）；失败时给出原因。
         """
+        msg = await self._do_recall_flow(event)
+        if msg:
+            await self._send(event, msg)
+        event.stop_event()
+
+    # 明文「撤回」拦截：@机器人或引用消息后直接说「撤回」（不带 /）也要秒执行。
+    # 不拦截的话消息会进 LLM 对话管线，被当成聊天处理，表现为「卡半天没反应」。
+    # 注意正则不含 / 前缀——/撤回 走上面的 command 处理器，避免同一消息双重执行。
+    _RECALL_TEXT_PATTERN = r"^(?:撤回|recall|撤回图片)$"
+
+    def _is_recall_intent_context(self, event) -> bool:
+        """明文「撤回」是否应被接管：引用了消息，或 @ 了机器人自己。
+
+        两者都不满足时不拦截（普通聊天里恰好说「撤回」的整句消息照常走对话）。
+        """
+        try:
+            chain = getattr(getattr(event, "message_obj", None), "message", None) or []
+        except Exception:
+            chain = []
+        try:
+            self_id = str(getattr(event, "get_self_id", lambda: "")() or "")
+        except Exception:
+            self_id = ""
+        for comp in chain:
+            if comp is None:
+                continue
+            t = type(comp).__name__
+            if t == "Reply":
+                return True
+            if t == "At" and self_id and str(getattr(comp, "qq", "") or "") == self_id:
+                return True
+        return False
+
+    @filter.regex(_RECALL_TEXT_PATTERN)
+    async def cmd_recall_plain(self, event: AstrMessageEvent):
+        """明文「撤回」：@机器人 / 引用消息后直接说「撤回」，立即执行不进 LLM。"""
         cfg = self._recall_cfg()
-        if not cfg.get("enabled", False):
-            await self._send(
-                event,
-                "撤回功能未启用（在插件配置的「撤回」分组开启「启用撤回功能」）。",
-            )
-            event.stop_event()
-            return
-        if not cfg.get("manual_enabled", True):
-            await self._send(
-                event,
-                "手动撤回指令未启用（在插件配置的「撤回」分组开启「启用 /撤回 指令」）。",
-            )
-            event.stop_event()
-            return
-        if not self._recall_allowed(event):
-            await self._send(
-                event,
-                "你暂无权限使用撤回功能：仅管理员与「权限 → 撤回功能白名单」内的用户可用。",
-            )
-            event.stop_event()
-            return
-        mid = self._extract_replied_message_id(event)
-        if not mid:
-            await self._send(
-                event,
-                "请先「回复」机器人发出的那张图片，再发送 /撤回（需回复图片本身，而非普通文字）。",
-            )
-            event.stop_event()
-            return
-        ok = await self._try_recall(event, mid)
-        if ok:
-            await self._send(event, "已撤回～")
-        else:
-            await self._send(
-                event,
-                "撤回失败：可能已超过平台撤回时限（QQ 群约 2 分钟），或当前平台不支持撤回。",
-            )
+        if not cfg.get("enabled", False) or not cfg.get("manual_enabled", True):
+            return  # 撤回未启用：不拦截，消息照常走对话管线
+        if not self._is_recall_intent_context(event):
+            return  # 无引用且没 @ 机器人：不拦截
+        msg = await self._do_recall_flow(event)
+        if msg:
+            await self._send(event, msg)
         event.stop_event()
 
     # ------------------------------------------------------------------ #
