@@ -40,6 +40,21 @@
       <n-button size="small" dashed block @click="addKv">+ 添加模板</n-button>
     </div>
 
+    <!-- ID 列表（QQ 号 / 群号）：标签式逐条录入，比手写逗号分隔友好得多。
+         存储仍是字符串（按「换行」连接），因此 AstrBot 内嵌配置页的文本域、
+         以及后端按 split 解析的逻辑都不受影响。 -->
+    <div v-else-if="field?.editor === 'idlines'" class="idlines">
+      <n-dynamic-tags
+        :value="idTags"
+        size="small"
+        :input-props="{ placeholder: '输入 QQ 号 / 群号后回车，可逐条添加' }"
+        @update:value="onTags"
+      />
+      <div class="idlines-tip">
+        {{ idTags.length ? `共 ${idTags.length} 条（点标签上的 × 删除）` : "还没有条目：输入号码后按回车即可添加。" }}
+      </div>
+    </div>
+
     <!-- 多行文本 -->
     <n-input
       v-else-if="field?.type === 'text'"
@@ -99,7 +114,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NSwitch, NInput, NInputNumber, NSlider, NSelect, NButton } from "naive-ui";
+import { NSwitch, NInput, NInputNumber, NSlider, NSelect, NButton, NDynamicTags } from "naive-ui";
 
 const props = defineProps<{
   fieldKey: string;
@@ -155,6 +170,30 @@ function removeKv(i: number) {
   emitKv();
 }
 
+// idlines 编辑器：QQ 号 / 群号列表。存储格式是字符串（换行分隔），
+// 这里在「字符串 ⇄ 标签数组」之间转换；解析兼容逗号/顿号/分号/空白分隔的旧数据。
+const idTags = ref<string[]>([]);
+function parseIds(v: any): string[] {
+    const text = typeof v === "string" ? v : Array.isArray(v) ? v.join("\n") : "";
+    return text
+        .split(/[\s,，;；、]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+watch(
+    () => props.modelValue,
+    (v) => {
+        // 自身编辑回写（换行连接）时无需重建，避免输入框失焦
+        if ((typeof v === "string" ? v : "") === idTags.value.join("\n")) return;
+        idTags.value = parseIds(v);
+    },
+    { immediate: true }
+);
+function onTags(tags: string[]) {
+    idTags.value = tags;
+    emit("update:modelValue", tags.join("\n"));
+}
+
 // object 类型：子字段变化时，拼成新对象向上 emit
 function onSubUpdate(fk: string, v: any) {
   const cur: Record<string, any> = { ...(props.modelValue && typeof props.modelValue === "object" ? props.modelValue : {}) };
@@ -183,6 +222,8 @@ function onSubUpdate(fk: string, v: any) {
 .field-hint-text { color: var(--text-sub); font-size: 11px; line-height: 1.4; }
 .field-desc { color: var(--text-sub); font-size: 12px; }
 .kvlines { display: flex; flex-direction: column; gap: 8px; }
+.idlines { display: flex; flex-direction: column; gap: 6px; }
+.idlines-tip { font-size: 11px; color: var(--text-sub); line-height: 1.4; }
 .kv-row { display: flex; align-items: center; gap: 6px; }
 .kv-sep { color: var(--text-sub); font-family: ui-monospace, Consolas, monospace; flex: 0 0 auto; }
 .kv-row :deep(.n-input:first-child) { flex: 0 0 160px; }
