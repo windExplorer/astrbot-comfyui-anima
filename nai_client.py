@@ -497,6 +497,24 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
     return results
 
 
+def _to_client_timeout(timeout) -> "aiohttp.ClientTimeout":
+    """把调用方传入的超时归一化为 ClientTimeout。
+
+    接受 ClientTimeout / 数值秒（float/int）/ None；非法值回落 _DEFAULT_TIMEOUT。
+    余额查询现在由 WebUI 后端按「平台 timeout > 全局 platform_gen_timeout」传
+    数值秒进来（v5.13.3），不能假设它一定是 ClientTimeout。
+    """
+    if isinstance(timeout, aiohttp.ClientTimeout):
+        return timeout
+    if timeout in (None, "", 0):
+        return _DEFAULT_TIMEOUT
+    try:
+        _t = float(timeout)
+        return aiohttp.ClientTimeout(total=_t, connect=min(60.0, _t))
+    except (TypeError, ValueError):
+        return _DEFAULT_TIMEOUT
+
+
 async def fetch_quota(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
     """查询 NAI 剩余点数。
 
@@ -504,9 +522,11 @@ async def fetch_quota(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
     - NAI 中转站（via_middle_station）：GET {base}/api/me?token={api_key}
     - NAI 官方：GET {base}/user/data（Bearer token），解析订阅固定/购买 steps 之和
       （对齐 Nai2API fetchNovelAiAccountQuota）。
+    timeout：ClientTimeout 或数值秒（None 用默认）。
     返回 {"ok": True, "balance": int, "enabled": bool} 或 {"ok": False, "message": str}。"""
     if not isinstance(p, dict):
         return {"ok": False, "message": "平台配置无效"}
+    timeout = _to_client_timeout(timeout)
     if not bool(p.get("via_middle_station")):
         return await _fetch_quota_official(p, timeout=timeout)
     base = (p.get("base_url") or "").strip().rstrip("/")
@@ -540,6 +560,7 @@ async def _fetch_quota_official(p: dict, *, timeout=_DEFAULT_TIMEOUT) -> dict:
 
     点数 = subscription.trainingStepsLeft.fixedTrainingStepsLeft + purchasedTrainingSteps
     （字段兼容 snake_case）；查不到点数字段时返回失败，不猜 0。"""
+    timeout = _to_client_timeout(timeout)
     key = (p.get("api_key") or "").strip()
     if not key:
         return {"ok": False, "message": "NAI 平台未配置 Token（api_key）"}

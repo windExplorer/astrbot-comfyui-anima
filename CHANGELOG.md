@@ -2,6 +2,21 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.13.3（修复：NAI 余额查询 15s 就超时——前端没传等待上限、后端没接全局超时）
+
+现象：WebUI「生图平台 → 获取余额」总是「请求超时（15s 无响应）」，而全局 `platform_gen_timeout` 根本没起作用。
+
+根因（两端都没接全局超时，与此前修过的「生图测试 15s」同款问题、余额查询漏修）：
+
+- **前端**：`PlatformsView.fetchQuota` 调 `apiPost("platforms/quota")` **没传 timeout**——独立模式默认 15s 就 abort，内嵌桥接模式更是 6s。后端就算还在等，前端早已放弃。
+- **后端**：`webui_api` / `standalone_webui` 的 `/platforms/quota` 调 `fetch_quota(plat)` 用的是 nai_client 默认 120s，没有按「平台 timeout > 全局 platform_gen_timeout」取值。
+
+修复：
+
+- 前端 `fetchQuota` 比照生图测试：客户端等待上限 = max(30s, (平台 timeout 或全局 platform_gen_timeout)×1000 + 10s)。
+- 两个后端 handler 计算同口径超时秒数传给 `fetch_quota`。
+- `nai_client.fetch_quota` / `_fetch_quota_official` 新增 `_to_client_timeout()` 归一化：接受 ClientTimeout 或数值秒（非法回落默认），不再假设调用方传的是 ClientTimeout。
+
 ## v5.13.2（撤回体验：成功静默 + 明文「撤回」秒执行 + 防误删他人消息）
 
 - **成功不再回「已撤回」**：撤回成功时静默收尾（图消失本身就是反馈，用户明确要求）；只有失败才回话说明原因。`/撤回` 指令与明文「撤回」共用同一流程（抽成 `_do_recall_flow`）。

@@ -379,7 +379,12 @@ async function fetchQuota(p: any) {
   if (!p || p.type !== "nai") return;
   quotaLoading[p.id] = true;
   try {
-    const d = await apiPost("platforms/quota", { platform: JSON.parse(JSON.stringify(p)) });
+    // 客户端等待上限与生图测试同口径：平台专属 timeout > 全局 platform_gen_timeout。
+    // ★之前没传 timeout：独立模式前端默认 15s 就 abort（「15s 无响应」），
+    //   内嵌桥接模式更短（6s）——慢中转下余额查询必超时。
+    const eff = Number(p.timeout) > 0 ? Number(p.timeout) : (globalGenTimeout.value || 180);
+    const clientMs = Math.max(30000, Math.round(eff * 1000) + 10000);
+    const d = await apiPost("platforms/quota", { platform: JSON.parse(JSON.stringify(p)) }, { timeout: clientMs });
     quotaMap[p.id] = d && typeof d === "object" ? d : { ok: false, message: "空响应" };
   } catch (e) {
     quotaMap[p.id] = { ok: false, message: (e as Error)?.message || String(e) };

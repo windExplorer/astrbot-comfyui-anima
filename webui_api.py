@@ -352,7 +352,21 @@ class WebUIApi:
         except ImportError:
             from nai_client import fetch_quota
         try:
-            result = await fetch_quota(plat)
+            # 查询超时与生图测试同口径：优先平台自身 timeout（秒），否则全局
+            # platform_gen_timeout（默认 180s）。此前用 nai_client 默认 120s、
+            # 而前端独立模式 15s 就 abort，慢中转下余额查询必超时。
+            _to = 0.0
+            try:
+                _raw = plat.get("timeout")
+                _to = float(_raw) if _raw not in (None, "", 0) else 0.0
+            except (TypeError, ValueError):
+                _to = 0.0
+            if _to <= 0:
+                try:
+                    _to = float(self.plugin._cfg("platform_gen_timeout", 180) or 180)
+                except Exception:
+                    _to = 180.0
+            result = await fetch_quota(plat, timeout=_to)
         except Exception as e:
             return error_response(f"查询余额异常: {e}")
         return json_response(result)

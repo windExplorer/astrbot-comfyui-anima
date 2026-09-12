@@ -633,7 +633,20 @@ class StandaloneWebUI:
                     from .nai_client import fetch_quota
                 except ImportError:
                     from nai_client import fetch_quota
-                result = await fetch_quota(plat)
+                # 查询超时与生图测试同口径：平台 timeout > 全局 platform_gen_timeout
+                # （默认 180s）。此前前端独立模式 15s 就 abort，慢中转必超时。
+                _to = 0.0
+                try:
+                    _raw = plat.get("timeout")
+                    _to = float(_raw) if _raw not in (None, "", 0) else 0.0
+                except (TypeError, ValueError):
+                    _to = 0.0
+                if _to <= 0:
+                    try:
+                        _to = float(self.plugin._cfg("platform_gen_timeout", 180) or 180)
+                    except Exception:
+                        _to = 180.0
+                result = await fetch_quota(plat, timeout=_to)
                 return _ok(result)
             except ValueError as e:
                 return _err(str(e))
