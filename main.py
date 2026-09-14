@@ -1084,11 +1084,14 @@ class ComfyUIDrawPlugin(Star):
                 # comfyui_workflows 无参数，无需 required
             }
             patched = []
+            empty = []
             for tool in llm_tools.func_list:
                 if tool.name in required_map:
                     params = getattr(tool, "parameters", None) or {}
                     if isinstance(params, dict):
                         params.setdefault("properties", {})
+                        if not params["properties"]:
+                            empty.append(tool.name)
                         params["required"] = required_map[tool.name]
                         tool.parameters = params
                         patched.append(tool.name)
@@ -1096,6 +1099,16 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"【初始化】 已为工具补充 required: {patched}")
             else:
                 logger.warning("【初始化】 未找到本插件工具，补充 required 跳过（工具可能尚未注册）")
+            # docstring 的 Args 段格式不合法时，AstrBot 的 docstring_parser（AUTO 模式）
+            # 会静默吞掉 Google 风格解析异常、退化成「0 个参数」：工具照常注册但模型拿不到任何
+            # 参数，不报错不打日志（comfyui_draw v5.10.12~v5.13.4 就这样废了两个版本）。
+            # 这里把这种静默失效显式暴露出来。
+            if empty:
+                logger.error(
+                    f"【初始化】 工具参数 schema 为空（模型将拿不到任何参数，工具等同失效）: {empty}；"
+                    "多半是 docstring 的 Args 段写坏了（裸说明行 / 中文冒号 / 两个参数写一行）。"
+                    "请运行 tests/test_llm_tool_docstrings.py 定位。"
+                )
         except Exception as e:  # 框架内部结构变动时不致命
             logger.warning(f"【初始化】 补充工具 required 失败（可忽略）: {e}")
 
@@ -5734,16 +5747,17 @@ class ComfyUIDrawPlugin(Star):
         ⚠️ 本工具受配置 `enable_comic_llm` 控制，**默认关闭**（关闭时直接拒绝）。关闭时若用户要带字漫画/表情包，
         应直接建议其用 `/漫画`、`/表情包` 指令，**不要反复重试本工具**；仅当管理员开启该配置时才用。
         普通「图上出现文字」（标题/招牌/海报字）**用 comfyui_draw 正常画**，不要改道本工具；图生表情包用 comfyui_meme_img。
+        ★本工具只能文生图：不要传 image / denoise（传了也不会走图生图）。
 
         Args:
             prompt(string): 【必填】画面/角色描述（中文或英文）；这是出图提示词，不是气泡文字。
             negative_prompt(string): 负向提示词，可选。
             workflow(string): 漫画工作流名，可选；须配了 prompt_slots（不填用功能默认，可先调 comfyui_workflows）。
             loras(array[string]): 要启用的 LoRA 名/关键字；规则同 comfyui_draw（先调 comfyui_loras 拿规范名）。
-            width、height(number): 宽高，0/不填=工作流默认。
+            width(number): 宽度，0/不填=工作流默认。
+            height(number): 高度，0/不填=工作流默认。
             seed(number): 随机种子，0/不填=随机。
             prompts(array): 多条出图项，要几张传几条。
-            image、denoise：本工具为文生，图生请用 comfyui_meme_img。
             caption(string): 想和图片发在同一条消息里的那句话（20 字内）；★发出后别在回复里复述一遍；★禁止提 LoRA / 模型 / 工作流 / 参数等技术细节。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
@@ -5811,7 +5825,8 @@ class ComfyUIDrawPlugin(Star):
             workflow(string): 图生表情包工作流名，可选；须配 prompt_slots + image_node（不填用功能默认）。
             image(string): 【必填】参考图 URL。
             loras(array[string]): 要启用的 LoRA 名/关键字；规则同 comfyui_draw。
-            width、height(number): 宽高，0/不填=工作流默认。
+            width(number): 宽度，0/不填=工作流默认。
+            height(number): 高度，0/不填=工作流默认。
             seed(number): 随机种子，0/不填=随机。
             prompts(array): 多条出图项（需图生图时每项带 image），要几张传几条。
             denoise(number): 降噪/重绘强度（0~1），可选。
@@ -8671,7 +8686,7 @@ class ComfyUIDrawPlugin(Star):
                 其它「用XX」按序找：comfyui_loras → comfyui_workflows → 都不命中留空走默认。显示名支持包含匹配（忽略大小写）。
                 ★NAI 类吃英文 Danbooru 标签、无 LoRA/工作流概念（loras 会被忽略，角色/画风直接写进 prompt）；OpenAI 类吃自然语言。
                 管理员未配置任何第三方平台时不要传；平台不存在/停用/无权限会回退 ComfyUI 并提示用户。
-            ★走 NAI 且要「画风/画师串/角色/服装/体位/异种/捆绑」等精确效果时：先调 nai_codex 检索「所长 NovelAI 法典」拿现成 tag 串
+                ★走 NAI 且要「画风/画师串/角色/服装/体位/异种/捆绑」等精确效果时：先调 nai_codex 检索「所长 NovelAI 法典」拿现成 tag 串
                 （含 artist: 画师串与权重记号）再原样拼进本工具 prompt，不要凭记忆拼 NAI 标签；普通泛化画面可直接写英文标签不必查。
                 nai_codex 的 scope 默认 sfw（常规册），仅用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
             cfg(number): 引导系数（仅 nai/openai 类，NAI 称 scale）；不传=平台默认（NAI 约 6）。
@@ -8679,7 +8694,7 @@ class ComfyUIDrawPlugin(Star):
             sampler(string): 采样器（仅 nai/openai 类）；不确定不要传，传错会报错。
             noise_schedule(string): 噪声调度（仅 nai 类）；不传=平台默认。
             artist(string): NAI 画师串（仅 nai 类）；可传预设名（自动匹配）或画师串原文；不传=平台默认画师串。
-            ★以上平台参数未传时回落平台配置默认值，不要无脑传；负向未传时 NAI 会自动套用插件已启用的负向模板。
+                ★以上平台参数未传时回落平台配置默认值，不要无脑传；负向未传时 NAI 会自动套用插件已启用的负向模板。
 
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时这些参数可不传，插件自动用工作流或配置默认值。

@@ -2,6 +2,47 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.13.5（修复：comfyui_draw / comfyui_comic 的工具参数全丢——docstring 的 Args 段格式非法）
+
+现象：AstrBot 面板「函数工具」里 `comfyui_draw`、`comfyui_comic` 展开后显示「无参数」
+（`comfyui_workflows` / `comfyui_platforms` 本就是无参只读查询，属正常）。
+其中 `comfyui_draw` 参数为空意味着模型拿不到 prompt 等 19 个参数，对话生图实际长期处于半瘫状态。
+
+根因（框架侧机制，已用与 AstrBot 同区间的 `docstring_parser` 纯 AST 复现，无需 AstrBot 环境）：
+`@filter.llm_tool` **只靠 docstring** 生成工具 schema（`star_handler.py` → `docstring_parser.parse(func_doc)`），
+而该调用用的是 `DocstringStyle.AUTO`——它依次尝试 REST / GOOGLE / NUMPYDOC / EPYDOC，
+**把抛 ParseError 的风格静默跳过**，最后取「meta 项最多」的结果。于是 Args 段一旦不符合 Google 风格，
+GOOGLE 解析失败被吞掉、回落到看不懂 `Args:` 的其他风格，最终返回 0 个参数：
+工具照常注册、模型照常看得到，却没有任何参数，**不报错、不打日志**（所以坏了两个版本没人发现）。
+
+Google 风格对 Args 段的硬性要求：段内每一行要么是 `name(type): 描述`，要么是缩进比参数行**更深**的续行；
+与参数行同缩进的裸说明行（尤其含中文冒号 `：`）会让整段 Args 解析失败。
+
+修复的三处：
+
+- `comfyui_draw`（**自 v5.10.12 起失效**）：两行与参数同缩进的裸说明 → 下沉为上一参数的续行，
+  语义上分别归入 `platform(string)` 与 `artist(string)` 的描述：
+  - `★以上四个参数只作用于第三方平台生图…`（v5.10.12 引入，v5.11.11 改写为
+    `★以上平台参数未传时回落平台配置默认值…`，两次都是裸行）；
+  - `★走 NAI 且要「画风/画师串/…」等精确效果时：…`。
+- `comfyui_comic`（**自 v5.11.11 起失效**）：
+  - `image、denoise：本工具为文生，图生请用 comfyui_meme_img。`（中文冒号裸行）→ 从 Args 移除，
+    改在 `Args:` 之前以普通说明行写「★本工具只能文生图：不要传 image / denoise」。
+- 同类写法错误（不报错，但会生成假参数）：`width、height(number): 宽高…` 产出的参数名就是
+  `width、height`，LLM 永远填不对 → 在 `comfyui_comic` / `comfyui_meme_img` 拆成 `width`、`height` 两条。
+
+修复后实测参数数量：`comfyui_draw` 19 项、`comfyui_meme_img` 11 项、`comfyui_comic` 9 项，
+9 个 LLM 工具的 Google 解析全部成功且与 AUTO（框架实际使用的）结果一致。
+
+防复发：
+
+- 新增 `tests/test_llm_tool_docstrings.py`：对每个 `@filter.llm_tool` 校验
+  ① Google 风格可解析；② AUTO 结果与 Google 一致（不一致即已静默退化）；③ 参数名必须是函数签名里
+  真实存在的参数（专防「两个参数写一行」）；④ 类型受支持；⑤ 必需参数不缺失。
+  用法：`uv run --no-project --with "docstring-parser>=0.16" python tests/test_llm_tool_docstrings.py`
+- `initialize()` 在补 `required` 的同时，检测「该有参数的工具却 properties 为空」，命中直接打
+  ERROR 日志（此前这种失效是完全静默的）。
+
 ## v5.13.4（NAI 专属：`/画` 指令画师串规则——`--画师串名` / `--` / 不补默认）
 
 需求：NAI 平台用指令画图时，此前会自动补「平台默认画师串 / 第一个启用的画师串预设」，用户想要指令完全掌控画师串。
