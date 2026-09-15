@@ -246,6 +246,13 @@ g_recent_user_images: dict[str, list[str]] = {}
 # 键为 session_id，值为最近一次图生图的用户原图本地路径列表（最多 3 张）。
 g_session_i2i_ref: dict[str, list[str]] = {}
 
+# 每个会话「最近一次显式指定的文生图工作流」记忆（v5.13.6）：
+# 用户（指令 --wf / 首 token）或 LLM（workflow 参数）显式指定了文生图工作流时记录，
+# 之后同一会话内未指定工作流时优先沿用，而不是按提示词语义自动换（旧逻辑导致
+# 「说好用动漫、几轮后悄悄变真人」）。图生图工作流绝不入此记忆（用户约定：
+# 「没指定就用默认或之前说过的，图生图不算」）。键为 session_id，值为工作流名。
+g_session_workflow: dict[str, str] = {}
+
 # 「我会永远陪着你」伴侣插件的来源标识：llm_draw 的 source 参数命中此值时，
 # 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
 # 事实与元指令、清除 [section compacted] 等标记）。
@@ -2492,24 +2499,37 @@ class ComfyUIDrawPlugin(Star):
             or self._cfg("default_workflow_real", "")
         )
 
-    def _detect_style_from_prompt(self, positive: str) -> str:
-        """从提示词语义检测「真人/写实」还是「动漫/二次元」，用于未指定工作流时选默认。
+    def _remember_session_workflow(self, session_id: str, name: str) -> None:
+        """记录「本会话最近一次显式指定的文生图工作流」（v5.13.6）。
 
-        返回 "real" / "anime" / ""（无法判断）。命中互斥时以更强烈的信号优先：
-        先看是否有动漫强词（anime/二次元/动漫/卡通/漫画/插画风/赛璐璐等），
-        再看是否真人强词（真人/写实/照片/摄影/真实人物/真人照片/证件照等）。
+        仅文生图调用方在用户/LLM 确实显式指定了工作流名时调用；
+        图生图工作流绝不入记忆。空名忽略；同名重复写覆盖（刷新时间语义）。
         """
-        text = (positive or "").lower()
-        anime_kw = ("anime", "二次元", "动漫", "卡通", "漫画", "动画", "插画风", "赛璐璐",
-                    "anima", "2d", "illustration style", "anime style", "cartoon", "manga")
-        real_kw = ("真人", "写实", "照片", "摄影", "真实", "证件照", "photo", "photograph",
-                   "realistic", "real person", "photorealistic", "真人写真")
-        has_anime = any(k in text for k in anime_kw)
-        has_real = any(k in text for k in real_kw)
-        if has_anime and not has_real:
-            return "anime"
-        if has_real and not has_anime:
-            return "real"
+        _name = (name or "").strip()
+        _sid = (session_id or "").strip()
+        if not _name or not _sid:
+            return
+        g_session_workflow[_sid] = _name
+        logger.info(f"【绘图·解析】 会话工作流记忆更新：session={_sid} -> 「{_name}」")
+
+    def _get_session_workflow(self, session_id: str) -> str:
+        """取「本会话最近一次显式指定的文生图工作流」，带回校验。
+
+        工作流已被删除/改名/停用则视为失效：清除记忆并返回空串（走全局默认）。
+        """
+        _sid = (session_id or "").strip()
+        if not _sid:
+            return ""
+        _name = (g_session_workflow.get(_sid) or "").strip()
+        if not _name:
+            return ""
+        for w in self._workflows():
+            if (w.get("name") or "").strip().lower() == _name.lower():
+                if w.get("enabled", True):
+                    return (w.get("name") or "").strip()
+                break
+        logger.info(f"【绘图·解析】 会话工作流记忆「{_name}」已失效（删除/改名/停用），清除")
+        g_session_workflow.pop(_sid, None)
         return ""
 
     def _alias_workflow_name(self, name: str) -> str:
@@ -2560,6 +2580,7 @@ class ComfyUIDrawPlugin(Star):
         positive: str = "",
         explicit_default: bool = False,
         intercept_disabled: bool = False,
+        session_id: str = "",
     ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
@@ -2573,6 +2594,12 @@ class ComfyUIDrawPlugin(Star):
              - fallback_on_missing=True（绘图真正入口 _do_draw，可能收到伴侣/LLM
                传入的无效工作流名）→ 容错回退到按「风格优先级 + 文生图/图生图」
                配置的默认工作流；默认未配置则用第一个。
+        未指定工作流名时：
+          - explicit_default=True（指令绘图且用户未显式指定）→ 全局默认工作流；
+          - explicit_default=False（LLM/Agent/第三方调用）→ 优先沿用本会话最近
+            一次显式指定的文生图工作流（session_id 非空时），没有记忆才走全局默认。
+            绝不按提示词语义（"真人/写实"、"动漫"字样）自动切换工作流——
+            旧逻辑导致「说好用动漫、几轮后悄悄变真人」，v5.13.6 已移除。
         """
         workflows = self._workflows()
         if not workflows:
@@ -2583,32 +2610,11 @@ class ComfyUIDrawPlugin(Star):
             if alias_target and alias_target != name:
                 name = alias_target
         if not name:
-            # 未指定工作流时：
-            #  - explicit_default=True（指令绘图且用户未显式指定工作流）→
-            #    直接使用全局「风格优先级 + 文生图/图生图」默认工作流，
-            #    **绝不**根据提示词内容（如 realistic）自行切换工作流，尊重指令语义。
-            #  - explicit_default=False（LLM/Agent/第三方调用）→ 先按提示词语义判断
-            #    「真人/动漫」，命中则用对应默认工作流；语义不明才走全局默认。
-            if not explicit_default:
-                _sem = self._detect_style_from_prompt("" if positive is None else str(positive))
-                if _sem == "real":
-                    _cand = (
-                        self._cfg("default_img2img_workflow_real", "")
-                        if is_img2img
-                        else self._cfg("default_workflow_real", "")
-                    ) or self._cfg("default_workflow_real", "")
-                    if _cand:
-                        name = _cand
-                        logger.info(f"【绘图·解析】 提示词含「真人/写实」语义，选用真人工流={name}")
-                elif _sem == "anime":
-                    _cand = (
-                        self._cfg("default_img2img_workflow", "")
-                        if is_img2img
-                        else self._cfg("default_workflow", "")
-                    ) or self._cfg("default_workflow", "")
-                    if _cand:
-                        name = _cand
-                        logger.info(f"【绘图·解析】 提示词含「动漫/二次元」语义，选用动漫工作流={name}")
+            if not explicit_default and session_id:
+                _mem = self._get_session_workflow(session_id)
+                if _mem:
+                    name = _mem
+                    logger.info(f"【绘图·解析】 未指定工作流，沿用本会话最近显式指定的文生图工作流={name}")
             if not name:
                 name = self._pick_default_workflow_name(is_img2img)
                 logger.info(
@@ -4316,6 +4322,7 @@ class ComfyUIDrawPlugin(Star):
                 positive=positive,
                 explicit_default=explicit_default,
                 intercept_disabled=bool(workflow_name and workflow_name.strip()),
+                session_id=getattr(event, "session_id", "") or "",
             )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
@@ -5535,6 +5542,9 @@ class ComfyUIDrawPlugin(Star):
         # 已读回执由 _ack_command_received 统一处理（覆盖本插件所有指令，含 /draw）
         # 若消息或引用(回复)里带了图片，则按图生图处理
         images = await self._extract_images(event)
+        # 记录「本会话显式指定的文生图工作流」（v5.13.6，图生图不入记忆）
+        if wf_name and not images:
+            self._remember_session_workflow(getattr(event, "session_id", "") or "", wf_name)
         async for m, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
@@ -6184,6 +6194,9 @@ class ComfyUIDrawPlugin(Star):
                 await self._send(event, str(e))
                 event.stop_event()
                 return
+            # 记录「本会话显式指定的文生图工作流」（v5.13.6，图生图不入记忆）
+            if not is_img:
+                self._remember_session_workflow(getattr(event, "session_id", "") or "", wf_name)
         # 若消息或引用(回复)里带了图片，则按图生图处理（参考图注入 LoadImage 节点）。
         # 否则走普通文生图。这样「画 真人 一个女孩 + 引用图片」也能自动图生图。
         async for out, _p in self._do_draw(
@@ -8609,7 +8622,10 @@ class ComfyUIDrawPlugin(Star):
         ★一条用户请求只调用本工具【一次】：要几张都在这一次用 prompts 说完；本轮出过图后再调会被拦回、白费一轮。
         一次调用的总张数（= prompts 条数）受插件配置的单次上限约束（默认 3 条），超出会从末尾截断。
         
-        图生图判定（重要）：只有当用户**当前消息里附带了参考图**（或明确说"把这张图/参考这张图/这张照片变成XX"）时，才按图生图处理（传 image 或依赖插件自动提取）。**普通文字请求一律文生图**，不要因为群里/历史里有图就当作图生图。
+        图生图判定（最重要，高频错误）：**默认一律文生图**。只有当用户【当前这条消息】真的附带/引用了图片，
+        或明确说「把这张图/参考这张图/这张照片变成XX」时，才按图生图处理（传 image 或 img2img_workflow）。
+        ★上一轮做过图生图、群里或对话历史里出现过图、用户只是继续用文字要新图——这些都【不算】图生图，
+          此时绝不传 image、绝不传 img2img_workflow（传了就会被迫走图生图，用户投诉过"没说明就一直图生图"）。
         
         ★★★提示词规范（按目标工作流的底模选写法，写错会直接毁图）：
         - anima / illustrious / noobai（动漫标签系）：英文 Danbooru 标签 + 质量前缀
@@ -8638,7 +8654,10 @@ class ComfyUIDrawPlugin(Star):
            拿不准就什么都不写；只有用户明确要求改某外观（如"头发染成粉色"）才加那一项。泛化人物（"画个少女"）不受此限。
         ★中文→英文标签：优先用 danbooru MCP 查/确认标准标签再填 prompt，不要臆造、不要透传中文、更不要抓官网。
         ★括号写法：角色/作品 tag 里的 `(` `)` 必须写成 `\\(` `\\)`（如 belle \\(zenless zone zero\\)）；MCP 返回什么就照抄什么。
-        工作流：不确定就**留空**用默认；只有用户明确要某画风且你有把握时才传 workflow（不确定可先调 comfyui_workflows）。
+        工作流（★★不许乱换）：用户没点名工作流就**留空**——插件会自动沿用本会话之前定过的工作流或全局默认，
+        你不需要、也不要自己替用户挑。同一会话里用户定过某工作流后，后续轮次保持不变，
+        绝不因为提示词里出现"真人/写实/动漫"等字样就擅自换工作流；只有用户明确要求换（"换成XX工作流"）才传新的 workflow。
+        不确定有哪些工作流可先调 comfyui_workflows 查列表。
         图生图时工作流填 **img2img_workflow**（不要填 workflow——文生图工作流常无图加载节点，会报错）：
         先调 comfyui_workflows 查列表，优先选名称含「图生图」的（专为图生图设计），其次只选标了 [支持图生图] 的
         （[仅文生图] 绝不能用于图生图）；再按名称语义匹配画风（转真人→含"真人"；转动漫→含"动漫/二次元"）；
@@ -8659,8 +8678,10 @@ class ComfyUIDrawPlugin(Star):
                 若 XX 命中 comfyui_workflows（工作流名/别名）→ 只填 workflow、platform 留空；拿不准宁可不填 platform。
                 ★LoRA 与底模匹配：工作流底模必须与 LoRA 底模**完全一致**（两个列表都带 [底模 xxx] 标记）；
                 底模"未配置"的 LoRA 一律不用（插件会拒绝注入）；不匹配就别填该 LoRA，并提醒管理员补配置；
-                用户未指定工作流时，从列表里选一个底模完全一致的；找不到就不出图并告知用户（附上两者底模名）。
-            img2img_workflow(string): 图生图工作流名称，可选。仅在本次消息附了参考图时使用。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
+                用户未指定工作流时一律留空（插件用默认/会话沿用的工作流）；若该工作流底模与 LoRA 不一致，插件会拒绝注入，
+                如实告知用户原因、由用户决定是否换工作流，不要自作主张替用户换。
+            img2img_workflow(string): 图生图工作流名称，可选。仅当用户【当前这条消息】真的附带/引用了图片时才允许使用；
+                普通文字请求绝不要传此参数（传了会被迫走图生图）。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
             height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
             loras(array[string]): 要启用的 LoRA 名/关键字，每项可带权重（"catgirl:0.8" = 0.8 强度）。★硬规则：用户提到某 LoRA 的名字/关键字
@@ -9098,6 +9119,24 @@ class ComfyUIDrawPlugin(Star):
             f"指定 img2img_workflow={img2img_workflow!r}, 指定 workflow={workflow!r}, "
             f"最终选用工作流={resolved_wf or '默认文生图'}"
         )
+        # ── 会话工作流记忆（v5.13.6）─────────────────────────────────
+        # 仅文生图、且 LLM/用户确实显式指定了 workflow（调用级或 prompts 任一项）时记录，
+        # 供本会话后续「没指定工作流」的绘图沿用（用户约定：图生图不算、不许乱换）。
+        if not is_img2img:
+            _explicit_wf = (workflow or "").strip()
+            if not _explicit_wf:
+                for _it in _items:
+                    if (_it.get("workflow") or "").strip():
+                        _explicit_wf = _it["workflow"].strip()
+                        break
+            if _explicit_wf:
+                _mem_cfg = self._find_workflow_by_name(_explicit_wf)
+                if _mem_cfg and self._workflow_kind(_mem_cfg) == "comic":
+                    _explicit_wf = ""  # 漫画工作流不入记忆，避免后续普通绘图被带偏
+            if _explicit_wf:
+                self._remember_session_workflow(
+                    getattr(event, "session_id", "") or "", _explicit_wf
+                )
 
         # ── 剔除「不要发表情包」类元指令 ────────────────────────────────
         # 这类句子是对**出图方式**的否定要求、不是画面描述；若不剔除会被当成描述语
