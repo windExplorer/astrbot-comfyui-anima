@@ -4827,39 +4827,51 @@ class ComfyUIDrawPlugin(Star):
         # 会被写入 positive（去重，仅追加缺失的词），否则只加了 LoRA 节点却没触发词，
         # 出图效果会偏离预期。仅当启用了 LoRA 且确实有触发词时才处理。
         # 触发词来源分两级（v5.7.6）：
-        #   a) LLM 调 comfyui_draw 时显式传了 trigger_words（画图时已按用户需求筛选过，
-        #      典型场景：触发词里混着服装词而用户要求换装，LLM 剔除冲突词）→ 只用 LLM 的列表；
-        #      传空串 = LLM 明确表示一个触发词都不要追加。
-        #   b) 未传（None，/draw 指令、伴侣插件、表情包等路径）→ 维持旧行为：全量自动追加。
+        #   a) LLM 调 comfyui_draw 时显式传了 trigger_words → **并集增补**（v5.13.8）：
+        #      启用 LoRA 的全量触发词始终保留（永不缺失），LLM 传入的额外词（角色名等）
+        #      追加在后。旧逻辑「LLM 列表整体替换」实测会导致角色特征逐张漂移——
+        #      LLM 每轮传的子集不一样，漏掉的词（发色/兽耳等）随之消失，
+        #      表现为「头发每张变色、猫娘莫名变小猫」。传空串 = 一个触发词都不要。
+        #   b) 未传（None，/draw 指令、伴侣插件、表情包等路径）→ 全量自动追加。
         # 两级来源统一追加「换装自动过滤」（v5.10.46）：用户消息带换装/换衣意图时，
-        # 对触发词按服饰黑名单做 token 级剔除（角色/画风核心词保留），不再赌 LLM 会筛。
+        # 对触发词按服饰黑名单做 token 级剔除（角色/画风核心词保留），不再赌 LLM 会筛——
+        # 这也是并集方案的安全网：LLM 曾借传词剔除服饰冲突，现在插件自动做。
         if enabled:
             _lib = self._lora_lib_index()
             _triggers: list[str] = []
-            if trigger_words is not None:
-                logger.info(
-                    f"【LoRA 触发词】 LLM 显式传入筛选触发词（原文）: {trigger_words!r}"
+            # ① 全量自动列表：启用 LoRA 的触发词永不缺失
+            for nm in enabled:
+                _lc = next(
+                    (l for l in (loras_cfg or [])
+                     if (l.get("name") or "").strip() == nm),
+                    None,
                 )
-                for _tw in re.split(r"[\n,，、;；]+", str(trigger_words).strip()):
+                _tw_raw = (
+                    (_lc.get("trigger_words") if _lc else None)
+                    or (_lib.get(nm) or {}).get("trigger_words")
+                    or ""
+                )
+                for _tw in re.split(r"[\n,，、;；]+", str(_tw_raw).strip()):
                     _tw = _tw.strip()
                     if _tw and _tw not in _triggers:
                         _triggers.append(_tw)
-            else:
-                for nm in enabled:
-                    _lc = next(
-                        (l for l in (loras_cfg or [])
-                         if (l.get("name") or "").strip() == nm),
-                        None,
-                    )
-                    _tw_raw = (
-                        (_lc.get("trigger_words") if _lc else None)
-                        or (_lib.get(nm) or {}).get("trigger_words")
-                        or ""
-                    )
-                    for _tw in re.split(r"[\n,，、;；]+", str(_tw_raw).strip()):
+            # ② LLM 显式传入的词：只增补、不替换
+            if trigger_words is not None:
+                if not str(trigger_words).strip():
+                    logger.info("【LoRA 触发词】 LLM 传空串，明确不要追加任何触发词")
+                    _triggers = []
+                else:
+                    _extra: list[str] = []
+                    for _tw in re.split(r"[\n,，、;；]+", str(trigger_words).strip()):
                         _tw = _tw.strip()
-                        if _tw and _tw not in _triggers:
-                            _triggers.append(_tw)
+                        if _tw and _tw not in _triggers and _tw not in _extra:
+                            _extra.append(_tw)
+                    if _extra:
+                        logger.info(
+                            f"【LoRA 触发词】 LLM 增补触发词: {_extra}"
+                            f"（启用 LoRA 全量 {_triggers} 保留，不再被传入列表整体替换）"
+                        )
+                    _triggers = _triggers + _extra
             # 换装自动过滤：用户原话带换装/换衣意图 → 剔除服饰类触发词。
             # 开关/追加词/自定义意图词均可配置（_conf_schema.json 的 lora_outfit_filter 组），
             # 改配置即时生效，无需升级版本。
@@ -8635,6 +8647,12 @@ class ComfyUIDrawPlugin(Star):
         或明确说「把这张图/参考这张图/这张照片变成XX」时，才按图生图处理（传 image 或 img2img_workflow）。
         ★上一轮做过图生图、群里或对话历史里出现过图、用户只是继续用文字要新图——这些都【不算】图生图，
           此时绝不传 image、绝不传 img2img_workflow（传了就会被迫走图生图，用户投诉过"没说明就一直图生图"）。
+
+        ★★角色一致性（多轮连画必读，高频翻车）：同一会话里反复画同一角色时，角色的外观标签
+        （发色/发型/瞳色/兽耳/尾巴/服饰风格等）必须【逐字沿用】本会话之前画该角色用的同一套，
+        只改动作/场景/构图/镜头；**绝不每轮重新发明外观描述**——否则会出现头发每张变色、
+        猫娘莫名变成小猫这类角色漂移（用户已投诉）。自定义角色名（danbooru 词表查不到的，
+        如「小叽」）原样照写，绝不意译成猫/狗/女孩等别的词。
         
         ★★★提示词规范（按目标工作流的底模选写法，写错会直接毁图）：
         - anima / illustrious / noobai（动漫标签系）：英文 Danbooru 标签 + 质量前缀
@@ -8708,9 +8726,8 @@ class ComfyUIDrawPlugin(Star):
                 与 prompt 二选一，都传以 prompts 为准。
             image(string): 图生图参考图的 URL。仅当用户在消息里明确带图并要变换时传；多数情况插件自动从消息提取，无需传此参数。
             denoise(number): 降噪幅度/重绘强度（0~1），仅图生图有效。不传或 -1 则用工作流配置默认值。用户明确要求"改多少/像不像原图"时传入。
-            trigger_words(string): LoRA 触发词追加控制。★默认【绝不传】——不传时插件自动把启用 LoRA 的全部触发词追加进提示词，这通常就是正确行为。
-                仅当触发词里确有与用户要求冲突的词（如含 white dress、black gloves 而用户要换衣服）时，才传筛选后的子集：
-                内容须来自 comfyui_loras 返回的 trigger_words，保留角色/画风核心词、只剔除冲突词；多 LoRA 需合并后再筛；禁止传空字符串。
+            trigger_words(string): ★默认【绝不传】——插件会自动把启用 LoRA 的全部触发词追加进提示词，且**不会被你传入的列表替换**（v5.13.8 起：你传的词只做额外增补）。
+                换装/服饰冲突词由插件自动检测并剔除，不需要也不会采纳你的筛选。仅当确需补「启用 LoRA 触发词之外」的固定角色词（如自定义角色名）时才传；禁止传空字符串。
             platform(string): 生图平台，可选；不传=管理员默认（通常 ComfyUI）。仅当 XX 明确指平台时才填（说了"平台"二字、点名平台名
                 如 agnes/日日新/nai、或类型名 nai/openai/custom）——**拿不准宁可不填**（误填会弹"找不到平台"打扰用户）。
                 其它「用XX」按序找：comfyui_loras → comfyui_workflows → 都不命中留空走默认。显示名支持包含匹配（忽略大小写）。
