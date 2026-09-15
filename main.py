@@ -2246,9 +2246,15 @@ class ComfyUIDrawPlugin(Star):
 
         例如 "帅气的少年, blue eyes, 微笑" ->
         ["帅气的少年", ", ", "blue eyes", ", ", "微笑"]。
+
+        v5.13.7：同时识别**全角**分隔符（，、；）与半角（, ;）——LLM 写中文画面描述时
+        常用全角逗号（「夜景甲板场景，猫耳少女深吻」），旧版只按半角 `,` 拆，
+        整段中文被当成一个片段送去 danbooru 查询，而标签服务一次只返回一个 tag，
+        导致整句画面被压缩成一个标签（实测翻车案例：整段描述 → 只剩 kissing_object）。
+        拆开后每个中文短句各自查一次标签，再按原顺序拼回。
         """
         import re as _re
-        parts = _re.split(r"(,\s*)", text or "")
+        parts = _re.split(r"([,，、;；]\s*)", text or "")
         # 去掉首尾空片段
         while parts and parts[0] in ("", ","):
             parts.pop(0)
@@ -2418,7 +2424,10 @@ class ComfyUIDrawPlugin(Star):
         if not _results:
             return positive
         # 片段列表已含逗号/空格分隔符，直接拼接即可保持原格式
-        return "".join((_results.get(_i) or seg) for _i, seg in enumerate(segments))
+        joined = "".join((_results.get(_i) or seg) for _i, seg in enumerate(segments))
+        # v5.13.7：把全角分隔符（，、；）归一为半角「, 」——翻译产物是英文标签，
+        # CLIP 不认全角标点（会被当成普通 token），统一为半角保证进提示词后正常分词。
+        return re.sub(r"[，、;；]\s*", ", ", joined)
 
     async def translate_test(self, mode: str, text: str) -> dict:
         """调试用：用指定模式翻译单段文本，返回结构化结果（结果/耗时/错误）。
