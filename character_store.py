@@ -426,6 +426,13 @@ class CharacterStore:
         )
         return self.get_anchor(int(ch["id"]), aid)
 
+    def get_anchor_by_id(self, anchor_id) -> dict | None:
+        """按锚点 id 直接取锚点（编辑/删除路径用，不需要知道它属于哪个角色）。"""
+        row = self._conn_get().execute(
+            "SELECT * FROM character_anchors WHERE id=?", (int(anchor_id),)
+        ).fetchone()
+        return self._row_to_anchor(row)
+
     def update_anchor(self, anchor_id, **fields) -> dict | None:
         conn = self._conn_get()
         row = conn.execute(

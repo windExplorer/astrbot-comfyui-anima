@@ -12,6 +12,7 @@ import TokenView from "@/views/TokenView.vue";
 import ShareView from "@/views/ShareView.vue";
 import ShareManageView from "@/views/ShareManageView.vue";
 import StoryView from "@/views/StoryView.vue";
+import CharacterView from "@/views/CharacterView.vue";
 import LoginView from "@/views/LoginView.vue";
 import { authState, checkStandaloneAuth } from "@/composables/auth";
 import { isStandaloneMode } from "@/api/bridge";
@@ -37,6 +38,7 @@ const router = createRouter({
     { path: "/share-manage", name: "share-manage", component: ShareManageView, meta: { title: "分享管理" } },
     { path: "/share", name: "share", component: ShareView, meta: { title: "萌绘分享", public: true } },
     { path: "/story", name: "story", component: StoryView, meta: { title: "剧情档案" } },
+    { path: "/character", name: "character", component: CharacterView, meta: { title: "角色卡" } },
     { path: "/:pathMatch(.*)*", redirect: "/config" },
   ],
 });

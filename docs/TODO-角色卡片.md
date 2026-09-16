@@ -1,11 +1,11 @@
 # 角色卡片（Character Card）设计文档
 
-> 状态：**M1 已实现（v5.16.0）**；M2（WebUI 页面）、M3（参考图 / 联网补全）待做
+> 状态：**M1 + M2 已实现（v5.16.0 / v5.16.1 / v5.17.0）**；M3（参考图 / 联网补全）待做
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）
 
-### M1 落地情况（v5.16.0）
+### M1 落地情况（v5.16.0；v5.16.1 热修）
 
 | 文档章节 | 落地位置 |
 | --- | --- |
@@ -16,9 +16,22 @@
 | 七、仓库硬约束 | 已同步 `build_zip.ps1` 的 `$includeList` 与 `main.py` 的 `importlib.reload` 列表 |
 | 八、配置项 | `_conf_schema.json` 的 `character_card` 块 + `ConfigView.vue` 新增「角色卡片」分区 |
 | 注入接入点 | `_do_draw`（覆盖 AI 对话 / 指令 / 伴侣插件全部入口；`_fixed_prompt` 跳过） |
+| 测试 | `tests/test_character.py`（35 项；含 v5.16.1「你和」语序防回归） |
 
 实测修正（相对本文档初稿）：多人分组内部**不写**计数标签（计数只由全局那一个表达）；
 画质前缀必须置顶；`allow_web_fetch` 仅预留（M3 未实现）。
+
+### M2 落地情况（v5.17.0）
+
+| 文档章节 | 落地位置 |
+| --- | --- |
+| 六、WebUI 双通道 | `webui_api.py` 9 个 handler + `routes` 注册；`standalone_webui.py` 的 `_dispatch` 加 `/character/*` 分支与 `_api_character()` 适配器（复用同一批 handler） |
+| 六、前端 | `webui-src/src/views/CharacterView.vue`（列表/搜索/新建/详情抽屉/锚点增删改+设主/导出导入） |
+| 六、路由与导航 | `router/index.ts` + **两处导航**：`App.vue` 的 PC 侧栏 menuOptions、`router/nav.ts` 的 NAV_ITEMS（移动端） |
+| 测试 | `tests/test_character_webui.py`（30 项，桩掉 `astrbot.api.web` 直调 handler，含路由注册自检） |
+
+M2 期间由测试暴露并修正：`character_anchor_save` 编辑路径不该强制 `character_id`
+（新增 `CharacterStore.get_anchor_by_id()`）。
 
 ---
 

@@ -159,6 +159,7 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/token" }, { default: () => "Token" }), key: "token", icon: () => iconSvg("🔑") },
   { label: () => h(RouterLink, { to: "/share-manage" }, { default: () => "分享管理" }), key: "share-manage", icon: () => iconSvg("🔗") },
   { label: () => h(RouterLink, { to: "/story" }, { default: () => "剧情档案" }), key: "story", icon: () => iconSvg("🎬") },
+  { label: () => h(RouterLink, { to: "/character" }, { default: () => "角色卡" }), key: "character", icon: () => iconSvg("🎭") },
 ];
 
 function iconSvg(text: string) {

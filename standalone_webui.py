@@ -450,6 +450,69 @@ class StandaloneWebUI:
         except (TypeError, ValueError):
             return default
 
+    async def _api_character(self, path: str, request: web.Request) -> web.Response:
+        """独立版角色卡片接口：复用 WebUIApi 实现（经 aiohttp 适配器 + 串行锁）。
+
+        与 `_api_story` 同一套写法：AstrBot 内嵌页的 handler 直接读模块级 `request`，
+        这里临时替换 `webui_api.request` 并串行化，避免与内嵌页并发冲突。
+        """
+        if self._api is None:
+            return _err("角色卡片模块未初始化")
+        sub = path[len("/character/"):].split("?", 1)[0].rstrip("/")
+        method = request.method.upper()
+        name = None
+        if sub == "list" and method == "GET":
+            name = "character_list"
+        elif sub == "detail" and method == "GET":
+            name = "character_detail"
+        elif sub == "export" and method == "GET":
+            name = "character_export"
+        elif sub == "save" and method == "POST":
+            name = "character_save"
+        elif sub == "delete" and method == "POST":
+            name = "character_delete"
+        elif sub == "anchor/save" and method == "POST":
+            name = "character_anchor_save"
+        elif sub == "anchor/delete" and method == "POST":
+            name = "character_anchor_delete"
+        elif sub == "anchor/primary" and method == "POST":
+            name = "character_anchor_primary"
+        elif sub == "import" and method == "POST":
+            name = "character_import"
+        if name is None:
+            return _err("Not Found: " + path, status=404)
+        if not hasattr(self._api, name):
+            return _err("角色卡片接口不可用（WebUIApi 缺少该方法，请重启插件或等待热更新）")
+        adapter = self._AioReqAdapter(request)
+
+        def _ok_dict(payload):
+            return {"__ok__": True, "data": payload}
+
+        def _err_dict(msg):
+            return {"__ok__": False, "error": str(msg)}
+
+        async with self._request_lock:
+            had_req = hasattr(webui_api, "request")
+            prev_req = getattr(webui_api, "request", None)
+            had_ok = hasattr(webui_api, "json_response")
+            prev_ok = getattr(webui_api, "json_response", None)
+            had_err = hasattr(webui_api, "error_response")
+            prev_err = getattr(webui_api, "error_response", None)
+            try:
+                webui_api.request = adapter
+                webui_api.json_response = _ok_dict
+                webui_api.error_response = _err_dict
+                result = await getattr(self._api, name)()
+            finally:
+                webui_api.request = prev_req if had_req else None
+                webui_api.json_response = prev_ok if had_ok else None
+                webui_api.error_response = prev_err if had_err else None
+        if isinstance(result, dict) and result.get("__ok__") is not None:
+            if result.get("__ok__"):
+                return _ok(result["data"])
+            return _err(result.get("error", "处理失败"))
+        return _ok(result)
+
     async def _api_story(self, path: str, request: web.Request) -> web.Response:
         """独立版剧情档案接口：复用 WebUIApi 实现（经 aiohttp 适配器 + 串行锁）。"""
         if self._api is None:
@@ -670,6 +733,10 @@ class StandaloneWebUI:
         # ---------- 统计 ----------
         if path.startswith("/stats/"):
             return await self._api_stats(path, request)
+
+        # ---------- 角色卡片 ----------
+        if path.startswith("/character/"):
+            return await self._api_character(path, request)
 
         # ---------- 剧情档案 ----------
         if path.startswith("/story/"):

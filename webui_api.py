@@ -1761,6 +1761,231 @@ class WebUIApi:
     # ------------------------------------------------------------------ #
     # 剧情模式档案
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # 角色卡片（Character Card）：列表 / 详情 / 保存 / 删除 / 锚点 / 导入导出
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _character_store(plugin):
+        return getattr(plugin, "character", None)
+
+    @staticmethod
+    def _character_cfg(plugin) -> dict:
+        try:
+            _c = plugin._cfg("character_card", {}) or {}
+            return _c if isinstance(_c, dict) else {}
+        except Exception:
+            return {}
+
+    async def character_list(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            keyword = (request.query.get("keyword", "") or "").strip()
+            rows = store.list_characters(keyword)
+            # 角色数量通常很少，列表直接带全锚点，前端一次拿全、免二次请求
+            for c in rows:
+                c["anchors"] = store.list_anchors(int(c["id"]))
+            cfg = self._character_cfg(self.plugin)
+            return json_response({
+                "characters": rows,
+                "total": len(rows),
+                "enabled": bool(cfg.get("enabled", True)),
+                "can_edit": True,  # WebUI 本身即管理面（独立 WebUI 需 token、内嵌页在面板内）
+            })
+        except Exception as e:
+            return error_response(f"读取角色卡片失败: {e}")
+
+    async def character_detail(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            key = (request.query.get("name", "") or request.query.get("id", "") or "").strip()
+            if not key:
+                return error_response("缺少 name 或 id")
+            ch = store.get_character(key)
+            if ch is None:
+                return error_response(f"没找到角色「{key}」")
+            ch["anchors"] = store.list_anchors(int(ch["id"]))
+            return json_response(ch)
+        except Exception as e:
+            return error_response(f"读取角色详情失败: {e}")
+
+    async def character_save(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            name = (body.get("name") or "").strip()
+            if not name:
+                return error_response("缺少角色名 name")
+            _aliases = body.get("aliases") or []
+            if isinstance(_aliases, str):
+                _aliases = [p.strip() for p in re.split(r"[,，]", _aliases) if p.strip()]
+            ch = store.get_character(body.get("id") or name)
+            if ch is None:
+                ch = store.create_character(
+                    name, aliases=_aliases,
+                    persona_name=(body.get("persona_name") or "").strip(),
+                    work=(body.get("work") or "").strip(),
+                    lora_name=(body.get("lora_name") or "").strip(),
+                    note=(body.get("note") or "").strip(),
+                    enabled=bool(body.get("enabled", True)),
+                )
+                return json_response({"ok": True, "created": True, "id": int(ch["id"])})
+            upd: dict = {"name": name}
+            for _k in ("persona_name", "work", "lora_name", "note"):
+                if _k in body:
+                    upd[_k] = (body.get(_k) or "").strip()
+            if "aliases" in body:
+                upd["aliases"] = _aliases
+            if "enabled" in body:
+                upd["enabled"] = bool(body.get("enabled"))
+            store.update_character(int(ch["id"]), **upd)
+            return json_response({"ok": True, "created": False, "id": int(ch["id"])})
+        except Exception as e:
+            return error_response(f"保存角色失败: {e}")
+
+    async def character_delete(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            ch = store.get_character(body.get("id") or body.get("name") or "")
+            if ch is None:
+                return error_response("没找到该角色")
+            store.delete_character(int(ch["id"]))
+            return json_response({"ok": True, "deleted": ch["name"]})
+        except Exception as e:
+            return error_response(f"删除角色失败: {e}")
+
+    async def character_anchor_save(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            positive = (body.get("positive") or "").strip()
+            if not positive:
+                return error_response("锚点标签（positive）不能为空")
+            try:
+                weight = float(body.get("weight") or 1.2)
+            except (TypeError, ValueError):
+                weight = 1.2
+            anchor_id = body.get("id") or body.get("anchor_id")
+            if anchor_id:
+                # 编辑路径：只按锚点 id 定位，**不要求传 character_id**
+                # （v5.16.2：此前编辑也强制先查角色，接口无谓地脆弱）
+                if store.get_anchor_by_id(int(anchor_id)) is None:
+                    return error_response(f"没找到锚点 id={anchor_id}")
+                store.update_anchor(
+                    int(anchor_id),
+                    name=(body.get("anchor_name") or body.get("name") or "默认装").strip() or "默认装",
+                    positive=positive,
+                    kind=(body.get("kind") or "full").strip(),
+                    negative=(body.get("negative") or "").strip(),
+                    weight=weight,
+                    lora_name=(body.get("lora_name") or "").strip(),
+                    skip_trigger_words=bool(body.get("skip_trigger_words", True)),
+                    note=(body.get("note") or "").strip(),
+                )
+                return json_response({"ok": True, "created": False, "id": int(anchor_id)})
+            ch = store.get_character(body.get("character_id") or body.get("character_name") or "")
+            if ch is None:
+                return error_response("没找到该角色（新增锚点需要 character_id 或 character_name）")
+            a = store.add_anchor(
+                int(ch["id"]),
+                (body.get("anchor_name") or body.get("name") or "默认装").strip() or "默认装",
+                positive,
+                kind=(body.get("kind") or "full").strip(),
+                negative=(body.get("negative") or "").strip(),
+                weight=weight,
+                lora_name=(body.get("lora_name") or "").strip(),
+                skip_trigger_words=bool(body.get("skip_trigger_words", True)),
+                note=(body.get("note") or "").strip(),
+            )
+            if a is None:
+                return error_response("新增锚点失败")
+            return json_response({"ok": True, "created": True, "id": int(a["id"])})
+        except Exception as e:
+            return error_response(f"保存锚点失败: {e}")
+
+    async def character_anchor_delete(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            anchor_id = body.get("id") or body.get("anchor_id")
+            if anchor_id:
+                ok = store.delete_anchor(int(anchor_id))
+                return json_response({"ok": bool(ok)})
+            ch = store.get_character(body.get("character_id") or body.get("character_name") or "")
+            if ch is None:
+                return error_response("缺少 anchor_id，且角色不存在")
+            a = store.get_anchor(int(ch["id"]), body.get("anchor_name") or None)
+            if a is None:
+                return error_response("没找到该锚点")
+            return json_response({"ok": store.delete_anchor(int(a["id"]))})
+        except Exception as e:
+            return error_response(f"删除锚点失败: {e}")
+
+    async def character_anchor_primary(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            ch = store.get_character(body.get("character_id") or body.get("character_name") or "")
+            if ch is None:
+                return error_response("没找到该角色")
+            a = store.set_primary_anchor(
+                int(ch["id"]), body.get("anchor_id") or body.get("anchor_name") or None
+            )
+            if a is None:
+                return error_response("没找到该锚点")
+            return json_response({"ok": True, "primary": a["name"]})
+        except Exception as e:
+            return error_response(f"设置主锚点失败: {e}")
+
+    async def character_export(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            return json_response(store.export_all())
+        except Exception as e:
+            return error_response(f"导出失败: {e}")
+
+    async def character_import(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            data = body.get("data") if isinstance(body.get("data"), dict) else body
+            if not isinstance(data, dict) or not data.get("characters"):
+                return error_response("导入数据格式不对（需要本插件导出的 JSON）")
+            n = store.import_all(data)
+            return json_response({"ok": True, "imported": n})
+        except Exception as e:
+            return error_response(f"导入失败: {e}")
+
     async def story_sessions(self):
         try:
             store = getattr(self.plugin, "story", None)
@@ -2078,6 +2303,15 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/platforms/quota", _h("platforms_quota"), ["POST"], "查询 NAI 平台余额"),
         (f"{prefix}/share/tokens", _h("share_tokens"), ["GET"], "分享链接管理列表"),
         (f"{prefix}/share/token/invalidate", _h("share_token_invalidate"), ["POST"], "分享链接作废"),
+        (f"{prefix}/character/list", _h("character_list"), ["GET"], "角色卡片列表"),
+        (f"{prefix}/character/detail", _h("character_detail"), ["GET"], "角色卡片详情"),
+        (f"{prefix}/character/save", _h("character_save"), ["POST"], "角色卡片新增/更新"),
+        (f"{prefix}/character/delete", _h("character_delete"), ["POST"], "角色卡片删除"),
+        (f"{prefix}/character/anchor/save", _h("character_anchor_save"), ["POST"], "锚点新增/更新"),
+        (f"{prefix}/character/anchor/delete", _h("character_anchor_delete"), ["POST"], "锚点删除"),
+        (f"{prefix}/character/anchor/primary", _h("character_anchor_primary"), ["POST"], "设主锚点"),
+        (f"{prefix}/character/export", _h("character_export"), ["GET"], "角色卡片导出"),
+        (f"{prefix}/character/import", _h("character_import"), ["POST"], "角色卡片导入"),
         (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),
         (f"{prefix}/story/session", _h("story_session_detail"), ["GET"], "剧情档案详情"),
         (f"{prefix}/story/session", _h("story_session_update"), ["POST"], "剧情档案更新"),

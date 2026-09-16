@@ -21,4 +21,5 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/quota", name: "quota", label: "限额", icon: "🚦", key: "quota" },
   { path: "/token", name: "token", label: "Token", icon: "🔑", key: "token" },
   { path: "/share-manage", name: "share-manage", label: "分享管理", icon: "🔗", key: "share-manage" },
+  { path: "/character", name: "character", label: "角色卡", icon: "🎭", key: "character" },
 ];

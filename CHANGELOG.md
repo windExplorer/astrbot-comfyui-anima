@@ -2,6 +2,45 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.17.0（角色卡片 M2：WebUI 管理页面（双通道）+ 接口层回归测试）
+
+交付 `docs/TODO-角色卡片.md` 的 **M2**：在 WebUI 里可视化管理角色卡片（M1 只能靠指令/对话改）。
+
+后端（**双通道都做了**，共用同一批 handler——用户主力是独立 WebUI，这条不能漏）：
+
+- `webui_api.py`：新增 9 个 handler 并注册路由 —— `character_list` / `character_detail` /
+  `character_save` / `character_delete` / `character_anchor_save` / `character_anchor_delete` /
+  `character_anchor_primary` / `character_export` / `character_import`。
+  列表接口直接带全锚点（角色数量少，省一次请求）；导出/导入复用 store 的 `export_all/import_all`。
+- `standalone_webui.py`：`_dispatch` 增加 `/character/*` 分支，新增 `_api_character()` 适配器
+  （与 `_api_story` 同一套写法：`_AioReqAdapter` + `_request_lock` 临时替换 `webui_api.request`），
+  因此内嵌页与独立 WebUI 行为完全一致。
+
+前端：
+
+- 新增 `webui-src/src/views/CharacterView.vue`：统计卡（角色/锚点/已绑定人格/关联 LoRA）、搜索、
+  新建角色（含首个锚点）、列表（别名/绑定人格/作品/关联 LoRA/锚点摘要）、详情抽屉
+  （角色字段编辑 + 锚点列表：编辑 / 设为主锚点 / 删除 + 新增锚点）、锚点弹窗
+  （名称/类型/标签串/负向/权重 1~1.5/覆盖 LoRA/抑制触发词）、导出 JSON（浏览器下载）与导入 JSON（粘贴）。
+- 路由与**两处导航**同步：`router/index.ts` 注册 `/character`；`App.vue` 的 PC 侧栏 menuOptions
+  与 `router/nav.ts` 的 NAV_ITEMS（移动端抽屉）各加一项「角色卡」。
+  （注意：本仓库 PC 侧栏与移动端导航是两份独立清单，新增页面必须都改。）
+
+接口健壮性修正（由新测试暴露）：`character_anchor_save` 的**编辑路径**此前也强制要求
+`character_id`，只传锚点 `id` 会误报「没找到该角色」；现改为按锚点 id 定位即可
+（并在 `CharacterStore` 补公开方法 `get_anchor_by_id()`，不再从 handler 里碰私有连接）。
+
+新增回归测试 `tests/test_character_webui.py`（30 项断言，**不依赖 AstrBot 运行时**：
+用桩模块顶掉 `astrbot.api.web` 后直接实例化 `WebUIApi` 调用 handler）：
+空库列表 → 建卡+锚点 → 列表/详情 → 编辑角色（别名串/停用）→ 加锚点/改锚点/设主锚点 →
+删锚点（主锚点顺延）→ 导出/导入（含非法数据报错）→ 删角色连带锚点 →
+**路由注册自检**（9 个 `/character/*` 路由 + 独立 WebUI 分派与适配器存在）。
+运行：`uv run --no-project --python 3.12 python tests/test_character_webui.py`（30 通过 / 0 失败）。
+
+回归确认（uv 拉真实 Python）：`tests/test_character.py` 35 通过、`tests/test_llm_tool_docstrings.py` 全部通过。
+
+M3（参考图落地与联网补全）仍未做，见设计文档。
+
 ## v5.16.1（热修：「你和XX的合照」命中不了人格绑定卡——自称正则中文语序写反 + 新增常驻回归测试）
 
 现象：v5.16.0 的角色卡片里，`_SELF_RE`（判断用户是否在说「你」= bot 人格）把常见话术写成了
