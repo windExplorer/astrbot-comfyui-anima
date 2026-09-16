@@ -70,9 +70,11 @@ const DEFAULT_FEATURES: Record<string, { name: string; hint: string }> = {
 
 // 功能列表：固定三个 key，UI 用同一份顺序渲染
 const features = reactive<any[]>([
-  { key: "meme_text", name: "", workflow: "", default_lora: "", default_negative: "", enabled: true },
-  { key: "meme_img", name: "", workflow: "", default_lora: "", default_negative: "", enabled: true },
-  { key: "comic", name: "", workflow: "", default_lora: "", default_negative: "", enabled: true },
+  // workflow 的空值用 null（不是空串）：`n-select` 只要非 null 就显示清空按钮，
+  // 会出现「看着是空的、却要手动点清空」的观感（v6.1.2 修）。
+  { key: "meme_text", name: "", workflow: null as string | null, default_lora: "", default_negative: "", enabled: true },
+  { key: "meme_img", name: "", workflow: null as string | null, default_lora: "", default_negative: "", enabled: true },
+  { key: "comic", name: "", workflow: null as string | null, default_lora: "", default_negative: "", enabled: true },
 ]);
 
 const workflowOptions = computed(() =>
@@ -99,7 +101,7 @@ async function load() {
     for (const f of features) {
       const r = byKey[f.key] || {};
       f.name = r.name || DEFAULT_FEATURES[f.key]?.name || "";
-      f.workflow = r.workflow || "";
+      f.workflow = (r.workflow || "").trim() || null; // 空 → null（下拉才真正显示 placeholder）
       f.default_lora = r.default_lora || "";
       f.default_negative = r.default_negative || "";
       f.enabled = r.enabled !== false;

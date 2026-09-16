@@ -350,6 +350,18 @@ async def main() -> int:
     check("取不到人格列表时不报错", _opt2.get("personas") == [], str(_opt2.get("personas")))
     check("LoRA 候选仍可用", len(_opt2.get("loras") or []) == 2, str(_opt2.get("loras")))
 
+    print("\n[15] 下拉空值语义（v6.1.2：n-select 绑 null，不能绑空串）")
+    _cv = (ROOT / "webui-src" / "src" / "views" / "CharacterView.vue").read_text(encoding="utf-8")
+    check("表单下拉字段声明为 null", "persona_name: null as NullableStr" in _cv)
+    check("新建弹窗清空下拉用 null", "createForm.persona_name = null" in _cv)
+    check("填充表单空值转 null", 'form.persona_name = (c?.persona_name || "").trim() || null' in _cv)
+    check("提交前 null 转空串", "persona_name: nv(form.persona_name)" in _cv)
+    check("回归守卫：不得再把下拉清成空串",
+          'createForm.persona_name = "' not in _cv and 'anchorForm.lora_name = "' not in _cv,
+          "发现把 n-select 绑成空串的写法（会显示幽灵清空按钮）")
+    _fv = (ROOT / "webui-src" / "src" / "views" / "FeaturesView.vue").read_text(encoding="utf-8")
+    check("FeaturesView 工作流下拉同样用 null", "workflow: null as string | null" in _fv)
+
     print("\n[9] 路由已注册（内嵌页）")
     src = (ROOT / "webui_api.py").read_text(encoding="utf-8")
     for _ep in ("character/list", "character/detail", "character/save", "character/delete",

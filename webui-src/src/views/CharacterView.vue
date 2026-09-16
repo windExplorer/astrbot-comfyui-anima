@@ -360,16 +360,24 @@ const anchorOpen = ref(false);
 const importOpen = ref(false);
 const importText = ref("");
 
+// v6.1.2：下拉框的「空」必须是 null，不能是空字符串——
+// `n-select` 只要 value 非 null 就认为「有值」，会显示清空按钮（看着空、其实得手点清空）。
+/** 下拉值统一判空：null/undefined → 空串（提交给后端前用）。 */
+const nv = (v: unknown) => String(v ?? "").trim();
+type NullableStr = string | null;
+
 const form = reactive({
-  name: "", aliasesText: "", persona_name: "", work: "", lora_name: "", note: "", enabled: true,
+  name: "", aliasesText: "", persona_name: null as NullableStr, work: "",
+  lora_name: null as NullableStr, note: "", enabled: true,
 });
 const createForm = reactive({
-  name: "", aliasesText: "", persona_name: "", work: "", lora_name: "",
+  name: "", aliasesText: "", persona_name: null as NullableStr, work: "",
+  lora_name: null as NullableStr,
   anchor_name: "默认装", positive: "",
 });
 const anchorForm = reactive({
   id: 0, name: "默认装", kind: "full", positive: "", negative: "",
-  weight: 1.2, lora_name: "", skip_trigger_words: true,
+  weight: 1.2, lora_name: null as NullableStr, skip_trigger_words: true,
 });
 
 const kindOptions = [
@@ -511,13 +519,14 @@ async function removeCardById(c: any) {
 function fillForm(c: any) {
   form.name = c?.name || "";
   form.aliasesText = (c?.aliases || []).join(",");
-  form.persona_name = c?.persona_name || "";
+  // 下拉字段：空 → null（不是空串，否则 n-select 会显示清空按钮）
+  form.persona_name = (c?.persona_name || "").trim() || null;
   form.work = c?.work || "";
-  form.lora_name = c?.lora_name || "";
+  form.lora_name = (c?.lora_name || "").trim() || null;
   form.note = c?.note || "";
   form.enabled = c?.enabled !== false;
   // 历史自定义值不在候选里时补进选项，避免下拉显示成空
-  rememberExtra(form.lora_name, form.persona_name);
+  rememberExtra(nv(form.lora_name), nv(form.persona_name));
 }
 
 async function openDetail(row: any) {
@@ -536,9 +545,9 @@ async function openDetail(row: any) {
 function openCreate() {
   createForm.name = "";
   createForm.aliasesText = "";
-  createForm.persona_name = "";
+  createForm.persona_name = null; // 下拉空值 = null（空串会被 n-select 当成有值）
   createForm.work = "";
-  createForm.lora_name = "";
+  createForm.lora_name = null;
   createForm.anchor_name = "默认装";
   createForm.positive = "";
   createOpen.value = true;
@@ -559,9 +568,9 @@ async function createCard() {
     const r = await apiPost("character/save", {
       name: createForm.name.trim(),
       aliases: splitAliases(createForm.aliasesText),
-      persona_name: createForm.persona_name.trim(),
+      persona_name: nv(createForm.persona_name),
       work: createForm.work.trim(),
-      lora_name: createForm.lora_name.trim(),
+      lora_name: nv(createForm.lora_name),
     });
     await apiPost("character/anchor/save", {
       character_id: r.id,
@@ -588,9 +597,9 @@ async function saveCard() {
       id: detail.value.id,
       name: form.name.trim(),
       aliases: splitAliases(form.aliasesText),
-      persona_name: form.persona_name.trim(),
+      persona_name: nv(form.persona_name),
       work: form.work.trim(),
-      lora_name: form.lora_name.trim(),
+      lora_name: nv(form.lora_name),
       note: form.note,
       enabled: form.enabled,
     });
@@ -631,7 +640,7 @@ function openAnchorCreate() {
   anchorForm.positive = "";
   anchorForm.negative = "";
   anchorForm.weight = 1.2;
-  anchorForm.lora_name = "";
+  anchorForm.lora_name = null; // 下拉空值 = null（空串会被 n-select 当成有值）
   anchorForm.skip_trigger_words = true;
   anchorOpen.value = true;
 }
@@ -643,9 +652,9 @@ function openAnchorEdit(a: any) {
   anchorForm.positive = a.positive || "";
   anchorForm.negative = a.negative || "";
   anchorForm.weight = Number(a.weight || 1.2);
-  anchorForm.lora_name = a.lora_name || "";
+  anchorForm.lora_name = a.lora_name || null; // 空值用 null，避免下拉出现「待清空」
   anchorForm.skip_trigger_words = a.skip_trigger_words !== false;
-  rememberExtra(anchorForm.lora_name, ""); // 锚点级自定义 LoRA 名也要能显示
+  rememberExtra(a.lora_name || "", ""); // 锚点级自定义 LoRA 名也要能显示
   anchorOpen.value = true;
 }
 
@@ -662,7 +671,7 @@ async function saveAnchor() {
       positive: anchorForm.positive.trim(),
       negative: anchorForm.negative.trim(),
       weight: Number(anchorForm.weight || 1.2),
-      lora_name: anchorForm.lora_name.trim(),
+      lora_name: nv(anchorForm.lora_name),
       skip_trigger_words: anchorForm.skip_trigger_words,
     });
     anchorOpen.value = false;
