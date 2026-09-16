@@ -8632,6 +8632,187 @@ class ComfyUIDrawPlugin(Star):
                 })
         return [i for i in out if i["prompt"]]
 
+    # ---------------- 多人提示词结构归一 / 校验（v5.14.4） ----------------
+    _MULTI_COUNT_RE = re.compile(
+        r"(?:[2-9]\s*girls|[2-9]\s*boys|multiple\s+girls|multiple\s+boys|"
+        r"1girl\s+1boy|1boy\s+1girl|\bgroup\b|\bcrowd\b)",
+        re.IGNORECASE,
+    )
+    # 「标签: 标签串」行（label 在行首；label 允许含配对的自然语言括号，不允许权重语法）
+    _LABEL_LINE_RE = re.compile(r"^([^\n:：]{1,60}?)\s*[:：]\s*(.+)$")
+    _COUNT_TAG_RE = re.compile(
+        r"^(?:solo|1girl|1boy|[2-9]girls|[2-9]boys|multiple\s+girls|multiple\s+boys|"
+        r"1girl\s+1boy|1boy\s+1girl|group|crowd)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_multi_person_prompt(cls, text: str) -> bool:
+        """提示词是否声明了 ≥2 人（英文计数标签）。多人结构校验的触发条件之一。"""
+        return bool(cls._MULTI_COUNT_RE.search(text or ""))
+
+    @staticmethod
+    def _split_top_commas(text: str) -> list[str]:
+        """按「顶层逗号」切分（忽略括号内的逗号），用于解析分组/区块内的标签列表。"""
+        out: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        for ch in text or "":
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                out.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            out.append("".join(buf))
+        return [s.strip() for s in out if s.strip()]
+
+    @staticmethod
+    def _count_weight_groups(text: str) -> int:
+        """统计「多标签权重分组」数量：形如 `(tag1, tag2, ... :1.2)` 的顶层括号组。
+
+        只有组内**至少含一个顶层逗号**（≥2 个标签）且末尾带权重才算一个分组；
+        「每个标签各自单独加权」的假分组（如 `(white hair:1.1), (cat ears:1.1)`）
+        不计入——那正是模型最常见的伪分组形态（实测：girl A (left): (1girl:1.2),
+        (white hair:1.1), ... 完全没有真正的角色分组）。
+        用括号配对扫描，天然兼容 tag 内的嵌套括号（esper zero f (neverness to everness)）。
+        """
+        n, depth, start = 0, 0, -1
+        for i, ch in enumerate(text or ""):
+            if ch == "(":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == ")":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        inner = text[start + 1:i]
+                        m = re.search(r":\s*\d+(?:\.\d+)?\s*$", inner)
+                        if m:
+                            d2, commas = 0, 0
+                            for c2 in inner[: m.start()]:
+                                if c2 in "([{":
+                                    d2 += 1
+                                elif c2 in ")]}":
+                                    d2 = max(0, d2 - 1)
+                                elif c2 == "," and d2 == 0:
+                                    commas += 1
+                            if commas >= 1:
+                                n += 1
+                        start = -1
+        return n
+
+    @classmethod
+    def _label_like(cls, lab: str) -> bool:
+        """判断某行冒号前缀是否像「角色标签」（girl A (left) / 左边女孩 / Left girl X）。
+
+        收紧条件避免误判标签行：不以 `(` 开头（排除 `(cheek to cheek:1.2), …` 这类真分组行）、
+        不含权重语法、长度 ≤60，且满足「含中文 / 含空格 / 以 girl|boy|char|left|right 开头」之一。
+        """
+        _lab = re.sub(r"\s+", " ", (lab or "").strip())
+        if not _lab or len(_lab) > 60 or _lab.startswith("("):
+            return False
+        if re.search(r":\s*\d", _lab):
+            return False
+        if any("\u4e00" <= ch <= "\u9fff" for ch in _lab):
+            return True
+        if " " in _lab:
+            return True
+        return bool(re.match(r"(?:girl|boy|char|character|person|left|right)\b", _lab, re.I))
+
+    @classmethod
+    def _normalize_labeled_multi_char(cls, text: str) -> tuple[str, int]:
+        """把「标签式分行」的多人提示词自动改写成规范权重分组（v5.14.4）。
+
+        实测模型常这样写（含换行）::
+
+            masterpiece, best quality, 2girls, selfie,
+            girl A (left): (1girl:1.2), (long white hair:1.1), (cat ears:1.1), ...
+            girl B (right): (1girl:1.2), (mint_(nte):1.2), (teal hair:1.2), ...
+            (cheek to cheek:1.2), hands making heart together, ...
+
+        ——自然语言标签 + 每个标签单独加权，没有任何真正的角色分组，特征必然互串。
+        本方法：按行识别「标签: 标签串」块，把每块的标签解包合并成一个分组
+        `(tag1, tag2, ... :权重)`（权重取块内最大值并夹到 1.1~1.3），丢弃自然语言标签，
+        块内的计数标签（1girl/1boy/solo…）剔除（总人数由全局计数标签决定）；
+        非标签行按原样保留（第一个块之前作前缀、之后作后缀）。
+        缺计数标签时按块标签里的 boy/girl 补一个（2girls / 1girl 1boy / 2boys）。
+        返回 (新文本, 识别到的块数)；块数 <2 或异常时原样返回。
+        """
+        try:
+            _txt = (text or "").strip()
+            if not _txt or "\n" not in _txt:
+                return text, 0
+            head: list[str] = []
+            tail: list[str] = []
+            blocks: list[tuple[list[str], float]] = []
+            label_txt: list[str] = []
+            for raw_line in _txt.split("\n"):
+                line = raw_line.strip().rstrip(",").strip()
+                if not line:
+                    continue
+                m = cls._LABEL_LINE_RE.match(line)
+                if m and cls._label_like(m.group(1)):
+                    label_txt.append(m.group(1).strip())
+                    tags: list[str] = []
+                    weight = 1.2
+                    for part in cls._split_top_commas(m.group(2)):
+                        wm = re.match(r"^\((.+):\s*(\d+(?:\.\d+)?)\s*\)$", part.strip())
+                        if wm:
+                            tag, w = wm.group(1).strip(), float(wm.group(2))
+                            weight = max(weight, min(1.3, max(1.1, w)))
+                        else:
+                            tag = part.strip()
+                        if not tag or cls._COUNT_TAG_RE.match(tag.strip()):
+                            continue
+                        if tag not in tags:
+                            tags.append(tag)
+                    if tags:
+                        blocks.append((tags, weight))
+                    continue
+                (head if not blocks else tail).extend(cls._split_top_commas(line))
+            if len(blocks) < 2:
+                return text, 0
+            # 计数标签：全部已有文本里没有就补一个（性别判断同时看标签行与标签串，
+            # 性别信息常在标签里：`boy A: …` / `左边女孩: …`）。
+            _all = " ".join(head + tail + label_txt)
+            if not cls._is_multi_person_prompt(_all):
+                _gender_src = " ".join(label_txt) + " " + " ".join(
+                    " ".join(tags[:3]) for tags, _w in blocks
+                )
+                _has_boy = bool(re.search(r"\b(?:boy|male|man|1boy|guys?)\b", _gender_src, re.I))
+                _has_girl = bool(re.search(r"\b(?:girl|female|woman|1girl)\b", _gender_src, re.I))
+                if _has_boy and _has_girl:
+                    _cnt = "1girl 1boy"
+                elif _has_boy and not _has_girl:
+                    _cnt = f"{len(blocks)}boys"
+                else:
+                    _cnt = f"{len(blocks)}girls"
+                # 计数标签应紧跟画质前缀（masterpiece, best quality, …），
+                # 而不是插到最前面变成 `2girls, masterpiece`（画质词必须打头）。
+                _qi = 0
+                while _qi < len(head) and re.search(
+                    r"masterpiece|best quality|high quality|very aesthetic|absurdres|"
+                    r"detailed|score_\d+|quality",
+                    head[_qi],
+                    re.I,
+                ):
+                    _qi += 1
+                head.insert(_qi, _cnt)
+            _group_txt = ", ".join(
+                "(" + ", ".join(tags) + f":{w:.2f})" for tags, w in blocks
+            )
+            parts = [p for p in (", ".join(head).strip(), _group_txt, ", ".join(tail).strip()) if p]
+            return ", ".join(parts), len(blocks)
+        except Exception as e:
+            logger.warning(f"【多人归一】 异常，保留原文: {e}")
+            return text, 0
+
     def _resolve_workflow_for(self, workflow, img2img_workflow, is_img2img, was_img2img, fallback_wf):
         """根据单条 prompt 的 workflow / img2img_workflow 与调用级图生图状态，求最终工作流名。
 
@@ -8703,6 +8884,11 @@ class ComfyUIDrawPlugin(Star):
         2. 【要 N 张 = prompts 数组写 N 条不同画面】，每条各出 1 张。
            绝不要用「单条 prompt + count=N」——那只会得到同一画面的 N 个近似副本，会被拦回。
         3. count 是预留参数（将来用于同一提示词跑不同种子），当前恒为 1，一般不用传。
+        5. 【点名角色/作品/画风 = 必先查 LoRA，不许跳过】：用户提到任何角色名、作品名、画风名
+           （「画个初音」「小叽和薄荷的合照」「用XX风格」「来张XX的图」），**必须在调用本工具前
+           先调 comfyui_loras 逐个查询**（多人 = 每个角色各查一次，允许查 2~3 次但别无限试探），
+           命中就填进 loras 参数。绝不因为"用户没提 LoRA 二字"就跳过，也不要等用户催
+           「你没用 lora / 你没找 lora」才去查——那已经废掉一轮了。
         4. 【出 N 张总耗时 ≈ N × 单张耗时（实测约 20~25 秒/张）】：一次调用是串行出图的，
            6 张约需 2~3 分钟。请确保 AstrBot 的「工具调用超时」足够大（建议直接设 300 秒，
            可覆盖约 9 张）；否则时间到会被框架硬取消、最后几张丢失。若被中途取消也无需重试——
@@ -8782,6 +8968,9 @@ class ComfyUIDrawPlugin(Star):
            绝不用「Left girl XXX: 一段描述…」「Right girl …」这类自然语言句式——权重分组是把特征
            绑定到个体的唯一手段，自然语言必然融脸（左边角色长出右边的东西）；也绝不把两个角色的
            外观标签平铺混排。每个角色的 danbooru 角色 tag 也写进自己的分组。分组权重 1.1~1.3，别超 1.5。
+           ✗ 尤其禁止「标签式分行 + 每个标签单独加权」，例如
+             `girl A (left): (1girl:1.2), (white hair:1.1), (cat ears:1.1)` ← 等于完全没分组；
+             插件会把这种写法归一成真分组或直接拦截，但你自己写对才不浪费一轮。
         3) 某角色用了 LoRA：该 LoRA 的触发词必须写进**那个角色自己的分组括号**（插件检测到已存在
            就不再全局追加，避免串到别人身上）。
            ★单人用角色 LoRA：不要重复描写该角色外貌（发色瞳色等全省略），只写表情/服装/动作。
@@ -9067,65 +9256,112 @@ class ComfyUIDrawPlugin(Star):
 
         lora_map = self._parse_llm_loras(loras)
 
-        # ── 多角色 LoRA 分组强制（v5.14.0，确定性兜底，不赌模型自觉）──────
-        # ≥2 个「角色」分类 LoRA 时，提示词必须用 (标签:权重) 分组且把各角色触发词
-        # 写进对应分组，否则特征必然互相污染（融脸/串味，用户多次投诉后实测依旧翻车）。
-        # 检测不通过直接返回指导文本让模型重写后再调（本轮尚未出图，不消耗出图闸门）。
+        # ── 多人提示词：结构归一 → 分组校验（v5.14.4，确定性兜底，不赌模型自觉）──
+        # 背景：模型极爱写「标签式分行 + 每标签单独加权」的伪分组，例如
+        #   girl A (left): (1girl:1.2), (long white hair:1.1), (cat ears:1.1), ...
+        #   girl B (right): (mint_(nte):1.2), (teal hair:1.2), ...
+        # 它既不是角色分组、特征必然互串，又带 `:1.1)` 结构骗过了 v5.14.0 的宽检测。
+        # 处理分两步：
+        #   ① 归一：把这种分行标签写法自动改写成 (tag1, tag2, …:1.2) 真分组（模型不用重写）；
+        #   ② 校验：归一后仍凑不出 ≥2 个「多标签权重分组」且本次确实是多人（声明了 2girls…
+        #      或启用了 ≥2 个角色 LoRA）时，返回指导文本让模型重写再调（尚未出图，不耗闸门）。
         try:
-            if lora_map:
-                _lib_idx = self._lora_lib_index()
-                _char_loras: list[tuple[str, str]] = []
-                for _n in lora_map:
-                    _le = _lib_idx.get((_n or "").strip()) or next(
-                        (
-                            v
-                            for k, v in _lib_idx.items()
-                            if workflow_builder._lora_name_matches(k, _n)
-                        ),
-                        None,
+            # 平台守卫：NAI / OpenAI 类平台不用 A1111 权重语法（NAI 用 {} / []），
+            # 这套「归一 + 分组校验」只适用于 ComfyUI 工作流链路，其它平台整体跳过。
+            _plat_skip = False
+            if (platform or "").strip():
+                try:
+                    _pcfg = self._platform_store().get_platform(platform.strip())
+                    _plat_skip = ((_pcfg or {}).get("type") or "").strip().lower() in ("nai", "openai")
+                except Exception:
+                    _plat_skip = False
+            _lib_idx = self._lora_lib_index()
+            _char_loras: list[tuple[str, str]] = []
+            for _n in (lora_map or {}):
+                _le = _lib_idx.get((_n or "").strip()) or next(
+                    (
+                        v
+                        for k, v in _lib_idx.items()
+                        if workflow_builder._lora_name_matches(k, _n)
+                    ),
+                    None,
+                )
+                if _le and (_le.get("category") or "").strip() == "角色":
+                    _char_loras.append(
+                        ((_le.get("name") or _n or "").strip(),
+                         (_le.get("trigger_words") or "").strip())
                     )
-                    if _le and (_le.get("category") or "").strip() == "角色":
-                        _char_loras.append(
-                            ((_le.get("name") or _n or "").strip(),
-                             (_le.get("trigger_words") or "").strip())
-                        )
-                if len(_char_loras) >= 2:
-                    _all_text = " ".join(
-                        [(prompt or ""), *[(it.get("prompt") or "") for it in _items]]
-                    )
-                    # 分组判定：只看「:权重)」尾部特征（如 :1.2) / :0.8) / :1)）。
-                    # v5.14.1 修正：旧正则 \([^()]{2,240}:[01]?\.\d{1,2}\) 不允许括号内
-                    # 再出现括号，而角色 tag 恰恰带嵌套括号（esper zero f (neverness to
-                    # everness)、mint_(nte)），导致模型已正确分组仍被判为无分组、连拒
-                    # 多轮后放弃（实测翻车）。改为只匹配结尾的权重语法，天然兼容嵌套。
-                    if not re.search(r":\s*\d+(?:\.\d+)?\s*\)", _all_text):
-                        _tw_lines = "\n".join(
-                            f"  - {_cn}：触发词「{_tw or '（库未配置触发词）'}」"
-                            for _cn, _tw in _char_loras
-                        )
+            # ① 归一（对调用级 prompt 与 prompts 每项都做；非 ComfyUI 平台跳过）
+            _norm_ok = False
+            if not _plat_skip:
+                _norm_targets: list[tuple[dict | None, str]] = []
+                if (prompt or "").strip():
+                    _norm_targets.append((None, prompt.strip()))
+                for _it in _items:
+                    if (_it.get("prompt") or "").strip():
+                        _norm_targets.append((_it, _it["prompt"].strip()))
+                for _holder, _raw in _norm_targets:
+                    _fixed, _nblk = self._normalize_labeled_multi_char(_raw)
+                    if _nblk >= 2:
+                        # 归一成功即视为结构合格：分组可能只有一个标签（如 (white hair:1.20)），
+                        # 会被下方「多标签分组」计数判为 0 —— 那是自相矛盾，故单独放行。
+                        _norm_ok = True
+                    if _nblk >= 2 and _fixed != _raw:
                         logger.info(
-                            f"【多角色拦截】 启用 {len(_char_loras)} 个角色 LoRA 但提示词无权重分组，"
-                            f"返回指导要求重写"
+                            f"【多人归一】 检测到 {_nblk} 个「标签式分行」角色块，已自动改写成权重分组: "
+                            f"{_fixed}"
                         )
-                        return (
-                            f"出图被拦截：本次启用了 {len(_char_loras)} 个角色 LoRA，但提示词没有按"
-                            "「多人分组规则」写——不分组两个角色的特征必然互相污染"
-                            "（A 角色长出 B 角色的猫耳/衣服）。请按以下规则重写 prompt 后"
-                            "重新调用本工具一次：\n"
-                            "1) 计数标签紧跟画质前缀（如 2girls），绝不写 solo；\n"
-                            "2) 每个角色一个英文标签权重分组，格式：\n"
-                            "   2girls, (角色A触发词, 角色A的danbooru标签:1.2), (角色B触发词, 角色B的danbooru标签:1.2)\n"
-                            "   每个角色的 LoRA 触发词与 danbooru 角色 tag 都必须写进它自己的分组括号内；\n"
-                            "3) 每个角色的分组里还要写 2~4 个该角色最有辨识度的外观标签"
-                            "（发色/瞳色/兽耳/角等）与本图服装——两个角色 LoRA 是同时全局生效的，"
-                            "纯触发词拉不开，不补辨识词必然两人同脸/衣服互串；"
-                            "两个角色的标签绝不平铺混排、绝不用 Left girl/Right girl 自然语言句式；\n"
-                            "4) 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会剔除，写了也白写）。\n"
-                            f"本次两个角色的 LoRA 与触发词：\n{_tw_lines}\n"
-                            "重写完成后带着新 prompt 重新调用本工具（参数不变，仅改 prompt）。"
-                        )
+                        if _holder is None:
+                            prompt = _fixed
+                        else:
+                            _holder["prompt"] = _fixed
+            # ② 校验
+            _texts = [
+                t for t in [
+                    (prompt or "").strip(),
+                    *[(it.get("prompt") or "").strip() for it in _items],
+                ] if t
+            ]
+            _multi_declared = any(self._is_multi_person_prompt(t) for t in _texts)
+            _need_ly = (not _plat_skip) and (len(_char_loras) >= 2 or _multi_declared)
+            if _need_ly:
+                _best_groups = max((self._count_weight_groups(t) for t in _texts), default=0)
+                if _best_groups < 2 and not _norm_ok:
+                    _reason = (
+                        f"启用了 {len(_char_loras)} 个角色 LoRA" if len(_char_loras) >= 2
+                        else "提示词声明了多人（计数标签）"
+                    )
+                    _tw_lines = "\n".join(
+                        f"  - {_cn}：触发词「{_tw or '（库未配置触发词）'}」"
+                        for _cn, _tw in _char_loras
+                    ) or "  （本次未启用角色 LoRA）"
+                    logger.info(
+                        f"【多人拦截】 {_reason} 但提示词只有 {_best_groups} 个权重分组"
+                        f"（需 ≥2），返回指导要求重写"
+                    )
+                    _ex = (
+                        "2girls, (角色A触发词, 角色A最有辨识的2~4个外观标签, 本图服装:1.2), "
+                        "(角色B触发词, 角色B最有辨识的2~4个外观标签, 本图服装:1.2), "
+                        "互动标签, 场景标签"
+                    )
+                    return (
+                        f"出图被拦截：{_reason}，但提示词没有写成「每个角色一个权重分组」——"
+                        "不分组时两个角色的特征必然互相污染（A 长出 B 的猫耳/衣服、两人穿同一套衣服）。"
+                        "请重写 prompt 后重新调用本工具一次，要求：\n"
+                        "1) 计数标签紧跟画质前缀（如 2girls / 1girl 1boy），绝不写 solo；\n"
+                        "2) 【一个角色一个括号分组】整段只允许两个角色分组，格式必须形如：\n"
+                        f"   {_ex}\n"
+                        "   ✗ 禁止的写法（实测翻车）：把标签按行铺开、每个标签各自加权，例如\n"
+                        '     "girl A (left): (1girl:1.2), (long white hair:1.1), (cat ears:1.1)"\n'
+                        "     ——这既不是分组，自然语言标签（girl A (left):）也会变成垃圾 token；\n"
+                        "3) 每个角色分组里必须有：该角色 LoRA 触发词（若用了 LoRA）+ 2~4 个该角色"
+                        "最有辨识度的外观标签（发色/瞳色/兽耳/角等）+ 本图服装；\n"
+                        "4) 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会自动剔除）。\n"
+                        f"本次角色 LoRA 与触发词：\n{_tw_lines}\n"
+                        "重写后带着新 prompt 重新调用本工具（其余参数不变）。"
+                    )
         except Exception as _e:
-            logger.warning(f"【多角色拦截】 检查异常（不拦截）: {_e}")
+            logger.warning(f"【多人拦截】 检查异常（不拦截）: {_e}")
 
         # ── 收集图片（图生图参考图）─────────────────────────────────
         # 关键修正：图生图不要求 LLM 必须传 image 参数。用户最常见的图生图方式就是
