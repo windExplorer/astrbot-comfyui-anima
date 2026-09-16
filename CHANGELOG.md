@@ -2,6 +2,49 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.15.0（表情包统一走「两段提示词」：命令入口不再吃固定槽位模板 + boogu 指令随图入库并在大图详情展示）
+
+现象（用户反馈两条）：
+
+1. **表情包还在用固定槽位**——明明是两段提示词（画面 + 加字指令），结果第二段（气泡/文字）走的是
+   写死的 `prompt_slots` 模板，不是现编的 boogu 指令。
+2. **图库大图详情没有展示 boogu 提示词**。
+
+根因（代码证据链）：
+
+- `/表情包`（直填）根本不调 LLM，只把 `::` 后的文字按 `prompt_slots` 的 vars 映射，然后
+  `inject_slots` 用**写死的模板**渲染（`render_slot_template`）= 固定槽位。
+- `/表情包llm` 调的是**旧的** `comic_build_prompts_llm`，它产出的键是 `boogu_{节点id}`；
+  而 `_do_draw` 注入侧只读 `slot_values["boogu"]` → **键名不匹配**，指令被静默丢弃，
+  节点 B 一直吃工作流 JSON 里写死的默认模板（日志摘要侧早就兼容两种键名，注入侧漏了）。
+- 只有 LLM 工具 `comfyui_comic` / `comfyui_meme_img` 与 `llm_draw` 自动路由走了真两段。
+- boogu 指令只存在于 `_do_draw` 局部变量与日志里，**从未写入归档字段**（ComfyUI 主归档连 `extra` 都没传），
+  所以图库详情自然没有。
+- 顺带发现真 bug：`main.py` 摘要里调用 `self._render_nl_slot(...)`，而该函数只是 `comic.py` 的
+  模块级函数（无 self 包装）→ nl 槽位一旦出现就 `AttributeError`。
+
+修复：
+
+- **注入侧键名兼容**：`_do_draw` 依次读 `slot_values["boogu"]` → `slot_values["boogu_{节点id}"]`，
+  旧命令路径的指令不再被丢弃（这一条单独就让 `/表情包llm` 立刻恢复两段）。
+- **`/表情包`·`/图生表情包` 直填 → boogu 指令**：新增 `comic.build_direct_boogu()`，把 `::` 文字段
+  按 vars 顺序经 nl 槽位链路（样式目录 / 「样式名:文字」/ 一致性锁+风格锁）拼成自然语言加字指令，
+  写 `slot_values["boogu"]`；工作流未配 `boogu_node` 时仍回退旧槽位（向后兼容）。
+- **`/表情包llm`·`/图生表情包llm` 切到两段造词器**：配了 `boogu_node` 时改用
+  `comic_write_prompts_llm`（一次产出 draw + boogu），不再走旧槽位清单；旧工作流仍走
+  `comic_build_prompts_llm`。为不丢能力，给 `comic_write_prompts_llm` **增加了 LoRA 识别**
+  （带库清单、返回规范名 `loras`），命令入口继续支持「用XX lora」。
+- **修 `self._render_nl_slot` → `comic._render_nl_slot(self, ...)`**。
+- **boogu 指令随图入库**：`_do_draw` 留存 `_boogu_record = {"node", "text"}`，
+  ComfyUI 主归档传 `extra={"boogu": ...}`（复用既有 `extra` JSON 列，**无需改表/迁移**）。
+- **前端大图详情展示**（`ImageViewer.vue`）：新增「boogu 加字指令（第二段提示词 · 节点 N）」区块，
+  侧栏与详情弹窗各一处；解析 `extra.boogu`（兼容字符串/对象）。
+- 文档：`/表情包`、`comfyui_comic` 的说明同步为「boogu_node 两段（旧 prompt_slots 兼容）」。
+
+验收：`/表情包 画面::摸鱼中` 出图后，日志应出现「直填→boogu 指令（两段模式）」与
+`【boogu】 指令 → 节点 11（N 字）`，不再出现「本次未生成指令（沿用工作流默认）」；
+图库大图详情能看到 boogu 指令原文。
+
 ## v5.14.5（anima 自然语言「元描述」短语权重剔除 + 提示词规范新增「只写真实 danbooru 标签」）
 
 现象（用户提问）提示词里出现 `(two different hair colors:1.3)`、`(white hair and teal hair:1.2)`

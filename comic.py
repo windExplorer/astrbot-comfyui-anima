@@ -870,6 +870,40 @@ def _nl_join(slot: dict, middle: str) -> str:
     return "\n\n".join(p for p in (_prefix, (middle or "").strip(), _suffix) if p)
 
 
+def build_direct_boogu(self, wf: dict, parts: list[str]) -> str:
+    """直填模式（`/表情包 画面::气泡[::底部]`）→ **boogu 加字指令（第二段提示词）**。
+
+    背景（v5.15.0）：表情包工作流现已统一走「两段提示词」——
+      ① 画面 → positive_node（走 positive 全流程）；
+      ② 加字指令 → boogu_node。
+    直填模式本意是「用户给什么就写什么」（不调 LLM 创作），但**第二段仍应是指令而不是旧槽位模板**，
+    否则 bubble/bottom 会去渲染写死的 prompt_slots 模板（用户反馈的「还在用固定槽位」）。
+
+    这里复用 nl 槽位的渲染链路（样式目录 / 「样式名:文字」前缀 / 一致性锁+风格锁），
+    把 parts 按 prompt_slots 的 vars 顺序映射成自然语言加字指令；所有文字都为空时返回空串
+    （调用方据此沿用工作流默认，绝不画空气泡）。
+
+    parts: `::` 之后的文字段（第 1 段=气泡，第 2 段=底部…）。
+    """
+    _vars = slot_vars(self, wf) or ["bubble_text", "bottom_text"]
+    _values = {v: (parts[i] if i < len(parts) else "") for i, v in enumerate(_vars)}
+    if not any(str(v or "").strip() for v in _values.values()):
+        return ""
+    _nl_slot: dict | None = None
+    for _s in normalize_prompt_slots(self, wf.get("prompt_slots")):
+        if not isinstance(_s, dict) or slot_mode(_s) != "nl":
+            continue
+        _svars = [str(v).strip() for v in (_s.get("vars") or []) if str(v).strip()]
+        if _svars and any(v in _vars for v in _svars):
+            _nl_slot = _s
+            break
+    _slot = dict(_nl_slot or {})
+    _slot["key"] = "__direct__"  # 确保不会误读 slot_values[key] 里的「LLM 中段」
+    _slot["vars"] = [str(v).strip() for v in (_slot.get("vars") or _vars) if str(v).strip()]
+    _slot.pop("template", None)  # 直填→指令模式不使用旧模板
+    return _render_nl_slot(self, _slot, _values)
+
+
 def render_slot_template(self, slot: dict, template, values: dict) -> str | None:
     """渲染单个提示词槽位（prompt_slots）的模板。
 
@@ -1104,12 +1138,24 @@ async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, su
         model = self._resolve_translate_provider_id() or ""
     if not model:
         logger.info("【表情包·造词】 未配置可用 LLM（llm_model 与 translate_llm_model 均为空），跳过得词（沿用工作流默认）")
-        return {"draw": "", "boogu": ""}
+        return {"draw": "", "boogu": "", "loras": []}
     _nl_notes = _nl_disable_notes(_raw)
     _thought_note = _detect_thought(_raw)
+    # LoRA 识别（v5.15.0）：从用户原话里识别想用的 LoRA（只能从库清单里挑），
+    # 让命令入口在切到「两段提示词」后仍保留旧造词器的「用XX lora」能力。
+    _lora_catalog: list[str] = []
+    for _l in self._lora_library():
+        _nm = (_l.get("name") or "").strip()
+        if _nm and _nm not in _lora_catalog:
+            _lora_catalog.append(_nm)
+        for _al in (_l.get("aliases") or []):
+            _al = str(_al).strip()
+            if _al and _al not in _lora_catalog:
+                _lora_catalog.append(_al)
     prompt = (
         "你正在为一句想法生成「表情包」所需的两段提示词。只输出一个 JSON 对象"
-        "（不要任何解释、不要 markdown 代码块、不要反引号），键固定为 draw 与 boogu：\n\n"
+        "（不要任何解释、不要 markdown 代码块、不要反引号），键固定为 draw 与 boogu"
+        + ("、loras" if _lora_catalog else "") + "：\n\n"
         + _perspective_rule(subject) + "\n\n"
         f"用户原话/想法：\n{_clean}\n\n"
         f"画面描述（将作为出图参考）：\n{scene}\n\n"
@@ -1141,7 +1187,17 @@ async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, su
     _fb_note = _feedback_note(_raw)
     if _fb_note:
         prompt += f"\n【反馈处理】{_fb_note}。"
-    prompt += '\n输出 JSON：{"draw": "英文绘图提示词", "boogu": "中文编辑指令"}'
+    if _lora_catalog:
+        prompt += (
+            "\nloras：数组，用户想用的 LoRA 名称列表——【只能从下方清单里挑】"
+            "（清单里没有就返回空数组 []）；不要把 LoRA 名当画面词写进 draw，也不要写 <lora:> 标签，"
+            "系统会按清单名称自动注入。\n"
+            "可选 LoRA 清单（名称须完全一致）：" + "、".join(_lora_catalog)
+        )
+    prompt += (
+        '\n输出 JSON：{"draw": "英文绘图提示词", "boogu": "中文编辑指令"'
+        + (', "loras": []' if _lora_catalog else "") + "}"
+    )
     try:
         logger.info(f"【表情包·造词】 使用模型({model}) 生成两段提示词")
         llm_resp = await self.context.llm_generate(chat_provider_id=model, prompt=prompt)
@@ -1149,7 +1205,7 @@ async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, su
         text = getattr(llm_resp, "completion_text", "") or ""
     except Exception as e:
         logger.warning(f"【表情包·造词】 LLM 调用失败，沿用默认文字: {e}")
-        return {"draw": "", "boogu": ""}
+        return {"draw": "", "boogu": "", "loras": []}
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text, flags=re.DOTALL)
@@ -1161,14 +1217,40 @@ async def comic_write_prompts_llm(self, wf: dict, user_text: str, scene: str, su
             try:
                 _parsed = json.loads(m.group(0))
             except Exception:
-                return {"draw": "", "boogu": ""}
+                return {"draw": "", "boogu": "", "loras": []}
         else:
-            return {"draw": "", "boogu": ""}
+            return {"draw": "", "boogu": "", "loras": []}
     if not isinstance(_parsed, dict):
-        return {"draw": "", "boogu": ""}
+        return {"draw": "", "boogu": "", "loras": []}
+    # LoRA 名称归一：LLM 给的词逐个去全局库匹配（含别名），拿到规范名
+    _loras: list[str] = []
+    if _lora_catalog:
+        _raw_loras = _parsed.get("loras")
+        if isinstance(_raw_loras, list):
+            for _item in _raw_loras:
+                _item = str(_item).strip()
+                if not _item:
+                    continue
+                _match = next(
+                    (
+                        (l.get("name") or "").strip()
+                        for l in self._lora_library()
+                        if workflow_builder._lora_name_matches(
+                            (l.get("name") or "").strip(), _item
+                        )
+                        or any(
+                            workflow_builder._lora_name_matches(str(a).strip(), _item)
+                            for a in (l.get("aliases") or [])
+                        )
+                    ),
+                    None,
+                )
+                if _match and _match not in _loras:
+                    _loras.append(_match)
     return {
         "draw": str(_parsed.get("draw") or "").strip(),
         "boogu": str(_parsed.get("boogu") or "").strip(),
+        "loras": _loras,
     }
 
 
