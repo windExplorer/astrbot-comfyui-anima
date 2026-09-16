@@ -314,19 +314,56 @@ async def main() -> int:
     _eb = await api.character_cover_set()
     check("跨角色设封面报错", isinstance(_eb, dict) and _eb.get("__kind__") == "error", str(_eb))
 
+    print("\n[14] 下拉候选接口（v6.1.1：角色类 LoRA + AstrBot 人格）")
+    # 桩：LoRA 库（含非角色分类）+ persona_manager
+    FakePlugin._lora_library = lambda self: [
+        {"name": "薄荷", "category": "角色", "base_model": "anima", "trigger_words": "mint_(nte)"},
+        {"name": "鉴定师", "category": "角色", "base_model": "anima", "trigger_words": "zero_nte"},
+        {"name": "鬼猫风格", "category": "风格", "base_model": "anima"},
+        {"name": "无分类项"},
+    ]
+    FakePlugin.context = types.SimpleNamespace(
+        persona_manager=types.SimpleNamespace(
+            personas_v3=[
+                {"name": "小叽V4", "prompt": "你是小叽……"},
+                {"name": "霜岛绫V4", "prompt": "你是霜岛绫……"},
+                {"name": "小叽V4", "prompt": "重复项应被去重"},
+            ],
+            selected_default_persona_v3={"name": "霜岛绫V4"},
+        )
+    )
+    set_req()
+    _opt = _payload(await api.character_options())
+    _lnames = [x["name"] for x in (_opt.get("loras") or [])]
+    # 排序按名称 Unicode（薄 U+8584 < 鉴 U+9274），不是拼音
+    check("只返回角色分类 LoRA", _lnames == ["薄荷", "鉴定师"], str(_lnames))
+    check("返回库内总数用于提示",
+          int(_opt.get("lora_total") or 0) == 4 and int(_opt.get("lora_role_total") or 0) == 2,
+          f"{_opt.get('lora_total')}/{_opt.get('lora_role_total')}")
+    _pnames = [x["name"] for x in (_opt.get("personas") or [])]
+    check("人格列表来自 AstrBot 且去重", _pnames == ["小叽V4", "霜岛绫V4"], str(_pnames))
+    check("返回默认人格", _opt.get("default_persona") == "霜岛绫V4", str(_opt.get("default_persona")))
+    # persona_manager 不可用时不报错、回空列表
+    FakePlugin.context = types.SimpleNamespace()
+    set_req()
+    _opt2 = _payload(await api.character_options())
+    check("取不到人格列表时不报错", _opt2.get("personas") == [], str(_opt2.get("personas")))
+    check("LoRA 候选仍可用", len(_opt2.get("loras") or []) == 2, str(_opt2.get("loras")))
+
     print("\n[9] 路由已注册（内嵌页）")
     src = (ROOT / "webui_api.py").read_text(encoding="utf-8")
     for _ep in ("character/list", "character/detail", "character/save", "character/delete",
                 "character/anchor/save", "character/anchor/delete", "character/anchor/primary",
                 "character/ref/upload", "character/ref/image", "character/ref/delete",
                 "character/ref/from_gallery", "character/ref/anchor", "character/cover/set",
-                "character/suggest", "character/export", "character/import"):
+                "character/options", "character/suggest", "character/export", "character/import"):
         check(f"路由 {_ep} 已注册", f'/character/' in src and _ep.split("/", 1)[1] in src, _ep)
     ssrc = (ROOT / "standalone_webui.py").read_text(encoding="utf-8")
     check("独立 WebUI 已分派 /character/", 'startswith("/character/")' in ssrc)
     check("独立 WebUI 适配器存在", "async def _api_character(" in ssrc)
     check("独立 WebUI 已分派 ref/anchor", 'sub == "ref/anchor"' in ssrc)
     check("独立 WebUI 已分派 cover/set", 'sub == "cover/set"' in ssrc)
+    check("独立 WebUI 已分派 options", 'sub == "options"' in ssrc)
 
     print("\n[12] 双通道方法校验（v6.0.0：独立通道 GET 不再能触发 POST 端点）")
     check("模块级方法表已声明", isinstance(getattr(webui_api, "ROUTE_METHODS", None), dict))

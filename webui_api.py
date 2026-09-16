@@ -45,6 +45,16 @@ from urllib.parse import quote, urlparse
 
 from astrbot.api.web import error_response, file_response, json_response, request
 
+# 模块级 logger（v6.1.1）：此前本文件多处用了 `logger.`（如平台测试入库失败分支），
+# 但**从未定义** —— 一旦走到那些 except 分支就会 NameError，把原始错误盖掉。
+# 测试环境（桩掉 astrbot.api.web）没有 astrbot 包，回退标准 logging。
+try:
+    from astrbot.api import logger as logger  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    import logging as _logging
+
+    logger = _logging.getLogger("astrbot_plugin_comfyui_anima.webui")
+
 # 插件名（与 metadata.yaml 的 name 一致）。路由前缀必须含它，否则 AstrBot
 # 的插件页面桥接会把请求发到错误路径（全部 404 / 前端永远加载中）。
 PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
@@ -2172,6 +2182,78 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"从图库导入失败: {e}")
 
+    async def character_options(self):
+        """角色卡表单的下拉候选（v6.1.1）：**角色类 LoRA** + AstrBot 人格列表。
+
+        为什么要专用接口：LoRA 库在 `config.loras` 里，但条目含 C 站描述（HTML，动辄数 KB），
+        整份 config 拉到角色页太重；这里只回精简字段，且只取「分类=角色」的 LoRA
+        （角色卡关联的就是角色 LoRA）。人格列表来自 AstrBot 的 `persona_manager`
+        （`personas_v3` 与 `selected_default_persona_v3`），取不到时回空列表并给提示，
+        前端仍可手输人格名。
+        """
+        out: dict = {
+            "loras": [], "lora_role_total": 0, "lora_total": 0,
+            "personas": [], "default_persona": "",
+        }
+        # ---- 角色类 LoRA ----
+        try:
+            lib = []
+            try:
+                lib = self.plugin._lora_library() or []
+            except Exception:
+                lib = list((getattr(self.plugin, "config", {}) or {}).get("loras") or [])
+            out["lora_total"] = len(lib)
+            _slim = []
+            for l in lib:
+                if not isinstance(l, dict):
+                    continue
+                _name = (l.get("name") or "").strip()
+                if not _name:
+                    continue
+                if (l.get("category") or "").strip() != "角色":
+                    continue
+                _slim.append({
+                    "name": _name,
+                    "base_model": (l.get("base_model") or "").strip(),
+                    "trigger_words": (l.get("trigger_words") or "").strip()[:200],
+                    "cover": (l.get("cover") or "").strip(),
+                    "enabled": l.get("enabled", True) is not False,
+                })
+            _slim.sort(key=lambda x: x["name"])
+            out["loras"] = _slim
+            out["lora_role_total"] = len(_slim)
+        except Exception as e:
+            logger.warning(f"【角色卡】 读取 LoRA 库失败（下拉留空）: {e}")
+        # ---- 人格列表 ----
+        try:
+            mgr = getattr(getattr(self.plugin, "context", None), "persona_manager", None)
+            if mgr is not None:
+                _seen: set[str] = set()
+                _plist = []
+                for p in (getattr(mgr, "personas_v3", None) or []):
+                    if isinstance(p, dict):
+                        _n = str(p.get("name") or "").strip()
+                        _pr = str(p.get("prompt") or "")
+                    else:
+                        _n = str(getattr(p, "name", "") or "").strip()
+                        _pr = str(getattr(p, "prompt", "") or "")
+                    if not _n or _n in _seen:
+                        continue
+                    _seen.add(_n)
+                    _plist.append({
+                        "name": _n,
+                        "preview": " ".join(_pr.split())[:60],
+                    })
+                _dflt = getattr(mgr, "selected_default_persona_v3", None)
+                if isinstance(_dflt, dict):
+                    out["default_persona"] = str(_dflt.get("name") or "").strip()
+                elif _dflt is not None:
+                    out["default_persona"] = str(getattr(_dflt, "name", "") or "").strip()
+                out["personas"] = _plist
+        except Exception as e:
+            logger.warning(f"【角色卡】 读取人格列表失败（下拉留空）: {e}")
+        return json_response(out)
+
     async def character_cover_set(self):
         """设置 / 清除角色封面（v6.1.0）。body: {character_id, ref_id}；ref_id=0 → 清除。"""
         try:
@@ -2608,6 +2690,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/character/ref/from_gallery", _h("character_ref_from_gallery"), ["POST"], "从图库导入参考图"),
         (f"{prefix}/character/ref/anchor", _h("character_ref_anchor"), ["POST"], "调整图片的锚点归属"),
         (f"{prefix}/character/cover/set", _h("character_cover_set"), ["POST"], "设置/清除角色封面"),
+        (f"{prefix}/character/options", _h("character_options"), ["GET"], "角色卡下拉候选（角色类 LoRA / 人格）"),
         (f"{prefix}/character/suggest", _h("character_suggest"), ["POST"], "联网补全候选标签"),
         (f"{prefix}/character/export", _h("character_export"), ["GET"], "角色卡片导出"),
         (f"{prefix}/character/import", _h("character_import"), ["POST"], "角色卡片导入"),

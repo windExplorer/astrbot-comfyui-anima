@@ -542,6 +542,8 @@ class StandaloneWebUI:
             name = "character_ref_anchor"
         elif sub == "cover/set" and method == "POST":
             name = "character_cover_set"
+        elif sub == "options" and method == "GET":
+            name = "character_options"
         elif sub == "suggest" and method == "POST":
             name = "character_suggest"
         elif sub == "import" and method == "POST":

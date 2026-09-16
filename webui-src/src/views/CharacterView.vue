@@ -104,11 +104,25 @@
               <n-input v-model:value="form.aliasesText" placeholder="逗号分隔，如：小叽酱,叽叽" />
             </n-form-item>
             <n-form-item label="绑定人格">
-              <n-input v-model:value="form.persona_name" placeholder="AstrBot 人格名，如 小叽V4（用户说「画你」时命中）" />
+              <n-select
+                v-model:value="form.persona_name"
+                :options="mergedPersonaOptions"
+                filterable
+                tag
+                clearable
+                placeholder="AstrBot 人格名（用户说「画你」时命中）"
+              />
             </n-form-item>
             <n-form-item label="作品"><n-input v-model:value="form.work" placeholder="如 Neverness to Everness" /></n-form-item>
             <n-form-item label="关联 LoRA">
-              <n-input v-model:value="form.lora_name" placeholder="LoRA 库里的规范名；命中卡片时自动启用" />
+              <n-select
+                v-model:value="form.lora_name"
+                :options="mergedLoraOptions"
+                filterable
+                tag
+                clearable
+                placeholder="只列「角色」分类的 LoRA；也可直接输入名称"
+              />
             </n-form-item>
             <n-form-item label="备注"><n-input v-model:value="form.note" type="textarea" :rows="2" /></n-form-item>
             <n-form-item label="启用"><n-switch v-model:value="form.enabled" /></n-form-item>
@@ -213,9 +227,30 @@
       <n-form label-placement="left" label-width="86" size="small">
         <n-form-item label="角色名"><n-input v-model:value="createForm.name" placeholder="如 薄荷" /></n-form-item>
         <n-form-item label="别名"><n-input v-model:value="createForm.aliasesText" placeholder="逗号分隔（可留空）" /></n-form-item>
-        <n-form-item label="绑定人格"><n-input v-model:value="createForm.persona_name" placeholder="AstrBot 人格名（可留空）" /></n-form-item>
+        <n-form-item label="绑定人格">
+          <n-select
+            v-model:value="createForm.persona_name"
+            :options="mergedPersonaOptions"
+            filterable
+            tag
+            clearable
+            placeholder="AstrBot 人格名（可留空）"
+          />
+        </n-form-item>
         <n-form-item label="作品"><n-input v-model:value="createForm.work" placeholder="可留空" /></n-form-item>
-        <n-form-item label="关联 LoRA"><n-input v-model:value="createForm.lora_name" placeholder="可留空" /></n-form-item>
+        <n-form-item label="关联 LoRA">
+          <n-select
+            v-model:value="createForm.lora_name"
+            :options="mergedLoraOptions"
+            filterable
+            tag
+            clearable
+            placeholder="只列「角色」分类的 LoRA（可留空，也可直接输入）"
+          />
+        </n-form-item>
+        <div v-if="!loraOptions.length" class="hint tip-inline">
+          未取到「角色」分类的 LoRA：可去「LoRA」页把分类改为角色，或直接输入名称。
+        </div>
         <n-divider style="margin: 6px 0 12px">首个锚点（必填）</n-divider>
         <n-form-item label="锚点名"><n-input v-model:value="createForm.anchor_name" placeholder="默认装" /></n-form-item>
         <n-form-item label="标签串">
@@ -250,7 +285,16 @@
           <n-input-number v-model:value="anchorForm.weight" :min="1" :max="1.5" :step="0.05" style="width: 160px" />
           <span class="hint">多人分组时用，建议 1.1~1.3（不超 1.5）</span>
         </n-form-item>
-        <n-form-item label="覆盖 LoRA"><n-input v-model:value="anchorForm.lora_name" placeholder="可留空（优先于角色级 LoRA）" /></n-form-item>
+        <n-form-item label="覆盖 LoRA">
+          <n-select
+            v-model:value="anchorForm.lora_name"
+            :options="mergedLoraOptions"
+            filterable
+            tag
+            clearable
+            placeholder="可留空（优先于角色级 LoRA）"
+          />
+        </n-form-item>
         <n-form-item label="抑制触发词">
           <n-switch v-model:value="anchorForm.skip_trigger_words" />
           <span class="hint">开启时该 LoRA 触发词不再全局追加（锚点里已写就不重复）</span>
@@ -472,6 +516,8 @@ function fillForm(c: any) {
   form.lora_name = c?.lora_name || "";
   form.note = c?.note || "";
   form.enabled = c?.enabled !== false;
+  // 历史自定义值不在候选里时补进选项，避免下拉显示成空
+  rememberExtra(form.lora_name, form.persona_name);
 }
 
 async function openDetail(row: any) {
@@ -599,6 +645,7 @@ function openAnchorEdit(a: any) {
   anchorForm.weight = Number(a.weight || 1.2);
   anchorForm.lora_name = a.lora_name || "";
   anchorForm.skip_trigger_words = a.skip_trigger_words !== false;
+  rememberExtra(anchorForm.lora_name, ""); // 锚点级自定义 LoRA 名也要能显示
   anchorOpen.value = true;
 }
 
@@ -656,6 +703,63 @@ async function setPrimary(a: any) {
     await reload();
   } catch (e: any) {
     message.error(`设置失败：${e?.message || e}`);
+  }
+}
+
+// ---------------- 下拉候选：角色类 LoRA / AstrBot 人格（v6.1.1）----------------
+const loraOptions = ref<{ label: string; value: string }[]>([]);
+const personaOptions = ref<{ label: string; value: string }[]>([]);
+/** 已保存但不在候选里的值（如历史自定义名）也要能显示 → 补进选项。 */
+const extraValues = reactive<{ lora: string[]; persona: string[] }>({ lora: [], persona: [] });
+
+function mergeOptions(
+  base: { label: string; value: string }[],
+  extras: string[],
+  suffix = "",
+): { label: string; value: string }[] {
+  const seen = new Set(base.map((o) => o.value));
+  const out = [...base];
+  for (const v of extras) {
+    const _v = (v || "").trim();
+    if (_v && !seen.has(_v)) {
+      seen.add(_v);
+      out.push({ label: `${_v}${suffix}`, value: _v });
+    }
+  }
+  return out;
+}
+
+const mergedLoraOptions = computed(() => mergeOptions(loraOptions.value, extraValues.lora));
+const mergedPersonaOptions = computed(() =>
+  mergeOptions(
+    personaOptions.value,
+    extraValues.persona,
+    extraValues.persona.length ? "" : "",
+  ),
+);
+
+async function loadOptions() {
+  try {
+    const d = await apiGet("character/options");
+    loraOptions.value = (d?.loras || []).map((l: any) => ({
+      label: l.base_model ? `${l.name}（${l.base_model}）` : l.name,
+      value: l.name,
+    }));
+    const _dflt = String(d?.default_persona || "");
+    personaOptions.value = (d?.personas || []).map((p: any) => ({
+      label: `${p.name}${_dflt && p.name === _dflt ? "（默认人格）" : ""}`,
+      value: p.name,
+    }));
+  } catch (e: any) {
+    // 候选拿不到不阻塞页面：下拉仍可手输
+    console.warn("[角色卡] 读取下拉候选失败:", e?.message || e);
+  }
+}
+
+function rememberExtra(lora: string, persona: string) {
+  for (const [k, v] of [["lora", lora], ["persona", persona]] as const) {
+    const _v = (v || "").trim();
+    if (_v && !extraValues[k].includes(_v)) extraValues[k].push(_v);
   }
 }
 
@@ -882,7 +986,10 @@ async function doImport() {
   }
 }
 
-onMounted(reload);
+onMounted(() => {
+  reload();
+  loadOptions(); // 角色类 LoRA 与 AstrBot 人格候选（拿不到也不影响手输）
+});
 </script>
 
 <style scoped>
@@ -913,6 +1020,7 @@ onMounted(reload);
 .anchor-neg { font-size: 12px; opacity: 0.7; margin-top: 4px; word-break: break-word; }
 .anchor-ops { display: flex; gap: 6px; margin-top: 8px; }
 .hint { font-size: 12px; opacity: 0.6; margin-left: 8px; }
+.tip-inline { display: block; margin: 0 0 10px 92px; }
 .ref-grid { display: flex; flex-wrap: wrap; gap: 10px; }
 .ref-item {
   width: 132px; border: 1px solid rgba(128, 128, 128, 0.2);

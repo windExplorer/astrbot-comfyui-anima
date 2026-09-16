@@ -2,6 +2,29 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.1.1（角色卡片表单：关联 LoRA / 绑定人格 改为可搜索下拉；顺带修 webui_api 缺失 logger）
+
+需求：关联 LoRA 做成**可搜索下拉**（里面只放**角色分类**的 LoRA）；绑定人格同样做下拉，
+候选来自 **AstrBot 的人格列表**。
+
+- **新接口** `character/options`（GET，双通道）：一次返回两样东西——
+  - `loras`：LoRA 库里**分类=角色**的条目（精简字段：name / base_model / trigger_words[:200] /
+    cover / enabled），另附 `lora_total`、`lora_role_total` 供前端提示「库内共 N 个，角色类 M 个」。
+    为什么不复用 `/config`：LoRA 条目带 C 站描述（HTML，动辄数 KB），整份配置拉到角色页太重。
+  - `personas`：AstrBot 的 `context.persona_manager.personas_v3`（去重、带 prompt 预览）+
+    `default_persona`（`selected_default_persona_v3`）。取不到时回空列表、接口不报错。
+- **前端**（`CharacterView.vue`）：详情表单、新建弹窗的「绑定人格」「关联 LoRA」，以及锚点弹窗的
+  「覆盖 LoRA」全部改为 `n-select`（`filterable` 可搜索 + `tag` 允许直接输入未列出的名字 + `clearable`）；
+  人格下拉会给默认人格标「（默认人格）」；LoRA 选项显示底模；**历史自定义值会自动补进选项**，
+  避免已有卡片打开后下拉显示为空；角色类 LoRA 为空时给出一句指引（去 LoRA 页改分类或直接输入）。
+- **顺带修复**：`webui_api.py` 多处使用了 `logger`，但该文件**从未定义**它
+  （如平台测试入库失败的 except 分支）——一旦走到就会 NameError 把原始错误盖掉。
+  现补模块级 logger（`from astrbot.api import logger`，非 AstrBot 环境回退标准 logging）。
+
+测试：`tests/test_character_webui.py` 增至 **77 项**——新增「只返回角色分类 LoRA」「返回库内/角色类总数」
+「人格列表来自 AstrBot 且去重」「返回默认人格」「persona_manager 不可用时不报错且 LoRA 候选仍可用」，
+路由自检与独立通道分派自检各补 `options`。
+
 ## v6.1.0（角色卡片：锚点级多图 + 角色封面 + 列表卡片视图）
 
 三项用户需求：① 给**锚点**传图片（可多张）；② 角色**封面**；③ 角色列表做成 LoRA 那种**卡片展示**（默认），
