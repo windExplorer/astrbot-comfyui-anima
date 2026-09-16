@@ -5979,8 +5979,10 @@ class ComfyUIDrawPlugin(Star):
         目标工作流须配 boogu 加字节点（`boogu_node`；旧 `prompt_slots` 槽位方式仍兼容）。
         **两段提示词由插件内部 LLM 生成**（第一段画面→正向节点，第二段加字指令→boogu 节点）——你只描述画面，
         不要手填槽位、也不要在 prompt 里写"气泡里写XX"。
-        ⚠️ 本工具受配置 `enable_comic_llm` 控制，**默认关闭**（关闭时直接拒绝）。关闭时若用户要带字漫画/表情包，
-        应直接建议其用 `/漫画`、`/表情包` 指令，**不要反复重试本工具**；仅当管理员开启该配置时才用。
+        ⚠️ 本工具受配置 `enable_comic_llm` 控制（**默认开启**）。若调用被拒绝（配置关闭），
+        应直接建议用户用 `/漫画`、`/表情包` 指令，**不要反复重试本工具**。
+        ★用户要「带字表情包/漫画」时优先用本工具；若本工具不可用，也可以调 comfyui_draw 并显式指定漫画工作流
+        （插件会自动生成两段提示词），但**绝不要自己把气泡文字/文字内容写进 prompt**。
         普通「图上出现文字」（标题/招牌/海报字）**用 comfyui_draw 正常画**，不要改道本工具；图生表情包用 comfyui_meme_img。
         ★本工具只能文生图：不要传 image / denoise（传了也不会走图生图）。
 
@@ -6002,8 +6004,8 @@ class ComfyUIDrawPlugin(Star):
         # 漫画/表情包 AI 自动配文开关（enable_comic_llm，默认关闭）：
         # 关闭时漫画功能仅允许通过指令（/漫画、/表情包、/表情包llm）绘制，
         # 经本工具由 AI 自动出图被禁用，避免误触发。伴侣插件走 _do_draw，不经本工具，不受影响。
-        if not plugin._cfg("enable_comic_llm", False):
-            return "漫画/表情包功能当前仅支持通过指令绘制（/漫画、/表情包、/表情包llm），AI 自动配文出图已关闭。"
+        if not plugin._cfg("enable_comic_llm", True):
+            return "漫画/表情包功能当前仅支持通过指令绘制（/漫画、/表情包、/表情包llm），AI 自动配文出图已在配置里关闭（enable_comic_llm=false）。"
         # 按功能解析工作流（meme_text=文生表情包/漫画），--wf 优先；非漫画工作流报错停住
         _wf_name, _err = self._resolve_comic_workflow("meme_text", workflow)
         if _err:
@@ -6051,7 +6053,7 @@ class ComfyUIDrawPlugin(Star):
     ):
         """图生表情包：附一张参考图 + 自动生成气泡/底部文字（图生图）。绑定 special_features 的「图生表情包(meme_img)」功能；
         目标工作流须配 prompt_slots + image_node。**文字由插件内部 LLM 自动生成**，你只描述画面。
-        ⚠️ 受配置 `enable_comic_llm` 控制，**默认关闭**（关闭时直接拒绝）：此时应建议用户用 `/图生表情包` 指令，
+        ⚠️ 受配置 `enable_comic_llm` 控制（**默认开启**）：若被拒绝（配置关闭）应建议用户用 `/图生表情包` 指令，
         不要反复重试本工具。必须提供参考图 image（顶层 image 或 prompts 每项带 image）。
 
         Args:
@@ -6072,8 +6074,8 @@ class ComfyUIDrawPlugin(Star):
             return "LLM 画图工具已关闭，请使用指令绘图（/图生表情包 等）。"
         # 漫画/表情包 AI 自动配文开关（enable_comic_llm，默认关闭）：
         # 关闭时图生漫画功能仅允许通过指令（/图生表情包 等）绘制，本工具被禁用。
-        if not plugin._cfg("enable_comic_llm", False):
-            return "图生表情包功能当前仅支持通过指令绘制（/图生表情包），AI 自动配文出图已关闭。"
+        if not plugin._cfg("enable_comic_llm", True):
+            return "图生表情包功能当前仅支持通过指令绘制（/图生表情包），AI 自动配文出图已在配置里关闭（enable_comic_llm=false）。"
         # 图生表情包必须有参考图（顶层 image 或 prompts 任一项带 image）
         _has_img = bool((image or "").strip()) or any(
             isinstance(_p, dict) and (str(_p.get("image") or "").strip()) for _p in (prompts or [])
@@ -8995,9 +8997,12 @@ class ComfyUIDrawPlugin(Star):
         - 本工具与 comfyui_gallery 职责严格分离：生图归 draw，发旧图归 gallery。
 
         触发时机：当用户表达任何想要绘制/生成/画一张图片的意图时，务必调用此工具。
-        ★★表情包/漫画分流（已改为仅指令）：漫画/表情包（带气泡文字）功能当前仅支持指令绘制
-        （/漫画、/表情包、/表情包llm），comfyui_comic / comfyui_meme_img 工具默认关闭（受 enable_comic_llm 控制），
-        不要改调 comfyui_comic；用户要带字漫画时，请直接建议其使用 /漫画 指令。
+        ★★表情包/漫画分流：用户要**带气泡文字的梗图/表情包/漫画**时：
+        ① 优先调 comfyui_comic（可用时它一次搞定，文字由插件内部 LLM 生成）；
+        ② 若它被拒绝或不在工具列表里，可以调**本工具**并显式指定漫画工作流（如 workflow="表情包"）——
+           插件检测到漫画工作流会**强制生成两段提示词**（画面 + 加字指令），你**绝不要把气泡文字、
+           "气泡里写XX"、text:/底部: 这类内容写进 prompt**（写了会被剥离，且会污染画面）；
+        ③ 实在不行再建议用户用 /表情包 指令。
         普通的「图上出现文字」（标题、招牌、海报字、墙上的字等）**直接用本工具画**——
         按下方「提示词规范」里对应底模的文字渲染写法写即可，不要因为画面带文字就改道 comfyui_comic。
         常规出图按本说明操作即可，**无需读取任何技能文件**；多人/合照规则已内嵌在下方，直接遵守即可；
@@ -9714,18 +9719,27 @@ class ComfyUIDrawPlugin(Star):
         # 时不会造词，boogu 节点会直接用工作流里写死的默认提示词——
         # 表现为『巨大字 + 永远有底部字幕 + 固定气泡』，正是用户反复吐槽的丑样子。
         # 已带 slot_values（comfyui_comic 已注入）或第三方 source 调用不触发本路由。
-        # enable_comic_llm（默认关闭）：关闭时漫画功能仅允许通过指令绘制，
-        # 这里整段「AI 静默造词」路由（意图命中 / 点名漫画工作流）一起跳过，comfyui_draw 不再自动走带字工作流。
-        if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN) and self._cfg("enable_comic_llm", False):
+        # enable_comic_llm（默认开启，可在 WebUI 配置）：控制「没点名工作流但说了表情包/漫画」时
+        # 是否自动切到漫画工作流并造词。
+        # ★v5.15.1 两处关键修正：
+        #  ① 该开关此前**没写进 _conf_schema.json**，而 AstrBot 只加载 schema 声明过的键，
+        #     于是 _cfg(..., False) 恒为 False → 整段路由从未执行（用户反馈「对话让 AI 画表情包
+        #     一直是固定槽位/错的」的真正根因）。现补进 schema 且默认 true。
+        #  ② 只要 AI **显式点名了漫画工作流**，无论开关如何都强制造词——否则节点 B 会沿用
+        #     工作流里写死的默认模板，出图必然不对，这属于「必然坏」的路径，不该被开关关掉。
+        if slot_values is None and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             _intent_text = (getattr(event, "message_str", "") or "").strip()
-            _comic_by_intent = self._is_comic_intent(_intent_text, prompt)
-            _cwf = None
-            if _comic_by_intent:
-                _cwf, _cerr = self._resolve_comic_wf("", is_img2img)
-            elif resolved_wf:
+            _allow_by_intent = bool(self._cfg("enable_comic_llm", True))
+            _explicit_comic = False
+            if resolved_wf:
                 _rwf_cfg = self._find_workflow_by_name(resolved_wf)
-                if _rwf_cfg and self._workflow_kind(_rwf_cfg) == "comic":
-                    _cwf = resolved_wf
+                _explicit_comic = bool(_rwf_cfg and self._workflow_kind(_rwf_cfg) == "comic")
+            _comic_by_intent = bool(_allow_by_intent) and self._is_comic_intent(_intent_text, prompt)
+            _cwf = None
+            if _explicit_comic:
+                _cwf = resolved_wf
+            elif _comic_by_intent:
+                _cwf, _cerr = self._resolve_comic_wf("", is_img2img)
             if _cwf:
                 logger.info(
                     f"【路由】 漫画工作流「{_cwf}」强制造词（覆盖工作流默认 boogu 提示词）"

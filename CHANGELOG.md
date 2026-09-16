@@ -2,6 +2,37 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.15.1（真根因：`enable_comic_llm` 从未写进配置 schema，导致「对话画表情包」的自动造词路由永远不执行）
+
+现象（用户澄清）：**用的是 LLM 对话**让 AI 画表情包（不是指令），一直画错、第二段仍是固定槽位模板。
+v5.15.0 修的是指令路径，对这条路径无效。
+
+根因（两层）：
+
+- **该开关根本没进 `_conf_schema.json`**：`enable_comic_llm` 只写在代码/SKILL/CHANGELOG 里，
+  而 AstrBot 只加载 schema 声明过的键 → `self._cfg("enable_comic_llm", False)` **恒为 False**。
+  于是：`comfyui_comic` / `comfyui_meme_img` 工具**永远直接拒绝**；`llm_draw` 的自然语言
+  表情包自动路由（意图命中 / 点名漫画工作流造词）**整段被跳过**。
+  用户对话画表情包时只能走 `comfyui_draw` → 无造词 → 节点 B 沿用工作流写死的默认模板
+  （= 用户看到的「固定槽位、一直画错」）。这个键自 v5.11.8 引入起就不可配置，等于功能长期失效。
+- **开关关掉会造成「必然坏」的路径**：AI 若显式点名漫画工作流却因为开关跳过造词，
+  出图必然用默认模板 → 应当无条件造词。
+
+修复：
+
+- `_conf_schema.json` 新增 `enable_comic_llm`（bool，**默认 true**，含详细 hint），
+  并在 `ConfigView.vue` 的 GROUP_META「AI 对话与 LLM」分区登记（否则掉「其他」分区）。
+- 三处读取默认值 `False → True`：`llm_comic`、`llm_meme_img`、`llm_draw` 路由开关。
+- **路由条件重构**（`main.py`）：只要 AI **显式点名漫画工作流**（`workflow_kind == "comic"`）就
+  **无条件造词**；「意图命中表情包/漫画」才受开关控制（关闭时退回原行为）。
+- docstring / SKILL.md 同步：`comfyui_comic`、`comfyui_meme_img` 由「默认关闭」改为「默认开启」，
+  并明确「要带字梗图优先用 comfyui_comic；它不可用时可用 comfyui_draw + 显式漫画工作流
+  （插件会强制两段），但绝不要把气泡文字写进 prompt」。
+
+验收：对 AI 说「画个表情包，鲸鱼娘在敲键盘说摸鱼中」→ 日志应出现
+`【路由】 漫画工作流「表情包」强制造词` 与 `【路由】 漫画两段提示词生成：绘图=有, boogu=有`，
+且 `【boogu】 指令 → 节点 N（M 字）`，不再是「本次未生成指令（沿用工作流默认）」。
+
 ## v5.15.0（表情包统一走「两段提示词」：命令入口不再吃固定槽位模板 + boogu 指令随图入库并在大图详情展示）
 
 现象（用户反馈两条）：
