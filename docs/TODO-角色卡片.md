@@ -1,9 +1,24 @@
 # 角色卡片（Character Card）设计文档
 
-> 状态：**设计稿（未实现）**，待确认后按「十一、推进顺序」分阶段落地
+> 状态：**M1 已实现（v5.16.0）**；M2（WebUI 页面）、M3（参考图 / 联网补全）待做
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）
+
+### M1 落地情况（v5.16.0）
+
+| 文档章节 | 落地位置 |
+| --- | --- |
+| 三、数据模型 | `character_store.py`（`data_dir/character.db`：`characters` / `character_anchors` / `character_refs`） |
+| 四、检索与注入 | `character.py:inject()`（单角色追加；多角色计数标签 + 每角色 `(标签:权重)` 分组并剥掉模型自带分组） |
+| 五、对话式设定 | `comfyui_character` 工具（10 个 action）+ `/角色` 指令（add/set/use/del/删…） |
+| 五.3 人格解析 | `character.py:resolve_persona_name()`（`persona_manager.resolve_selected_persona` → `get_default_persona_v3`） |
+| 七、仓库硬约束 | 已同步 `build_zip.ps1` 的 `$includeList` 与 `main.py` 的 `importlib.reload` 列表 |
+| 八、配置项 | `_conf_schema.json` 的 `character_card` 块 + `ConfigView.vue` 新增「角色卡片」分区 |
+| 注入接入点 | `_do_draw`（覆盖 AI 对话 / 指令 / 伴侣插件全部入口；`_fixed_prompt` 跳过） |
+
+实测修正（相对本文档初稿）：多人分组内部**不写**计数标签（计数只由全局那一个表达）；
+画质前缀必须置顶；`allow_web_fetch` 仅预留（M3 未实现）。
 
 ---
 
