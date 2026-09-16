@@ -2,6 +2,33 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.14.2（双角色 LoRA 串味第三刀：分组通过后仍同脸/串装——多人分组必须补辨识外观标签）
+
+现象（用户实测）：拦截修好后分组格式已正确，但出图仍是「两个人头都是薄荷、衣服鞋子都是鉴定师」：
+`2girls, (esper zero f \(neverness to everness\), zero_nte:1.2), (mint_(nte), teal hair, long hair,
+red eyes, cat ears:1.2), standing side by side, ...`
+
+根因（两层）：
+
+- **本质限制**：两个角色 LoRA 是同时、全局作用于整张图的——LoRA 不认 prompt 分组，权重分组
+  只是辅助拉扯。两个 LoRA 同时推每个生成的人向各自角色靠，猫耳特征强的薄荷把两个人的头都拉走；
+  而「鉴定师」的分组里除了触发词**什么都没有**，服装没人管就落到鉴定师 LoRA 的默认装。
+- **规则埋坑**：v5.13.9/v5.14.0 的规则写的是「用了角色 LoRA 绝不补外貌」——这条在**单人**场景
+  正确（避免与 LoRA 打架），但在**多人都用角色 LoRA** 场景是错的：鉴定师分组里零外观词，
+  等于没给模型任何把该角色钉在组里的抓手。
+
+修复（规则修正，docstring + 拦截指导 + SKILL.md 三处同步）：
+
+- 「不补外貌」限定为**单人**用角色 LoRA 的场景；
+- **多人都用角色 LoRA** 时：每个角色的分组里必须再写 2~4 个该角色最有辨识度的外观标签
+  （发色/瞳色/兽耳/角等）与本图服装，把角色钉在组内；
+- SKILL.md 多人章节同步，并说明本质限制：要彻底避免串染需 Regional Prompter 类区域控制
+  （本插件暂未支持）或分开生成再合成；单人场景不受影响。
+
+效果预期：同场景的合格提示词形如
+`2girls, (esper zero f \(neverness to everness\), zero_nte, grey hair, blue eyes, black cropped jacket:1.2),
+(mint_(nte), teal hair, long hair, red eyes, cat ears, black corset:1.2), standing side by side, ...`。
+
 ## v5.14.1（紧急修复：多角色拦截正则误杀正确分组——括号内嵌套括号导致匹配失败）
 
 现象（用户日志实测）：「画一张异环鉴定师和薄荷站一起的图」，模型第 2 次重试就已经写出了
