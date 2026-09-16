@@ -1,40 +1,308 @@
-# TODO：角色卡片（Character Card）
+# 角色卡片（Character Card）设计文档
 
-## 需求
+> 状态：**设计稿（未实现）**，待确认后按「十一、推进顺序」分阶段落地
+> 提出日期：2026-09-16
+> 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
+> 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）
 
-为"具体角色"建立**可持久化、可维护**的角色资料库，供绘图时直接复用，解决"模型/LoRA/danbooru 都找不到某个角色"以及"角色信息存错了难改"的问题。
+---
 
-## 核心功能
+## 一、需求概述
 
-1. **联网找角色**：当模型知识、LoRA 库、danbooru 里都查不到某个角色时，**联网搜索**该角色的资料（外貌、常穿服装、性格、发色/瞳色等设定）。
-2. **图片下载**：找到角色后，若有关键图片/参考图，**下载到本地**；数据库里把**图片链接/本地路径**补充进去（支持**多图**）。
-3. **资料持久化**：把角色相关的外貌、常穿服装等描写**存起来**，以后画该角色时**直接复用**，不用每次重新查。
-4. **可修正**：用户可能发现存下的角色信息**有的地方对不上**（如头发颜色），需要**及时更新到数据库**。
-5. **WebUI 角色卡片栏目**：新增一个"角色卡片"页面/栏目，支持**查看、修改、删除、新增**角色。
+为「具体角色」建立**可持久化、可维护、可经对话设定**的绘图资料库，让"这个角色长什么样"从**模型的即兴发挥**变成**插件的确定性注入**。
 
-## 与现有"角色/作品处理顺序"衔接
+五条核心诉求：
 
-之前 v4.5.13 已定义画具体角色时的顺序：**先查角色 LoRA → 没有再调 danbooru MCP → 都没有用模型知识**。本功能是这条链路的**第四步兜底**：上面都没有时 → **联网搜角色 → 存成角色卡片 → 以后直接复用**。
+1. **多人格**：系统存在多个 bot 人格（如 `小叽V4`、`霜岛绫V4`）。用户说「画你」时指的是**当前会话生效的人格**，其形象必须能被查到。
+2. **一个角色多个锚点**：一个角色有多套提示词标签组（默认装 / 泳装 / 校服 / 季节限定…），绘图时按用户要求选用；未指定则用**主锚点**。
+3. **对话可设定**：「记住小叽的样子是…」「小叽换成蓝发」「给薄荷加一套泳装锚点」——角色与锚点都能**通过对话**新增/修改，无需开 WebUI。
+4. **持久化与可修正**：设定落库，后续每张图复用；用户发现对不上（如发色错了）能立刻改，下一张图即生效。
+5. **确定性注入**：卡片命中时由**插件**把锚点标签（含多人分组、计数标签）写进提示词，不再依赖模型是否听话。
 
-## 设计要点（初步）
+原文档里的「联网找角色 + 下载参考图」保留，但**降级为第三阶段的可选增强**（详见第九节）。
 
-- **数据存储**：参考现有图库/图库 SQLite 的做法，新增角色卡片表（或独立 SQLite 表），字段含：角色名、别名、作品、外貌描写（发色/瞳色/体型等）、常穿服装、参考图路径/URL（多图）、来源、创建/更新时间等。
-- **联网搜索**：需要接入一个能搜索角色资料的来源（如 Danbooru wiki、角色百科、或通用搜索接口），解析出结构化资料。
-- **图片落地**：下载到 `data_dir` 下的角色图目录（类似 gallery/），内容寻址或按角色名组织；支持多图。
-- **WebUI**：在 `webui-src` 新增"角色卡片"视图，复用现有图库的增删改查交互模式（列表 / 搜索 / 编辑 / 删除 / 新增）。
-- **LLM 工具**：可考虑新增一个 `comfyui_character` 工具，画具体角色时先查角色卡片；命中就直接用卡片的设定，避免每次联网/查库。
-- **修正链路**：用户指出某角色资料不对 → 允许直接改数据库（WebUI 或指令），改完下次绘图即用新设定。
+---
 
-## 待细化问题
+## 二、概念模型
 
-- 联网搜角色的具体数据源与解析方式（哪些来源可靠、如何转成结构化字段）。
-- 多图在 prompt/绘图里如何利用（参考图用于图生图？还是仅作资料展示？）。
-- 角色卡片与 LoRA、danbooru 标签的优先级最终定稿（画图时以哪个为准）。
-- WebUI 权限（谁能增删改角色卡片）。
-- 是否需要独立配置块（`_conf_schema.json` 新增 `character_card` 配置）。
+| 概念 | 说明 | 对应 AstrBot 概念 |
+| --- | --- | --- |
+| **人格 persona** | bot 扮演的角色，会话级生效。id 即 `Personality["name"]`（如 `小叽V4`） | `context.persona_manager.personas_v3` |
+| **角色卡 character** | 一个可绘图角色。来源三类：**bot 自身人格角色**、用户原创角色、第三方 IP 角色 | 本插件 `character.db` |
+| **锚点 anchor** | 角色的一套**提示词标签组**（正标签串 + 负标签串 + 建议权重 + 可选关联 LoRA + 备注）。一个角色 N 个（N≥1） | 同库 `character_anchors` |
+| **参考图 ref** | 0~N 张参考图，用于卡片展示与图生图 | `data_dir/characters/<slug>/` |
+| **主锚点 primary** | 未指定锚点时默认使用的那一套（每个角色恰有 1 个） | `character.is_primary_anchor_id` |
 
-## 推进顺序（建议）
+```mermaid
+erDiagram
+    PERSONA ||--o| CHARACTER : "可选绑定（bot 自身）"
+    CHARACTER ||--|{ ANCHOR : "1..N 套标签组"
+    CHARACTER ||--o{ REF_IMAGE : "0..N 张参考图"
+    ANCHOR }o--o| LORA : "可选关联"
+```
 
-1. 先做**数据层**：角色卡片表 + 增删改查接口（WebUI + 指令）。
-2. 再做**联网获取**：搜角色资料 + 图片下载 + 多图存储。
-3. 最后**接入绘图流程**：新增 LLM 工具 / 在 `comfyui_draw` 里优先查角色卡片，命中即用，并与"先 LoRA→再 danbooru"的顺序打通。
+关键点：
+
+- **persona ↔ character 是可选的 1:1 绑定**（`character.persona_name` 非空即绑定）。第三方角色（薄荷）不绑人格；bot 自身角色（小叽）绑定人格，从而「画你」可解析。
+- **锚点是绘图的实际载体**。角色卡只存身份信息；所有进提示词的东西都在锚点里。
+
+---
+
+## 三、数据模型
+
+新增 `character_store.py`，数据文件 `data_dir/character.db`（沿用现有 store 范式：WAL + `CREATE TABLE IF NOT EXISTS` + 缺列 `ALTER TABLE` 迁移，无 schema 版本号；参考 `quota_store.py:40-100`）。
+
+```sql
+CREATE TABLE IF NOT EXISTS characters (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,                 -- 角色名（唯一键，大小写不敏感比较）
+    aliases       TEXT DEFAULT '[]',             -- JSON 数组：别名/昵称（「你」「我」「小叽酱」）
+    persona_name  TEXT DEFAULT '',               -- 绑定人格名；空=未绑定（第三方角色）
+    work          TEXT DEFAULT '',               -- 作品/IP（如 Neverness to Everness）
+    lora_name     TEXT DEFAULT '',               -- 可选：关联 LoRA 名（绘图时自动启用）
+    primary_anchor_id INTEGER DEFAULT 0,         -- 主锚点 id
+    source        TEXT DEFAULT 'user',           -- user / persona / web / import
+    note          TEXT DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    REAL NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS character_anchors (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id INTEGER NOT NULL,
+    name         TEXT NOT NULL,                  -- 锚点名：默认装/泳装/校服/冬季…
+    kind         TEXT DEFAULT 'outfit',          -- appearance / outfit / full（full=含外观+服装）
+    positive     TEXT NOT NULL,                  -- 正标签串（danbooru 英文标签，逗号分隔）
+    negative     TEXT DEFAULT '',
+    weight       REAL NOT NULL DEFAULT 1.2,      -- 多人分组时的建议权重
+    lora_name    TEXT DEFAULT '',                -- 该锚点可覆盖角色级 LoRA
+    skip_trigger_words INTEGER NOT NULL DEFAULT 1, -- 锚点已含身份词时不再全局追加该 LoRA 触发词
+    note         TEXT DEFAULT '',
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    created_at   REAL NOT NULL DEFAULT 0,
+    updated_at   REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS character_refs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id INTEGER NOT NULL,
+    path         TEXT NOT NULL,                  -- data_dir/characters/<slug>/<sha16>.<ext>
+    url          TEXT DEFAULT '',                -- 来源链接（联网抓取时）
+    sha256       TEXT DEFAULT '',
+    nsfw_score   REAL DEFAULT -1,                -- 复用 nsfw_detector；-1=未检测
+    note         TEXT DEFAULT '',
+    created_at   REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_anchor_char ON character_anchors(character_id);
+CREATE INDEX IF NOT EXISTS idx_ref_char    ON character_refs(character_id);
+```
+
+Store 方法（命名对齐现有 store 风格）：
+
+```
+create_character / update_character / delete_character / get_character(name_or_id, fuzzy=True)
+list_characters(keyword="") / find_by_persona(persona_name) / resolve(text) -> (character, anchor)
+  ↑ resolve：输入用户话里的名字（含别名/「你」）返回角色与命中锚点
+list_anchors(char_id) / add_anchor / update_anchor / delete_anchor / set_primary_anchor
+add_ref / list_refs / delete_ref
+export_all / import_all            # 备份迁移用
+```
+
+---
+
+## 四、检索与注入（本文档的核心）
+
+### 4.1 优先级（**修正原文档的「第四步兜底」**）
+
+画一个具体角色时的解析顺序：
+
+```
+① 角色卡片（用户自己确认过的权威设定，含锚点标签 / 关联 LoRA / 负向）
+② 角色 LoRA（库里查到的角色 LoRA + 触发词）
+③ danbooru MCP / 标签服务
+④ 模型自身知识
+⑤ 联网检索兜底（阶段三；命中后建议"记住"成卡片，回到 ①）
+```
+
+理由：卡片是**人工确认过**的，且能一次锁定外观+服装+权重+分组；LoRA 与 danbooru 都是它的补充或降级来源。
+
+### 4.2 注入时机与渲染规则
+
+在 `comfyui_draw` / `_do_draw` 入口做**角色解析**（静默、确定性），命中卡片则渲染：
+
+| 场景 | 渲染结果 |
+| --- | --- |
+| 单角色（「画小叽」） | `锚点.positive` 直接并入正向提示词（追加而非替换，保留用户的动作/场景描述） |
+| 单角色 + 「画你」 | 先解析**当前会话人格** → 查 `persona_name == 人格名` 的卡片 → 同上 |
+| 多角色（「鉴定师和薄荷站一起」） | 计数标签自动补（角色数 → `2girls`/`1boy 1girl`） + 每角色一个分组 `(锚点.positive:锚点.weight)`；卡片顺序 = 提及顺序 |
+| 锚点关联 LoRA | 自动并入 `loras` 参数；`skip_trigger_words=1` 时该 LoRA 触发词不再全局追加（防串味，与 v5.14.0 的多角色抑制规则一致） |
+| 用户指定锚点（「薄荷泳装」「用校服那套」） | 命中锚点名则用该锚点，否则用主锚点 |
+
+**必须**：渲染结果写日志（`【角色卡】 命中 角色=薄荷 锚点=默认装 注入=...`），否则出问题无法排查。
+
+### 4.3 与现有规则的关系
+
+- **v5.13.8 角色一致性**：卡片命中后，跨轮一致性由数据库保证，不再依赖「模型逐字沿用」。
+- **v5.14.0 多角色拦截**：卡片路径**不触发**该拦截（插件自己就会渲染分组）；仅当模型自行写多角色 LoRA 且无卡片时仍拦截。
+- **v5.14.3 bot 自身入画**：由「让模型去记忆库检索」升级为「插件按人格直接查卡片」；docstring 仍保留兜底检索（卡片缺失时）。
+
+---
+
+## 五、对话式设定（阶段一重点）
+
+### 5.1 LLM 工具 `comfyui_character`
+
+| action | 参数 | 用户话术示例 |
+| --- | --- | --- |
+| `list` | keyword | 「都有哪些角色卡」 |
+| `get` | name | 「小叽的设定是什么」 |
+| `save` | name/aliases/work/persona_name/lora_name/anchor_* | 「记住小叽的样子：白发、异色瞳、猫耳…」 → 建卡 + 建主锚点 |
+| `update` | name + 字段 | 「小叽绑定的 LoRA 是 XX」 |
+| `delete` | name | 「删掉小叽的卡片」（需用户确认） |
+| `add_anchor` | name + anchor 字段 | 「给薄荷加一套泳装：…」 |
+| `update_anchor` | name + anchor_name + 字段 | 「小叽的默认装改成蓝发」 |
+| `delete_anchor` | name + anchor_name | 「删掉校服那套」 |
+| `set_primary_anchor` | name + anchor_name | 「小叽默认用泳装那套」 |
+| `bind_persona` | name + persona_name | 「把这张卡绑到小叽V4人格」 |
+
+docstring 要点：**静默调用**；写入前回显摘要（「已记住：小叽 / 默认装 / 白发、异色瞳…」）；删除前必须让用户二次确认；参数名进入 `tests/test_llm_tool_docstrings.py` 的 `REQUIRED`。
+
+### 5.2 指令入口 `/角色`（等价、更可靠）
+
+```
+/角色                     列表
+/角色 看 小叽              查看卡片与全部锚点
+/角色 记住 小叽 白发异色瞳猫耳  [--别名 小叽酱 --作品 NTE --人格 小叽V4]
+/角色 改 小叽 锚点=默认装 +标签 blue_hair   （或 --set 覆盖）
+/角色 锚点 add 薄荷 泳装 "…标签…"
+/角色 锚点 use 小叽 泳装     （设为主锚点）
+/角色 删 小叽               （需二次确认）
+```
+
+指令优于 LLM 的部分：不受模型听话程度影响、管理员可用、支持精确字段。两条入口共用同一份 store 逻辑。
+
+### 5.3 人格解析（已核对 AstrBot 4.27.4 源码）
+
+```python
+pm = getattr(self.context, "persona_manager", None)          # astrbot/core/star/context.py:161
+umo = getattr(event, "unified_msg_origin", "") or ""
+persona = await pm.get_default_persona_v3(umo=umo)           # persona_mgr.py:68
+# 更精确（会读会话级强制人格 session_service_config.persona_id）：
+pid, persona, forced, _ = await pm.resolve_selected_persona(
+    umo=umo, conversation_persona_id=None,
+    platform_name=event.get_platform_name(), provider_settings=None,
+)                                                             # persona_mgr.py:83
+name = (persona or {}).get("name", "")                        # personas_v3 的 name 即 persona_id
+```
+
+注意：`Personality` 是 dict-like，`name` 就是 persona_id（`persona_mgr.py:52-66`）。全部用 `getattr`/`try` 容错，取不到时降级为「未绑定人格，走原链路」。
+
+---
+
+## 六、WebUI（双通道，务必两处都改）
+
+| 步骤 | 文件 | 说明 |
+| --- | --- | --- |
+| 1 | `webui_api.py` | `WebUIApi` 内新增 `character_list / character_get / character_save / character_delete / character_anchor_*`，返回 `json_response` / `error_response` |
+| 2 | `webui_api.py` | `routes` 列表（约 2038 行）加 `(f"{prefix}/character/list", _h("character_list"), ["GET"], "...")` 等 |
+| 3 | `standalone_webui.py` | `_dispatch`（约 504 行）加分支 `/character/*` → `_api_character`，**照抄 `_api_story`（453-502）的 `_AioReqAdapter` + `_request_lock` 适配器写法**即可复用第 1 步的 handler（用户主力用独立 WebUI，这步不能漏） |
+| 4 | `webui-src/src/router/index.ts` | 加路由（hash 路由，静态 import） |
+| 5 | `webui-src/src/router/nav.ts` | `NAV_ITEMS` 加导航项（PC 侧栏与移动抽屉共用） |
+| 6 | `webui-src/src/views/CharacterView.vue` | 新建；**以 `StoryView.vue` 为 CRUD 样板**（`apiGet("story/sessions")` 那套），列表 + 详情 + 锚点表格 + 编辑表单 + 删/存 |
+
+约束与提醒：
+
+- **本仓库没有 i18n 体系**（无 vue-i18n，文案硬编码中文，`App.vue` 只设了 Naive UI 的 `zhCN` 面板语言）。不要照搬工作区其它插件的「4 语言」要求。
+- 权限：复用现有 `permissions` / `allow_draw_users` 判定；写操作默认限管理员（`_is_admin(event)`），只读可放开。
+- 新配置键若新增，必须同步 `ConfigView.vue` 的 `GROUP_META`（`93-109`），否则配置页显示在兜底的「其他」分区。
+
+---
+
+## 七、新模块与仓库硬约束（最易漏）
+
+新增顶层模块 `character_store.py` 时，**四处必须同步**，否则功能静默失效：
+
+1. `build_zip.ps1` 的 `$includeList`（显式白名单，不加则 zip 里没文件）；
+2. `main.py` `__init__` 里的 `importlib.reload` 依赖模块列表（约 972-979 行，不加则热更后 `sys.modules` 仍是旧代码）；
+3. 若新增 LLM 工具 → `tests/test_llm_tool_docstrings.py` 的 `REQUIRED`；
+4. 若新增配置键 → `_conf_schema.json` + `ConfigView.vue` 的 `GROUP_META`。
+
+store 实例化沿用现有写法（`main.py:884-957` 一带，`try/except` 失败降级为 `None` + warning）：
+
+```python
+self.character = CharacterStore(self.data_dir, cfg_provider=lambda: self.config.get("character_card", {}))
+```
+
+---
+
+## 八、配置项（`_conf_schema.json` 新增顶层块 `character_card`）
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | true | 总开关 |
+| `auto_bind_persona` | true | 「画你」时自动按当前会话人格查卡片 |
+| `auto_inject` | true | 命中卡片时自动注入锚点标签（否则只在工具返回里提示模型） |
+| `auto_group_multi` | true | 多角色时自动渲染 `(标签:权重)` 分组与计数标签 |
+| `default_weight` | 1.2 | 分组权重默认值（1.1~1.3，不超 1.5） |
+| `allow_user_edit` | true | 非管理员能否用 `/角色` 写入 |
+| `allow_web_fetch` | false | 阶段三：允许联网补全角色资料 |
+
+同步：`ConfigView.vue` 的 `GROUP_META` 新增「角色卡片」分区（或并入「特殊功能」）。
+
+---
+
+## 九、联网获取与参考图（阶段三，可选）
+
+- **来源优先级**：danbooru MCP/标签服务（已有链路）> 用户手动粘贴 > 通用网页搜索（需先确认 AstrBot 是否向插件暴露搜索能力）。
+- ⛔ **禁止抓 danbooru 官网/镜像**（403/限流，`comfyui_draw` docstring 已明令禁止）。
+- **图片落地**：`data_dir/characters/<slug>/<sha256[:16]>.<ext>`（内容寻址，复用 `image_store.py` 的 `_path_for` 思路）；抓取后过一遍 `nsfw_detector` 打标，`nsfw_score` 存库。
+- **参考图用途**：① WebUI 展示；② 图生图（用户说「照这张画」时作为 `init_images`）。落地前不做自动图生图。
+- 联网结果一律 `source='web'`，并在 WebUI 标注来源与抓取时间，**人工确认后才作为正式锚点**（避免脏数据污染出图）。
+
+---
+
+## 十、验收清单
+
+- [ ] `/角色 记住 小叽 …` 后，`character.db` 有卡 + 主锚点，`/角色 看 小叽` 可回读
+- [ ] 「画你和薄荷的合照」：日志出现「命中 角色=小叽（人格绑定）」「命中 角色=薄荷」，最终 prompt 带 `2girls` 与两个 `(…:1.2)` 分组，且**没有**触发多角色拦截
+- [ ] 多人时角色 LoRA 触发词未被全局追加（无串味）
+- [ ] 「小叽的默认装改成蓝发」后，下一张图即生效（无需重启）
+- [ ] 未建卡的角色仍走原链路（LoRA → danbooru → 知识），行为不回归
+- [ ] WebUI：内嵌页与独立 WebUI **两边**的列表/新增/编辑/删除都可用
+- [ ] 热更验证：新增 `character_store.py` 已进 `build_zip.ps1` 清单与 reload 列表（`tar -tf` 复核 zip 内含该文件）
+- [ ] 多角色 + 卡片 + 用户自定义动作描述混写时，动作/场景词不被卡片覆盖
+- [ ] 删除卡片需二次确认；非管理员按 `allow_user_edit` 受控
+
+---
+
+## 十一、推进顺序
+
+**M1（最小可用，建议先做）——卡片 + 对话设定 + 单角色注入**
+
+1. `character_store.py` + 三张表 + CRUD（含 `resolve` / `find_by_persona`）；
+2. `/角色` 指令（管理员可用）；
+3. `comfyui_character` LLM 工具；
+4. `_do_draw` 注入：单角色命中卡片 → 用主锚点标签；「画你」→ 人格解析绑定；
+5. 仓库四处同步 + 日志埋点。
+
+**M2——多人渲染 + WebUI**
+
+6. 多角色自动分组渲染 + 计数标签 + 与 v5.14.0 拦截逻辑打通；
+7. `CharacterView.vue` + 双通道路由 + 权限；
+8. `_conf_schema.json` 的 `character_card` 块 + `GROUP_META`。
+
+**M3——联网与参考图（可选）**
+
+9. 联网补全（来源校验 + 人工确认）+ 图片落地 + NSFW 打标 + 参考图用于图生图。
+
+---
+
+## 十二、待确认 / 未决项
+
+1. **人格解析的会话级精度**：`resolve_selected_persona` 需要 `conversation_persona_id`（会话级人格切换）。M1 先用 `get_default_persona_v3(umo)`，是否要读 `session_service_config` 的强制人格由实测决定。
+2. **「你」的多义性**：群聊里用户说「你」指 bot；但「画我和小叽」中的「我」是用户自己——是否需要「用户自身角色卡」（如群友头像/虚拟形象）？待定。
+3. **卡片与 LoRA 的冲突策略**：锚点标签与 LoRA 触发词重复时以卡片为准（`skip_trigger_words`），但若卡片标签是自然语言（非 danbooru 标签系底模），是否要做底模适配？待定。
+4. **卡片分享/导入导出**：是否支持导出 JSON 分享给其他用户（结合 `ShareView`）？
+5. **多人格 ↔ 一角色的多对一**：一个角色卡能否被多个人格共用（如「通用女仆装角色」）？当前设计为 1:1，若需要改为映射表。
+6. **联网搜索能力可用性**：需确认 AstrBot 是否为插件提供可调用的 web 搜索工具（否则 M3 只能手动粘贴）。
