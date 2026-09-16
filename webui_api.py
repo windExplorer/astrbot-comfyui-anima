@@ -907,6 +907,41 @@ class WebUIApi:
     # -------------------------------------------------------------- #
     # LoRA 封面 / C 站抓取
     # -------------------------------------------------------------- #
+    @staticmethod
+    def _thumb_data_url_sync(path: Path, max_size: int = 640) -> tuple[str, str] | None:
+        """把本地图片压成 data URL（优先 PIL 缩略图），返回 (data_url, mime)；失败返回 None。
+
+        抽自 lora_image（角色卡参考图同样需要），避免两处各写一份缩略逻辑。
+        """
+        try:
+            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+            data = None
+            try:
+                from PIL import Image as _PImage
+                import io as _io
+
+                with _PImage.open(path) as _im:
+                    _im.thumbnail((max_size, max_size))
+                    _buf = _io.BytesIO()
+                    _fmt = _im.format or "JPEG"
+                    if _fmt.upper() == "PNG":
+                        _im.save(_buf, "PNG")
+                        mime = "image/png"
+                    else:
+                        if _im.mode in ("RGBA", "P", "LA"):
+                            _im = _im.convert("RGB")
+                        _im.save(_buf, "JPEG", quality=82)
+                        mime = "image/jpeg"
+                    data = _buf.getvalue()
+            except Exception:
+                data = None
+            if data is None:
+                data = Path(path).read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            return f"data:{mime};base64,{b64}", mime
+        except Exception:
+            return None
+
     def _lora_assets_dir(self) -> Path:
         d = getattr(self.plugin, "lora_assets_dir", None)
         if d is None:
@@ -927,32 +962,11 @@ class WebUIApi:
         if not path.exists() or not path.is_file():
             return error_response("图片不存在", status_code=404)
         try:
-            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
             # 压缩缩略图（最大宽/高 640px），避免原图 base64 过大导致前端 <img> 无法显示/卡顿
-            data = None
-            try:
-                from PIL import Image as _PImage
-                import io as _io
-
-                with _PImage.open(path) as _im:
-                    _im.thumbnail((640, 640))
-                    _buf = _io.BytesIO()
-                    _fmt = _im.format or "JPEG"
-                    if _fmt.upper() == "PNG":
-                        _im.save(_buf, "PNG")
-                        mime = "image/png"
-                    else:
-                        if _im.mode in ("RGBA", "P", "LA"):
-                            _im = _im.convert("RGB")
-                        _im.save(_buf, "JPEG", quality=82)
-                        mime = "image/jpeg"
-                    data = _buf.getvalue()
-            except Exception:
-                data = None
-            if data is None:
-                data = await asyncio.to_thread(path.read_bytes)
-            b64 = base64.b64encode(data).decode("ascii")
-            return json_response({"name": fname, "url": f"data:{mime};base64,{b64}"})
+            _res = await asyncio.to_thread(self._thumb_data_url_sync, path, 640)
+            if not _res:
+                return error_response("生成缩略图失败")
+            return json_response({"name": fname, "url": _res[0]})
         except Exception as e:
             return error_response(f"读取图片失败: {e}")
 
@@ -1769,6 +1783,15 @@ class WebUIApi:
         return getattr(plugin, "character", None)
 
     @staticmethod
+    def _character_mod():
+        """拿 character 逻辑模块（兼容包内/非包环境，沿用仓库既有导入范式）。"""
+        try:
+            from . import character as _cm
+        except ImportError:
+            import character as _cm
+        return _cm
+
+    @staticmethod
     def _character_cfg(plugin) -> dict:
         try:
             _c = plugin._cfg("character_card", {}) or {}
@@ -1783,9 +1806,10 @@ class WebUIApi:
                 return error_response("角色卡片模块未启用（存储初始化失败）")
             keyword = (request.query.get("keyword", "") or "").strip()
             rows = store.list_characters(keyword)
-            # 角色数量通常很少，列表直接带全锚点，前端一次拿全、免二次请求
+            # 角色数量通常很少，列表直接带全锚点与参考图，前端一次拿全、免二次请求
             for c in rows:
                 c["anchors"] = store.list_anchors(int(c["id"]))
+                c["refs"] = store.list_refs(int(c["id"]))
             cfg = self._character_cfg(self.plugin)
             return json_response({
                 "characters": rows,
@@ -1808,6 +1832,7 @@ class WebUIApi:
             if ch is None:
                 return error_response(f"没找到角色「{key}」")
             ch["anchors"] = store.list_anchors(int(ch["id"]))
+            ch["refs"] = store.list_refs(int(ch["id"]))
             return json_response(ch)
         except Exception as e:
             return error_response(f"读取角色详情失败: {e}")
@@ -1960,6 +1985,168 @@ class WebUIApi:
             return json_response({"ok": True, "primary": a["name"]})
         except Exception as e:
             return error_response(f"设置主锚点失败: {e}")
+
+    async def character_ref_upload(self):
+        """上传角色参考图（M3）：JSON {character_id, filename, data(base64)} 或原始二进制。
+
+        与 `lora_upload_image` 同一套入参约定（raw 二进制时用 `x-character-id` / `x-filename` 头），
+        因此独立 WebUI 的 `_AioReqAdapter` 无需改动即可复用。落盘后跑 NSFW 打标。
+        """
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            raw = await request.body()
+            ctype = (request.headers.get("content-type") or "").lower()
+            # 容错：某些反向代理/客户端会丢 content-type；body 以 `{` 开头即按 JSON 解析
+            if "json" not in ctype and raw[:1] == b"{":
+                ctype = "application/json"
+            char_key = ""
+            filename = f"ref_{uuid.uuid4().hex}.png"
+            data_bytes = None
+            if "json" in ctype:
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                char_key = str(payload.get("character_id") or payload.get("character_name") or "").strip()
+                if (payload.get("filename") or "").strip():
+                    filename = os.path.basename(str(payload["filename"]).strip())
+                b64 = payload.get("data") or payload.get("base64") or ""
+                if "," in b64:  # 兼容 dataURL 前缀
+                    b64 = b64.split(",", 1)[1]
+                try:
+                    data_bytes = base64.b64decode(b64)
+                except Exception:
+                    return error_response("base64 数据无效")
+            else:
+                data_bytes = raw
+                char_key = (request.headers.get("x-character-id") or "").strip()
+                if (request.headers.get("x-filename") or "").strip():
+                    filename = os.path.basename(request.headers.get("x-filename").strip())
+            if not data_bytes or len(data_bytes) < 16:
+                return error_response("图片数据为空或过小")
+            if len(data_bytes) > 12 * 1024 * 1024:
+                return error_response("图片过大（上限 12MB）")
+            ch = store.get_character(char_key)
+            if ch is None:
+                return error_response("缺少有效的 character_id（或角色不存在）")
+            try:
+                _char_mod = self._character_mod()
+            except Exception:
+                return error_response("character 模块不可用")
+            ref = await _char_mod.land_ref(
+                self.plugin, int(ch["id"]), data_bytes, filename=filename, note="WebUI 上传"
+            )
+            if ref is None:
+                return error_response("参考图落地失败")
+            return json_response({
+                "ok": True, "id": int(ref["id"]), "dedup": bool(ref.get("dedup")),
+                "nsfw_score": float(ref.get("nsfw_score") or -1),
+                "sha256": ref.get("sha256") or "",
+            })
+        except Exception as e:
+            return error_response(f"上传参考图失败: {e}")
+
+    async def character_ref_image(self):
+        """返回参考图缩略图 data URL（query: id=）。"""
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            _id = (request.query.get("id", "") or "").strip()
+            if not _id.isdigit():
+                return error_response("缺少 id 参数")
+            ref = store.get_ref(int(_id))
+            if ref is None:
+                return error_response("参考图不存在", status_code=404)
+            _p = Path(ref.get("path") or "")
+            if not _p.exists():
+                return error_response("参考图文件缺失", status_code=404)
+            try:
+                _size = int(request.query.get("size", "640") or "640")
+            except Exception:
+                _size = 640
+            _res = await asyncio.to_thread(
+                self._thumb_data_url_sync, _p, max(64, min(1600, _size))
+            )
+            if not _res:
+                return error_response("生成缩略图失败")
+            return json_response({"id": int(_id), "url": _res[0]})
+        except Exception as e:
+            return error_response(f"读取参考图失败: {e}")
+
+    async def character_ref_delete(self):
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            _id = body.get("id") or body.get("ref_id")
+            if not _id:
+                return error_response("缺少 id")
+            ok = store.delete_ref(int(_id))
+            return json_response({"ok": bool(ok)})
+        except Exception as e:
+            return error_response(f"删除参考图失败: {e}")
+
+    async def character_ref_from_gallery(self):
+        """把图库里某张图复制为角色参考图（避免用户重复上传）。body: {character_id, sha}"""
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            g = self._gallery()
+            if g is None:
+                return error_response("图库未启用")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            ch = store.get_character(body.get("character_id") or body.get("character_name") or "")
+            if ch is None:
+                return error_response("没找到该角色")
+            sha = (body.get("sha") or body.get("sha256") or "").strip()
+            if not sha:
+                return error_response("缺少 sha")
+            src = g.path_of(sha)
+            if not src or not Path(src).exists():
+                return error_response("图库里没有这张图", status_code=404)
+            try:
+                _char_mod = self._character_mod()
+            except Exception:
+                return error_response("character 模块不可用")
+            ref = await _char_mod.land_ref(
+                self.plugin, int(ch["id"]), Path(src).read_bytes(),
+                filename=Path(src).name, note=f"来自图库 {sha[:12]}",
+            )
+            if ref is None:
+                return error_response("参考图落地失败")
+            return json_response({"ok": True, "id": int(ref["id"]), "dedup": bool(ref.get("dedup"))})
+        except Exception as e:
+            return error_response(f"从图库导入失败: {e}")
+
+    async def character_suggest(self):
+        """用 danbooru 标签服务补全候选锚点标签（**仅返回候选，需人工确认后再落库**）。"""
+        try:
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            name = (body.get("name") or "").strip()
+            work = (body.get("work") or "").strip()
+            if not name:
+                return error_response("缺少 name")
+            try:
+                _char_mod = self._character_mod()
+            except Exception:
+                return error_response("character 模块不可用")
+            res = await _char_mod.suggest_anchor(self.plugin, name, work)
+            if not res.get("ok"):
+                return error_response(res.get("msg") or "补全失败")
+            return json_response(res)
+        except Exception as e:
+            return error_response(f"补全失败: {e}")
 
     async def character_export(self):
         try:
@@ -2310,6 +2497,11 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/character/anchor/save", _h("character_anchor_save"), ["POST"], "锚点新增/更新"),
         (f"{prefix}/character/anchor/delete", _h("character_anchor_delete"), ["POST"], "锚点删除"),
         (f"{prefix}/character/anchor/primary", _h("character_anchor_primary"), ["POST"], "设主锚点"),
+        (f"{prefix}/character/ref/upload", _h("character_ref_upload"), ["POST"], "上传角色参考图"),
+        (f"{prefix}/character/ref/image", _h("character_ref_image"), ["GET"], "角色参考图缩略图"),
+        (f"{prefix}/character/ref/delete", _h("character_ref_delete"), ["POST"], "删除角色参考图"),
+        (f"{prefix}/character/ref/from_gallery", _h("character_ref_from_gallery"), ["POST"], "从图库导入参考图"),
+        (f"{prefix}/character/suggest", _h("character_suggest"), ["POST"], "联网补全候选标签"),
         (f"{prefix}/character/export", _h("character_export"), ["GET"], "角色卡片导出"),
         (f"{prefix}/character/import", _h("character_import"), ["POST"], "角色卡片导入"),
         (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),

@@ -1,6 +1,6 @@
 # 角色卡片（Character Card）设计文档
 
-> 状态：**M1 + M2 已实现（v5.16.0 / v5.16.1 / v5.17.0）**；M3（参考图 / 联网补全）待做
+> 状态：**M1 + M2 + M3 已实现（v5.16.0 / v5.16.1 / v5.17.0 / v5.18.0）**
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）
@@ -32,6 +32,21 @@
 
 M2 期间由测试暴露并修正：`character_anchor_save` 编辑路径不该强制 `character_id`
 （新增 `CharacterStore.get_anchor_by_id()`）。
+
+### M3 落地情况（v5.18.0）
+
+| 文档章节 | 落地位置 |
+| --- | --- |
+| 九、图片落地 | `character_store.py`：`characters_dir/refs_dir/store_ref_bytes/store_ref_from_path`（内容寻址 `<sha16>.<ext>`，同角色同图去重；删角色连带清目录） |
+| 九、NSFW 打标 | `character.py:land_ref()`（复用 `nsfw_detector` + 图库阈值，检测不可用记 -1 不阻断） |
+| 九、联网补全（来源优先级） | `character.py:suggest_anchor()` 走**已有 danbooru 标签服务**（不抓官网）；返回候选，**人工确认后**才落库 |
+| 九、通用网页搜索 | 核实 AstrBot 4.28.1 有 `web_search_*` 系列工具（插件不可直接调）→ docstring 引导模型自行联网查资料、整理标签，用户确认后落库 |
+| 九、参考图用途 | ① WebUI 展示（缩略图/NSFW/来源）；② 图生图：`list_refs` 返回本地路径，可作 `comfyui_draw` 的 `image`（**按文档不做自动图生图**，保持人工触发） |
+| 入口 | `/角色 参考图 列表\|记住\|删`、`/角色 补全 <角色>`；`comfyui_character` 的 `list_refs/add_ref/delete_ref/suggest` |
+| 六、WebUI 双通道 | 5 个新 handler（`ref/upload|image|delete|from_gallery`、`suggest`）+ 独立通道分派；前端参考图区块与补全弹窗 |
+| 测试 | `tests/test_character.py` 46 项、`tests/test_character_webui.py` 47 项 |
+
+`allow_web_fetch` 语义已对齐实现：只约束 **http(s) 直链落图**；danbooru 标签服务是本机/自建链路，不受它限制。
 
 ---
 

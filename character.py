@@ -16,6 +16,7 @@
 
 import logging
 import re
+from pathlib import Path
 
 logger = logging.getLogger("astrbot_plugin_comfyui_anima.character")
 
@@ -397,3 +398,99 @@ def describe_hits(hits: list[tuple[dict, dict]]) -> str:
         else f"{c.get('name')}（锚点「{a.get('name')}」：{a.get('positive') or ''}）"
         for c, a in hits
     )
+
+
+# ---------------------------------------------------------------------- #
+# M3：参考图落地（含 NSFW 打标）与联网补全（走已有 danbooru 标签服务）
+# ---------------------------------------------------------------------- #
+async def _detect_ref_nsfw(self, path: str) -> float:
+    """对参考图跑一遍 NSFW 检测，返回置信度；不可用/失败返回 -1（不阻断落地）。"""
+    import asyncio as _aio
+
+    try:
+        try:
+            from .nsfw_detector import get_detector
+        except ImportError:
+            from nsfw_detector import get_detector
+        _thr = 0.5
+        try:
+            if getattr(self, "gallery", None) is not None:
+                _thr = self.gallery._nsfw_threshold()
+        except Exception:
+            pass
+        det = get_detector(_thr)
+        if det is None:
+            return -1.0
+        _is, score, available = await _aio.to_thread(det.detect, path)
+        return float(score) if available else -1.0
+    except Exception as e:
+        logger.warning(f"【角色卡】 参考图 NSFW 检测异常（跳过打标）: {e}")
+        return -1.0
+
+
+async def land_ref(
+    self,
+    char_id,
+    data: bytes,
+    filename: str = "",
+    url: str = "",
+    note: str = "",
+) -> dict | None:
+    """参考图落地：写文件（内容寻址）→ NSFW 打标 → 落库，返回记录。
+
+    `url` 非空表示来源是联网抓取，受 `character_card.allow_web_fetch` 约束
+    （关闭时直接拒绝，避免用户没授权就联网落图）。
+    """
+    store = getattr(self, "character", None)
+    if store is None:
+        return None
+    cfg = _cfg(self)
+    _url = (url or "").strip()
+    if _url and not cfg.get("allow_web_fetch", False):
+        raise ValueError(
+            "联网获取参考图未开启（配置「角色卡片 → 允许联网补全角色资料」= false）"
+        )
+    _ext = Path(filename).suffix if filename else ".png"
+    ref = store.store_ref_bytes(char_id, data, ext=_ext or ".png", url=_url, note=note)
+    if ref is None:
+        return None
+    if not ref.get("dedup") and (ref.get("path") or ""):
+        score = await _detect_ref_nsfw(self, ref["path"])
+        if score >= 0:
+            try:
+                store.update_ref_nsfw(int(ref["id"]), score)
+                ref["nsfw_score"] = score
+            except Exception as e:
+                logger.warning(f"【角色卡】 NSFW 分数回写失败: {e}")
+    return ref
+
+
+async def suggest_anchor(self, name: str, work: str = "") -> dict:
+    """按角色名联网/标签服务补全候选锚点标签（**需人工确认后才落库**）。
+
+    走插件已有的 danbooru 标签服务链路（`_build_danbooru()`，本机/自建服务，
+    不是抓 danbooru 官网——官网 403/限流且 docstring 已明令禁止）。
+    返回 `{"ok": bool, "query": str, "tags": str, "msg": str}`。
+    """
+    _n = (name or "").strip()
+    if not _n:
+        return {"ok": False, "msg": "缺少角色名"}
+    client = None
+    try:
+        client = self._build_danbooru()
+    except Exception as e:
+        logger.warning(f"【角色卡】 构建 danbooru 客户端失败: {e}")
+    if client is None:
+        return {
+            "ok": False,
+            "msg": "未启用 danbooru 标签服务（配置 → Anima 翻译 → danbooru 服务地址/开关），无法自动补全；"
+                   "可以先手动 /角色 记住，或让用户在 WebUI 里填标签串",
+        }
+    _q = f"{_n} {work}".strip()
+    try:
+        tags = await client.search(_q)
+    except Exception as e:
+        return {"ok": False, "query": _q, "msg": f"标签服务查询失败: {e}"}
+    if not (tags or "").strip():
+        return {"ok": False, "query": _q, "msg": f"标签服务没查到结果（查询词：{_q}）"}
+    return {"ok": True, "query": _q, "tags": tags.strip(), "source": "danbooru"}

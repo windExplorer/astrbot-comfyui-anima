@@ -555,8 +555,8 @@
       },
       "allow_web_fetch": {
         "type": "bool",
-        "description": "允许联网补全角色资料（阶段三）",
-        "hint": "预留开关：允许联网检索角色资料与参考图。当前版本尚未实现联网链路，开启也不生效。",
+        "description": "允许联网补全角色资料（参考图直链 / 联网标签）",
+        "hint": "开启后：AI 才能用 comfyui_character 的 add_ref 抓取 http(s) 图片直链存为参考图（关闭时只允许本机路径/WebUI 上传）。注意：从 danbooru 标签服务查候选标签（suggest）走的是本机自建服务，不受此开关限制。",
         "default": false
       }
     }

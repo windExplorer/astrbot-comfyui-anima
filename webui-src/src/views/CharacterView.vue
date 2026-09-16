@@ -28,6 +28,10 @@
         角色卡片是绘图时的<strong>最高优先级来源</strong>：命中后插件自动注入锚点标签，多人时自动生成
         <code>2girls</code> 计数标签与每个角色一个 <code>(标签:1.2)</code> 分组。
         也可以用对话设定（说「记住小叽的样子是…」）或 <code>/角色</code> 指令管理。
+        <br />
+        <strong>参考图</strong>：每个角色可存 0~N 张定妆图（自动做 NSFW 打标），
+        其中路径可直接作为图生图的参考；<strong>补全标签</strong>会调用 danbooru 标签服务给候选，
+        人工确认后再落库。
       </div>
     </n-card>
 
@@ -77,7 +81,10 @@
 
           <n-divider>锚点（{{ detail.anchors?.length || 0 }} 个）</n-divider>
           <div class="anchor-head">
-            <n-button size="small" type="primary" ghost @click="openAnchorCreate">＋ 新增锚点</n-button>
+            <n-space size="small">
+              <n-button size="small" type="primary" ghost @click="openAnchorCreate">＋ 新增锚点</n-button>
+              <n-button size="small" :loading="suggesting" @click="suggestTags">🔎 从标签服务补全</n-button>
+            </n-space>
           </div>
           <div v-for="a in detail.anchors || []" :key="a.id" class="anchor-item">
             <div class="anchor-top">
@@ -98,6 +105,34 @@
             </div>
           </div>
           <div v-if="!(detail.anchors || []).length" class="empty">还没有锚点，点「＋ 新增锚点」添加（至少一个才能注入）。</div>
+
+          <n-divider>参考图（{{ detail.refs?.length || 0 }} 张）</n-divider>
+          <div class="anchor-head">
+            <n-space size="small">
+              <n-button size="small" type="primary" ghost @click="pickRefFiles">＋ 上传图片</n-button>
+              <n-input v-model:value="refSha" size="small" placeholder="图库 sha（从图库点图复制）" style="width: 190px" />
+              <n-button size="small" @click="importRefFromGallery">从图库导入</n-button>
+            </n-space>
+          </div>
+          <input ref="refInput" type="file" accept="image/*" multiple style="display:none" @change="onRefFiles" />
+          <div v-if="(detail.refs || []).length" class="ref-grid">
+            <div v-for="r in detail.refs" :key="r.id" class="ref-item">
+              <img v-if="refUrls[r.id]" :src="refUrls[r.id]" :alt="'ref ' + r.id" />
+              <div v-else class="ref-ph">加载中…</div>
+              <div class="ref-meta">
+                <span>#{{ r.id }}</span>
+                <n-tag v-if="nsfwText(r)" size="tiny" :type="nsfwType(r)" :bordered="false">{{ nsfwText(r) }}</n-tag>
+                <span v-if="r.url" class="ref-src" :title="r.url">联网</span>
+              </div>
+              <n-popconfirm @positive-click="removeRef(r)">
+                <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
+                删除这张参考图？
+              </n-popconfirm>
+            </div>
+          </div>
+          <div v-else class="empty">
+            还没有参考图。上传几张该角色的定妆图，后续可用作图生图参考（也可让 AI 在对话里用 add_ref 存）。
+          </div>
         </template>
       </n-drawer-content>
     </n-drawer>
@@ -154,6 +189,21 @@
         <n-space justify="end">
           <n-button @click="anchorOpen = false">取消</n-button>
           <n-button type="primary" :loading="saving" @click="saveAnchor">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 补全候选标签（需人工确认） -->
+    <n-modal v-model:show="suggestOpen" preset="card" title="候选标签（需人工确认）" style="max-width: 620px">
+      <div class="tip">
+        来源：danbooru 标签服务（查询词「{{ suggestQuery }}」）。
+        ⚠️ 自动结果可能含不适用的服装/场景词，请删掉后再落库；落库只是新增一个锚点，不会自动出图。
+      </div>
+      <n-input v-model:value="suggestText" type="textarea" :rows="5" style="margin-top: 8px" />
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="suggestOpen = false">取消</n-button>
+          <n-button type="primary" @click="useSuggestAsAnchor">用它新建锚点</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -237,6 +287,10 @@ const columns = [
     },
   },
   {
+    title: "参考图", key: "refs", width: 90,
+    render: (row: any) => `${(row.refs || []).length} 张`,
+  },
+  {
     title: "操作", key: "ops", width: 130,
     render: (row: any) =>
       h(NSpace, { size: 4 }, {
@@ -279,6 +333,7 @@ async function openDetail(row: any) {
     detail.value = c;
     fillForm(c);
     detailOpen.value = true;
+    loadRefUrls(c?.refs || []);
   } catch (e: any) {
     message.error(`读取详情失败：${e?.message || e}`);
   }
@@ -456,6 +511,140 @@ async function setPrimary(a: any) {
   }
 }
 
+// ---------------- 参考图（M3）----------------
+const refInput = ref<HTMLInputElement | null>(null);
+const refUrls = reactive<Record<number, string>>({});
+const refSha = ref("");
+const suggesting = ref(false);
+const suggestOpen = ref(false);
+const suggestText = ref("");
+const suggestQuery = ref("");
+
+function pickRefFiles() {
+  refInput.value?.click();
+}
+
+function nsfwText(r: any) {
+  const n = Number(r?.nsfw_score ?? -1);
+  return n < 0 ? "" : `NSFW ${n.toFixed(2)}`;
+}
+
+function nsfwType(r: any) {
+  const n = Number(r?.nsfw_score ?? -1);
+  if (n >= 0.7) return "error";
+  if (n >= 0.4) return "warning";
+  return "success";
+}
+
+async function loadRefUrls(refs: any[]) {
+  for (const r of refs || []) {
+    if (refUrls[r.id]) continue;
+    try {
+      const d = await apiGet("character/ref/image", { id: r.id });
+      if (d?.url) refUrls[r.id] = d.url;
+    } catch {
+      /* 单张失败不阻塞其余 */
+    }
+  }
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ""));
+    fr.onerror = () => reject(new Error("读取文件失败"));
+    fr.readAsDataURL(file);
+  });
+}
+
+async function onRefFiles(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  if (!files.length || !detail.value) return;
+  saving.value = true;
+  let ok = 0;
+  const errs: string[] = [];
+  for (const f of files.slice(0, 5)) {
+    try {
+      const dataUrl = await fileToDataUrl(f);
+      await apiPost(
+        "character/ref/upload",
+        { character_id: detail.value.id, filename: f.name, data: dataUrl },
+        { timeout: 30000 },
+      );
+      ok += 1;
+    } catch (err: any) {
+      errs.push(`${f.name}: ${err?.message || err}`);
+    }
+  }
+  saving.value = false;
+  if (ok) message.success(`已上传 ${ok} 张参考图`);
+  if (errs.length) message.error(`有 ${errs.length} 张失败：${errs[0]}`);
+  await openDetail({ id: detail.value.id });
+  await reload();
+}
+
+function removeRef(r: any) {
+  dialog.warning({
+    title: "删除参考图",
+    content: `确认删除参考图 #${r.id}？`,
+    positiveText: "删除",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      try {
+        await apiPost("character/ref/delete", { id: r.id });
+        delete refUrls[r.id];
+        message.success("已删除");
+        await openDetail({ id: detail.value.id });
+        await reload();
+      } catch (e: any) {
+        message.error(`删除失败：${e?.message || e}`);
+      }
+    },
+  });
+}
+
+async function importRefFromGallery() {
+  const sha = (refSha.value || "").trim();
+  if (!sha) return message.warning("请填图库图片的 sha");
+  if (!detail.value) return;
+  try {
+    await apiPost("character/ref/from_gallery", { character_id: detail.value.id, sha });
+    refSha.value = "";
+    message.success("已从图库导入");
+    await openDetail({ id: detail.value.id });
+    await reload();
+  } catch (e: any) {
+    message.error(`导入失败：${e?.message || e}`);
+  }
+}
+
+async function suggestTags() {
+  if (!detail.value) return;
+  suggesting.value = true;
+  try {
+    const r = await apiPost("character/suggest", {
+      name: detail.value.name,
+      work: detail.value.work || "",
+    });
+    suggestText.value = r?.tags || "";
+    suggestQuery.value = r?.query || "";
+    suggestOpen.value = true;
+  } catch (e: any) {
+    message.error(`补全失败：${e?.message || e}`);
+  } finally {
+    suggesting.value = false;
+  }
+}
+
+function useSuggestAsAnchor() {
+  suggestOpen.value = false;
+  openAnchorCreate();
+  anchorForm.name = "补全候选";
+  anchorForm.positive = suggestText.value;
+}
+
 async function doExport() {
   try {
     const data = await apiGet("character/export");
@@ -526,4 +715,19 @@ onMounted(reload);
 .anchor-neg { font-size: 12px; opacity: 0.7; margin-top: 4px; word-break: break-word; }
 .anchor-ops { display: flex; gap: 6px; margin-top: 8px; }
 .hint { font-size: 12px; opacity: 0.6; margin-left: 8px; }
+.ref-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.ref-item {
+  width: 132px; border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 8px; padding: 6px; text-align: center;
+}
+.ref-item img { width: 100%; height: 110px; object-fit: cover; border-radius: 6px; display: block; }
+.ref-ph {
+  height: 110px; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; opacity: 0.5; background: rgba(128, 128, 128, 0.12); border-radius: 6px;
+}
+.ref-meta {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  font-size: 11px; opacity: 0.8; margin: 4px 0 2px; flex-wrap: wrap;
+}
+.ref-src { opacity: 0.7; }
 </style>

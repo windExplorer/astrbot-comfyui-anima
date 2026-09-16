@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import base64
 import json
 import sys
 import tempfile
@@ -31,14 +32,23 @@ def check(title: str, cond: bool, detail: str = ""):
 
 
 class _FakeRequest:
-    """最小 aiohttp 风格 request 桩：query + json()。"""
+    """最小 aiohttp 风格 request 桩：query + json() + body() + headers。
 
-    def __init__(self, query=None, body=None):
+    与 standalone_webui 的 `_AioReqAdapter` 暴露的能力保持一致，确保两条通道
+    走同一批 handler 时行为等价。
+    """
+
+    def __init__(self, query=None, body=None, raw: bytes = b"", headers=None):
         self.query = query or {}
         self._body = body or {}
+        self._raw = raw or b""
+        self.headers = headers or {}
 
     async def json(self, default=None):
         return self._body
+
+    async def body(self):
+        return self._raw
 
 
 def _install_stub():
@@ -84,20 +94,39 @@ async def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="charweb_test_"))
     store = CharacterStore(tmp)
 
+    # 图库桩：ref/from_gallery 需要 path_of(sha)（M3）
+    _gal_img = tmp / "gallery_img.png"
+    _gal_img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"g" * 64)
+
+    class _FakeGallery:
+        def path_of(self, sha):
+            return str(_gal_img)
+
+        def _nsfw_threshold(self):
+            return 0.5
+
+    class _FakeDanbooru:
+        async def search(self, query):
+            return "mint_\\(nte\\), teal hair, long hair, red eyes, cat ears"
+
     class FakePlugin:
         character = store
-        config = {"character_card": {"enabled": True, "auto_inject": True}}
+        gallery = _FakeGallery()
+        config = {"character_card": {"enabled": True, "auto_inject": True, "allow_web_fetch": False}}
 
         def _cfg(self, key, default=None):
             return self.config.get(key, default)
 
+        def _build_danbooru(self):
+            return _FakeDanbooru()
+
     api = webui_api.WebUIApi(FakePlugin())
     print("WebUIApi 实例化成功，开始跑角色卡接口\n")
 
-    def set_req(query=None, body=None):
+    def set_req(query=None, body=None, raw: bytes = b"", headers=None):
         # ★必须替换 webui_api 模块属性（handler 读的是它自己的模块级 request），
         # 与 standalone_webui 的适配器做法一致；只改桩模块的属性不会生效。
-        webui_api.request = _FakeRequest(query, body)
+        webui_api.request = _FakeRequest(query, body, raw, headers)
 
     print("[1] 列表（空）")
     set_req()
@@ -175,10 +204,66 @@ async def main() -> int:
     res = _payload(await api.character_list())
     check("列表已空", res["total"] == 0, str(res["total"]))
 
+    print("\n[10] 参考图接口（M3）")
+    set_req(body={"name": "薄荷", "aliases": [], "persona_name": "", "work": "", "lora_name": ""})
+    rc = _payload(await api.character_save())
+    cid = int(rc["id"])
+    _img = b"\x89PNG\r\n\x1a\n" + b"r" * 64
+    _b64 = base64.b64encode(_img).decode()
+    # ★注意：handler 读的是 `await request.body()` 后自行解析 JSON（与 lora_upload_image 同构），
+    #   所以这里把 JSON 序列化进 raw，而不是走桩的 json()。
+    set_req(raw=json.dumps({
+        "character_id": cid, "filename": "ref.png",
+        "data": "data:image/png;base64," + _b64,
+    }).encode(), headers={"content-type": "application/json"})
+    up = _payload(await api.character_ref_upload())
+    check("上传（JSON base64 + dataURL 前缀）", bool(up.get("id")) and up.get("dedup") is False, str(up))
+    # 缺 content-type 时靠「body 以 { 开头」兜底识别为 JSON
+    _img3 = b"\x89PNG\r\n\x1a\n" + b"t" * 90
+    set_req(raw=json.dumps({
+        "character_id": cid, "filename": "noct.png",
+        "data": base64.b64encode(_img3).decode(),
+    }).encode())
+    up3 = _payload(await api.character_ref_upload())
+    check("缺 content-type 仍能识别 JSON", bool(up3.get("id")), str(up3))
+    _img2 = b"\x89PNG\r\n\x1a\n" + b"s" * 80
+    set_req(raw=_img2, headers={"x-character-id": str(cid), "x-filename": "raw.png"})
+    up2 = _payload(await api.character_ref_upload())
+    check("上传（raw + 头，独立通道形态）", bool(up2.get("id")) and up2["id"] != up["id"], str(up2))
+    set_req(body={"filename": "x.png", "data": _b64})
+    _e = await api.character_ref_upload()
+    check("缺 character_id 报错", isinstance(_e, dict) and _e.get("__kind__") == "error", str(_e))
+    set_req(query={"id": str(up["id"])})
+    im = _payload(await api.character_ref_image())
+    check("缩略图返回 data URL", str(im.get("url", "")).startswith("data:image"), str(im)[:70])
+    set_req(query={"id": str(cid)})
+    det = _payload(await api.character_detail())
+    check("详情含 3 张参考图", len(det.get("refs") or []) == 3, str(len(det.get("refs") or [])))
+    set_req(body={"character_id": cid, "sha": "deadbeef"})
+    fg = _payload(await api.character_ref_from_gallery())
+    check("从图库导入参考图", bool(fg.get("id")), str(fg))
+    set_req(body={"id": up["id"]})
+    dl = _payload(await api.character_ref_delete())
+    check("删除参考图", dl.get("ok") is True, str(dl))
+    set_req(query={"id": str(cid)})
+    det = _payload(await api.character_detail())
+    check("删除后剩 3 张", len(det.get("refs") or []) == 3, str(len(det.get("refs") or [])))
+
+    print("\n[11] 联网补全接口（M3）")
+    set_req(body={"name": "薄荷", "work": "NTE"})
+    sug = _payload(await api.character_suggest())
+    check("补全返回候选标签", "mint" in (sug.get("tags") or ""), str(sug))
+    check("补全标注来源", sug.get("source") == "danbooru", str(sug.get("source")))
+    set_req(body={})
+    _e2 = await api.character_suggest()
+    check("缺 name 报错", isinstance(_e2, dict) and _e2.get("__kind__") == "error", str(_e2))
+
     print("\n[9] 路由已注册（内嵌页）")
     src = (ROOT / "webui_api.py").read_text(encoding="utf-8")
     for _ep in ("character/list", "character/detail", "character/save", "character/delete",
                 "character/anchor/save", "character/anchor/delete", "character/anchor/primary",
+                "character/ref/upload", "character/ref/image", "character/ref/delete",
+                "character/ref/from_gallery", "character/suggest",
                 "character/export", "character/import"):
         check(f"路由 {_ep} 已注册", f'/character/' in src and _ep.split("/", 1)[1] in src, _ep)
     ssrc = (ROOT / "standalone_webui.py").read_text(encoding="utf-8")

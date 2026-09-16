@@ -2,6 +2,54 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.18.0（角色卡片 M3：参考图落地与打标 + 联网补全候选标签 + 双通道接口/前端）
+
+交付 `docs/TODO-角色卡片.md` 的 **M3**（最后一期）：参考图与联网补全。
+
+**参考图（内容寻址落地）**
+
+- `character_store.py`：新增 `characters_dir()/refs_dir()`（`data_dir/characters/<名安全化>_<id>/`）、
+  `store_ref_bytes()`（**内容寻址**：文件名 `sha256[:16].ext`，同角色同图自动去重）、
+  `store_ref_from_path()`、`get_ref()/update_ref_nsfw()/delete_ref()`（删除记录；文件仅当无其它记录
+  引用同路径时才删）；`list_refs()` 增加 `exists` 标记（文件被外部删除时前端可提示）；
+  **删角色卡会连带清理其参考图目录**（此前只删库记录、文件留在盘上）。
+- `character.py:land_ref()`：写文件 → **NSFW 打标**（复用 `nsfw_detector` + 图库阈值，检测不可用时
+  记 -1 不阻断）→ 落库；来源为 http(s) 时受 `character_card.allow_web_fetch` 约束（关闭即拒绝）。
+- 上传体积上限 12MB。
+
+**联网补全（走已有链路，不抓 danbooru 官网）**
+
+- `character.py:suggest_anchor()`：用插件既有的 danbooru 标签服务（`_build_danbooru()`，
+  本机/自建）查候选标签，返回 `{ok, query, tags, source}`；服务未启用时给出明确指引。
+  **只产出候选，人工确认后再落库**（符合设计文档「避免脏数据污染出图」）。
+- 经核实 AstrBot 4.28.1 内置 `web_search_*` 系列工具（tavily/baidu/bocha/brave/firecrawl/exa/
+  anysearch）供主 LLM 使用，插件不能直接调用——因此 docstring 引导模型：`suggest` 不可用时
+  可自行联网查角色资料、整理成标签，让用户确认后落库（解决设计文档待确认项 6）。
+
+**入口**
+
+- `/角色 参考图 列表|记住|删`（`记住` 配合消息附图，走 `_extract_images`）；`/角色 补全 <角色> [作品]`。
+- `comfyui_character` 工具新增 4 个 action：`list_refs` / `add_ref`（ref_url 支持本机路径与直链）/
+  `delete_ref` / `suggest`；`list_refs` 的返回里带**本地路径**，可直接作为 `comfyui_draw` 的 `image`
+  用于图生图（参考图的用途②，按设计「不做自动图生图」保持人工触发）。
+- WebUI 双通道新增 5 个 handler：`character/ref/upload`（JSON base64 或 raw+头，**兼容缺失
+  content-type 的 JSON body**）、`character/ref/image`（缩略图 data URL）、`character/ref/delete`、
+  `character/ref/from_gallery`（从图库复制，免重复上传）、`character/suggest`；
+  列表/详情接口带出 `refs`。
+- 前端 `CharacterView.vue`：列表新增「参考图」列；详情抽屉新增参考图区块（上传多张 / 从图库导入 /
+  缩略图网格 / NSFW 标注 / 删除）；锚点区新增「🔎 从标签服务补全」→ 候选弹窗 → 一键新建锚点。
+- 顺带重构：抽出 `_thumb_data_url_sync()`（`lora_image` 与新接口共用，去掉重复 25 行）。
+
+**测试**（uv 拉真实 Python）
+
+- `tests/test_character.py` 增至 **46 项**：新增参考图落地/目录命名/sha 记录/同图去重/列表存在性/
+  `land_ref` 去重/`allow_web_fetch` 拒绝与放行/记录来源 url/删除记录与文件/删角色连带目录。
+- `tests/test_character_webui.py` 增至 **47 项**：新增 JSON 上传（含 dataURL 前缀）、raw+头上传、
+  缺 `character_id` 报错、缺 content-type 兜底、缩略图 data URL、详情带 refs、从图库导入、删除、
+  补全接口（含来源标注与缺参报错），路由自检扩到 14 个 `/character/*` 端点。
+- 期间修掉两处测试自身问题（用例用了刚存过的同图命中内容寻址去重；把 JSON 传给了 `json()` 而
+  handler 读的是 `body()`），非产品缺陷。
+
 ## v5.17.0（角色卡片 M2：WebUI 管理页面（双通道）+ 接口层回归测试）
 
 交付 `docs/TODO-角色卡片.md` 的 **M2**：在 WebUI 里可视化管理角色卡片（M1 只能靠指令/对话改）。

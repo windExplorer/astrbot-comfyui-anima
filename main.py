@@ -6028,7 +6028,11 @@ class ComfyUIDrawPlugin(Star):
         /角色 锚点 set <角色名> <锚点名> <标签串>
         /角色 锚点 use <角色名> <锚点名>     把该锚点设为主锚点
         /角色 锚点 del <角色名> <锚点名>
-        /角色 删 <角色名>                   删除角色卡（含其锚点）
+        /角色 参考图 列表 <角色名>           列出该角色已落地的参考图
+        /角色 参考图 记住 <角色名>           把本条消息附带的图片存为该角色的参考图
+        /角色 参考图 删 <角色名> <图片id>     删除一张参考图
+        /角色 补全 <角色名> [作品名]          用 danbooru 标签服务查候选标签（人工确认后再落库）
+        /角色 删 <角色名>                   删除角色卡（含其锚点与参考图）
         """
         store = getattr(self, "character", None)
         if store is None:
@@ -6069,6 +6073,12 @@ class ComfyUIDrawPlugin(Star):
                 return
             if _action in ("锚点", "anchor", "anchors"):
                 await self._character_anchor(event, store, _tokens[1:])
+                return
+            if _action in ("参考图", "ref", "refs"):
+                await self._character_ref(event, store, _tokens[1:], cfg)
+                return
+            if _action in ("补全", "suggest", "fetch"):
+                await self._character_suggest(event, store, _tokens[1:], cfg)
                 return
             if _action in ("删", "删除", "delete", "del", "rm"):
                 if len(_tokens) < 2:
@@ -6293,6 +6303,105 @@ class ComfyUIDrawPlugin(Star):
             )
             return
         await self._send(event, f"未知锚点子命令「{tokens[0]}」。")
+
+    async def _character_ref(self, event, store, tokens: list[str], cfg: dict):
+        """`/角色 参考图 列表|记住|删`：参考图落地与管理（M3）。"""
+        if len(tokens) < 2:
+            await self._send(
+                event,
+                "用法：\n"
+                "/角色 参考图 列表 <角色名>\n"
+                "/角色 参考图 记住 <角色名>   （本条消息附图）\n"
+                "/角色 参考图 删 <角色名> <图片id>",
+            )
+            return
+        sub = tokens[0].lower()
+        ch = store.get_character(tokens[1])
+        if ch is None:
+            await self._send(event, f"没找到角色「{tokens[1]}」。")
+            return
+        if sub in ("列表", "list", "ls"):
+            refs = store.list_refs(int(ch["id"]))
+            if not refs:
+                await self._send(
+                    event,
+                    f"「{ch['name']}」还没有参考图。发一张图并配 `/角色 参考图 记住 {ch['name']}` 即可存下。",
+                )
+                return
+            lines = [f"「{ch['name']}」参考图（{len(refs)} 张）："]
+            for r in refs:
+                _n = float(r.get("nsfw_score") or -1)
+                _ns = "未检测" if _n < 0 else f"NSFW {_n:.2f}"
+                lines.append(
+                    f"- id={r['id']}  {r.get('sha256', '')[:12]}  {_ns}"
+                    + ("  ⚠文件缺失" if not r.get("exists", True) else "")
+                    + (f"  来源 {r.get('url')}" if r.get("url") else "")
+                )
+            await self._send(event, "\n".join(lines))
+            return
+        if sub in ("删", "删除", "del", "delete"):
+            if len(tokens) < 3 or not tokens[2].strip().isdigit():
+                await self._send(event, "用法：/角色 参考图 删 <角色名> <图片id>（id 见「参考图 列表」）")
+                return
+            ref = store.get_ref(int(tokens[2]))
+            if ref is None or int(ref.get("character_id") or 0) != int(ch["id"]):
+                await self._send(event, f"「{ch['name']}」下没有 id={tokens[2]} 的参考图。")
+                return
+            store.delete_ref(int(tokens[2]))
+            await self._send(event, f"已删除「{ch['name']}」的参考图 id={tokens[2]}。")
+            return
+        if sub in ("记住", "add", "新增"):
+            if not cfg.get("allow_user_edit", True) and not self._is_admin(event):
+                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
+                return
+            imgs = await self._extract_images(event)
+            if not imgs:
+                await self._send(event, "请把图片和这条指令一起发（或引用一张图）。")
+                return
+            _ok_n = 0
+            for p in imgs[:5]:
+                try:
+                    ref = await character.land_ref(
+                        self, int(ch["id"]), Path(p).read_bytes(),
+                        filename=Path(p).name, note="指令录入",
+                    )
+                    if ref is not None:
+                        _ok_n += 1
+                except Exception as e:
+                    logger.warning(f"【角色卡】 参考图落地失败 {p}: {e}")
+                    await self._send(event, f"有一张图存储失败：{e}")
+            if _ok_n:
+                await self._send(
+                    event,
+                    f"已为「{ch['name']}」存下 {_ok_n} 张参考图（可用 `/角色 参考图 列表 {ch['name']}` 查看）。",
+                )
+            return
+        await self._send(event, f"未知参考图子命令「{tokens[0]}」。")
+
+    async def _character_suggest(self, event, store, tokens: list[str], cfg: dict):
+        """`/角色 补全 <角色名> [作品]`：用 danbooru 标签服务查候选标签（人工确认后落库）。"""
+        _rest, _flags = self._pop_flags(tokens)
+        if not _rest:
+            await self._send(event, "用法：/角色 补全 <角色名> [作品名]\n查到的标签会用消息发给你，确认后再用 /角色 锚点 add 落库。")
+            return
+        ch = store.get_character(_rest[0])
+        _name = (ch or {}).get("name") or _rest[0]
+        _work = _flags.get("作品") or _flags.get("work") or ((ch or {}).get("work") or "")
+        _res = await character.suggest_anchor(self, _name, _work)
+        if not _res.get("ok"):
+            await self._send(
+                event,
+                f"补全失败：{_res.get('msg')}\n（也可以直接 /角色 记住 {_name} <标签串> 手填）",
+            )
+            return
+        _tags = _res.get("tags") or ""
+        await self._send(
+            event,
+            f"「{_name}」候选标签（来源：{_res.get('source')}，查询词「{_res.get('query')}」）：\n"
+            f"{_tags}\n"
+            f"确认无误后落库：\n/角色 锚点 add {_name} 默认装 {_tags}\n"
+            "（⚠️请人工核对：标签服务返回的可能包含不适用的服装/场景词，删掉不需要的再落库。）",
+        )
 
     @filter.llm_tool(name="comfyui_comic")
     @_safe_llm_tool
@@ -11841,6 +11950,8 @@ class ComfyUIDrawPlugin(Star):
         weight: float = 0,
         keyword: str = "",
         note: str = "",
+        ref_url: str = "",
+        ref_id: int = 0,
     ):
         """角色卡片管理：为「具体角色」建立可复用的绘图设定（角色 + 多套锚点）。
 
@@ -11854,6 +11965,12 @@ class ComfyUIDrawPlugin(Star):
         - 用户问「都有哪些角色卡」「小叽的设定是什么」→ action=list / get；
         - 用户要把角色绑到某个人格（「把这张卡绑到小叽V4人格」）→ action=bind_persona；
         - 用户要换默认锚点（「小叽默认用泳装那套」）→ action=set_primary_anchor；
+        - 用户发来角色图 / 说「把这张存成小叽的参考图」→ action=add_ref（ref_url 传本机绝对路径
+          或 http(s) 直链；联网链接需要管理员开启「允许联网补全角色资料」）；问「有没有参考图」→
+          action=list_refs；要删 → action=delete_ref。参考图路径可直接给 comfyui_draw 当 image 用于图生图。
+        - 建卡时不知道怎么填标签（用户说「小叽该用什么标签」）→ action=suggest 查候选标签，
+          **核对后**再 save/add_anchor。若 suggest 不可用（未启用 danbooru 标签服务）而你的工具列表里
+          有 web_search_* 等联网工具，可以联网查该角色资料、整理成 danbooru 风格标签，让用户确认后落库。
         - 用户明确说删掉某角色/某锚点 → action=delete / delete_anchor（**必须先向用户确认**）。
         什么时候不要调用：普通画图请求（交给 comfyui_draw 即可，插件会自动查卡片）；
         用户只是描述画面而没有「设定 / 记住 / 修改角色」的意思时不要写库。
@@ -11865,7 +11982,8 @@ class ComfyUIDrawPlugin(Star):
             action(string): 必填。取值：list（列表）/ get（看某角色）/ save（建卡或改主锚点）/
                 update（改卡片字段）/ delete（删角色卡）/ add_anchor（新增锚点）/
                 update_anchor（改锚点）/ delete_anchor（删锚点）/ set_primary_anchor（设主锚点）/
-                bind_persona（绑定人格）。
+                bind_persona（绑定人格）/ list_refs（看参考图）/ add_ref（存参考图）/
+                delete_ref（删参考图）/ suggest（联网补全候选标签）。
             name(string): 角色名。除 list 外都要传（get/save/update/delete/锚点类操作都靠它定位）。
             positive(string): 锚点标签串（英文 danbooru 标签，逗号分隔）。save / add_anchor /
                 update_anchor 必填。例：「white hair, heterochromia, cat ears, white knit sweater」。
@@ -11881,6 +11999,10 @@ class ComfyUIDrawPlugin(Star):
             weight(number): 锚点权重（多人分组用），建议 1.1~1.3，不传或 0 用 1.2。
             keyword(string): list 时的可选过滤词（按角色名/别名/作品/人格模糊匹配）。
             note(string): 备注（可选）。
+            ref_url(string): add_ref 必填。参考图来源：http(s) 图片直链，或本机绝对路径
+                （用户发来的图 / 图库里的图都可以）。**联网链接需要管理员在配置里开启
+                「允许联网补全角色资料」**，否则会被拒绝。
+            ref_id(number): delete_ref 必填，参考图 id（先用 action=list_refs 查）。
 
         工具返回卡片列表 / 详情 / 操作结果；失败会返回可读原因。
         """
@@ -11892,7 +12014,11 @@ class ComfyUIDrawPlugin(Star):
             return "角色卡片功能未启用（存储初始化失败），无法操作。"
         _act = (action or "").strip().lower()
         if not _act:
-            return "缺少 action 参数。可用：list / get / save / update / delete / add_anchor / update_anchor / delete_anchor / set_primary_anchor / bind_persona。"
+            return (
+                "缺少 action 参数。可用：list / get / save / update / delete / add_anchor / "
+                "update_anchor / delete_anchor / set_primary_anchor / bind_persona / "
+                "list_refs / add_ref / delete_ref / suggest。"
+            )
 
         def _fmt_card(c: dict) -> str:
             anchors = store.list_anchors(int(c["id"]))
@@ -12041,9 +12167,99 @@ class ComfyUIDrawPlugin(Star):
                 if a is None:
                     return f"没找到锚点「{anchor_name}」（可用 action=get 看现有锚点名）。"
                 return f"「{ch['name']}」的主锚点已设为「{a['name']}」。"
+            if _act == "list_refs":
+                ch = store.get_character(name or "")
+                if ch is None:
+                    return f"没找到角色「{name}」。"
+                refs = store.list_refs(int(ch["id"]))
+                if not refs:
+                    return (
+                        f"「{ch['name']}」还没有参考图。用 action=add_ref 存一张"
+                        "（ref_url 传图片直链或本机绝对路径）。"
+                    )
+                lines = [f"「{ch['name']}」参考图 {len(refs)} 张："]
+                for r in refs:
+                    _n = float(r.get("nsfw_score") or -1)
+                    lines.append(
+                        f"- id={r['id']} 路径={r.get('path')} "
+                        f"sha={str(r.get('sha256') or '')[:12]} "
+                        + ("NSFW未检测" if _n < 0 else f"NSFW {_n:.2f}")
+                        + ("" if r.get("exists", True) else " ⚠文件缺失")
+                    )
+                lines.append("★其中「路径」可直接作为 comfyui_draw / comfyui_img2img 的 image 参数用于图生图。")
+                return "\n".join(lines)
+            if _act == "add_ref":
+                ch = store.get_character(name or "")
+                if ch is None:
+                    return f"没找到角色「{name}」。"
+                _u = (ref_url or "").strip()
+                if not _u:
+                    return "add_ref 需要 ref_url（http(s) 图片直链，或本机绝对路径）。"
+                _is_web = bool(re.match(r"^https?://", _u, re.I))
+                _MAX = 12 * 1024 * 1024
+                try:
+                    if _is_web:
+                        import aiohttp
+                        async with aiohttp.ClientSession(
+                            timeout=aiohttp.ClientTimeout(total=30)
+                        ) as _ses:
+                            async with _ses.get(_u) as _resp:
+                                _resp.raise_for_status()
+                                data = await _resp.read()
+                        # 不引入 urlparse：去掉 query/fragment 后取文件名即可
+                        _fname = (os.path.basename(_u.split("?", 1)[0].split("#", 1)[0]) or "ref.png")
+                    else:
+                        _p = Path(_u)
+                        if not _p.exists() or not _p.is_file():
+                            return f"本地路径不存在：{_u}"
+                        data = await asyncio.to_thread(_p.read_bytes)
+                        _fname = _p.name
+                except Exception as e:
+                    return f"读取参考图失败：{e}"
+                if len(data) > _MAX:
+                    return f"图片过大（{len(data) // 1024 // 1024} MB > 12 MB），请压缩后再存。"
+                try:
+                    ref = await character.land_ref(
+                        self, int(ch["id"]), data, filename=_fname,
+                        url=_u if _is_web else "", note="工具录入",
+                    )
+                except Exception as e:
+                    return f"参考图落地失败：{e}"
+                if ref is None:
+                    return "参考图落地失败。"
+                _n = float(ref.get("nsfw_score") or -1)
+                return (
+                    f"已为「{ch['name']}」存下参考图 id={ref['id']}"
+                    + ("（同图已存在，复用记录）" if ref.get("dedup") else "")
+                    + (f"，NSFW 置信度 {_n:.2f}" if _n >= 0 else "，NSFW 未检测（检测器不可用）")
+                    + f"。路径：{ref.get('path')}"
+                )
+            if _act == "delete_ref":
+                ch = store.get_character(name or "")
+                if ch is None:
+                    return f"没找到角色「{name}」。"
+                if not ref_id:
+                    return "delete_ref 需要 ref_id（先用 action=list_refs 查）。"
+                ref = store.get_ref(int(ref_id))
+                if ref is None or int(ref.get("character_id") or 0) != int(ch["id"]):
+                    return f"「{ch['name']}」下没有 id={int(ref_id)} 的参考图。"
+                store.delete_ref(int(ref_id))
+                return f"已删除「{ch['name']}」的参考图 id={int(ref_id)}。"
+            if _act == "suggest":
+                _res = await character.suggest_anchor(self, name or "", work or "")
+                if not _res.get("ok"):
+                    return f"补全失败：{_res.get('msg')}"
+                return (
+                    f"「{name}」候选标签（来源：{_res.get('source')}，查询词「{_res.get('query')}」）：\n"
+                    f"{_res.get('tags')}\n"
+                    "★这是候选：请人工核对后（删掉不适用的服装/场景词、补上角色专有 tag）\n"
+                    f"用 action=save 或 add_anchor 落库（name={name}, positive=核对后的标签串）。"
+                    "落库前必须让用户确认，不要直接写入。"
+                )
             return (
                 f"未知 action「{action}」。可用：list / get / save / update / delete / "
-                "add_anchor / update_anchor / delete_anchor / set_primary_anchor / bind_persona。"
+                "add_anchor / update_anchor / delete_anchor / set_primary_anchor / bind_persona / "
+                "list_refs / add_ref / delete_ref / suggest。"
             )
         except ValueError as e:
             return f"操作失败：{e}"

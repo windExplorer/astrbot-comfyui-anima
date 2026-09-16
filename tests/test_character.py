@@ -180,6 +180,50 @@ async def main() -> int:
     store.delete_character(boy["id"])
     check("删角色连带锚点", store.get_character("阿明") is None and store.list_anchors(boy["id"]) == [])
 
+    print("\n[10] 参考图落地（M3）")
+    _img = b"\x89PNG\r\n\x1a\n" + b"x" * 64          # 内容不重要，store 只做内容寻址
+    _img2 = b"\x89PNG\r\n\x1a\n" + b"z" * 80
+    r1 = store.store_ref_bytes(ji["id"], _img, ext=".png", note="测试")
+    check("落地写文件", bool(r1) and Path(r1["path"]).exists(), str(r1 and r1.get("path")))
+    check("目录名含角色名与 id",
+          bool(r1) and f"_{ji['id']}" in Path(r1["path"]).parent.name,
+          str(r1 and Path(r1["path"]).parent.name))
+    check("sha256 已记录", bool(r1) and len(r1["sha256"]) == 64)
+    r1b = store.store_ref_bytes(ji["id"], _img, ext=".png")
+    check("同图去重（同记录）", bool(r1b) and r1b["id"] == r1["id"] and r1b.get("dedup") is True, str(r1b))
+    r2 = store.store_ref_bytes(ji["id"], _img2, ext=".png")
+    check("不同图新记录", bool(r2) and r2["id"] != r1["id"])
+    _refs = store.list_refs(ji["id"])
+    check("列表返回 2 张且文件存在", len(_refs) == 2 and all(x["exists"] for x in _refs), str(_refs))
+    _landed = await character.land_ref(plugin, ji["id"], _img2, filename="dup.png")
+    check("land_ref 复用已有（去重）", bool(_landed) and _landed.get("dedup") is True, str(_landed))
+    # 联网来源受 allow_web_fetch 约束
+    try:
+        await character.land_ref(plugin, ji["id"], _img, filename="w.png", url="https://example.com/a.png")
+        check("联网来源被拒（allow_web_fetch=false）", False, "未抛异常")
+    except ValueError:
+        check("联网来源被拒（allow_web_fetch=false）", True)
+    # 打开 allow_web_fetch 后，联网来源允许落地并记录 url
+    # （注意用**新图**：同 sha 会命中内容寻址去重、返回既有记录，url 自然为空）
+    _img3 = b"\x89PNG\r\n\x1a\n" + b"w" * 96
+    plugin._c = {**cfg, "allow_web_fetch": True}
+    _w2 = await character.land_ref(
+        plugin, ji["id"], _img3, filename="w2.png", url="https://example.com/b.png"
+    )
+    check("允许联网时记录来源 url", bool(_w2) and _w2.get("url") == "https://example.com/b.png", str(_w2))
+    plugin._c = cfg
+    # 删除：记录与文件都清理
+    _path1 = Path(r1["path"])
+    store.delete_ref(int(r1["id"]))
+    check("删参考图（记录+文件）", store.get_ref(int(r1["id"])) is None and not _path1.exists())
+    # 删角色连带参考图目录
+    _t = store.create_character("临时角色X")
+    store.add_anchor(_t["id"], "默认装", "1girl, red hair")
+    _rt = store.store_ref_bytes(_t["id"], _img, ext=".png")
+    _tdir = Path(_rt["path"]).parent
+    store.delete_character(_t["id"])
+    check("删角色连带参考图目录", not _tdir.exists(), str(_tdir))
+
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1
 

@@ -20,6 +20,7 @@
 
 import json
 import logging
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -61,6 +62,15 @@ def _dump_list(items) -> str:
         [str(x).strip() for x in (items or []) if str(x).strip()],
         ensure_ascii=False,
     )
+
+
+def _slugify(name: str, maxlen: int = 40) -> str:
+    """角色名 → 目录名安全串（保留中英文与数字，其余替成下划线；空则 'char'）。"""
+    import re as _re
+
+    s = _re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", (name or "").strip())
+    s = s.strip("_")[:maxlen]
+    return s or "char"
 
 
 class CharacterStore:
@@ -258,16 +268,24 @@ class CharacterStore:
         return self.get_character(char_id)
 
     def delete_character(self, char_id) -> bool:
-        """删除角色卡（连同其锚点与参考图记录）。"""
+        """删除角色卡（连同其锚点、参考图记录与参考图文件目录）。"""
         row = self._find_char_row(char_id)
         if row is None:
             return False
         conn = self._conn_get()
         cid = int(row["id"])
+        _slug = _slugify(row["name"] or "char")
         conn.execute("DELETE FROM character_anchors WHERE character_id=?", (cid,))
         conn.execute("DELETE FROM character_refs WHERE character_id=?", (cid,))
         conn.execute("DELETE FROM characters WHERE id=?", (cid,))
         conn.commit()
+        # 参考图文件目录一并清理（数据行已删，留着只是占盘）
+        try:
+            _d = self.characters_dir() / f"{_slug}_{cid}"
+            if _d.exists():
+                shutil.rmtree(_d, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"【角色卡】 参考图目录清理失败（记录已删）: {e}")
         logger.info(f"【角色卡】 已删除角色「{row['name']}」（id={cid}，含锚点/参考图）")
         return True
 
@@ -540,25 +558,115 @@ class CharacterStore:
         )
 
     # ------------------------------------------------------------------ #
-    # 参考图（阶段三会用到；M1 先打通读写）
+    # 参考图（M3：文件落地走内容寻址 data_dir/characters/<slug_id>/<sha16>.<ext>）
     # ------------------------------------------------------------------ #
-    def add_ref(
-        self, char_id, path: str = "", url: str = "",
-        sha256: str = "", nsfw_score: float = -1, note: str = "",
-    ) -> int | None:
+    def characters_dir(self) -> Path:
+        """角色资料根目录（参考图等文件落地处）。"""
+        d = self.data_dir / "characters"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def refs_dir(self, char_id) -> Path | None:
+        """某角色的参考图目录：`data_dir/characters/<名安全化>_<id>/`。
+
+        目录名带 id 后缀，避免同名/改名的角色互相串目录；角色不存在返回 None。
+        """
         ch = self.get_character(char_id)
         if ch is None:
             return None
+        slug = _slugify(ch.get("name") or "char")
+        d = self.characters_dir() / f"{slug}_{int(ch['id'])}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def store_ref_bytes(
+        self,
+        char_id,
+        data: bytes,
+        ext: str = ".png",
+        url: str = "",
+        note: str = "",
+        nsfw_score: float = -1,
+    ) -> dict | None:
+        """把图片字节落盘到角色参考图目录并落库（内容寻址，同角色同图去重）。
+
+        文件名用 `sha256[:16] + ext`：同图重复上传只占一份空间、直接返回已有记录。
+        """
+        ch = self.get_character(char_id)
+        if ch is None:
+            return None
+        if not data or len(data) < 16:
+            raise ValueError("图片数据为空或过小")
+        _ext = (ext or ".png").strip().lower()
+        if not _ext.startswith("."):
+            _ext = "." + _ext
+        if _ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+            _ext = ".png"
+        import hashlib as _hl
+
+        sha = _hl.sha256(data).hexdigest()
         conn = self._conn_get()
+        exist = conn.execute(
+            "SELECT * FROM character_refs WHERE character_id=? AND sha256=?",
+            (int(ch["id"]), sha),
+        ).fetchone()
+        if exist is not None:
+            logger.info(f"【角色卡】 参考图已存在（同 sha），复用记录 id={exist['id']}")
+            d = dict(exist)
+            d["dedup"] = True
+            return d
+        d_dir = self.refs_dir(int(ch["id"]))
+        out = d_dir / f"{sha[:16]}{_ext}"
+        try:
+            if not out.exists():
+                out.write_bytes(data)
+        except Exception as e:
+            logger.warning(f"【角色卡】 参考图落盘失败: {e}")
+            raise
         cur = conn.execute(
             """INSERT INTO character_refs
                (character_id, path, url, sha256, nsfw_score, note, created_at)
                VALUES (?,?,?,?,?,?,?)""",
-            (int(ch["id"]), path or "", url or "", sha256 or "",
-             float(nsfw_score), note or "", time.time()),
+            (int(ch["id"]), str(out), (url or "").strip(), sha,
+             float(nsfw_score), (note or "").strip(), time.time()),
         )
         conn.commit()
-        return int(cur.lastrowid)
+        logger.info(
+            f"【角色卡】 角色「{ch['name']}」新增参考图 id={cur.lastrowid} "
+            f"（{len(data) // 1024} KB → {out.name}）"
+        )
+        row = conn.execute(
+            "SELECT * FROM character_refs WHERE id=?", (int(cur.lastrowid),)
+        ).fetchone()
+        d = dict(row)
+        d["dedup"] = False
+        return d
+
+    def store_ref_from_path(
+        self, char_id, src_path, url: str = "", note: str = "", nsfw_score: float = -1
+    ) -> dict | None:
+        """从本地已有文件落地一张参考图（复制进角色目录）。"""
+        p = Path(str(src_path))
+        if not p.exists() or not p.is_file():
+            raise ValueError(f"文件不存在: {src_path}")
+        return self.store_ref_bytes(
+            char_id, p.read_bytes(), ext=p.suffix or ".png",
+            url=url, note=note, nsfw_score=nsfw_score,
+        )
+
+    def get_ref(self, ref_id) -> dict | None:
+        row = self._conn_get().execute(
+            "SELECT * FROM character_refs WHERE id=?", (int(ref_id),)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def update_ref_nsfw(self, ref_id, score: float) -> None:
+        """回写 NSFW 置信度（落地时先落库、检测是异步的，故分开写）。"""
+        conn = self._conn_get()
+        conn.execute(
+            "UPDATE character_refs SET nsfw_score=? WHERE id=?", (float(score), int(ref_id))
+        )
+        conn.commit()
 
     def list_refs(self, char_id) -> list[dict]:
         ch = self.get_character(char_id)
@@ -568,13 +676,32 @@ class CharacterStore:
             "SELECT * FROM character_refs WHERE character_id=? ORDER BY id",
             (int(ch["id"]),),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            # 文件被外部删掉时标记出来，前端可提示（不自动清库，便于排查）
+            d["exists"] = bool(d.get("path") and Path(d["path"]).exists())
+            out.append(d)
+        return out
 
-    def delete_ref(self, ref_id) -> bool:
+    def delete_ref(self, ref_id, delete_file: bool = True) -> bool:
+        """删除参考图记录；文件仅当没有其它记录引用同一路径时才删（内容寻址可能共享）。"""
+        row = self.get_ref(ref_id)
+        if row is None:
+            return False
         conn = self._conn_get()
-        cur = conn.execute("DELETE FROM character_refs WHERE id=?", (int(ref_id),))
+        conn.execute("DELETE FROM character_refs WHERE id=?", (int(ref_id),))
         conn.commit()
-        return bool(cur.rowcount)
+        if delete_file and row.get("path"):
+            still = conn.execute(
+                "SELECT COUNT(*) AS c FROM character_refs WHERE path=?", (row["path"],)
+            ).fetchone()["c"]
+            if not still:
+                try:
+                    Path(row["path"]).unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning(f"【角色卡】 参考图文件删除失败（记录已删）: {e}")
+        return True
 
     # ------------------------------------------------------------------ #
     # 导出 / 导入（备份迁移用）

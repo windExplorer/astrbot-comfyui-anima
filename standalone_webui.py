@@ -477,6 +477,16 @@ class StandaloneWebUI:
             name = "character_anchor_delete"
         elif sub == "anchor/primary" and method == "POST":
             name = "character_anchor_primary"
+        elif sub == "ref/upload" and method == "POST":
+            name = "character_ref_upload"
+        elif sub == "ref/image" and method == "GET":
+            name = "character_ref_image"
+        elif sub == "ref/delete" and method == "POST":
+            name = "character_ref_delete"
+        elif sub == "ref/from_gallery" and method == "POST":
+            name = "character_ref_from_gallery"
+        elif sub == "suggest" and method == "POST":
+            name = "character_suggest"
         elif sub == "import" and method == "POST":
             name = "character_import"
         if name is None:
