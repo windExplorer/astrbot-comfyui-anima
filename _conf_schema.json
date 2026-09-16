@@ -512,6 +512,55 @@
     "hint": "兼容字段：当 special_features 为空且本项有值时，插件会自动迁移出一条 meme_text 功能。新配置建议直接在「功能配置」页用 special_features 管理。本项保留仅为旧用户平滑过渡。",
     "default": ""
   },
+  "character_card": {
+    "description": "角色卡片（Character Card）",
+    "hint": "为「具体角色」建立可持久化的绘图资料库：角色 = 一张卡（角色名/别名/绑定人格/关联 LoRA），锚点 = 该角色的多套提示词标签组（默认装/泳装/校服…）。命中卡片时由插件把锚点标签注入提示词（多人时自动渲染成每个角色一个权重分组），不再依赖模型每轮记忆。可用 /角色 指令或对话（comfyui_character 工具）增删改。",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用角色卡片",
+        "hint": "关闭后不读卡片、不做注入（/角色 指令与 comfyui_character 工具仍可管理数据）。",
+        "default": true
+      },
+      "auto_bind_persona": {
+        "type": "bool",
+        "description": "「画你」自动按当前会话人格查卡片",
+        "hint": "用户说「画你」「你和XX的合照」时，按当前会话生效的人格名查绑定该人格的角色卡。",
+        "default": true
+      },
+      "auto_inject": {
+        "type": "bool",
+        "description": "命中卡片时自动注入锚点标签",
+        "hint": "开启：插件直接把锚点标签写进提示词（确定性）；关闭：仅在工具/指令返回里提示模型，由模型自己填。",
+        "default": true
+      },
+      "auto_group_multi": {
+        "type": "bool",
+        "description": "多人时自动渲染权重分组与计数标签",
+        "hint": "命中 ≥2 张角色卡时，自动生成 2girls 之类的计数标签与 (标签:权重) 分组，避免特征互串。",
+        "default": true
+      },
+      "default_weight": {
+        "type": "float",
+        "description": "角色分组默认权重",
+        "hint": "渲染多人分组时的默认权重（锚点自带 weight 时以锚点为准）。建议 1.1~1.3，不超过 1.5。",
+        "default": 1.2
+      },
+      "allow_user_edit": {
+        "type": "bool",
+        "description": "允许非管理员用 /角色 写入",
+        "hint": "关闭时仅管理员（AstrBot 管理员）能新增/修改/删除角色与锚点，普通用户只能查看。",
+        "default": true
+      },
+      "allow_web_fetch": {
+        "type": "bool",
+        "description": "允许联网补全角色资料（阶段三）",
+        "hint": "预留开关：允许联网检索角色资料与参考图。当前版本尚未实现联网链路，开启也不生效。",
+        "default": false
+      }
+    }
+  },
   "special_features": {
     "description": "特殊功能配置（表情包 / 图生表情包 / 漫画）",
     "hint": "声明「表情包(meme_text) / 图生表情包(meme_img) / 漫画(comic)」三类带字功能，每项绑定一个漫画工作流（需配 boogu_node 指令节点，或旧版 prompt_slots；meme_img 还需配 image_node）。可选默认 LoRA 与默认负向提示词。指令 /表情包、/图生表情包 与 AI 工具 comfyui_comic / comfyui_meme_img 会按功能 key 找到对应配置并出图。留空时插件会尝试从旧配置 default_comic_workflow 自动迁移出一条 meme_text。",

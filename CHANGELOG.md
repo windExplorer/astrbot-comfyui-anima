@@ -2,6 +2,65 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.16.0（新功能：角色卡片 M1——角色/锚点持久化、对话设定、命中即注入、多人自动分组）
+
+需求（用户在「一直画错角色」的连续反馈后确认）：为具体角色建立可持久化、可经**对话设定**的绘图资料库，
+让"这个角色长什么样"从模型的即兴发挥变成插件的确定性注入。设计见 `docs/TODO-角色卡片.md`。
+本版交付 **M1**：数据层 + 对话设定 + 单角色注入 + **多人自动分组**（用户选定一起做）。
+
+新增模块（**注意仓库硬约束**：已同步进 `build_zip.ps1` 的 `$includeList` 与 `main.py` 的
+`importlib.reload` 列表，否则打包丢文件 / 热更后仍跑旧代码）：
+
+- **`character_store.py`**（数据层，独立 SQLite `data_dir/character.db`）：
+  - `characters`（角色名/别名/绑定人格/作品/关联 LoRA/主锚点）、
+    `character_anchors`（**一个角色可有多套锚点**：正/负标签串、权重、可选覆盖 LoRA、是否抑制全局触发词）、
+    `character_refs`（参考图，M1 先打通读写，阶段三用）。
+  - CRUD + `match_characters()`（按角色名/别名在文本里扫命中，按出现位置排序）、
+    `find_by_persona()`（「画你」链路）、`get_anchor/list_anchors/set_primary_anchor`、
+    `export_all/import_all`（备份迁移）。沿用既有 store 范式（WAL + CREATE IF NOT EXISTS + 缺列 ALTER）。
+- **`character.py`**（逻辑层）：
+  - `resolve_persona_name()`：取当前会话最终生效人格（AstrBot 4.27.4 的
+    `context.persona_manager.resolve_selected_persona()`，回退 `get_default_persona_v3(umo)`）；
+  - `resolve_hits()`：扫用户原话 + 提示词命中角色卡，并叠加「你/你的自拍」→ **当前人格绑定卡**；
+    锚点选择优先用户点名的锚点（「薄荷泳装」），否则主锚点；
+  - `inject()`：**单角色**→锚点标签追加进正向提示词（已存在不重复）；
+    **多角色**→计数标签（按锚点里的 1girl/1boy 推断 `2girls`/`1girl 1boy`）+ 每角色一个
+    `(标签:权重:1.1~1.3)` 分组，并**剥掉模型自己写的权重分组**（它每轮重新发明的那套外观）；
+    画质前缀提到最前；锚点负向合并进负向提示词。
+
+接入与入口：
+
+- **`_do_draw` 注入**（覆盖 AI 对话 / 指令 / 伴侣插件所有入口）：未命中不改任何行为；
+  命中的卡片关联 LoRA 并入 `lora_map`；`_fixed_prompt`（工作流固定提示词）跳过注入。
+- **`/角色` 指令**：`列表 / 看 <名> / 记住 <名> <标签串> [--别名 --作品 --人格 --lora --锚点] /
+  改 <名> 字段=值 / 锚点 add|set|use|del / 删 <名>`；写操作受 `allow_user_edit` 控制（关闭时仅管理员）。
+- **`comfyui_character` LLM 工具**（10 个 action：list/get/save/update/delete/add_anchor/
+  update_anchor/delete_anchor/set_primary_anchor/bind_persona）：让用户**用对话即可设定角色与锚点**
+  （「记住小叽的样子是…」「小叽换成蓝发」「给薄荷加一套泳装锚点」）；已进 `required_map`
+  与 `tests/test_llm_tool_docstrings.py` 的 `REQUIRED`。
+- `comfyui_draw` docstring 新增「角色卡片（最高优先级来源）」：命中卡片时不必再凭记忆写外观，
+  也不必重复查 danbooru 角色 tag；用户给出/修正设定时应调 `comfyui_character` 落库。
+- 多人分组拦截让路：命中 ≥2 张角色卡时跳过 v5.14.4 的拦截（改由插件注入规范分组）。
+
+配置（`_conf_schema.json` 新增 `character_card` 块，并在 `ConfigView.vue` 新增「角色卡片」分区）：
+`enabled` / `auto_bind_persona` / `auto_inject` / `auto_group_multi` / `default_weight` /
+`allow_user_edit` / `allow_web_fetch`（预留）。
+
+验证（本机无可用 Python，改用 Node 移植渲染逻辑跑 9 组用例，**首轮就抓到两个 bug 并修掉**）：
+
+| 用例 | 结果 |
+| --- | --- |
+| 单角色追加 / 已存在标签不重复 | ✓ |
+| 双角色 + 模型自带分组 | 模型分组被剥掉，改由卡片分组；计数 `2girls` ✓ |
+| 双角色平铺标签 | 保留场景标签、去掉重复计数标签 ✓ |
+| 一男一女 / 三女 | `1girl 1boy` / `3girls` 推断正确 ✓ |
+| 负向合并 / 关闭自动分组 | ✓ |
+| **首轮 bug**：分组内混入 `1girl` | 已修：组内剔除计数标签（计数只由全局标签表达） |
+| **首轮 bug**：`masterpiece` 被挤到分组之后 | 已修：画质前缀置顶 |
+| `strip_weight_groups` 边界 | 嵌套括号 `esper zero f (neverness to everness)` 保留 ✓ |
+
+未交付（M2/M3，见设计文档）：WebUI 角色卡片页面（列表/编辑/删除）、参考图落地与联网补全。
+
 ## v5.15.1（真根因：`enable_comic_llm` 从未写进配置 schema，导致「对话画表情包」的自动造词路由永远不执行）
 
 现象（用户澄清）：**用的是 LLM 对话**让 AI 画表情包（不是指令），一直画错、第二段仍是固定槽位模板。
