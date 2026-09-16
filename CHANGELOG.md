@@ -2,6 +2,36 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.13.9（修复：多人绘图不遵循分组规则导致融脸串味——多人规则精简版内嵌进 comfyui_draw docstring）
+
+现象（用户反馈）：画两人（海滩亲吻场景）时特征互相串——左边角色长出右边角色的东西、反之亦然。
+拿到的一段实际生成提示词几乎全面违反多人规则：
+
+- 用自然语言句式 `Left girl Sakiri (...): short white hair, ...` / `Right girl ...` 分角色描述，
+  **完全没有 `(标签:1.2)` 权重分组**——权重分组是把特征绑定到个体的唯一手段（SKILL.md「画多人」
+  章节的核心规则），没有它必然融脸/串味；
+- 整段自然语言而非英文 danbooru 标签（`close-up portrait of two girls on a sunny summer beach`…）；
+- 角色 tag `lacrimosa \(nte\)` 孤挂在整段末尾全局位置、不进任何分组，另一角色则什么都没有；
+- 出现 `@style_name, @NJSW33T, @4x0style`——`@` 是 NovelAI 画师串专属语法，ComfyUI/Anima
+  工作流不认、纯垃圾 token（`@style_name` 疑似某个 LoRA 配置里未填的占位符被 LLM 原样照抄）；
+- 用了角色 LoRA 却把两人外貌全套重写（违反「有 LoRA 不补外貌」规则）。
+
+根因：多人绘图规则只存在于技能文件 `skills/comfyui-draw/SKILL.md`，而 `comfyui_draw` docstring 写的是
+「多角色/合照按需读技能文件」——主对话模型实际不去读，自由发挥写成自然语言。技能文件躺着没用上。
+
+修复（`comfyui_draw` docstring，约束随工具 schema 每次调用都带上、不依赖模型读文件）：
+
+- 新增「★★★多人/合照规则」精简版五条：①计数标签紧跟画质前缀（2girls…，绝不 solo）；
+  ②【最重要】每角色一个英文标签权重分组 `(tags:1.2)`，角色 tag 也进自己的分组，
+  绝不用 `Left girl XXX: 描述` 自然语言句式、绝不平铺混排，权重 1.1~1.3 不超 1.5；
+  ③角色 LoRA 的触发词写进该角色自己的分组括号、且不再重复描写该角色外貌，只写本图要变的
+  表情/服装/动作；④绝不用 `@` 语法、不照抄 `@style_name` 类占位符；⑤补互动/站位标签
+  （side_by_side / kissing_cheek…），左右站位仅是软约束。
+- 「常规出图无需读技能文件」说明同步更新：多人规则已内嵌，仅漫画/NAI 法典场景才需读技能。
+
+给用户的排查提示：`@style_name` 不是插件生成的固定文案，是某个 LoRA（或触发词配置）里
+没填的占位符原样进 prompt——建议检查工作流 LoRA 配置里是否有 trigger_words 写着 `@style_name` 的项。
+
 ## v5.13.8（修复：多轮连画角色漂移——LLM 传 trigger_words 不再整体替换自动触发词，docstring 增加角色外观锁定）
 
 现象（用户反馈）：连续画了约 20 张后角色开始漂移——头发每张一种颜色、左右不分乱画角色、
