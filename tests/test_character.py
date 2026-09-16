@@ -138,6 +138,23 @@ async def main() -> int:
     check("负向合并", r2["negative"] == "bad hands", r2["negative"])
     check("关联 LoRA 收集", r2["loras"] == ["薄荷"], str(r2["loras"]))
 
+    print("\n[6b] 一个角色多个锚点 + 锚点选择")
+    check("一个角色可有多个锚点", len(store.list_anchors(ji["id"])) == 2,
+          str([a["name"] for a in store.list_anchors(ji["id"])]))
+    check("按名取锚点", (store.get_anchor(ji["id"], "泳装") or {}).get("name") == "泳装")
+    check("不传名取主锚点", (store.get_anchor(ji["id"]) or {}).get("name") == "默认装",
+          str((store.get_anchor(ji["id"]) or {}).get("name")))
+    _h = character.collect_hits(plugin, "画一张小叽泳装", prefer_anchor_text="画一张小叽泳装")
+    check("用户提锚点名 → 选中该锚点", bool(_h) and _h[0][1]["name"] == "泳装",
+          str([(c["name"], a["name"]) for c, a in _h]))
+    _h2 = character.collect_hits(plugin, "画一张小叽", prefer_anchor_text="画一张小叽")
+    check("未提锚点名 → 用主锚点", bool(_h2) and _h2[0][1]["name"] == "默认装",
+          str([(c["name"], a["name"]) for c, a in _h2]))
+    _h3 = character.collect_hits(plugin, "画一张小叽泳装", prefer_anchor_text="画一张小叽")
+    check("锚点名只在提示词里也算数（用户原话优先）",
+          bool(_h3) and _h3[0][1]["name"] == "默认装",
+          str([(c["name"], a["name"]) for c, a in _h3]))
+
     print("\n[7] 一男一女 / 三女 计数推断")
     boy = store.create_character("阿明")
     store.add_anchor(boy["id"], "默认装", "1boy, black hair, school uniform")

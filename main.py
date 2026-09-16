@@ -6282,14 +6282,19 @@ class ComfyUIDrawPlugin(Star):
                 _wv = float(_w) if _w else 1.2
             except (TypeError, ValueError):
                 _wv = 1.2
+            # v5.18.1：同名锚点一律视为**更新**（此前 `add` 是纯插入，同名会多出一条
+            # 同名锚点，而按名查找/注入都只取第一条 → 第二条永远隐形，用户以为改了其实没改）。
             exist = store.get_anchor(int(ch["id"]), anchor_name)
-            if exist is not None and sub in ("set", "改"):
+            if exist is not None:
                 store.update_anchor(
                     int(exist["id"]), positive=positive,
                     negative=flags.get("negative") or flags.get("负向") or "",
                     weight=_wv, lora_name=flags.get("lora") or "",
                 )
-                await self._send(event, f"已更新「{ch['name']}」锚点「{anchor_name}」。")
+                await self._send(
+                    event,
+                    f"「{ch['name']}」已有同名锚点「{anchor_name}」，已改为更新：\n{positive}",
+                )
                 return
             a = store.add_anchor(
                 int(ch["id"]), anchor_name, positive,
@@ -11980,7 +11985,7 @@ class ComfyUIDrawPlugin(Star):
 
         Args:
             action(string): 必填。取值：list（列表）/ get（看某角色）/ save（建卡或改主锚点）/
-                update（改卡片字段）/ delete（删角色卡）/ add_anchor（新增锚点）/
+                update（改卡片字段）/ delete（删角色卡）/ add_anchor（新增锚点，**同名则更新**）/
                 update_anchor（改锚点）/ delete_anchor（删锚点）/ set_primary_anchor（设主锚点）/
                 bind_persona（绑定人格）/ list_refs（看参考图）/ add_ref（存参考图）/
                 delete_ref（删参考图）/ suggest（联网补全候选标签）。
@@ -12123,6 +12128,18 @@ class ComfyUIDrawPlugin(Star):
                     return "add_anchor 需要 positive（英文标签串）。"
                 if not (anchor_name or "").strip():
                     return "add_anchor 需要 anchor_name（锚点名，如 泳装 / 校服）。"
+                # v5.18.1：同名锚点视为更新，避免同名重复记录（按名查找只取第一条，
+                # 重复那条会永远隐形，用户以为改上了其实没改）。
+                _exist = store.get_anchor(int(ch["id"]), anchor_name)
+                if _exist is not None:
+                    store.update_anchor(
+                        int(_exist["id"]), positive=positive, negative=negative,
+                        weight=float(weight or 1.2), lora_name=lora,
+                    )
+                    return (
+                        f"「{ch['name']}」已有同名锚点「{_exist['name']}」，已更新为："
+                        f"{positive}（权重 {float(weight or 1.2)}）"
+                    )
                 a = store.add_anchor(
                     int(ch["id"]), anchor_name, positive, negative=negative,
                     weight=float(weight or 1.2), lora_name=lora,
