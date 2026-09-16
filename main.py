@@ -2338,6 +2338,77 @@ class ComfyUIDrawPlugin(Star):
                     )
         return seg
 
+    def _collect_known_trigger_words(
+        self, loras_cfg: list | None, lora_map: dict | None
+    ) -> set[str]:
+        """收集「本次调用涉及的 LoRA」已配置的触发词集合（小写，逐词）。
+
+        来源：工作流引用的 LoRA 配置 + 本次请求启用的 LoRA（查全局库）。
+        供提示词语法清理使用：`@xxx` 这类 NAI 画师串语法默认是垃圾 token，
+        但若它恰好是某个相关 LoRA 的正式触发词（部分风格 LoRA 确实用 @ 触发词），
+        必须保留。
+        """
+        words: set[str] = set()
+        lib = self._lora_lib_index()
+        entries: list[dict] = [
+            l for l in (loras_cfg or []) if isinstance(l, dict)
+        ]
+        for nm in (lora_map or {}):
+            _le = lib.get((nm or "").strip())
+            if _le:
+                entries.append(_le)
+        for e in entries:
+            for tw in re.split(r"[\n,，、;；]+", str(e.get("trigger_words") or "").strip()):
+                tw = tw.strip()
+                if tw:
+                    words.add(tw.lower())
+        return words
+
+    def _sanitize_prompt_syntax(
+        self,
+        wf: dict | None,
+        positive: str,
+        platform: str = "",
+        loras_cfg: list | None = None,
+        lora_map: dict | None = None,
+    ) -> str:
+        """确定性清理提示词里的「跨后端语法垃圾」（v5.14.0，不赌 LLM 自觉）。
+
+        - `<lora:xxx:1>`：A1111 语法。ComfyUI 注入走 LoRA 节点（workflow_builder），
+          写进 prompt 只是死 token（实测案例：`<lora:esper_zero_f-...:1>` 出现在正向提示词里）；
+        - `@xxx`：NAI 画师串专属语法。仅 platform=nai 保留；其它后端一律剔除，
+          **但**若该词是本次相关 LoRA 已配置的正式触发词则保留
+          （实测案例：`@4x0style`、`@style_name` 被原样送进 Anima 工作流）；
+        - `score_9 / score_8_up / score_7_up`：Pony 质量词体系，docstring 已声明仅 pony 底模
+          可用，anima 工作流必删（实测 `score_9` 出现在 Anima 提示词里）。
+
+        清理后归并连续逗号与首尾空白。仅清理语法垃圾，不改画面语义；失败保底返回原文。
+        """
+        try:
+            text = (positive or "").strip()
+            if not text:
+                return text
+            orig = text
+            # 1) A1111 <lora:...>
+            text = re.sub(r"<lora:[^>]{0,300}>", "", text, flags=re.IGNORECASE)
+            # 2) @ 画师串语法（非 NAI 后端；保留已配置触发词）
+            if (platform or "").strip().lower() != "nai":
+                _known = self._collect_known_trigger_words(loras_cfg, lora_map)
+                text = re.sub(
+                    r"@\w[\w\-]*",
+                    lambda m: m.group(0) if m.group(0).lower() in _known else "",
+                    text,
+                )
+            # 3) Pony 质量词（anima 工作流）
+            if wf and wf.get("is_anima"):
+                text = re.sub(r"\bscore_\d+(?:_up)?\b", "", text, flags=re.IGNORECASE)
+            if text != orig:
+                text = re.sub(r"\s*,\s*(?:,\s*)+", ", ", text).strip().strip(",").strip()
+            return text
+        except Exception as e:
+            logger.warning(f"【提示词清理】 异常，保留原文: {e}")
+            return positive or ""
+
     async def _llm_refine_prompt(
         self, wf: dict, positive: str, source: str, trace_id: str = ""
     ) -> str:
@@ -4415,6 +4486,15 @@ class ComfyUIDrawPlugin(Star):
         # 下方「参考图上传」并行，少等一段串行时间；结果在提示词定稿处统一 await。
         _t_llm0 = time.time()
         _llm_task = None
+        # ── 跨后端语法垃圾清理（v5.14.0，确定性，不赌 LLM 自觉）────────────
+        # 必须在 LLM 翻译/整理之前：<lora:>、@语法、score_9 这类垃圾不会被子流程剔除。
+        if not _fixed_prompt and (positive or "").strip():
+            _pos_cleaned = self._sanitize_prompt_syntax(
+                wf, positive, platform, self._loras_of(wf), lora_map
+            )
+            if _pos_cleaned != (positive or "").strip():
+                logger.info(f"【提示词清理】 剔除跨后端语法垃圾后: {_pos_cleaned}")
+                positive = _pos_cleaned
         if not _fixed_prompt and (source or (wf.get("is_anima") and self._has_chinese(positive))):
             _llm_task = asyncio.create_task(
                 self._llm_refine_prompt(wf, positive, source, _trace_id)
@@ -4839,8 +4919,32 @@ class ComfyUIDrawPlugin(Star):
         if enabled:
             _lib = self._lora_lib_index()
             _triggers: list[str] = []
-            # ① 全量自动列表：启用 LoRA 的触发词永不缺失
+            # v5.14.0：≥2 个「角色」分类 LoRA 同时启用时，绝不把它们的触发词全局追加
+            # （全局追加=两个角色特征互相污染，实测「薄荷的猫耳跑到鉴定师头上」）。
+            # 多角色时触发词必须由 LLM 写进各自的角色分组括号（comfyui_draw 已有
+            # 「无分组即拦截」保证分组存在；已写进分组的词走下方「已存在不重复追加」）。
+            _multi_char_skip: set[str] = set()
+            _skip_words: set[str] = set()
+            for _nm in enabled:
+                _le = _lib.get(_nm) or _lib.get((_nm or "").lower()) or {}
+                if (_le.get("category") or "").strip() == "角色":
+                    _multi_char_skip.add(_nm)
+                    for _tw in re.split(r"[\n,，、;；]+", str(_le.get("trigger_words") or "").strip()):
+                        _tw = _tw.strip()
+                        if _tw:
+                            _skip_words.add(_tw.lower())
+            if len(_multi_char_skip) >= 2:
+                logger.warning(
+                    f"【LoRA 触发词】 多角色模式：{sorted(_multi_char_skip)} 的触发词不全局追加"
+                    f"（防串味），应已由 LLM 写进各自的角色分组括号"
+                )
+            else:
+                _multi_char_skip = set()
+                _skip_words = set()
+            # ① 全量自动列表：启用 LoRA 的触发词永不缺失（多角色模式除外，见上）
             for nm in enabled:
+                if nm in _multi_char_skip:
+                    continue
                 _lc = next(
                     (l for l in (loras_cfg or [])
                      if (l.get("name") or "").strip() == nm),
@@ -4864,8 +4968,16 @@ class ComfyUIDrawPlugin(Star):
                     _extra: list[str] = []
                     for _tw in re.split(r"[\n,，、;；]+", str(trigger_words).strip()):
                         _tw = _tw.strip()
-                        if _tw and _tw not in _triggers and _tw not in _extra:
-                            _extra.append(_tw)
+                        if not _tw or _tw in _triggers or _tw in _extra:
+                            continue
+                        # 多角色模式：角色 LoRA 的触发词绝不全局增补（必须进对应角色分组）
+                        if _skip_words and _tw.lower() in _skip_words:
+                            logger.info(
+                                f"【LoRA 触发词】 多角色模式：LLM 增补的「{_tw}」是角色 LoRA 触发词，"
+                                f"不全局追加（应由 LLM 写进对应角色分组）"
+                            )
+                            continue
+                        _extra.append(_tw)
                     if _extra:
                         logger.info(
                             f"【LoRA 触发词】 LLM 增补触发词: {_extra}"
@@ -8664,8 +8776,10 @@ class ComfyUIDrawPlugin(Star):
         3) 某角色用了 LoRA：该 LoRA 的触发词必须写进**那个角色自己的分组括号**（插件检测到已存在
            就不再全局追加，避免串到别人身上）；且**不再重复描写该角色外貌**（发色瞳色角尾巴等一律省略），
            只写本图要变的表情/服装/动作。
-        4) 绝不用 @ 开头的语法（@xxx 是 NAI 画师串专属，ComfyUI/Anima 工作流不认，纯垃圾 token）；
-           也不要照抄任何形如 @style_name 的占位符。
+        4) 绝不用这些语法（插件会自动剔除，写了也白写）：@ 开头的词（NAI 画师串专属，Anima 不认）、
+           <lora:xxx:1>（A1111 语法，ComfyUI 走 LoRA 参数注入，不写进 prompt）、
+           score_9/score_8_up 等 Pony 质量词（仅 pony 底模可用）；也不要照抄 @style_name 这类占位符。
+           ★启用 2 个及以上角色 LoRA 时，插件会检查分组：没写权重分组会被拦截并要求重写。
         5) 补互动/站位标签：side_by_side、holding_hands、hugging、looking_at_each_other、kissing_cheek 等；
            「谁左谁右」只是软约束、无法精确摆位，用户要求精确构图时建议图生图/ControlNet。
         详细规则与示例见技能 comfyui-draw 的「画多人 / 多人场景」章节。
@@ -8939,6 +9053,60 @@ class ComfyUIDrawPlugin(Star):
         # 见「工作流决策」段之后。
 
         lora_map = self._parse_llm_loras(loras)
+
+        # ── 多角色 LoRA 分组强制（v5.14.0，确定性兜底，不赌模型自觉）──────
+        # ≥2 个「角色」分类 LoRA 时，提示词必须用 (标签:权重) 分组且把各角色触发词
+        # 写进对应分组，否则特征必然互相污染（融脸/串味，用户多次投诉后实测依旧翻车）。
+        # 检测不通过直接返回指导文本让模型重写后再调（本轮尚未出图，不消耗出图闸门）。
+        try:
+            if lora_map:
+                _lib_idx = self._lora_lib_index()
+                _char_loras: list[tuple[str, str]] = []
+                for _n in lora_map:
+                    _le = _lib_idx.get((_n or "").strip()) or next(
+                        (
+                            v
+                            for k, v in _lib_idx.items()
+                            if workflow_builder._lora_name_matches(k, _n)
+                        ),
+                        None,
+                    )
+                    if _le and (_le.get("category") or "").strip() == "角色":
+                        _char_loras.append(
+                            ((_le.get("name") or _n or "").strip(),
+                             (_le.get("trigger_words") or "").strip())
+                        )
+                if len(_char_loras) >= 2:
+                    _all_text = " ".join(
+                        [(prompt or ""), *[(it.get("prompt") or "") for it in _items]]
+                    )
+                    if not re.search(r"\([^()]{2,240}:[01]?\.\d{1,2}\)", _all_text):
+                        _tw_lines = "\n".join(
+                            f"  - {_cn}：触发词「{_tw or '（库未配置触发词）'}」"
+                            for _cn, _tw in _char_loras
+                        )
+                        logger.info(
+                            f"【多角色拦截】 启用 {len(_char_loras)} 个角色 LoRA 但提示词无权重分组，"
+                            f"返回指导要求重写"
+                        )
+                        return (
+                            f"出图被拦截：本次启用了 {len(_char_loras)} 个角色 LoRA，但提示词没有按"
+                            "「多人分组规则」写——不分组两个角色的特征必然互相污染"
+                            "（A 角色长出 B 角色的猫耳/衣服）。请按以下规则重写 prompt 后"
+                            "重新调用本工具一次：\n"
+                            "1) 计数标签紧跟画质前缀（如 2girls），绝不写 solo；\n"
+                            "2) 每个角色一个英文标签权重分组，格式：\n"
+                            "   2girls, (角色A触发词, 角色A的danbooru标签:1.2), (角色B触发词, 角色B的danbooru标签:1.2)\n"
+                            "   每个角色的 LoRA 触发词与 danbooru 角色 tag 都必须写进它自己的分组括号内；\n"
+                            "3) 用了角色 LoRA 就绝不重复描写该角色外貌（发色/瞳色/兽耳/服饰全省略），"
+                            "只写本图要变的表情/动作/场景；两个角色的标签绝不平铺混排、"
+                            "绝不用 Left girl/Right girl 自然语言句式；\n"
+                            "4) 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会剔除，写了也白写）。\n"
+                            f"本次两个角色的 LoRA 与触发词：\n{_tw_lines}\n"
+                            "重写完成后带着新 prompt 重新调用本工具（参数不变，仅改 prompt）。"
+                        )
+        except Exception as _e:
+            logger.warning(f"【多角色拦截】 检查异常（不拦截）: {_e}")
 
         # ── 收集图片（图生图参考图）─────────────────────────────────
         # 关键修正：图生图不要求 LLM 必须传 image 参数。用户最常见的图生图方式就是
