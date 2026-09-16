@@ -2,6 +2,30 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v5.14.5（anima 自然语言「元描述」短语权重剔除 + 提示词规范新增「只写真实 danbooru 标签」）
+
+现象（用户提问）提示词里出现 `(two different hair colors:1.3)`、`(white hair and teal hair:1.2)`
+这类短语，用户质疑「有必要吗？会误导吧」。
+
+定性：**有害无益**，且来源是模型（不是插件生成）：
+
+- danbooru 并不存在 `two different hair colors` 这个 tag，正确写法是 `two-tone hair` /
+  `multicolored hair` / `streaked hair`（或干脆写各角色自己的发色标签）；
+- 更糟的是它带了 `:1.3` 权重——**放大一个无效短语**，对标签系底模是噪音，还可能诱导模型
+  把「两种发色」画到同一个角色头上（染发/渐变感）；
+- 根因之一是插件**只翻译含中文的片段、英文标签完全不校验**，所以这类自然语言英文短语能一路
+  畅通进 prompt（这一事实此前没写进 docstring，模型并不知道写错没人拦）。
+
+修复：
+
+- 后端 `_sanitize_prompt_syntax` 新增第 4 步（仅 anima 标签系工作流）：识别「含连接词的括号组」
+  （`different|various|multiple|and|with|or|between|that|which`）并**只剔除其权重、保留文本**
+  （不删内容、可逆可查），同时打日志 `【提示词体检】`。已实测边界：`blue eyes` / `long hair` /
+  `looking at viewer` 保留；含嵌套括号的真分组（`esper zero f (neverness to everness), …:1.2`、
+  `mint_(nte):1.2`）不受影响。
+- docstring 提示词规范新增：anima 系「只写真实存在的 danbooru 标签」+ 反面例子 + 正确 tag 写法，
+  并明确写出「**英文标签不会被翻译或校验**，写错没有兜底」。
+
 ## v5.14.4（多人提示词「标签式分行」自动归一 + 分组校验扩展到多人声明 + 铁律级「必先查 LoRA」）
 
 现象（用户反馈两条）：

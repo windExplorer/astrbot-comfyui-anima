@@ -2402,6 +2402,37 @@ class ComfyUIDrawPlugin(Star):
             # 3) Pony 质量词（anima 工作流）
             if wf and wf.get("is_anima"):
                 text = re.sub(r"\bscore_\d+(?:_up)?\b", "", text, flags=re.IGNORECASE)
+            # 4) anima 标签系工作流：自然语言「元描述」权重剔除（v5.14.5）
+            #    实测模型爱写 (two different hair colors:1.3) / (white hair and teal hair:1.2)
+            #    这类 danbooru 并不存在的自然语言短语，还带权重——对标签系底模纯属噪音，
+            #    且高权重会诱导模型把"两种发色"画到同一个角色头上（应写 two-tone hair /
+            #    multicolored hair / streaked hair，或干脆写各角色自己的发色）。
+            #    处理方式：只去掉权重、保留文本（不删内容，可逆可查），并打日志。
+            #    含嵌套括号的真分组（esper zero f (neverness to everness), …:1.2）不受影响。
+            if wf and wf.get("is_anima"):
+                _meta_hits: list[str] = []
+                _meta_re = re.compile(
+                    r"\(([^()]{0,120}?):\s*\d+(?:\.\d+)?\s*\)"
+                )
+                _conn_re = re.compile(
+                    r"\b(different|various|multiple|and|with|or|between|that|which)\b",
+                    re.IGNORECASE,
+                )
+
+                def _demote_meta(m: "re.Match") -> str:
+                    _inner = m.group(1)
+                    if _conn_re.search(_inner):
+                        _meta_hits.append(_inner)
+                        return _inner
+                    return m.group(0)
+
+                text = _meta_re.sub(_demote_meta, text)
+                if _meta_hits:
+                    logger.info(
+                        f"【提示词体检】 anima 标签系提示词含自然语言元描述，已剔除权重"
+                        f"（建议改用 danbooru 标准 tag，如 two-tone hair / multicolored hair）: "
+                        f"{_meta_hits}"
+                    )
             if text != orig:
                 text = re.sub(r"\s*,\s*(?:,\s*)+", ", ", text).strip().strip(",").strip()
             return text
@@ -8989,6 +9020,12 @@ class ComfyUIDrawPlugin(Star):
         ★★★提示词规范（按目标工作流的底模选写法，写错会直接毁图）：
         - anima / illustrious / noobai（动漫标签系）：英文 Danbooru 标签 + 质量前缀
           （masterpiece, best quality, very aesthetic, absurdres）；禁自然语言长句、禁 Pony 质量词。
+          ★只写**真实存在的 danbooru 标签**，绝不写自然语言元描述短语。反面例子（实测被模型写出）：
+          `two different hair colors`、`white hair and teal hair`、`holding hands with each other`
+          ——这些读音像描述、但不是 danbooru 标签，插件会剔除其权重（不再放大），对标签系底模仍是噪音。
+          正确写法：两色发用 `two-tone hair` / `multicolored hair` / `streaked hair`；
+          两个角色各自的发色分别写进各自的分组；互动用 `holding hands` / `hugging` / `looking at viewer` 等标准 tag。
+          ★注意：**英文标签不会被翻译或校验**（插件只翻译含中文的片段），写错没有任何兜底，全靠你自己写对。
         - z-image-turbo（阿里 Z-Image）：中文或英文**自然语言整句**（中文理解最好）；不写标签/质量词；
           要渲染的文字放引号（渲染力强，引号外类文字 token 也可能被画出来）。
         - krea2 / flux / qwen 等自然语言系：**英文自然语言整句**；不写任何 danbooru 标签与质量词
