@@ -362,6 +362,31 @@ async def main() -> int:
     _fv = (ROOT / "webui-src" / "src" / "views" / "FeaturesView.vue").read_text(encoding="utf-8")
     check("FeaturesView 工作流下拉同样用 null", "workflow: null as string | null" in _fv)
 
+    print("\n[16] 原图查看 size=orig（v6.1.3）")
+    _raw_png = b"\x89PNG\r\n\x1a\n" + b"o" * 88
+    set_req(raw=_raw_png, headers={"x-character-id": str(_cid2), "x-filename": "orig.png"})
+    _uo = _payload(await api.character_ref_upload())
+    set_req(query={"id": str(_uo["id"]), "size": "orig"})
+    _im2 = _payload(await api.character_ref_image())
+    _dec1 = base64.b64decode(str(_im2.get("url", "")).split(",", 1)[1]) if "," in str(_im2.get("url", "")) else b""
+    check("角色参考图 size=orig 返回原图字节", _dec1 == _raw_png, f"{len(_dec1)} vs {len(_raw_png)}")
+    set_req(query={"id": str(_uo["id"])})
+    _im3 = _payload(await api.character_ref_image())
+    check("角色参考图缺省仍是缩略图 data URL",
+          str(_im3.get("url", "")).startswith("data:image"), str(_im3.get("url", ""))[:40])
+    # lora_image 同样支持 size=orig（工作流/LoRA 封面存于 lora_assets/）
+    FakePlugin.lora_assets_dir = tmp / "lora_assets"
+    FakePlugin.lora_assets_dir.mkdir(exist_ok=True)
+    (FakePlugin.lora_assets_dir / "cover_test.png").write_bytes(_raw_png)
+    set_req(query={"name": "cover_test.png", "size": "orig"})
+    _li = _payload(await api.lora_image())
+    _dec2 = base64.b64decode(str(_li.get("url", "")).split(",", 1)[1]) if "," in str(_li.get("url", "")) else b""
+    check("LoRA/工作流封面 size=orig 返回原图", _dec2 == _raw_png, f"{len(_dec2)} vs {len(_raw_png)}")
+    set_req(query={"name": "cover_test.png"})
+    _li2 = _payload(await api.lora_image())
+    check("LoRA/工作流封面缺省仍是缩略图",
+          str(_li2.get("url", "")).startswith("data:image"), str(_li2.get("url", ""))[:40])
+
     print("\n[9] 路由已注册（内嵌页）")
     src = (ROOT / "webui_api.py").read_text(encoding="utf-8")
     for _ep in ("character/list", "character/detail", "character/save", "character/delete",

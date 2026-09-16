@@ -170,7 +170,15 @@
                 class="anchor-ref"
                 :title="`id=${r.id}${r.is_cover ? '（封面）' : ''}`"
               >
-                <img v-if="refUrls[r.id]" :src="refUrls[r.id]" :alt="'ref ' + r.id" loading="lazy" />
+                <img
+                  v-if="refUrls[r.id]"
+                  :src="refUrls[r.id]"
+                  :alt="'ref ' + r.id"
+                  loading="lazy"
+                  class="ref-clickable"
+                  title="点击查看原图"
+                  @click.stop="openRefViewer(r)"
+                />
                 <div v-else class="anchor-ref-ph">…</div>
                 <span v-if="r.is_cover" class="anchor-ref-cover">★</span>
               </div>
@@ -196,7 +204,15 @@
           <input ref="refInput" type="file" accept="image/*" multiple style="display:none" @change="onRefFiles" />
           <div v-if="(detail.refs || []).length" class="ref-grid">
             <div v-for="r in detail.refs" :key="r.id" class="ref-item" :class="{ 'ref-is-cover': r.is_cover }">
-              <img v-if="refUrls[r.id]" :src="refUrls[r.id]" :alt="'ref ' + r.id" loading="lazy" />
+              <img
+                v-if="refUrls[r.id]"
+                :src="refUrls[r.id]"
+                :alt="'ref ' + r.id"
+                loading="lazy"
+                class="ref-clickable"
+                title="点击查看原图"
+                @click.stop="openRefViewer(r)"
+              />
               <div v-else class="ref-ph">加载中…</div>
               <div class="ref-meta">
                 <span>#{{ r.id }}</span>
@@ -324,6 +340,7 @@
     </n-modal>
 
     <!-- 导入 -->
+    <ItemViewer v-model:show="viewerShow" :src="viewerSrc" :title="viewerTitle" />
     <n-modal v-model:show="importOpen" preset="card" title="导入角色卡片 JSON" style="max-width: 620px">
       <n-input v-model:value="importText" type="textarea" :rows="10" placeholder='把导出的 JSON 粘贴到这里（{"version":1,"characters":[…] }）' />
       <template #footer>
@@ -344,6 +361,7 @@ import {
   useDialog, useMessage,
 } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
+import ItemViewer from "@/components/ItemViewer.vue";
 
 const message = useMessage();
 const dialog = useDialog();
@@ -826,6 +844,26 @@ async function setCover(r: any) {
   }
 }
 
+// ---------------- 查看原图（v6.1.3）----------------
+const viewerShow = ref(false);
+const viewerSrc = ref("");
+const viewerTitle = ref("");
+
+/** 点缩略图 → 拉**原图**进大图查看器（列表里的都是缩略图，放大才不发糊）。 */
+async function openRefViewer(r: any) {
+  viewerTitle.value = detail.value
+    ? `${detail.value.name} · #${r.id}${r.is_cover ? "（封面）" : ""}`
+    : `图片 #${r.id}`;
+  viewerShow.value = true;
+  viewerSrc.value = refUrls[r.id] || ""; // 先用缩略图占位，原图到了即刻替换
+  try {
+    const d = await apiGet("character/ref/image", { id: r.id, size: "orig" });
+    if (d?.url) viewerSrc.value = d.url;
+  } catch {
+    /* 拉不到原图就保留缩略图展示 */
+  }
+}
+
 function nsfwText(r: any) {
   const n = Number(r?.nsfw_score ?? -1);
   return n < 0 ? "" : `NSFW ${n.toFixed(2)}`;
@@ -1045,6 +1083,8 @@ onMounted(() => {
   font-size: 11px; opacity: 0.8; margin: 4px 0 2px; flex-wrap: wrap;
 }
 .ref-src { opacity: 0.7; }
+.ref-clickable { cursor: zoom-in; }
+.anchor-ref img.ref-clickable { cursor: zoom-in; }
 .ref-upload-label { font-size: 12px; opacity: 0.7; }
 .ref-is-cover { border-color: rgba(250, 173, 20, 0.75) !important; }
 .ref-ops { display: flex; align-items: center; justify-content: center; gap: 2px; }

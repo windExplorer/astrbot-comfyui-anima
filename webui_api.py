@@ -982,6 +982,22 @@ class WebUIApi:
         except Exception:
             return None
 
+    @staticmethod
+    def _orig_data_url_sync(path: Path, max_bytes: int = 24 * 1024 * 1024) -> tuple[str, str] | None:
+        """读**原图**整字节并编码 data URL（不缩放），供「查看大图」使用。
+
+        超过 `max_bytes`（默认 24MB）返回 None——调用方回退缩略图，避免一次性
+        把超大文件 base64 进内存把页面卡死。
+        """
+        try:
+            if Path(path).stat().st_size > max_bytes:
+                return None
+            raw = Path(path).read_bytes()
+            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+            return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}", mime
+        except Exception:
+            return None
+
     def _lora_assets_dir(self) -> Path:
         d = getattr(self.plugin, "lora_assets_dir", None)
         if d is None:
@@ -1002,7 +1018,14 @@ class WebUIApi:
         if not path.exists() or not path.is_file():
             return error_response("图片不存在", status_code=404)
         try:
-            # 压缩缩略图（最大宽/高 640px），避免原图 base64 过大导致前端 <img> 无法显示/卡顿
+            # v6.1.3：size=orig 返回**原图**（大图查看器用）；缺省仍 640px 缩略图
+            # （卡片列表用缩略图，避免原图 base64 过大导致前端 <img> 无法显示/卡顿）
+            _size = (request.query.get("size", "") or "").strip().lower()
+            if _size in ("orig", "original", "full", "0"):
+                _res = await asyncio.to_thread(self._orig_data_url_sync, path)
+                if not _res:
+                    return error_response("原图过大或读取失败", status_code=413)
+                return json_response({"name": fname, "url": _res[0]})
             _res = await asyncio.to_thread(self._thumb_data_url_sync, path, 640)
             if not _res:
                 return error_response("生成缩略图失败")
@@ -2115,7 +2138,17 @@ class WebUIApi:
             if not _p.exists():
                 return error_response("参考图文件缺失", status_code=404)
             try:
-                _size = int(request.query.get("size", "640") or "640")
+                _size_raw = (request.query.get("size", "") or "").strip().lower()
+            except Exception:
+                _size_raw = ""
+            if _size_raw in ("orig", "original", "full", "0"):
+                # v6.1.3：size=orig 返回原图（「查看大图」用），不缩放
+                _res = await asyncio.to_thread(self._orig_data_url_sync, _p)
+                if not _res:
+                    return error_response("原图过大或读取失败", status_code=413)
+                return json_response({"id": int(_id), "url": _res[0]})
+            try:
+                _size = int(_size_raw or "640")
             except Exception:
                 _size = 640
             _res = await asyncio.to_thread(

@@ -82,7 +82,8 @@ function applyItem(fname?: string, title?: string, fields?: ItemViewerField[]) {
   resolvedFields.value = fields ?? [];
   if (fname) {
     resolvedSrc.value = "";
-    apiGet("lora/image", { name: fname })
+    // v6.1.3：大图查看器拉**原图**（此前拿的是 640px 缩略图，放大后发糊）
+    apiGet("lora/image", { name: fname, size: "orig" })
       .then((d: any) => { resolvedSrc.value = d?.url || ""; })
       .catch(() => { resolvedSrc.value = ""; });
   } else {
