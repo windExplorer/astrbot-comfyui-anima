@@ -275,8 +275,33 @@ async def main() -> int:
 
     print("\n[12] 双通道方法校验（v6.0.0：独立通道 GET 不再能触发 POST 端点）")
     check("模块级方法表已声明", isinstance(getattr(webui_api, "ROUTE_METHODS", None), dict))
+    # ★v6.0.1 回归：同名不同方法的条目必须**归并**。
+    #   `/config` 在 routes 里是两条（GET 读 + POST 写），早期实现用 dict[key]=methods
+    #   互相覆盖 → 表里只剩 POST → GET /api/config 全 405（实测故障）。
+    _tbl = webui_api.build_route_methods([
+        ("/p/config", object(), ["GET"], "读"),
+        ("/p/config", object(), ["POST"], "写"),
+        ("/p/skip", None, ["GET"], "handler 缺失应跳过"),
+        ("/p/story/session", object(), ["GET"], "详情"),
+        ("/p/story/session", object(), ["POST"], "更新"),
+    ])
+    check("同名条目归并方法（/config = GET+POST）",
+          set(_tbl.get("/p/config") or []) == {"GET", "POST"}, str(_tbl.get("/p/config")))
+    check("handler 为 None 的条目跳过", "/p/skip" not in _tbl)
+    check("同名条目归并方法（/story/session = GET+POST）",
+          set(_tbl.get("/p/story/session") or []) == {"GET", "POST"})
+    # 精确匹配优先：/quota/config 不该被 /config 抢走
     webui_api.ROUTE_METHODS.clear()
-    webui_api.ROUTE_METHODS["/astrbot_plugin_comfyui_anima/quota/reset"] = ["POST"]
+    webui_api.ROUTE_METHODS.update(webui_api.build_route_methods([
+        (f"/{webui_api.PLUGIN_NAME}/config", object(), ["GET"], ""),
+        (f"/{webui_api.PLUGIN_NAME}/quota/config", object(), ["POST"], ""),
+        (f"/{webui_api.PLUGIN_NAME}/quota/reset", object(), ["POST"], ""),
+    ]))
+    check("精确匹配 /config = GET", StandaloneWebUI._route_methods("/config") == {"GET"},
+          str(StandaloneWebUI._route_methods("/config")))
+    check("精确匹配 /quota/config = POST",
+          StandaloneWebUI._route_methods("/quota/config") == {"POST"},
+          str(StandaloneWebUI._route_methods("/quota/config")))
     check("独立通道方法表可解析",
           StandaloneWebUI._route_methods("/quota/reset") == {"POST"},
           str(StandaloneWebUI._route_methods("/quota/reset")))

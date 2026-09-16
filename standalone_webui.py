@@ -446,9 +446,24 @@ class StandaloneWebUI:
                 import webui_api as _wa
             table = getattr(_wa, "ROUTE_METHODS", None) or {}
             _p = path.rstrip("/")
+            # ① 精确匹配：路由表键 = 插件名前缀 + 本通道路径（如
+            #    /astrbot_plugin_comfyui_anima/config ← /config）
+            _prefix = "/" + str(getattr(_wa, "PLUGIN_NAME", "") or "")
+            if _prefix != "/":
+                hit = table.get((_prefix + _p).rstrip("/"))
+                if hit:
+                    return set(hit) or None
+            # ② 兜底：前缀不一致（改过插件 id / 热更残留）时按后缀匹配。
+            #    注意 `endswith` 有歧义（/quota/config 也 endswith /config），
+            #    故只作兜底，且优先取「段数最接近」的那个。
+            best = None
             for _k, _ms in table.items():
-                if _k.rstrip("/").endswith(_p):
-                    return set(_ms) or None
+                _k2 = _k.rstrip("/")
+                if _k2 == _p or _k2.endswith(_p):
+                    if best is None or len(_k2) < len(best[0]):
+                        best = (_k2, _ms)
+            if best is not None:
+                return set(best[1]) or None
             return None
         except Exception:
             return None

@@ -2,6 +2,35 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.0.2（紧急修复：独立 WebUI 的 `/api/config` 全 405——方法表被同名条目覆盖）
+
+现象（用户实测）：独立 WebUI 下 `/api/config` 全部 405（配置页读不出配置）。
+
+根因：v6.0.0 为了修「独立通道可用 GET 触发破坏性操作」，在内嵌通道注册时登记
+`webui_api.ROUTE_METHODS`（路径→允许方法），但填表用的是 `ROUTE_METHODS[key] = methods`——
+而 `routes` 里存在**同一路径多条条目**的情况（一条声明 GET、另一条声明 POST）：
+
+| 路径 | 条目 1 | 条目 2 | 覆盖后表里的方法 |
+| --- | --- | --- | --- |
+| `/config` | `get_config` GET（读配置） | `save_config` POST（存配置） | 只剩 **POST** → `GET /api/config` 405 |
+| `/story/session` | `story_session_detail` GET | `story_session_update` POST | 只剩 **POST** → `GET /story/session` 405 |
+
+即后一条把前一条覆盖了，导致声明为 GET 的方向被一律判为「方法不允许」。
+（全仓核对：仅这两条路径属于同名多方法，其余端点不受影响。）
+
+修复：
+
+- `webui_api.py`：抽出 `build_route_methods(routes)`，按路径**归并**方法并去重
+  （同时跳过 handler 为 None 的条目），`register_web_api` 改用它填表；
+- `standalone_webui.py:_route_methods()`：匹配改为**精确前缀优先**
+  （`表键 == /<PLUGIN_NAME> + 路径`），仅在前缀不一致（改过插件 id / 热更残留）时才回退后缀匹配，
+  且取「段数最接近」的一条——顺带消除 `endswith` 的歧义（`/quota/config` 也 endswith `/config`）；
+- `tests/test_character_webui.py`：新增 5 项回归——同名条目归并（`/config`、`/story/session`
+  均须为 `{GET, POST}`）、handler 为 None 的条目跳过、精确匹配 `/config`=GET 与 `/quota/config`=POST。
+
+影响范围提示：v6.0.0 与 v6.0.1 两个版本的**独立 WebUI** 均受此影响（内嵌页不受影响，因为它不使用方法表）；
+升级到本版即恢复。
+
 ## v6.0.1（文档补全：README 与聊天内帮助都没有角色卡片）
 
 问题：角色卡片做了 M1/M2/M3 四轮（v5.16.0~v5.18.0），但**文档一处都没写**——
