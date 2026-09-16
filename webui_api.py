@@ -2032,6 +2032,7 @@ class WebUIApi:
             if "json" not in ctype and raw[:1] == b"{":
                 ctype = "application/json"
             char_key = ""
+            anchor_id = 0
             filename = f"ref_{uuid.uuid4().hex}.png"
             data_bytes = None
             if "json" in ctype:
@@ -2040,6 +2041,10 @@ class WebUIApi:
                 except Exception:
                     payload = {}
                 char_key = str(payload.get("character_id") or payload.get("character_name") or "").strip()
+                try:
+                    anchor_id = int(payload.get("anchor_id") or 0)
+                except Exception:
+                    anchor_id = 0
                 if (payload.get("filename") or "").strip():
                     filename = os.path.basename(str(payload["filename"]).strip())
                 b64 = payload.get("data") or payload.get("base64") or ""
@@ -2052,6 +2057,10 @@ class WebUIApi:
             else:
                 data_bytes = raw
                 char_key = (request.headers.get("x-character-id") or "").strip()
+                try:
+                    anchor_id = int(request.headers.get("x-anchor-id") or 0)
+                except Exception:
+                    anchor_id = 0
                 if (request.headers.get("x-filename") or "").strip():
                     filename = os.path.basename(request.headers.get("x-filename").strip())
             if not data_bytes or len(data_bytes) < 16:
@@ -2066,7 +2075,8 @@ class WebUIApi:
             except Exception:
                 return error_response("character 模块不可用")
             ref = await _char_mod.land_ref(
-                self.plugin, int(ch["id"]), data_bytes, filename=filename, note="WebUI 上传"
+                self.plugin, int(ch["id"]), data_bytes, filename=filename,
+                note="WebUI 上传", anchor_id=anchor_id,
             )
             if ref is None:
                 return error_response("参考图落地失败")
@@ -2074,6 +2084,7 @@ class WebUIApi:
                 "ok": True, "id": int(ref["id"]), "dedup": bool(ref.get("dedup")),
                 "nsfw_score": float(ref.get("nsfw_score") or -1),
                 "sha256": ref.get("sha256") or "",
+                "anchor_id": int(ref.get("anchor_id") or 0),
             })
         except Exception as e:
             return error_response(f"上传参考图失败: {e}")
@@ -2147,15 +2158,79 @@ class WebUIApi:
                 _char_mod = self._character_mod()
             except Exception:
                 return error_response("character 模块不可用")
+            try:
+                _aid = int(body.get("anchor_id") or 0)
+            except Exception:
+                _aid = 0
             ref = await _char_mod.land_ref(
                 self.plugin, int(ch["id"]), Path(src).read_bytes(),
-                filename=Path(src).name, note=f"来自图库 {sha[:12]}",
+                filename=Path(src).name, note=f"来自图库 {sha[:12]}", anchor_id=_aid,
             )
             if ref is None:
                 return error_response("参考图落地失败")
             return json_response({"ok": True, "id": int(ref["id"]), "dedup": bool(ref.get("dedup"))})
         except Exception as e:
             return error_response(f"从图库导入失败: {e}")
+
+    async def character_cover_set(self):
+        """设置 / 清除角色封面（v6.1.0）。body: {character_id, ref_id}；ref_id=0 → 清除。"""
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            ch = store.get_character(
+                body.get("character_id") or body.get("character_name") or body.get("id") or ""
+            )
+            if ch is None:
+                return error_response("没找到该角色")
+            try:
+                _rid = int(body.get("ref_id") or 0)
+            except Exception:
+                _rid = 0
+            if not _rid:
+                store.clear_cover_ref(int(ch["id"]))
+                return json_response({"ok": True, "ref_id": 0, "auto": True})
+            _ref = store.get_ref(_rid)
+            if _ref is None or int(_ref.get("character_id") or 0) != int(ch["id"]):
+                return error_response(f"「{ch['name']}」下没有 id={_rid} 的图片")
+            store.set_cover_ref(int(ch["id"]), _rid)
+            return json_response({"ok": True, "ref_id": _rid, "auto": False})
+        except ValueError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"设置封面失败: {e}")
+
+    async def character_ref_anchor(self):
+        """把一张图挪到某个锚点下（v6.1.0）。body: {id, anchor_id}（anchor_id=0 → 角色级）。"""
+        try:
+            store = self._character_store(self.plugin)
+            if store is None:
+                return error_response("角色卡片模块未启用（存储初始化失败）")
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            try:
+                _rid = int(body.get("id") or body.get("ref_id") or 0)
+            except Exception:
+                _rid = 0
+            if not _rid:
+                return error_response("缺少 id")
+            ref = store.get_ref(_rid)
+            if ref is None:
+                return error_response("图片不存在", status_code=404)
+            try:
+                _aid = int(body.get("anchor_id") or 0)
+            except Exception:
+                _aid = 0
+            out = store.set_ref_anchor(_rid, _aid)
+            if out is None:
+                return error_response("调整归属失败")
+            return json_response({"ok": True, "id": _rid, "anchor_id": int(out.get("anchor_id") or 0)})
+        except Exception as e:
+            return error_response(f"调整归属失败: {e}")
 
     async def character_suggest(self):
         """用 danbooru 标签服务补全候选锚点标签（**仅返回候选，需人工确认后再落库**）。"""
@@ -2531,6 +2606,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/character/ref/image", _h("character_ref_image"), ["GET"], "角色参考图缩略图"),
         (f"{prefix}/character/ref/delete", _h("character_ref_delete"), ["POST"], "删除角色参考图"),
         (f"{prefix}/character/ref/from_gallery", _h("character_ref_from_gallery"), ["POST"], "从图库导入参考图"),
+        (f"{prefix}/character/ref/anchor", _h("character_ref_anchor"), ["POST"], "调整图片的锚点归属"),
+        (f"{prefix}/character/cover/set", _h("character_cover_set"), ["POST"], "设置/清除角色封面"),
         (f"{prefix}/character/suggest", _h("character_suggest"), ["POST"], "联网补全候选标签"),
         (f"{prefix}/character/export", _h("character_export"), ["GET"], "角色卡片导出"),
         (f"{prefix}/character/import", _h("character_import"), ["POST"], "角色卡片导入"),

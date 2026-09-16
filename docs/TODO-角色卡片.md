@@ -1,6 +1,17 @@
 # 角色卡片（Character Card）设计文档
 
-> 状态：**M1 + M2 + M3 已实现（v5.16.0 / v5.16.1 / v5.17.0 / v5.18.0）**
+> 状态：**M1 + M2 + M3 已实现（v5.16.0 / v5.16.1 / v5.17.0 / v5.18.0）；M4（v6.1.0）见下方**
+
+### M4 落地情况（v6.1.0：锚点级多图 / 角色封面 / 列表卡片视图）
+
+| 需求 | 落地位置 |
+| --- | --- |
+| 锚点可传多图 | `character_refs.anchor_id`（0=角色级）+ `store_ref_bytes(anchor_id=...)` / `set_ref_anchor()` / `list_refs(anchor_id=)` |
+| 角色封面 | `characters.cover_ref_id` + `set_cover_ref()` / `get_cover_ref()`（未设 → 自动第一张）/ `clear_cover_ref()` |
+| 缺列迁移 | `character_store._ensure_columns()`（此前本库无升级路径，审计已指出） |
+| 入口 | `/角色 参考图 记住 <角色> [锚点名]`、`参考图 封面|取消封面`；工具 `add_ref(anchor_name)` + `set_cover` |
+| 接口/前端 | `character/cover/set`、`character/ref/anchor`；`CharacterView` 卡片/表格双视图（默认卡片，localStorage 记忆）、封面列、锚点条目内图片缩略图与「＋ 传图」 |
+| 测试 | `test_character.py` 79 项、`test_character_webui.py` 69 项 |
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）

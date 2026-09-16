@@ -31,6 +31,7 @@ logger = logging.getLogger("astrbot_plugin_comfyui_anima.character")
 _CHAR_FIELDS = {
     "name", "aliases", "persona_name", "work", "lora_name",
     "primary_anchor_id", "source", "note", "enabled",
+    "cover_ref_id",  # v6.1.0：角色封面（指向 character_refs.id，0 = 自动取第一张）
 }
 _ANCHOR_FIELDS = {
     "name", "kind", "positive", "negative", "weight",
@@ -106,6 +107,32 @@ class CharacterStore:
                 logger.warning(f"[角色卡] 开启 WAL 失败（不影响使用）: {e}")
         return self._conn
 
+    def _ensure_columns(self, table: str, cols: "dict[str, str]") -> None:
+        """缺列则补（幂等）。`cols` = {列名: 列定义}。
+
+        v6.1.0 新增：本库此前只能靠 `CREATE TABLE IF NOT EXISTS` 建表，**没有任何升级路径**
+        （审计指出）——给已存在的表加字段会静默失效。这里按 `PRAGMA table_info` 判断后 ALTER。
+        失败只在「列已存在」时静默，其余情况记日志（避免像 image_store 那样把库锁/损坏一起吞掉）。
+        """
+        try:
+            conn = self._conn_get()
+            have = {
+                (r["name"] if isinstance(r, sqlite3.Row) else r[1])
+                for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for _col, _decl in (cols or {}).items():
+                if _col in have:
+                    continue
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {_col} {_decl}")
+                    logger.info(f"【角色卡】 迁移：{table} 补列 {_col}")
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        logger.warning(f"【角色卡】 迁移补列 {table}.{_col} 失败: {e}")
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"【角色卡】 迁移检查失败（{table}）: {e}")
+
     def _init_db(self) -> None:
         conn = self._conn_get()
         conn.execute(
@@ -145,6 +172,7 @@ class CharacterStore:
             """CREATE TABLE IF NOT EXISTS character_refs (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 character_id INTEGER NOT NULL,
+                anchor_id    INTEGER NOT NULL DEFAULT 0,
                 path         TEXT NOT NULL DEFAULT '',
                 url          TEXT DEFAULT '',
                 sha256       TEXT DEFAULT '',
@@ -152,6 +180,22 @@ class CharacterStore:
                 note         TEXT DEFAULT '',
                 created_at   REAL NOT NULL DEFAULT 0
             )"""
+        )
+        # 缺列迁移（v6.1.0）：
+        #   character_refs.anchor_id —— 图片可挂到某个**锚点**下（0 = 角色级，未绑定锚点）
+        #   characters.cover_ref_id  —— 角色**封面**（指向 character_refs.id，0 = 未设、取第一张）
+        # 此前 character_store 完全没有迁移路径（审计已指出），这里补上通用助手。
+        self._ensure_columns(
+            "character_refs",
+            {
+                "anchor_id": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
+        self._ensure_columns(
+            "characters",
+            {
+                "cover_ref_id": "INTEGER NOT NULL DEFAULT 0",
+            },
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_anchor_char ON character_anchors(character_id)"
@@ -494,6 +538,16 @@ class CharacterStore:
             return False
         cid = int(row["character_id"])
         conn.execute("DELETE FROM character_anchors WHERE id=?", (int(anchor_id),))
+        # v6.1.0：锚点下的图片**不删**（用户素材不该因为删锚点就丢），改为降级为角色级
+        try:
+            _moved = conn.execute(
+                "UPDATE character_refs SET anchor_id=0 WHERE anchor_id=?",
+                (int(anchor_id),),
+            ).rowcount
+            if _moved:
+                logger.info(f"【角色卡】 锚点 id={anchor_id} 的 {_moved} 张图已降级为角色级（未删除）")
+        except Exception as e:
+            logger.warning(f"【角色卡】 锚点图片降级失败（图片保留原归属）: {e}")
         # 主锚点被删 → 顺延到剩余第一个锚点
         ch = conn.execute("SELECT * FROM characters WHERE id=?", (cid,)).fetchone()
         if ch is not None and int(ch["primary_anchor_id"] or 0) == int(anchor_id):
@@ -634,10 +688,13 @@ class CharacterStore:
         url: str = "",
         note: str = "",
         nsfw_score: float = -1,
+        anchor_id: int = 0,
     ) -> dict | None:
         """把图片字节落盘到角色参考图目录并落库（内容寻址，同角色同图去重）。
 
         文件名用 `sha256[:16] + ext`：同图重复上传只占一份空间、直接返回已有记录。
+        `anchor_id`（v6.1.0）：把这张图挂到某个**锚点**下（0 = 角色级，不绑定锚点）。
+        同一张图已存在但本次指定了不同锚点时，**只更新归属**而不新建记录。
         """
         ch = self.get_character(char_id)
         if ch is None:
@@ -666,6 +723,14 @@ class CharacterStore:
             logger.info(f"【角色卡】 参考图已存在（同 sha），复用记录 id={exist['id']}")
             d = dict(exist)
             d["dedup"] = True
+            # 本次显式指定了锚点且与原归属不同 → 只挪归属（不重复占盘）
+            _want = int(anchor_id or 0)
+            if _want and _want != int(exist["anchor_id"] or 0):
+                try:
+                    self.set_ref_anchor(int(exist["id"]), _want)
+                    d["anchor_id"] = _want
+                except Exception as e:
+                    logger.warning(f"【角色卡】 参考图改归属失败（保持原样）: {e}")
             return d
         d_dir = self.refs_dir(int(ch["id"]))
         out = d_dir / f"{sha[:16]}{_ext}"
@@ -677,9 +742,9 @@ class CharacterStore:
             raise
         cur = conn.execute(
             """INSERT INTO character_refs
-               (character_id, path, url, sha256, nsfw_score, note, created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (int(ch["id"]), str(out), (url or "").strip(), sha,
+               (character_id, anchor_id, path, url, sha256, nsfw_score, note, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (int(ch["id"]), int(anchor_id or 0), str(out), (url or "").strip(), sha,
              float(nsfw_score), (note or "").strip(), time.time()),
         )
         conn.commit()
@@ -695,7 +760,8 @@ class CharacterStore:
         return d
 
     def store_ref_from_path(
-        self, char_id, src_path, url: str = "", note: str = "", nsfw_score: float = -1
+        self, char_id, src_path, url: str = "", note: str = "",
+        nsfw_score: float = -1, anchor_id: int = 0,
     ) -> dict | None:
         """从本地已有文件落地一张参考图（复制进角色目录）。"""
         p = Path(str(src_path))
@@ -703,8 +769,68 @@ class CharacterStore:
             raise ValueError(f"文件不存在: {src_path}")
         return self.store_ref_bytes(
             char_id, p.read_bytes(), ext=p.suffix or ".png",
-            url=url, note=note, nsfw_score=nsfw_score,
+            url=url, note=note, nsfw_score=nsfw_score, anchor_id=anchor_id,
         )
+
+    def set_ref_anchor(self, ref_id, anchor_id: int = 0) -> dict | None:
+        """把一张图挪到某个锚点下（0 = 角色级）。锚点必须属于同一角色，否则忽略归属改为 0。"""
+        ref = self.get_ref(ref_id)
+        if ref is None:
+            return None
+        _aid = int(anchor_id or 0)
+        if _aid:
+            a = self.get_anchor(int(ref["character_id"]), _aid)
+            if a is None:
+                logger.warning(f"【角色卡】 锚点 id={_aid} 不属于该角色，图片改为角色级")
+                _aid = 0
+        conn = self._conn_get()
+        conn.execute(
+            "UPDATE character_refs SET anchor_id=? WHERE id=?", (_aid, int(ref_id))
+        )
+        conn.commit()
+        return self.get_ref(ref_id)
+
+    # ------------------------------------------------------------------ #
+    # 角色封面（v6.1.0）
+    # ------------------------------------------------------------------ #
+    def set_cover_ref(self, char_id, ref_id) -> dict | None:
+        """把某张参考图设为角色封面；`ref_id=0` 等同清除（回落为第一张图）。"""
+        ch = self.get_character(char_id)
+        if ch is None:
+            return None
+        _rid = int(ref_id or 0)
+        if _rid:
+            ref = self.get_ref(_rid)
+            if ref is None or int(ref["character_id"]) != int(ch["id"]):
+                raise ValueError("该图片不属于此角色")
+        self.update_character(int(ch["id"]), cover_ref_id=_rid)
+        return self.get_character(int(ch["id"]))
+
+    def get_cover_ref(self, char_id) -> dict | None:
+        """取角色封面图。
+
+        优先用显式设置的 `cover_ref_id`；未设置或该图已被删 → 回落到**第一张**参考图
+        （锚点图也算，按 id 顺序），都没有则返回 None。
+        """
+        ch = self.get_character(char_id)
+        if ch is None:
+            return None
+        _cid = int(ch["id"])
+        _rid = int(ch.get("cover_ref_id") or 0)
+        if _rid:
+            ref = self.get_ref(_rid)
+            if ref is not None and int(ref["character_id"]) == _cid:
+                ref["is_cover"] = True
+                return ref
+        refs = self.list_refs(_cid)
+        if not refs:
+            return None
+        d = refs[0]
+        d["is_cover"] = False
+        return d
+
+    def clear_cover_ref(self, char_id) -> dict | None:
+        return self.set_cover_ref(char_id, 0)
 
     def get_ref(self, ref_id) -> dict | None:
         row = self._conn_get().execute(
@@ -720,29 +846,69 @@ class CharacterStore:
         )
         conn.commit()
 
-    def list_refs(self, char_id) -> list[dict]:
+    def list_refs(self, char_id, anchor_id=None) -> list[dict]:
+        """列出参考图。
+
+        `anchor_id=None` → 该角色全部图片；`anchor_id=0` → 只列角色级（未绑定锚点的）；
+        `anchor_id=N` → 只列挂在锚点 N 下的。每项带 `exists`（文件是否还在）与
+        `is_cover`（是否当前封面），前端可直接用。
+        """
         ch = self.get_character(char_id)
         if ch is None:
             return []
-        rows = self._conn_get().execute(
-            "SELECT * FROM character_refs WHERE character_id=? ORDER BY id",
-            (int(ch["id"]),),
-        ).fetchall()
+        _cid = int(ch["id"])
+        sql = "SELECT * FROM character_refs WHERE character_id=?"
+        args: list = [_cid]
+        if anchor_id is not None:
+            sql += " AND anchor_id=?"
+            args.append(int(anchor_id or 0))
+        sql += " ORDER BY id"
+        rows = self._conn_get().execute(sql, args).fetchall()
+        _cover = int(ch.get("cover_ref_id") or 0)
+        _first_id = 0
         out = []
         for r in rows:
             d = dict(r)
             # 文件被外部删掉时标记出来，前端可提示（不自动清库，便于排查）
             d["exists"] = bool(d.get("path") and Path(d["path"]).exists())
+            if not _first_id:
+                _first_id = int(d["id"])
             out.append(d)
+        # 封面标记：显式设置的封面优先；未设置则第一张图视为「自动封面」
+        if _cover:
+            _hit = False
+            for d in out:
+                if int(d["id"]) == _cover:
+                    d["is_cover"] = True
+                    _hit = True
+            if not _hit and _first_id:
+                for d in out:
+                    if int(d["id"]) == _first_id:
+                        d["is_cover_auto"] = True
+        elif _first_id:
+            for d in out:
+                if int(d["id"]) == _first_id:
+                    d["is_cover_auto"] = True
         return out
 
     def delete_ref(self, ref_id, delete_file: bool = True) -> bool:
-        """删除参考图记录；文件仅当没有其它记录引用同一路径时才删（内容寻址可能共享）。"""
+        """删除参考图记录；文件仅当没有其它记录引用同一路径时才删（内容寻址可能共享）。
+
+        若删的正是该角色的封面（`cover_ref_id`），一并清空封面设置（回落到自动取第一张）。
+        """
         row = self.get_ref(ref_id)
         if row is None:
             return False
         conn = self._conn_get()
         conn.execute("DELETE FROM character_refs WHERE id=?", (int(ref_id),))
+        # v6.1.0：封面被删 → 清空 cover_ref_id，否则会留下悬挂引用
+        try:
+            conn.execute(
+                "UPDATE characters SET cover_ref_id=0, updated_at=? WHERE id=? AND cover_ref_id=?",
+                (time.time(), int(row["character_id"]), int(ref_id)),
+            )
+        except Exception as e:
+            logger.warning(f"【角色卡】 清理封面引用失败: {e}")
         conn.commit()
         if delete_file and row.get("path"):
             still = conn.execute(
@@ -822,6 +988,22 @@ class CharacterStore:
                 self.set_primary_anchor(int(ch["id"]), int(_want["id"]))
             # 参考图（v6.0.0 新增）：同机迁移时按导出路径复制文件入角色目录；
             # 跨机/文件缺失则跳过并计数（文件本身不在导出里，无法凭空恢复）。
+            # v6.1.0：图片的**锚点归属**按「锚点名」映射还原（导出 id 在导入后已变），
+            # 封面按 sha256 匹配还原。
+            _amap: "dict[int, int]" = {}
+            for _sa in (c.get("anchors") or []):
+                if not isinstance(_sa, dict):
+                    continue
+                try:
+                    _old = int(_sa.get("id") or 0)
+                except Exception:
+                    _old = 0
+                _nm = (_sa.get("name") or "").strip()
+                if not _old or not _nm:
+                    continue
+                _hit_a = self.find_anchor_exact(int(ch["id"]), _nm)
+                if _hit_a is not None:
+                    _amap[_old] = int(_hit_a["id"])
             _ref_ok = 0
             _ref_skip = 0
             for r in (c.get("refs") or []):
@@ -830,10 +1012,12 @@ class CharacterStore:
                 _srcp = str(r.get("path") or "").strip()
                 if _srcp and Path(_srcp).exists():
                     try:
+                        _old_a = int(r.get("anchor_id") or 0)
                         self.store_ref_from_path(
                             int(ch["id"]), _srcp,
                             url=r.get("url") or "", note=r.get("note") or "",
                             nsfw_score=float(r.get("nsfw_score") or -1),
+                            anchor_id=_amap.get(_old_a, 0),
                         )
                         _ref_ok += 1
                     except Exception as e:
@@ -846,5 +1030,29 @@ class CharacterStore:
                     f"【角色卡】 「{ch['name']}」导入参考图：成功 {_ref_ok} 张"
                     f"，跳过 {_ref_skip} 张（文件不存在，需手动复制 data_dir/characters/）"
                 )
+            # 封面还原：导出的 cover_ref_id 是旧库 id → 用它的 sha256 找导入后的同图
+            try:
+                _cover_old = int(c.get("cover_ref_id") or 0)
+            except Exception:
+                _cover_old = 0
+            if _cover_old:
+                _src_cover = next(
+                    (
+                        r for r in (c.get("refs") or [])
+                        if isinstance(r, dict) and int(r.get("id") or 0) == _cover_old
+                    ),
+                    None,
+                )
+                _sha_c = (_src_cover or {}).get("sha256") or ""
+                if _sha_c:
+                    _hit_ref = next(
+                        (x for x in self.list_refs(int(ch["id"])) if x.get("sha256") == _sha_c),
+                        None,
+                    )
+                    if _hit_ref is not None:
+                        try:
+                            self.set_cover_ref(int(ch["id"]), int(_hit_ref["id"]))
+                        except Exception as e:
+                            logger.warning(f"【角色卡】 导入封面还原失败: {e}")
             n += 1
         return n

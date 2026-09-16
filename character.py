@@ -439,11 +439,13 @@ async def land_ref(
     filename: str = "",
     url: str = "",
     note: str = "",
+    anchor_id: int = 0,
 ) -> dict | None:
     """参考图落地：写文件（内容寻址）→ NSFW 打标 → 落库，返回记录。
 
     `url` 非空表示来源是联网抓取，受 `character_card.allow_web_fetch` 约束
     （关闭时直接拒绝，避免用户没授权就联网落图）。
+    `anchor_id`（v6.1.0）：把图片挂到某个锚点下（0 = 角色级），前端可按锚点分组展示。
     """
     store = getattr(self, "character", None)
     if store is None:
@@ -455,7 +457,9 @@ async def land_ref(
             "联网获取参考图未开启（配置「角色卡片 → 允许联网补全角色资料」= false）"
         )
     _ext = Path(filename).suffix if filename else ".png"
-    ref = store.store_ref_bytes(char_id, data, ext=_ext or ".png", url=_url, note=note)
+    ref = store.store_ref_bytes(
+        char_id, data, ext=_ext or ".png", url=_url, note=note, anchor_id=anchor_id
+    )
     if ref is None:
         return None
     if not ref.get("dedup") and (ref.get("path") or ""):

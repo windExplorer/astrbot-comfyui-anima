@@ -284,6 +284,87 @@ async def main() -> int:
     check("story 裁剪：最新一条保留", _story.get_session(_sids[2]) is not None)
     check("story 裁剪：max_keep=-1 不限", _story.prune_sessions(-1) == 0)
 
+    print("\n[12] 锚点级多图 / 角色封面 / 迁移（v6.1.0）")
+    _cz = store.create_character("图测角色")
+    _a1 = store.add_anchor(_cz["id"], "默认装", "1girl, black hair")
+    _a2 = store.add_anchor(_cz["id"], "泳装", "1girl, blue swimsuit")
+    _core = b"\x89PNG\r\n\x1a\n" + b"c" * 64
+    _r0 = store.store_ref_bytes(_cz["id"], _core, ext=".png")  # 角色级
+    _r1 = store.store_ref_bytes(
+        _cz["id"], b"\x89PNG\r\n\x1a\n" + b"a" * 70, ext=".png", anchor_id=int(_a1["id"])
+    )
+    _r2 = store.store_ref_bytes(
+        _cz["id"], b"\x89PNG\r\n\x1a\n" + b"b" * 74, ext=".png", anchor_id=int(_a2["id"])
+    )
+    check("图片可挂到锚点下", int(_r1.get("anchor_id") or 0) == int(_a1["id"]), str(_r1.get("anchor_id")))
+    check("按锚点过滤只返回该锚点图",
+          [int(x["id"]) for x in store.list_refs(_cz["id"], anchor_id=int(_a1["id"]))] == [int(_r1["id"])],
+          str([x["id"] for x in store.list_refs(_cz["id"], anchor_id=int(_a1["id"]))]))
+    check("按角色级过滤只返回角色级图",
+          [int(x["id"]) for x in store.list_refs(_cz["id"], anchor_id=0)] == [int(_r0["id"])])
+    check("不传 anchor_id 返回全部", len(store.list_refs(_cz["id"])) == 3)
+    # 同图去重 + 指定新锚点 → 只挪归属、不新建记录
+    _dup = store.store_ref_bytes(_cz["id"], _core, ext=".png", anchor_id=int(_a2["id"]))
+    check("同图重复上传只挪归属",
+          bool(_dup) and int(_dup["id"]) == int(_r0["id"]) and int(_dup["anchor_id"]) == int(_a2["id"]),
+          str(_dup and ( _dup["id"], _dup.get("anchor_id"))))
+    check("挪归属后总数不变", len(store.list_refs(_cz["id"])) == 3)
+    # set_ref_anchor：非法锚点自动降级为角色级
+    store.set_ref_anchor(int(_r0["id"]), 999999)
+    check("非法锚点→降级角色级", int((store.get_ref(int(_r0["id"])) or {}).get("anchor_id") or 0) == 0)
+    # 封面：未设置 → 自动第一张；显式设置 → is_cover；清除 → 回落
+    _cov0 = store.get_cover_ref(_cz["id"])
+    check("未设封面时自动取第一张", bool(_cov0) and int(_cov0["id"]) == int(_r0["id"]) and not _cov0.get("is_cover"))
+    store.set_cover_ref(_cz["id"], int(_r2["id"]))
+    _cov1 = store.get_cover_ref(_cz["id"])
+    check("显式封面生效", bool(_cov1) and int(_cov1["id"]) == int(_r2["id"]) and _cov1.get("is_cover") is True)
+    check("列表标注 is_cover",
+          [int(x["id"]) for x in store.list_refs(_cz["id"]) if x.get("is_cover")] == [int(_r2["id"])])
+    # 删掉封面图 → 封面引用被清空、回落到第一张
+    store.delete_ref(int(_r2["id"]))
+    _cov2 = store.get_cover_ref(_cz["id"])
+    check("删封面图后回落自动封面",
+          bool(_cov2) and int(_cov2["id"]) != int(_r2["id"]) and not _cov2.get("is_cover"),
+          str(_cov2 and _cov2["id"]))
+    # 删锚点 → 其图片降级为角色级（不删除）
+    _before = len(store.list_refs(_cz["id"]))
+    store.delete_anchor(int(_a1["id"]))
+    check("删锚点后图片保留并降级",
+          len(store.list_refs(_cz["id"])) == _before
+          and int((store.get_ref(int(_r1["id"])) or {}).get("anchor_id") or 0) == 0,
+          str(len(store.list_refs(_cz["id"]))))
+    # 迁移：新旧列都在（老库升级路径）
+    _cols = {
+        (r["name"] if not isinstance(r, tuple) else r[1])
+        for r in store._conn_get().execute("PRAGMA table_info(character_refs)").fetchall()
+    }
+    _ccols = {
+        (r["name"] if not isinstance(r, tuple) else r[1])
+        for r in store._conn_get().execute("PRAGMA table_info(characters)").fetchall()
+    }
+    check("迁移：character_refs.anchor_id 存在", "anchor_id" in _cols, str(sorted(_cols)))
+    check("迁移：characters.cover_ref_id 存在", "cover_ref_id" in _ccols, str(sorted(_ccols)))
+    # 导出 / 导入保留锚点归属与封面
+    store.set_cover_ref(_cz["id"], int(_r0["id"]))
+    store.set_ref_anchor(int(_r0["id"]), int(_a2["id"]))
+    _exp2 = store.export_all()
+    _cz_exp = next(c for c in _exp2["characters"] if c["name"] == "图测角色")
+    check("导出含 cover_ref_id 与图片 anchor_id",
+          int(_cz_exp.get("cover_ref_id") or 0) > 0
+          and any(int(r.get("anchor_id") or 0) for r in (_cz_exp.get("refs") or [])),
+          str(_cz_exp.get("cover_ref_id")))
+    _store3 = CharacterStore(tmp / "import_test2")
+    _store3.import_all(_exp2)
+    _cz3 = _store3.get_character("图测角色")
+    _refs3 = _store3.list_refs(int(_cz3["id"]))
+    _a3 = {a["name"]: int(a["id"]) for a in _store3.list_anchors(int(_cz3["id"]))}
+    check("导入后图片仍挂在对应锚点",
+          any(int(r.get("anchor_id") or 0) == _a3.get("泳装") for r in _refs3),
+          str([(r["id"], r.get("anchor_id")) for r in _refs3]))
+    check("导入后封面还原",
+          int(_store3.get_character(int(_cz3["id"])).get("cover_ref_id") or 0) > 0,
+          str(_store3.get_character(int(_cz3["id"])).get("cover_ref_id")))
+
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1
 

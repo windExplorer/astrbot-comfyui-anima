@@ -261,17 +261,72 @@ async def main() -> int:
     _e2 = await api.character_suggest()
     check("缺 name 报错", isinstance(_e2, dict) and _e2.get("__kind__") == "error", str(_e2))
 
+    print("\n[13] 锚点图片与封面接口（v6.1.0）")
+    set_req(body={"name": "封面测试", "aliases": [], "persona_name": "", "work": "", "lora_name": ""})
+    _rcc = _payload(await api.character_save())
+    _cid2 = int(_rcc["id"])
+    set_req(body={"character_id": _cid2, "anchor_name": "默认装",
+                  "positive": "1girl, red hair", "kind": "full", "weight": 1.2})
+    _aid1 = int(_payload(await api.character_anchor_save())["id"])
+    set_req(body={"character_id": _cid2, "anchor_name": "泳装",
+                  "positive": "1girl, blue swimsuit", "kind": "full", "weight": 1.2})
+    _aid2 = int(_payload(await api.character_anchor_save())["id"])
+    # 上传时用 JSON 字段指定锚点
+    set_req(
+        raw=json.dumps({
+            "character_id": _cid2, "filename": "a.png", "anchor_id": _aid1,
+            "data": base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"1" * 60).decode(),
+        }).encode(),
+        headers={"content-type": "application/json"},
+    )
+    _u1 = _payload(await api.character_ref_upload())
+    check("上传可指定锚点", int(_u1.get("anchor_id") or 0) == _aid1, str(_u1))
+    # raw 二进制 + x-anchor-id 头（独立通道形态）
+    set_req(
+        raw=b"\x89PNG\r\n\x1a\n" + b"2" * 70,
+        headers={"x-character-id": str(_cid2), "x-anchor-id": str(_aid2), "x-filename": "b.png"},
+    )
+    _u2 = _payload(await api.character_ref_upload())
+    check("raw 上传走 x-anchor-id", int(_u2.get("anchor_id") or 0) == _aid2, str(_u2))
+    set_req(query={"id": str(_cid2)})
+    _det2 = _payload(await api.character_detail())
+    _byid = {int(r["id"]): int(r.get("anchor_id") or 0) for r in (_det2.get("refs") or [])}
+    check("详情图片带锚点归属",
+          _byid.get(int(_u1["id"])) == _aid1 and _byid.get(int(_u2["id"])) == _aid2, str(_byid))
+    check("未设封面时首图标记自动封面",
+          any(r.get("is_cover_auto") for r in (_det2.get("refs") or [])),
+          str([(r["id"], r.get("is_cover_auto")) for r in (_det2.get("refs") or [])]))
+    set_req(body={"character_id": _cid2, "ref_id": _u2["id"]})
+    _cs = _payload(await api.character_cover_set())
+    check("设置封面", _cs.get("ok") is True and int(_cs.get("ref_id") or 0) == int(_u2["id"]), str(_cs))
+    set_req(query={"id": str(_cid2)})
+    _det3 = _payload(await api.character_detail())
+    check("详情标注 is_cover",
+          [int(r["id"]) for r in (_det3.get("refs") or []) if r.get("is_cover")] == [int(_u2["id"])],
+          str([(r["id"], r.get("is_cover")) for r in (_det3.get("refs") or [])]))
+    set_req(body={"character_id": _cid2, "ref_id": 0})
+    _cc = _payload(await api.character_cover_set())
+    check("清除封面回落自动", _cc.get("ok") is True and int(_cc.get("ref_id") or 0) == 0, str(_cc))
+    set_req(body={"id": _u1["id"], "anchor_id": 0})
+    _ra = _payload(await api.character_ref_anchor())
+    check("改归属为角色级", int(_ra.get("anchor_id") or 0) == 0, str(_ra))
+    set_req(body={"character_id": cid, "ref_id": _u1["id"]})
+    _eb = await api.character_cover_set()
+    check("跨角色设封面报错", isinstance(_eb, dict) and _eb.get("__kind__") == "error", str(_eb))
+
     print("\n[9] 路由已注册（内嵌页）")
     src = (ROOT / "webui_api.py").read_text(encoding="utf-8")
     for _ep in ("character/list", "character/detail", "character/save", "character/delete",
                 "character/anchor/save", "character/anchor/delete", "character/anchor/primary",
                 "character/ref/upload", "character/ref/image", "character/ref/delete",
-                "character/ref/from_gallery", "character/suggest",
-                "character/export", "character/import"):
+                "character/ref/from_gallery", "character/ref/anchor", "character/cover/set",
+                "character/suggest", "character/export", "character/import"):
         check(f"路由 {_ep} 已注册", f'/character/' in src and _ep.split("/", 1)[1] in src, _ep)
     ssrc = (ROOT / "standalone_webui.py").read_text(encoding="utf-8")
     check("独立 WebUI 已分派 /character/", 'startswith("/character/")' in ssrc)
     check("独立 WebUI 适配器存在", "async def _api_character(" in ssrc)
+    check("独立 WebUI 已分派 ref/anchor", 'sub == "ref/anchor"' in ssrc)
+    check("独立 WebUI 已分派 cover/set", 'sub == "cover/set"' in ssrc)
 
     print("\n[12] 双通道方法校验（v6.0.0：独立通道 GET 不再能触发 POST 端点）")
     check("模块级方法表已声明", isinstance(getattr(webui_api, "ROUTE_METHODS", None), dict))

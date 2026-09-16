@@ -18,6 +18,10 @@
           @keyup.enter="reload"
         />
         <div class="tool-actions">
+          <n-radio-group v-model:value="viewMode" size="small">
+            <n-radio-button value="card">卡片</n-radio-button>
+            <n-radio-button value="table">表格</n-radio-button>
+          </n-radio-group>
           <n-button type="primary" @click="reload">查询</n-button>
           <n-button type="primary" ghost @click="openCreate">＋ 新建角色</n-button>
           <n-button @click="doExport">导出 JSON</n-button>
@@ -37,7 +41,47 @@
 
     <!-- 列表 -->
     <n-card class="list-card" :bordered="false">
+      <!-- 卡片视图（默认）：带封面的画廊式展示 -->
+      <div v-if="viewMode === 'card'" class="char-grid">
+        <div
+          v-for="c in characters"
+          :key="c.id"
+          class="char-card"
+          :class="{ 'char-off': !c.enabled }"
+          @click="openDetail(c)"
+        >
+          <div class="char-cover">
+            <img v-if="coverUrls[c.id]" :src="coverUrls[c.id]" :alt="c.name" loading="lazy" />
+            <div v-else class="char-cover-ph">{{ (c.name || '?').slice(0, 2) }}</div>
+            <n-tag v-if="c.persona_name" class="char-badge" size="tiny" type="success" :bordered="false">人格</n-tag>
+            <n-tag v-if="!c.enabled" class="char-badge char-badge-right" size="tiny" :bordered="false">停用</n-tag>
+          </div>
+          <div class="char-body">
+            <div class="char-title">
+              <span class="char-name">{{ c.name }}</span>
+              <n-tag v-if="c.aliases?.length" size="tiny" :bordered="false">{{ c.aliases[0] }}</n-tag>
+            </div>
+            <div class="char-meta">
+              <span v-if="c.work" :title="c.work">📖 {{ c.work }}</span>
+              <span>🎯 {{ (c.anchors || []).length }} 锚点</span>
+              <span>🖼 {{ (c.refs || []).length }} 图</span>
+            </div>
+            <div class="char-anchor-names">{{ anchorNames(c) || '（无锚点）' }}</div>
+            <div v-if="c.lora_name" class="char-lora" :title="c.lora_name">LoRA：{{ c.lora_name }}</div>
+            <div class="char-ops" @click.stop>
+              <n-button size="tiny" type="primary" ghost @click="openDetail(c)">详情 / 图片</n-button>
+              <n-button size="tiny" quaternary @click="openDetail(c)">锚点</n-button>
+              <n-popconfirm @positive-click="removeCardById(c)">
+                <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
+                删除「{{ c.name }}」及其全部锚点与图片？此操作不可恢复。
+              </n-popconfirm>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 表格视图 -->
       <n-data-table
+        v-else
         :columns="columns"
         :data="characters"
         :loading="loading"
@@ -98,40 +142,67 @@
             <div class="anchor-ops">
               <n-button size="tiny" @click="openAnchorEdit(a)">编辑</n-button>
               <n-button size="tiny" quaternary @click="setPrimary(a)">设为主锚点</n-button>
+              <n-button size="tiny" quaternary @click="pickRefFilesFor(a.id)">＋ 传图</n-button>
               <n-popconfirm @positive-click="removeAnchor(a)">
                 <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
-                删除锚点「{{ a.name }}」？
+                删除锚点「{{ a.name }}」？（其图片会保留，降级为角色级）
               </n-popconfirm>
+            </div>
+            <!-- 该锚点下的图片（v6.1.0：锚点可挂多图） -->
+            <div v-if="anchorRefs(a.id).length" class="anchor-refs">
+              <div
+                v-for="r in anchorRefs(a.id)"
+                :key="r.id"
+                class="anchor-ref"
+                :title="`id=${r.id}${r.is_cover ? '（封面）' : ''}`"
+              >
+                <img v-if="refUrls[r.id]" :src="refUrls[r.id]" :alt="'ref ' + r.id" loading="lazy" />
+                <div v-else class="anchor-ref-ph">…</div>
+                <span v-if="r.is_cover" class="anchor-ref-cover">★</span>
+              </div>
             </div>
           </div>
           <div v-if="!(detail.anchors || []).length" class="empty">还没有锚点，点「＋ 新增锚点」添加（至少一个才能注入）。</div>
 
           <n-divider>参考图（{{ detail.refs?.length || 0 }} 张）</n-divider>
           <div class="anchor-head">
-            <n-space size="small">
+            <n-space size="small" align="center">
+              <span class="ref-upload-label">上传到</span>
+              <n-select
+                v-model:value="uploadAnchorId"
+                size="small"
+                style="width: 150px"
+                :options="uploadTargetOptions"
+              />
               <n-button size="small" type="primary" ghost @click="pickRefFiles">＋ 上传图片</n-button>
-              <n-input v-model:value="refSha" size="small" placeholder="图库 sha（从图库点图复制）" style="width: 190px" />
+              <n-input v-model:value="refSha" size="small" placeholder="图库 sha" style="width: 120px" />
               <n-button size="small" @click="importRefFromGallery">从图库导入</n-button>
             </n-space>
           </div>
           <input ref="refInput" type="file" accept="image/*" multiple style="display:none" @change="onRefFiles" />
           <div v-if="(detail.refs || []).length" class="ref-grid">
-            <div v-for="r in detail.refs" :key="r.id" class="ref-item">
-              <img v-if="refUrls[r.id]" :src="refUrls[r.id]" :alt="'ref ' + r.id" />
+            <div v-for="r in detail.refs" :key="r.id" class="ref-item" :class="{ 'ref-is-cover': r.is_cover }">
+              <img v-if="refUrls[r.id]" :src="refUrls[r.id]" :alt="'ref ' + r.id" loading="lazy" />
               <div v-else class="ref-ph">加载中…</div>
               <div class="ref-meta">
                 <span>#{{ r.id }}</span>
+                <n-tag size="tiny" :bordered="false">{{ refAnchorName(r) }}</n-tag>
+                <n-tag v-if="r.is_cover" size="tiny" type="warning" :bordered="false">★封面</n-tag>
+                <n-tag v-else-if="r.is_cover_auto" size="tiny" :bordered="false">自动封面</n-tag>
                 <n-tag v-if="nsfwText(r)" size="tiny" :type="nsfwType(r)" :bordered="false">{{ nsfwText(r) }}</n-tag>
                 <span v-if="r.url" class="ref-src" :title="r.url">联网</span>
               </div>
-              <n-popconfirm @positive-click="removeRef(r)">
-                <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
-                删除这张参考图？
-              </n-popconfirm>
+              <div class="ref-ops">
+                <n-button v-if="!r.is_cover" size="tiny" quaternary @click="setCover(r)">设为封面</n-button>
+                <n-popconfirm @positive-click="removeRef(r)">
+                  <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
+                  删除这张参考图？
+                </n-popconfirm>
+              </div>
             </div>
           </div>
           <div v-else class="empty">
-            还没有参考图。上传几张该角色的定妆图，后续可用作图生图参考（也可让 AI 在对话里用 add_ref 存）。
+            还没有参考图。可上传该角色的定妆图（多张），并选择挂到某个锚点下；第一张会自动作为封面。
           </div>
         </template>
       </n-drawer-content>
@@ -222,7 +293,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, reactive, ref } from "vue";
+import { computed, h, onMounted, reactive, ref, watch } from "vue";
 import {
   NButton, NCard, NDataTable, NDivider, NDrawer, NDrawerContent, NForm, NFormItem,
   NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NSwitch, NTag,
@@ -270,6 +341,17 @@ const loraCount = computed(() => characters.value.filter((c) => (c.lora_name || 
 const columns = [
   { title: "角色名", key: "name", width: 140 },
   {
+    title: "封面", key: "cover", width: 74,
+    render: (row: any) =>
+      coverUrls[row.id]
+        ? h("img", {
+            src: coverUrls[row.id],
+            alt: row.name,
+            style: "width:48px;height:48px;object-fit:cover;border-radius:6px;display:block",
+          })
+        : h("span", { style: "opacity:.4" }, "—"),
+  },
+  {
     title: "别名", key: "aliases", width: 160,
     render: (row: any) => (row.aliases || []).join("、") || "—",
   },
@@ -310,10 +392,75 @@ async function reload() {
   try {
     const data = await apiGet("character/list", { keyword: keyword.value.trim() });
     characters.value = data?.characters || [];
+    loadCovers();
   } catch (e: any) {
     message.error(`读取角色卡片失败：${e?.message || e}`);
   } finally {
     loading.value = false;
+  }
+}
+
+// ---------------- 视图模式（默认卡片）----------------
+const VIEW_KEY = "anima_char_view";
+const viewMode = ref<"card" | "table">(
+  (() => {
+    try {
+      return localStorage.getItem(VIEW_KEY) === "table" ? "table" : "card";
+    } catch {
+      return "card";
+    }
+  })(),
+);
+watch(viewMode, (v) => {
+  try {
+    localStorage.setItem(VIEW_KEY, v);
+  } catch {
+    /* 忽略隐私模式等 */
+  }
+  loadCovers();
+});
+
+// ---------------- 封面（v6.1.0）----------------
+const coverUrls = reactive<Record<number, string>>({});
+
+function coverRef(c: any) {
+  const refs: any[] = c?.refs || [];
+  return refs.find((r) => r.is_cover) || refs.find((r) => r.is_cover_auto) || null;
+}
+
+function anchorNames(c: any) {
+  return (c?.anchors || []).map((a: any) => a.name).join("、");
+}
+
+/** 拉角色封面缩略图（限 4 并发，避免一次几十个请求打满）。 */
+async function loadCovers() {
+  const todo = characters.value
+    .map((c: any) => ({ cid: Number(c.id), ref: coverRef(c) }))
+    .filter((x) => x.ref && !coverUrls[x.cid]);
+  if (!todo.length) return;
+  let idx = 0;
+  const worker = async () => {
+    while (idx < todo.length) {
+      const it = todo[idx++];
+      try {
+        const d = await apiGet("character/ref/image", { id: it.ref.id, size: 320 });
+        if (d?.url) coverUrls[it.cid] = d.url;
+      } catch {
+        /* 单张失败不影响其他 */
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, todo.length) }, worker));
+}
+
+async function removeCardById(c: any) {
+  try {
+    await apiPost("character/delete", { id: c.id });
+    delete coverUrls[c.id];
+    message.success("已删除");
+    await reload();
+  } catch (e: any) {
+    message.error(`删除失败：${e?.message || e}`);
   }
 }
 
@@ -333,6 +480,7 @@ async function openDetail(row: any) {
     detail.value = c;
     fillForm(c);
     detailOpen.value = true;
+    uploadAnchorId.value = 0; // 上传目标默认回到「角色级」，避免误挂到上次选的锚点
     loadRefUrls(c?.refs || []);
   } catch (e: any) {
     message.error(`读取详情失败：${e?.message || e}`);
@@ -524,6 +672,47 @@ function pickRefFiles() {
   refInput.value?.click();
 }
 
+// ---------------- 锚点级图片（v6.1.0）----------------
+/** 上传目标：0 = 角色级（不绑定锚点），其余 = 锚点 id。 */
+const uploadAnchorId = ref<number>(0);
+
+const uploadTargetOptions = computed(() => [
+  { label: "角色级（不绑定）", value: 0 },
+  ...((detail.value?.anchors || []).map((a: any) => ({
+    label: `锚点：${a.name}`,
+    value: Number(a.id),
+  })) as { label: string; value: number }[]),
+]);
+
+function anchorRefs(aid: number) {
+  return (detail.value?.refs || []).filter((r: any) => Number(r.anchor_id || 0) === Number(aid));
+}
+
+function refAnchorName(r: any) {
+  const aid = Number(r?.anchor_id || 0);
+  if (!aid) return "角色级";
+  const a = (detail.value?.anchors || []).find((x: any) => Number(x.id) === aid);
+  return a ? `@${a.name}` : `@锚点${aid}`;
+}
+
+/** 指定锚点后打开文件选择（锚点条目里的「＋ 传图」）。 */
+function pickRefFilesFor(aid: number) {
+  uploadAnchorId.value = Number(aid) || 0;
+  refInput.value?.click();
+}
+
+async function setCover(r: any) {
+  if (!detail.value) return;
+  try {
+    await apiPost("character/cover/set", { character_id: detail.value.id, ref_id: r.id });
+    message.success("已设为封面");
+    await openDetail({ id: detail.value.id });
+    await reload();
+  } catch (e: any) {
+    message.error(`设置封面失败：${e?.message || e}`);
+  }
+}
+
 function nsfwText(r: any) {
   const n = Number(r?.nsfw_score ?? -1);
   return n < 0 ? "" : `NSFW ${n.toFixed(2)}`;
@@ -570,7 +759,12 @@ async function onRefFiles(e: Event) {
       const dataUrl = await fileToDataUrl(f);
       await apiPost(
         "character/ref/upload",
-        { character_id: detail.value.id, filename: f.name, data: dataUrl },
+        {
+          character_id: detail.value.id,
+          filename: f.name,
+          data: dataUrl,
+          anchor_id: Number(uploadAnchorId.value) || 0,
+        },
         { timeout: 30000 },
       );
       ok += 1;
@@ -610,7 +804,11 @@ async function importRefFromGallery() {
   if (!sha) return message.warning("请填图库图片的 sha");
   if (!detail.value) return;
   try {
-    await apiPost("character/ref/from_gallery", { character_id: detail.value.id, sha });
+    await apiPost("character/ref/from_gallery", {
+      character_id: detail.value.id,
+      sha,
+      anchor_id: Number(uploadAnchorId.value) || 0,
+    });
     refSha.value = "";
     message.success("已从图库导入");
     await openDetail({ id: detail.value.id });
@@ -730,4 +928,74 @@ onMounted(reload);
   font-size: 11px; opacity: 0.8; margin: 4px 0 2px; flex-wrap: wrap;
 }
 .ref-src { opacity: 0.7; }
+.ref-upload-label { font-size: 12px; opacity: 0.7; }
+.ref-is-cover { border-color: rgba(250, 173, 20, 0.75) !important; }
+.ref-ops { display: flex; align-items: center; justify-content: center; gap: 2px; }
+
+/* ---- 卡片视图（v6.1.0）---- */
+.char-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+}
+.char-card {
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  background: rgba(128, 128, 128, 0.04);
+}
+.char-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  border-color: rgba(64, 128, 255, 0.45);
+}
+.char-off { opacity: 0.55; }
+.char-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: rgba(128, 128, 128, 0.12);
+  overflow: hidden;
+}
+.char-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.char-cover-ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 30px; font-weight: 600; opacity: 0.35; letter-spacing: 2px;
+}
+.char-badge { position: absolute; top: 6px; left: 6px; }
+.char-badge-right { left: auto; right: 6px; }
+.char-body { padding: 8px 10px 10px; }
+.char-title { display: flex; align-items: center; gap: 6px; }
+.char-name { font-weight: 600; font-size: 14px; }
+.char-meta {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
+  font-size: 11px; opacity: 0.72;
+}
+.char-anchor-names {
+  margin-top: 4px; font-size: 11px; opacity: 0.6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.char-lora {
+  margin-top: 2px; font-size: 11px; opacity: 0.6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.char-ops { display: flex; align-items: center; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+
+/* ---- 锚点下的图片 ---- */
+.anchor-refs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.anchor-ref { position: relative; width: 56px; height: 56px; }
+.anchor-ref img {
+  width: 100%; height: 100%; object-fit: cover; border-radius: 6px; display: block;
+  border: 1px solid rgba(128, 128, 128, 0.25);
+}
+.anchor-ref-ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; background: rgba(128, 128, 128, 0.14); font-size: 11px; opacity: 0.6;
+}
+.anchor-ref-cover {
+  position: absolute; top: -4px; right: -4px; font-size: 12px;
+  color: #faad14; text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+}
 </style>
