@@ -59,8 +59,8 @@ def _install_stub():
     def json_response(payload):
         return {"__kind__": "json", "payload": payload}
 
-    def error_response(msg):
-        return {"__kind__": "error", "message": str(msg)}
+    def error_response(msg, **kwargs):  # status_code 等关键字参数由 handler 传入，桩需宽容
+        return {"__kind__": "error", "message": str(msg), "kwargs": kwargs}
 
     def file_response(*a, **k):  # pragma: no cover - 角色卡用不到
         return {"__kind__": "file"}
@@ -89,7 +89,10 @@ def _payload(res):
 async def main() -> int:
     web = _install_stub()
     import webui_api  # noqa: E402
+    import standalone_webui  # noqa: E402
     from character_store import CharacterStore  # noqa: E402
+
+    StandaloneWebUI = standalone_webui.StandaloneWebUI
 
     tmp = Path(tempfile.mkdtemp(prefix="charweb_test_"))
     store = CharacterStore(tmp)
@@ -269,6 +272,17 @@ async def main() -> int:
     ssrc = (ROOT / "standalone_webui.py").read_text(encoding="utf-8")
     check("独立 WebUI 已分派 /character/", 'startswith("/character/")' in ssrc)
     check("独立 WebUI 适配器存在", "async def _api_character(" in ssrc)
+
+    print("\n[12] 双通道方法校验（v6.0.0：独立通道 GET 不再能触发 POST 端点）")
+    check("模块级方法表已声明", isinstance(getattr(webui_api, "ROUTE_METHODS", None), dict))
+    webui_api.ROUTE_METHODS.clear()
+    webui_api.ROUTE_METHODS["/astrbot_plugin_comfyui_anima/quota/reset"] = ["POST"]
+    check("独立通道方法表可解析",
+          StandaloneWebUI._route_methods("/quota/reset") == {"POST"},
+          str(StandaloneWebUI._route_methods("/quota/reset")))
+    check("未知路径不拦截（返回 None）",
+          StandaloneWebUI._route_methods("/not/registered") is None)
+    check("独立通道已放宽 body 上限", "_MAX_UPLOAD_BYTES" in ssrc)
 
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1

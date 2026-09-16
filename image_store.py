@@ -213,8 +213,12 @@ class ImageStore:
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
-            except Exception:
-                pass
+            except Exception as e:
+                # v6.0.0：不再静默（原先 `except: pass`）。列已存在=正常（幂等）；
+                # 其它原因（库锁/损坏）若被吞掉，后续 SELECT/INSERT 才会炸「no such column」，
+                # 且迁移阶段毫无线索，排查成本极高。
+                if "duplicate column" not in str(e).lower():
+                    logger.warning(f"[图库] 迁移补列 {_col} 失败（可能需要手动处理）: {e}")
         _ddl(
             "image_tags 表",
             """CREATE TABLE IF NOT EXISTS image_tags (
@@ -1656,7 +1660,10 @@ class ImageStore:
         # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
         sql += " AND status=0"
         if owner:
-            sql += " AND (is_public=1 OR user_id=?)"
+            # v6.0.0：统一可见性口径（补 is_global=1）。`_gidx_rank` 算编号时把全局图
+            # 算进去了，而 count_search / search / get_by_global_no 没算 →
+            # 「/图库 取图 <编号>」按编号取回的图与列表里显示的不是同一张。
+            sql += " AND (is_public=1 OR is_global=1 OR user_id=?)"
             args.append(owner)
         if session:
             # 会话范围过滤：非空时统计「当前会话内的图」「公开图(is_public=1)」或
@@ -1738,7 +1745,10 @@ class ImageStore:
         # 历史无主图（user_id 为空）不对普通用户暴露，仅管理员（owner 为空/全库模式）可见。
         # owner 为空（管理员/全库/库维护场景）不过滤。
         if owner:
-            sql += " AND (is_public=1 OR user_id=?)"
+            # v6.0.0：统一可见性口径（补 is_global=1）。`_gidx_rank` 算编号时把全局图
+            # 算进去了，而 count_search / search / get_by_global_no 没算 →
+            # 「/图库 取图 <编号>」按编号取回的图与列表里显示的不是同一张。
+            sql += " AND (is_public=1 OR is_global=1 OR user_id=?)"
             args.append(owner)
         if session:
             # 会话范围过滤：非空时检索「当前会话内的图」「公开图(is_public=1)」或
@@ -1816,7 +1826,10 @@ class ImageStore:
         sql += " AND deleted=0"
         sql += " AND status=0"
         if owner:
-            sql += " AND (is_public=1 OR user_id=?)"
+            # v6.0.0：统一可见性口径（补 is_global=1）。`_gidx_rank` 算编号时把全局图
+            # 算进去了，而 count_search / search / get_by_global_no 没算 →
+            # 「/图库 取图 <编号>」按编号取回的图与列表里显示的不是同一张。
+            sql += " AND (is_public=1 OR is_global=1 OR user_id=?)"
             args.append(owner)
         sql += " ORDER BY created_at DESC, sha256 DESC LIMIT 1 OFFSET ?"
         args.append(int(no) - 1)

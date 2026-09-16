@@ -2,6 +2,118 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.0.0（代码审计 + 一批确定性修复；角色卡片三期完成后的整备版本）
+
+主版本号进位原因：本轮不是单一功能迭代，而是**全量代码审计 + 修复闭环**——覆盖绘图主链路、
+角色卡片、WebUI 双通道、7 个 SQLite 存储层、打包/热更/版本链路与测试覆盖，并修正了多处
+「文档承诺了但代码没做」与「两套通道语义不一致」的结构性问题。
+
+### 审计范围与方法
+
+三个只读子审计并行：① 绘图主链路 + 角色卡片（`main.py` 关键函数、`character.py`、
+`character_store.py`）；② WebUI 双通道 + 前端（`webui_api.py`、`standalone_webui.py`、
+`webui-src/`）；③ 存储层 + 打包/热更/版本 + 测试覆盖 + 文档漂移。全部结论都要求给出
+`file:line` 证据。**正向结论**（未发现问题的部分）也一并记录，避免下次重复排查：
+打包清单 `$includeList` 与仓库根 18 个 `.py` 一一对应无遗漏、`importlib.reload` 列表无差集、
+版本号链路（metadata → 打包名 → 前端注入）一致、SQL 拼接口径安全（值全走占位符、
+列名走白名单）、LoRA/工作流封面与 `/img/{sha}` 无路径穿越、分享落地页转义正确、
+前端 `URL.createObjectURL`/事件监听均有释放。
+
+### 已修复（按严重度）
+
+**高**
+
+1. **角色卡分组被自己的清理器拆掉**（`main.py` 注入时序）：`_sanitize_prompt_syntax` 的
+   「元描述降权」会把注入生成的 `(…:1.20)` 分组降权成裸标签——锚点里只要含
+   `hair between eyes` 这类带 and/with 的标签即触发，多角色分组结构被破坏、直接串味。
+   → 注入整体**后移**到「sanitize + LLM 改写/翻译」之后：先清理不可信的模型产物，
+   再叠加用户确认过的确定性锚点。同一改动还修掉了「`_llm_refine_prompt` 返回值整体覆盖
+   positive，模型改写可能把分组拉平」的隐患。
+2. **`/角色 参考图 删` 绕过 `allow_user_edit`**（`main.py`）：删除分支缺权限校验
+   （只有「记住」校验了），非管理员可执行不可撤销的删除 → 补校验。
+3. **独立 WebUI 可用 GET 触发破坏性操作**（`standalone_webui.py`）：catch-all 路由对
+   GET/POST 一视同仁，`GET /api/quota/reset`、`GET /api/token/reset` 可被 GET（甚至
+   `<img src>` 式 CSRF）触发，未设 token 时尤为危险 → 内嵌通道注册时登记
+   `webui_api.ROUTE_METHODS`（路径→允许方法），独立通道 `_handle_api` 统一校验，
+   不匹配返回 405；未注册路径保持原行为。
+4. **图库「按编号取图」取错图**（`image_store.py`）：`_gidx_rank` 算编号时把
+   `is_global=1` 的全局图算进去，而 `count_search`/`search`/`get_by_global_no` 没算
+   → 同一编号在列表与取图之间指向不同图片 → 三处统一为
+   `(is_public=1 OR is_global=1 OR user_id=?)`。
+5. **剧情档案 `max_keep` 是空头支票**（`story_store.py`/`main.py`）：README 与配置项都承诺
+   「超过按最早删除」，代码从未读取该键 → `story.db` 无限增长。新增
+   `StoryStore.prune_sessions()`，在新开剧情时按 `max_keep` 裁剪（连带回合/图片记录），
+   `-1` 表示不限。
+
+**中**
+
+6. **参考图上传在独立 WebUI 必然 413**（`standalone_webui.py`）：aiohttp 默认
+   `client_max_size=1MiB`，而 handler 允许 12MB → 上传在进 handler 前就被拒（M3 功能在独立
+   模式下实际不可用）→ `web.Application(client_max_size=24MiB)`。
+7. **参考图大小无上限 + 同步读盘阻塞事件循环**（`character_store.py`/`main.py`）：
+   指令路径此前无大小校验、直接 `read_bytes()` → store 层统一 12MB 上限并抛明确错误，
+   指令侧读盘改走 `asyncio.to_thread`。
+8. **锚点负向提示词被覆盖**（`character.py`/`main.py`）：`inject()` 只返回锚点负向，
+   调用方直接覆盖 → 用户/模型原有负向被丢弃 → `inject(..., negative=...)` 改为**合并**。
+9. **`add_anchor` 同名判定误命中**（`character_store.py`/`main.py`）：v5.18.1 用
+   `get_anchor()` 判同名，而它末段有子串回退（「泳」会命中「泳装」）→「想新增」变成
+   「偷改别人的锚点」→ 新增 `find_anchor_exact()` 精确比较。
+10. **导出/导入丢主锚点、参考图不导入**（`character_store.py`）：`export_all` 不导出
+    `primary_anchor_name`，而 `import_all` 恰用它恢复主锚点（等于死代码）；
+    参考图也不在导入范围内 → 补导出主锚点名（并对旧导出用「下标映射」兜底）、
+    按导出路径复制参考图文件（跨机/文件缺失则计数并提示）。
+11. **`/gallery/retag` 在独立 WebUI 404**（`standalone_webui.py`）：内嵌通道有此端点、
+    独立通道没分派 → 前端「补标表情包/漫画」在独立模式报错 → 补分派（走 `to_thread`）。
+12. **会话工作流记忆存别名**（`main.py`）：`--wf <别名>` 记的是别名原文，读取校验只比对
+    `name` → 记忆下一轮即被判失效清除 → 记录前先做别名归一。
+13. **`/角色 改` 值含空格被截断**（`main.py`）：逐 token `split("=")` →
+    `/角色 改 卡 作品=Neverness to Everness` 只写入「Neverness」→ 改为按「字段=」贪婪切分。
+14. **迁移补列静默失败**（`image_store.py`）：`ALTER TABLE ... except: pass` 会把库锁/损坏
+    一并吞掉，之后才炸「no such column」且毫无线索 → 非「列已存在」时记 warning。
+15. **store 初始化假定 data_dir 存在**（`character_store.py`/`story_store.py`）：
+    目录缺失时 `sqlite3.connect` 直接 OperationalError → 初始化时显式建目录。
+16. **分享头像路径穿越**（`standalone_webui.py`）：`uid` 直接拼目录、无过滤
+    （`/share/avatar/..` 可上跳）→ 限定 `[0-9A-Za-z_-]{1,64}` + `resolve()` 复检。
+17. **分享令牌被写进日志**（`standalone_webui.py`）：拒绝分支把完整 query（含
+    `share_t=令牌`）与令牌前 8 位打进日志 → 只记长度与来源。
+18. **`standalone_webui` 用到未导入的 `os`**（`lora_assets_dir` 兜底分支会 NameError）→ 改用 `Path.cwd()`。
+
+**低 / 清理**
+
+19. 锚点 `sort_order` 用 `len()` → 删锚点后重号、排序不稳 → 改 `MAX+1`。
+20. 删除仓库根误建文件 `$null`（PowerShell 重定向产物，23 字节），避免污染工作区。
+21. 删除自述「用完即删」的遗留脚本 `tests/_tmp_quota_test.py`。
+22. 文档/配置漂移对齐：配置页「剧情模式（仅私聊，被动记录）」与实现（主动推演）矛盾 → 改描述；
+    `max_keep` hint 补清理时机；`docs/TODO-角色卡片.md` 的测试项数（35→62）、
+    action 数（10→14）订正。
+
+### 已知问题（本轮**未**修，需产品决策，已在审计报告中说明）
+
+- **SSRF 面**：`/lora/fetch` 的 `direct_image` 分支可抓任意 http(s) 地址（含内网/metadata）；
+  生图平台 `base_url` 也是用户可控且被后端直接请求。后者对「自建 ComfyUI/中转站在内网」
+  是**刚需**，一刀切拦内网会破坏正常用法，故需先定策略（白名单 / 仅允许已保存平台 /
+  可配置的私网允许开关）。
+- **全局 `webui_api.request` 临时替换的跨请求竞态**：独立通道靠模块级变量替换 + 串行锁
+  复用内嵌 handler，内嵌通道并发请求可能读到独立通道的 request 适配器。彻底修需把
+  request 作为参数（或 contextvar）贯穿 handler，属较大重构。
+- **存储层单连接契约**：各 store 用单连接且未设 `check_same_thread=False`，目前依赖
+  「所有调用都在事件循环线程」这一隐式约定；一旦引入线程池访问 store 会直接报错。
+- **`allow_user_edit` 在 WebUI 侧未生效**：WebUI（内嵌面板/独立服务）本身是管理员面，
+  故未加限权；如需多人共用需另设机制。
+- **会话级全局字典无 TTL**（`g_last_generated` 等 5 个）：按 session_id 的键从不清理，
+  长期运行内存随会话数增长（每会话内部有长度上限）。
+- **oplog/token 无保留期**、`tests/test_logic.py` 需 `astrbot` 已安装（仓库无 CI）。
+
+### 测试
+
+- `tests/test_character.py`：**62 项**（新增 10 项审计回归：精确名查找、不子串误命中、
+  导出主锚点名、导入恢复主锚点、导入参考图、`inject` 合并负向、`story max_keep` 裁剪 ×4）。
+- `tests/test_character_webui.py`：**51 项**（新增 4 项：模块级方法表已声明、独立通道方法表可解析、
+  未知路径不拦截、独立通道已放宽 body 上限；桩的 `error_response` 兼容 `status_code` 关键字）。
+- `tests/test_llm_tool_docstrings.py`：全部工具参数 schema 可解析。
+- 修复过程中另发现并修掉两处**测试自身**问题：`CharacterStore` 类名引用写错、
+  测试桩 `error_response` 不接受关键字参数。
+
 ## v5.18.1（修复：同名锚点被 `add` 追加成重复记录——第二条永远隐形）
 
 排查「一个角色能否有多个锚点」时发现的坑：`/角色 锚点 add` 与 `comfyui_character` 的

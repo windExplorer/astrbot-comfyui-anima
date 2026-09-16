@@ -2641,6 +2641,14 @@ class ComfyUIDrawPlugin(Star):
         _sid = (session_id or "").strip()
         if not _name or not _sid:
             return
+        # v6.0.0：存**真实工作流名**（先做别名映射）。旧实现原样存别名，
+        # 而读取校验只比对 name 字段 → 用 `--wf <别名>` 指定的记忆下一轮即被判失效清除。
+        try:
+            _real = self._alias_workflow_name(_name)
+            if _real:
+                _name = _real
+        except Exception:
+            pass
         g_session_workflow[_sid] = _name
         logger.info(f"【绘图·解析】 会话工作流记忆更新：session={_sid} -> 「{_name}」")
 
@@ -4538,45 +4546,16 @@ class ComfyUIDrawPlugin(Star):
         # 下方「参考图上传」并行，少等一段串行时间；结果在提示词定稿处统一 await。
         _t_llm0 = time.time()
         _llm_task = None
-        # ── 角色卡片注入（v5.16.0，确定性：命中即注入锚点，不赌模型记忆）──────
-        # 覆盖所有入口（AI 对话 / 指令 / 伴侣插件）。命中规则见 character.py：
-        #   单角色 → 锚点标签追加进正向提示词；多角色 → 计数标签 + 每角色一个权重分组，
-        #   并剥掉模型自己写的分组（它每轮重新发明的那套外观）。
-        # 卡片关联的 LoRA 会并入 lora_map（触发词按既有规则注入）。
+        # ── 角色卡片注入（v5.16.0；v6.0.0 调整了注入时序）────────────────────
+        # 注入原本就地执行（在 sanitize 清理与 LLM 改写**之前**），审计发现两个副作用：
+        #   ① `_sanitize_prompt_syntax` 的「元描述降权」会把注入生成的 `(…:1.20)` 分组
+        #      降权成裸标签——锚点里只要含 `hair between eyes` 这类带 and/with/between
+        #      的标签即触发，多角色分组结构被破坏 → 正是要防的串味；
+        #   ② `_llm_refine_prompt` 的返回值会**整体覆盖** positive，模型改写时可能把
+        #      分组拉平成平铺标签，与「确定性注入」的承诺相悖。
+        # 现改为「先清理不可信的模型产物（sanitize → LLM 改写/翻译），再叠加用户确认过的
+        # 确定性锚点」，注入点移到下方 `await _llm_task` 之后（见「角色卡片注入（时序后移）」）。
         _card_lora_names: list[str] = []
-        try:
-            _cc_cfg = self._cfg("character_card", {}) or {}
-            if (
-                (not _fixed_prompt)
-                and isinstance(_cc_cfg, dict)
-                and _cc_cfg.get("enabled", True)
-                and getattr(self, "character", None) is not None
-            ):
-                _u_text = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
-                _hits = await character.resolve_hits(self, event, _u_text, positive)
-                if _hits and _cc_cfg.get("auto_inject", True):
-                    _cres = character.inject(self, positive, _hits, _cc_cfg)
-                    if (_cres.get("prompt") or "").strip():
-                        positive = _cres["prompt"]
-                    if (_cres.get("negative") or "").strip():
-                        negative = _cres["negative"]
-                    _card_lora_names = list(_cres.get("loras") or [])
-                    logger.info(
-                        f"【角色卡·注入】 模式={_cres.get('mode')}｜{_cres.get('note')}｜"
-                        f"正向提示词: {positive[:300]}"
-                    )
-                elif _hits:
-                    logger.info(
-                        f"【角色卡】 命中 {len(_hits)} 个角色，但 character_card.auto_inject=false，仅记录不注入"
-                    )
-        except Exception as _ce:
-            logger.warning(f"【角色卡·注入】 异常（不影响出图）: {_ce}")
-        if _card_lora_names:
-            _lm2 = dict(lora_map or {})
-            for _cn in _card_lora_names:
-                _lm2.setdefault(_cn, None)
-            lora_map = _lm2
-            logger.info(f"【角色卡·注入】 并入关联 LoRA: {_card_lora_names}")
         # ── 跨后端语法垃圾清理（v5.14.0，确定性，不赌 LLM 自觉）────────────
         # 必须在 LLM 翻译/整理之前：<lora:>、@语法、score_9 这类垃圾不会被子流程剔除。
         if not _fixed_prompt and (positive or "").strip():
@@ -4688,6 +4667,48 @@ class ComfyUIDrawPlugin(Star):
             logger.info(
                 f"【耗时】 出图前 LLM 整理（改写/翻译）耗时 {time.time() - _t_llm0:.1f}s"
             )
+
+        # ── 角色卡片注入（时序后移，v6.0.0）──────────────────────────────
+        # 覆盖所有入口（AI 对话 / 指令 / 伴侣插件）。命中规则见 character.py：
+        #   单角色 → 锚点标签追加进正向提示词；多角色 → 计数标签 + 每角色一个权重分组，
+        #   并剥掉模型自己写的分组（它每轮重新发明的那套外观）。
+        # 卡片关联的 LoRA 会并入 lora_map（触发词按既有规则注入）。
+        # ★放在 sanitize 与 LLM 改写之后：锚点标签是用户确认过的确定性内容，
+        #   既不能被「元描述降权」拆掉分组，也不能被模型改写覆盖。
+        try:
+            _cc_cfg = self._cfg("character_card", {}) or {}
+            if (
+                (not _fixed_prompt)
+                and isinstance(_cc_cfg, dict)
+                and _cc_cfg.get("enabled", True)
+                and getattr(self, "character", None) is not None
+            ):
+                _u_text = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
+                _hits = await character.resolve_hits(self, event, _u_text, positive)
+                if _hits and _cc_cfg.get("auto_inject", True):
+                    _cres = character.inject(self, positive, _hits, _cc_cfg, negative=negative)
+                    if (_cres.get("prompt") or "").strip():
+                        positive = _cres["prompt"]
+                    # 负向：与锚点负向**合并**（旧实现是直接覆盖，会把原有负向提示词丢掉）
+                    if (_cres.get("negative") or "").strip():
+                        negative = _cres["negative"]
+                    _card_lora_names = list(_cres.get("loras") or [])
+                    logger.info(
+                        f"【角色卡·注入】 模式={_cres.get('mode')}｜{_cres.get('note')}｜"
+                        f"正向提示词: {positive[:300]}"
+                    )
+                elif _hits:
+                    logger.info(
+                        f"【角色卡】 命中 {len(_hits)} 个角色，但 character_card.auto_inject=false，仅记录不注入"
+                    )
+        except Exception as _ce:
+            logger.warning(f"【角色卡·注入】 异常（不影响出图）: {_ce}")
+        if _card_lora_names:
+            _lm2 = dict(lora_map or {})
+            for _cn in _card_lora_names:
+                _lm2.setdefault(_cn, None)
+            lora_map = _lm2
+            logger.info(f"【角色卡·注入】 并入关联 LoRA: {_card_lora_names}")
 
         # danbooru 角色/作品 tag 的括号兜底（anima 工作流）：LLM 常把角色 tag 写成
         # `belle (zenless zone zero)`，而 CLIP 把 `(` `)` 当注意力权重符号，不转义会被拆坏、
@@ -6215,10 +6236,13 @@ class ComfyUIDrawPlugin(Star):
             "启用": "enabled", "enabled": "enabled",
         }
         upd: dict = {}
-        for tok in tokens[1:]:
-            if "=" not in tok:
+        # v6.0.0：值允许含空格——按「字段=」贪婪切分（旧实现逐 token split，
+        # `/角色 改 卡 作品=Neverness to Everness` 只会写入「Neverness」）。
+        _raw = " ".join(tokens[1:]).strip()
+        for _seg in re.split(r"\s+(?=[^\s=]+=)", _raw):
+            if "=" not in _seg:
                 continue
-            k, v = tok.split("=", 1)
+            k, v = _seg.split("=", 1)
             field = _map.get(k.strip().lower()) or _map.get(k.strip())
             if not field:
                 continue
@@ -6284,7 +6308,8 @@ class ComfyUIDrawPlugin(Star):
                 _wv = 1.2
             # v5.18.1：同名锚点一律视为**更新**（此前 `add` 是纯插入，同名会多出一条
             # 同名锚点，而按名查找/注入都只取第一条 → 第二条永远隐形，用户以为改了其实没改）。
-            exist = store.get_anchor(int(ch["id"]), anchor_name)
+            # v6.0.0：判定改用**精确名**（`get_anchor` 有子串回退，会把「泳」误判为「泳装」）。
+            exist = store.find_anchor_exact(int(ch["id"]), anchor_name)
             if exist is not None:
                 store.update_anchor(
                     int(exist["id"]), positive=positive,
@@ -6345,6 +6370,11 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, "\n".join(lines))
             return
         if sub in ("删", "删除", "del", "delete"):
+            # v6.0.0：补权限校验（此前只有「记住」校验了 allow_user_edit，
+            # 「删」能绕过开关被非管理员执行——删除不可撤销）
+            if not cfg.get("allow_user_edit", True) and not self._is_admin(event):
+                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
+                return
             if len(tokens) < 3 or not tokens[2].strip().isdigit():
                 await self._send(event, "用法：/角色 参考图 删 <角色名> <图片id>（id 见「参考图 列表」）")
                 return
@@ -6366,8 +6396,10 @@ class ComfyUIDrawPlugin(Star):
             _ok_n = 0
             for p in imgs[:5]:
                 try:
+                    # 读盘放线程池（大图 read_bytes 会阻塞事件循环）
+                    _data = await asyncio.to_thread(Path(p).read_bytes)
                     ref = await character.land_ref(
-                        self, int(ch["id"]), Path(p).read_bytes(),
+                        self, int(ch["id"]), _data,
                         filename=Path(p).name, note="指令录入",
                     )
                     if ref is not None:
@@ -11095,6 +11127,14 @@ class ComfyUIDrawPlugin(Star):
             source="trigger",
             title=(theme or "自由剧情")[:60], scene=theme or "",
         )
+        # max_keep：本地档案条数上限（README/配置一直承诺，v6.0.0 起真正生效；
+        # 此前该键从未被读取 → story.db 无限增长）
+        try:
+            _mk = int(cfg.get("max_keep", -1))
+            if _mk >= 0:
+                self.story.prune_sessions(_mk)
+        except Exception as _pe:
+            logger.warning(f"【剧情档案】 按 max_keep 清理旧档案失败（不影响本次剧情）: {_pe}")
         # 角色绑定：男主 = 用户（优先取昵称）；女主默认 = 现实模式（bot 本体，按当前对话自然创作），
         # 仅在显式指定女主名时才走名单/人设
         _user_name = (parsed.get("user_name") or (cfg.get("user_name") or "")).strip()
@@ -12130,7 +12170,8 @@ class ComfyUIDrawPlugin(Star):
                     return "add_anchor 需要 anchor_name（锚点名，如 泳装 / 校服）。"
                 # v5.18.1：同名锚点视为更新，避免同名重复记录（按名查找只取第一条，
                 # 重复那条会永远隐形，用户以为改上了其实没改）。
-                _exist = store.get_anchor(int(ch["id"]), anchor_name)
+                # v6.0.0：用精确名判定，避免子串回退误伤（「泳」≠「泳装」）。
+                _exist = store.find_anchor_exact(int(ch["id"]), anchor_name)
                 if _exist is not None:
                     store.update_anchor(
                         int(_exist["id"]), positive=positive, negative=negative,

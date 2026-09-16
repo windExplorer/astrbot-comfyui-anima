@@ -241,6 +241,49 @@ async def main() -> int:
     store.delete_character(_t["id"])
     check("删角色连带参考图目录", not _tdir.exists(), str(_tdir))
 
+    print("\n[11] 审计修复回归（v6.0.0）")
+    # 精确名查找：不能被子串回退误伤（「泳」≠「泳装」）
+    _cy = store.create_character("审测角色")
+    store.add_anchor(_cy["id"], "默认装", "1girl, red hair")
+    store.add_anchor(_cy["id"], "泳装", "1girl, blue swimsuit")
+    store.set_primary_anchor(_cy["id"], "泳装")
+    check("find_anchor_exact 精确命中",
+          (store.find_anchor_exact(_cy["id"], "泳装") or {}).get("name") == "泳装")
+    check("find_anchor_exact 不子串误命中",
+          store.find_anchor_exact(_cy["id"], "泳") is None,
+          str(store.find_anchor_exact(_cy["id"], "泳")))
+    # 导出带主锚点名；导入恢复主锚点 + 参考图
+    store.store_ref_bytes(_cy["id"], b"\x89PNG\r\n\x1a\n" + b"e" * 70, ext=".png")
+    _exp = store.export_all()
+    _cy_exp = next(c for c in _exp["characters"] if c["name"] == "审测角色")
+    check("导出含 primary_anchor_name", _cy_exp.get("primary_anchor_name") == "泳装",
+          str(_cy_exp.get("primary_anchor_name")))
+    _store2 = CharacterStore(tmp / "import_test")
+    _store2.import_all(_exp)
+    _cy2 = _store2.get_character("审测角色")
+    check("导入后主锚点恢复",
+          (_store2.get_anchor(int(_cy2["id"])) or {}).get("name") == "泳装",
+          str((_store2.get_anchor(int(_cy2["id"])) or {}).get("name")))
+    check("导入参考图（同机文件）", len(_store2.list_refs(int(_cy2["id"]))) == 1,
+          str(len(_store2.list_refs(int(_cy2["id"])))))
+    # inject 合并既有负向（旧实现直接覆盖，会丢掉原有负向）
+    _r = character.inject(
+        plugin, "masterpiece, sitting",
+        [(store.get_character("小叽") or _cy, store.get_anchor(_cy["id"], "泳装"))],
+        cfg, negative="lowres, bad hands",
+    )
+    check("inject 合并既有负向",
+          "lowres" in _r["negative"] and "bad hands" in _r["negative"], _r["negative"])
+    # 剧情档案 max_keep 裁剪（此前配置键从未被读取）
+    import story_store as _ss
+
+    _story = _ss.StoryStore(tmp / "story_test")
+    _sids = [_story.create_session(session_key=f"k{i}", user_id=f"u{i}") for i in range(3)]
+    check("story 裁剪：max_keep=2 删 1 条", _story.prune_sessions(2) == 1)
+    check("story 裁剪：最老一条已删", _story.get_session(_sids[0]) is None)
+    check("story 裁剪：最新一条保留", _story.get_session(_sids[2]) is not None)
+    check("story 裁剪：max_keep=-1 不限", _story.prune_sessions(-1) == 0)
+
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1
 

@@ -21,11 +21,16 @@ import asyncio
 import base64
 import json
 import mimetypes
+import re
 import time
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+
+# 请求体上限（v6.0.0）：aiohttp 默认 1 MiB，会把参考图/封面这类 base64 上传
+# （handler 侧允许到 12MB）在进入 handler 前就以 413 拒掉。这里留出 base64 膨胀余量。
+_MAX_UPLOAD_BYTES = 24 * 1024 * 1024
 
 try:
     from astrbot.api import logger as _log
@@ -146,7 +151,9 @@ class StandaloneWebUI:
             return
         if self._runner is not None:
             return
-        app = web.Application()
+        # client_max_size：aiohttp 默认仅 1 MiB，会把「参考图/封面」这类 base64
+        # 上传（允许到 12MB）在进入 handler 前就以 413 拒掉（v6.0.0 修）。
+        app = web.Application(client_max_size=_MAX_UPLOAD_BYTES)
         self._setup_routes(app)
         try:
             self._runner = web.AppRunner(app)
@@ -309,7 +316,8 @@ class StandaloneWebUI:
             return _err("非法文件名", status=400)
         assets_dir = getattr(self.plugin, "lora_assets_dir", None)
         if assets_dir is None:
-            assets_dir = (getattr(self.plugin, "data_dir", None) or Path(os.getcwd())) / "lora_assets"
+            # v6.0.0：本文件没导入 os，原写法进这个兜底分支会 NameError（用 Path.cwd() 代替）
+            assets_dir = (getattr(self.plugin, "data_dir", None) or Path.cwd()) / "lora_assets"
         path = Path(assets_dir) / name
         if not path.exists() or not path.is_file():
             return _err("图片不存在", status=404)
@@ -422,6 +430,29 @@ class StandaloneWebUI:
     # ------------------------------------------------------------------ #
     # API 分发
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _route_methods(path: str) -> set[str] | None:
+        """查内嵌通道允许的 HTTP 方法（`webui_api.ROUTE_METHODS`，无记录返回 None）。
+
+        v6.0.0：独立通道此前对 `GET /api/{tail:.*}` 与 POST 一视同仁，
+        导致 `GET /api/quota/reset`、`GET /api/token/reset` 这类破坏性操作
+        可被 GET（甚至 <img src> 式 CSRF）触发。这里复用内嵌通道注册时登记的方法表
+        做统一校验，避免两套通道语义漂移；查不到的路径保持原行为（不拦截）。
+        """
+        try:
+            try:
+                from . import webui_api as _wa
+            except ImportError:
+                import webui_api as _wa
+            table = getattr(_wa, "ROUTE_METHODS", None) or {}
+            _p = path.rstrip("/")
+            for _k, _ms in table.items():
+                if _k.rstrip("/").endswith(_p):
+                    return set(_ms) or None
+            return None
+        except Exception:
+            return None
+
     async def _handle_api(self, request: web.Request) -> web.Response:
         denied = self._authed(request)
         if denied is not None:
@@ -436,6 +467,13 @@ class StandaloneWebUI:
             match_tail = full
         path = "/" + match_tail.strip("/")
         method = request.method.upper()
+        # 方法校验：内嵌通道声明为 POST 的端点不允许用 GET 触发（反之亦然）
+        _allow = self._route_methods(path)
+        if _allow and method not in _allow:
+            _log.warning(
+                f"[独立WebUI] 方法不允许 path={path} method={method} allow={sorted(_allow)}"
+            )
+            return _err(f"Method Not Allowed: {method} {path}", status=405)
         try:
             return await self._dispatch(path, method, request)
         except Exception as e:
@@ -961,6 +999,20 @@ class StandaloneWebUI:
             return _ok(res)
         if path == "/gallery/scan_nsfw_progress":
             return _ok(g.scan_nsfw_progress())
+        if path == "/gallery/retag":
+            # v6.0.0：补齐分派（内嵌通道有该端点，独立通道此前 404 →
+            # 前端「补标表情包/漫画」按钮在独立模式下报「补标失败」）。
+            p = self.plugin
+            if p is None:
+                return _err("插件未就绪")
+            try:
+                # 同步跑重活，放线程池避免阻塞事件循环
+                msg = await asyncio.to_thread(
+                    p._gallery_retag, owner="", all_view=True, session_scope=""
+                )
+                return _ok({"msg": msg})
+            except Exception as e:
+                return _err(f"补标失败: {e}")
         if path == "/gallery/backup":
             dbp = getattr(g, "db_path", None)
             if not dbp or not Path(dbp).exists():
@@ -1275,10 +1327,11 @@ class StandaloneWebUI:
         g = self.plugin.gallery
         info, allowed = (g.verify_share_token(tok, self._client_ip(request)) if (g and tok) else (None, False))
         if not info or not allowed:
-            # 诊断：记录收到的令牌与查询条件，便于排查「分享链接已失效」
+            # 诊断：只记长度与来源，**不记令牌片段/完整 query**（v6.0.0）——
+            # 分享令牌就在 query 里，记进日志等于把可用凭据写到日志文件。
             _log.warning(
                 f"[独立WebUI] 分享令牌拒绝 path={path} token_len={len(tok)} "
-                f"token_head={(tok[:8] or '(empty)')} ip={self._client_ip(request)} query={str(request.query)}"
+                f"token_present={bool(tok)} ip={self._client_ip(request)}"
             )
             return _err("分享链接无效或已过期", status=404)
         try:
@@ -1379,8 +1432,19 @@ class StandaloneWebUI:
         uid = request.match_info.get("user_id", "") or ""
         if not uid:
             return _err("缺少 user_id", status=400)
+        # v6.0.0：uid 直接拼进目录名，此前无过滤（`/share/avatar/..` 可上跳出 avatars/）。
+        # 只允许数字/字母/下划线/短横，长度限制 64。
+        if not re.fullmatch(r"[0-9A-Za-z_\-]{1,64}", uid):
+            return _err("非法 user_id", status=400)
         data_dir = getattr(self.plugin, "data_dir", None) or Path.cwd()
         av_dir = Path(data_dir) / "avatars" / uid
+        # 双保险：resolve 后必须仍在 avatars/ 之下
+        try:
+            _base = (Path(data_dir) / "avatars").resolve()
+            if _base not in av_dir.resolve().parents:
+                return _err("非法 user_id", status=400)
+        except Exception:
+            return _err("非法 user_id", status=400)
         try:
             av_dir.mkdir(parents=True, exist_ok=True)
         except Exception:

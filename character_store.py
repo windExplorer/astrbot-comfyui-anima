@@ -57,6 +57,10 @@ def _json_list(raw) -> list[str]:
     return [p.strip() for p in str(raw).replace("，", ",").split(",") if p.strip()]
 
 
+# 参考图单张大小上限（与工具侧 add_ref 的 12MB 保持一致，v6.0.0）
+_MAX_REF_BYTES = 12 * 1024 * 1024
+
+
 def _dump_list(items) -> str:
     return json.dumps(
         [str(x).strip() for x in (items or []) if str(x).strip()],
@@ -78,6 +82,12 @@ class CharacterStore:
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = Path(data_dir)
+        # v6.0.0：目录缺失时 sqlite3.connect 会直接 OperationalError（旧代码假定
+        # data_dir 一定存在）。这里显式创建，与 platform_store 的做法一致。
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.db_path = self.data_dir / "character.db"
         self._conn = None
         self._init_db()
@@ -429,7 +439,7 @@ class CharacterStore:
                 int(ch["id"]), _name, _kind, _pos, (negative or "").strip(),
                 float(weight or 1.2), (lora_name or "").strip(),
                 1 if skip_trigger_words else 0, (note or "").strip(),
-                len(self.list_anchors(int(ch["id"]))), now, now,
+                self._next_sort_order(int(ch["id"])), now, now,
             ),
         )
         aid = int(cur.lastrowid)
@@ -530,6 +540,43 @@ class CharacterStore:
         logger.info(f"【角色卡】 「{ch['name']}」主锚点 → 「{target['name']}」")
         return self.get_anchor(int(ch["id"]), int(target["id"]))
 
+    def _next_sort_order(self, char_id) -> int:
+        """下一个排序号（MAX+1）。
+
+        旧实现用 `len(list_anchors())`，删掉一个锚点后再新增会与既有 sort_order
+        撞号，`ORDER BY sort_order, id` 的次序不稳（锚点列表/主锚点顺延跟着抖）。
+        """
+        try:
+            row = self._conn_get().execute(
+                "SELECT COALESCE(MAX(sort_order), -1) AS m"
+                " FROM character_anchors WHERE character_id=?",
+                (int(char_id),),
+            ).fetchone()
+            return int(row["m"] or 0) + 1
+        except Exception:
+            return 0
+
+    def find_anchor_exact(self, char_id, name: str) -> dict | None:
+        """按**精确名**取锚点（去空格、大小写不敏感），**不做**子串回退。
+
+        v6.0.0 新增：`add_anchor`（指令/工具）的「同名即更新」判定必须用精确比较——
+        `get_anchor()` 末段有子串回退，用「泳」去判会被已有锚点「泳装」命中，
+        于是「想新增一套」变成「偷偷改掉了别人的锚点」。
+        """
+        ch = self.get_character(char_id)
+        if ch is None:
+            return None
+        _k = (name or "").strip().lower()
+        if not _k:
+            return None
+        return next(
+            (
+                a for a in self.list_anchors(int(ch["id"]))
+                if (a.get("name") or "").strip().lower() == _k
+            ),
+            None,
+        )
+
     def get_anchor(self, char_id, anchor_name_or_id=None) -> dict | None:
         """取锚点：给定名字/ID 则取其，否则取主锚点（再退回第一个）。"""
         ch = self.get_character(char_id)
@@ -597,6 +644,11 @@ class CharacterStore:
             return None
         if not data or len(data) < 16:
             raise ValueError("图片数据为空或过小")
+        if len(data) > _MAX_REF_BYTES:
+            # 统一上限（指令路径此前无限制，可把超大图整张读进内存并落盘）
+            raise ValueError(
+                f"参考图过大（{len(data) // 1024 // 1024} MB > {_MAX_REF_BYTES // 1024 // 1024} MB），请压缩后再存"
+            )
         _ext = (ext or ".png").strip().lower()
         if not _ext.startswith("."):
             _ext = "." + _ext
@@ -711,6 +763,12 @@ class CharacterStore:
         for c in chars:
             c["anchors"] = self.list_anchors(int(c["id"]))
             c["refs"] = self.list_refs(int(c["id"]))
+            # v6.0.0：补导主锚点**名**。import_all 想用名字恢复主锚点，
+            # 而旧版只导出 id（导入后 id 全变），导致该恢复逻辑实际是死代码。
+            _pid = int(c.get("primary_anchor_id") or 0)
+            c["primary_anchor_name"] = next(
+                (a["name"] for a in c["anchors"] if int(a["id"]) == _pid), ""
+            )
         return {"version": 1, "characters": chars}
 
     def import_all(self, data: dict) -> int:
@@ -740,9 +798,53 @@ class CharacterStore:
                     skip_trigger_words=bool(a.get("skip_trigger_words", True)),
                     note=a.get("note") or "",
                 )
-            if c.get("primary_anchor_id"):
-                for a in self.list_anchors(int(ch["id"])):
-                    if (a["name"] or "") == str(c.get("primary_anchor_name") or ""):
-                        self.set_primary_anchor(int(ch["id"]), int(a["id"]))
+            # 主锚点恢复（v6.0.0 修正）：
+            #   ① 优先按导出的 primary_anchor_name 精确匹配（新版导出会带该字段）；
+            #   ② 旧导出没有该字段 → 用「主锚点在导出锚点列表里的下标」映射到导入后的
+            #      同序位锚点（导入保持顺序），旧实现用从未导出的名字匹配，等于永远不会恢复。
+            _want = None
+            _pname = str(c.get("primary_anchor_name") or "").strip()
+            if _pname:
+                _want = self.find_anchor_exact(int(ch["id"]), _pname)
+            elif c.get("primary_anchor_id"):
+                _src = c.get("anchors") or []
+                _idx = next(
+                    (
+                        i for i, a in enumerate(_src)
+                        if int(a.get("id") or 0) == int(c["primary_anchor_id"])
+                    ),
+                    -1,
+                )
+                _dst = self.list_anchors(int(ch["id"]))
+                if 0 <= _idx < len(_dst):
+                    _want = _dst[_idx]
+            if _want is not None:
+                self.set_primary_anchor(int(ch["id"]), int(_want["id"]))
+            # 参考图（v6.0.0 新增）：同机迁移时按导出路径复制文件入角色目录；
+            # 跨机/文件缺失则跳过并计数（文件本身不在导出里，无法凭空恢复）。
+            _ref_ok = 0
+            _ref_skip = 0
+            for r in (c.get("refs") or []):
+                if not isinstance(r, dict):
+                    continue
+                _srcp = str(r.get("path") or "").strip()
+                if _srcp and Path(_srcp).exists():
+                    try:
+                        self.store_ref_from_path(
+                            int(ch["id"]), _srcp,
+                            url=r.get("url") or "", note=r.get("note") or "",
+                            nsfw_score=float(r.get("nsfw_score") or -1),
+                        )
+                        _ref_ok += 1
+                    except Exception as e:
+                        _ref_skip += 1
+                        logger.warning(f"【角色卡】 导入参考图失败（跳过）{_srcp}: {e}")
+                else:
+                    _ref_skip += 1
+            if _ref_ok or _ref_skip:
+                logger.info(
+                    f"【角色卡】 「{ch['name']}」导入参考图：成功 {_ref_ok} 张"
+                    f"，跳过 {_ref_skip} 张（文件不存在，需手动复制 data_dir/characters/）"
+                )
             n += 1
         return n

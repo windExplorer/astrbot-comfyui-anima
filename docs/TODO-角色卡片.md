@@ -11,12 +11,12 @@
 | --- | --- |
 | 三、数据模型 | `character_store.py`（`data_dir/character.db`：`characters` / `character_anchors` / `character_refs`） |
 | 四、检索与注入 | `character.py:inject()`（单角色追加；多角色计数标签 + 每角色 `(标签:权重)` 分组并剥掉模型自带分组） |
-| 五、对话式设定 | `comfyui_character` 工具（10 个 action）+ `/角色` 指令（add/set/use/del/删…） |
+| 五、对话式设定 | `comfyui_character` 工具（M3 后共 14 个 action）+ `/角色` 指令（add/set/use/del/删…） |
 | 五.3 人格解析 | `character.py:resolve_persona_name()`（`persona_manager.resolve_selected_persona` → `get_default_persona_v3`） |
 | 七、仓库硬约束 | 已同步 `build_zip.ps1` 的 `$includeList` 与 `main.py` 的 `importlib.reload` 列表 |
 | 八、配置项 | `_conf_schema.json` 的 `character_card` 块 + `ConfigView.vue` 新增「角色卡片」分区 |
 | 注入接入点 | `_do_draw`（覆盖 AI 对话 / 指令 / 伴侣插件全部入口；`_fixed_prompt` 跳过） |
-| 测试 | `tests/test_character.py`（35 项；含 v5.16.1「你和」语序防回归） |
+| 测试 | `tests/test_character.py`（M1 时 35 项，M3/审计后 58 项；含 v5.16.1「你和」语序防回归） |
 
 实测修正（相对本文档初稿）：多人分组内部**不写**计数标签（计数只由全局那一个表达）；
 画质前缀必须置顶；`allow_web_fetch` 仅预留（M3 未实现）。

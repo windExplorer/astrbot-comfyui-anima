@@ -294,6 +294,7 @@ def inject(
     prompt: str,
     hits: list[tuple[dict, dict]],
     cfg: dict | None = None,
+    negative: str = "",
 ) -> dict:
     """把命中的角色锚点注入提示词（确定性渲染）。
 
@@ -303,6 +304,9 @@ def inject(
     - 单角色：锚点标签**追加**进原提示词（已存在的不重复写），负向合并；
     - 多角色（≥2）：生成计数标签 + ``(标签:权重)`` 分组，并剥掉模型自己的权重分组，
       只保留场景/动作类标签，避免两套角色描述互相打架。
+
+    ``negative``（v6.0.0 新增）：调用方现有的负向提示词，会与锚点负向**合并**后返回。
+    旧实现只返回锚点负向，调用方直接覆盖 → 用户/模型原有的负向提示词被丢掉。
     """
     _cfg_ = cfg if isinstance(cfg, dict) else _cfg(self)
     base = (prompt or "").strip()
@@ -317,7 +321,7 @@ def inject(
         _ln = (card.get("lora_name") or "").strip()
         if _ln and _ln not in loras:
             loras.append(_ln)
-    negatives = _merge_negative("", [a for _c, a in hits])
+    negatives = _merge_negative(negative or "", [a for _c, a in hits])
 
     # ---- 单角色 ----
     if len(hits) == 1:

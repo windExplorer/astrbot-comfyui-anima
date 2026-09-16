@@ -49,6 +49,10 @@ from astrbot.api.web import error_response, file_response, json_response, reques
 # 的插件页面桥接会把请求发到错误路径（全部 404 / 前端永远加载中）。
 PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 
+# 路由方法表（v6.0.0）：`register_web_api` 注册时填充，键为含插件名前缀的完整路径，
+# 值为允许的 HTTP 方法。独立 WebUI 通道（standalone_webui）复用它做方法校验。
+ROUTE_METHODS: "dict[str, list[str]]" = {}
+
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
 
@@ -2510,6 +2514,16 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/story/session/delete", _h("story_session_delete"), ["POST"], "剧情档案删除"),
         (f"{prefix}/story/stats", _h("story_stats"), ["GET"], "剧情档案统计"),
     ]
+    # v6.0.0：把「路径 → 允许的方法」落成模块级表，供独立 WebUI 通道复用做方法校验。
+    # 背景：独立通道的 catch-all 路由对 GET/POST 一视同仁，而部分破坏性端点
+    # （quota/reset、token/reset…）在内嵌通道是 POST-only → 曾被 GET（含 <img src>
+    # 式 CSRF）触发。这里复用同一张方法表，避免两套通道语义漂移。
+    ROUTE_METHODS.clear()
+    for _p, _hd, _ms, _d in routes:
+        if _hd is None:
+            continue
+        ROUTE_METHODS[_p.rstrip("/")] = [str(m).upper() for m in (_ms or [])]
+
     registered = []
     for path, handler, methods, desc in routes:
         if handler is None:

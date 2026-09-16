@@ -44,6 +44,11 @@ class StoryStore:
     def __init__(self, data_dir: Path, cfg: dict | None = None,
                  cfg_provider=None) -> None:
         self.data_dir = Path(data_dir)
+        # v6.0.0：目录缺失时 sqlite3.connect 会直接 OperationalError（旧代码假定已存在）
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.db_path = self.data_dir / "story.db"
         self.cfg = cfg or {}
         self._cfg_provider = cfg_provider if callable(cfg_provider) else None
@@ -156,6 +161,45 @@ class StoryStore:
     # ------------------------------------------------------------------ #
     # 会话生命周期
     # ------------------------------------------------------------------ #
+    def prune_sessions(self, max_keep: int) -> int:
+        """保留最近 `max_keep` 条剧情档案，删除更早的（连带其回合/图片记录）。
+
+        v6.0.0 新增：配置 `story.max_keep` 与 README 一直承诺「超过按最早删除」，
+        但代码从未读取该键 → story.db 无限增长。max_keep < 0 表示不限。
+        按 `updated_at`（缺省回退 created_at）倒序保留，返回删除条数。
+        """
+        try:
+            _mk = int(max_keep)
+        except (TypeError, ValueError):
+            return 0
+        if _mk < 0:
+            return 0
+        conn = self._conn_get()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM story_sessions"
+                " ORDER BY COALESCE(updated_at, created_at) DESC, id DESC"
+                " LIMIT -1 OFFSET ?",
+                (_mk,),
+            ).fetchall()
+        except Exception as e:
+            logger.warning(f"【剧情档案】 查询待清理档案失败: {e}")
+            return 0
+        ids = [int(r["id"]) for r in rows]
+        if not ids:
+            return 0
+        q = ",".join("?" * len(ids))
+        try:
+            conn.execute(f"DELETE FROM story_turns WHERE session_id IN ({q})", ids)
+            conn.execute(f"DELETE FROM story_images WHERE session_id IN ({q})", ids)
+            conn.execute(f"DELETE FROM story_sessions WHERE id IN ({q})", ids)
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"【剧情档案】 清理旧档案失败（不影响本次剧情）: {e}")
+            return 0
+        logger.info(f"【剧情档案】 按 max_keep={_mk} 清理旧档案 {len(ids)} 条")
+        return len(ids)
+
     def create_session(self, session_key: str, user_id: str, user_name: str = "",
                        platform: str = "", source: str = "", status: str = "active",
                        **fields) -> int:
