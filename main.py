@@ -9080,7 +9080,12 @@ class ComfyUIDrawPlugin(Star):
                     _all_text = " ".join(
                         [(prompt or ""), *[(it.get("prompt") or "") for it in _items]]
                     )
-                    if not re.search(r"\([^()]{2,240}:[01]?\.\d{1,2}\)", _all_text):
+                    # 分组判定：只看「:权重)」尾部特征（如 :1.2) / :0.8) / :1)）。
+                    # v5.14.1 修正：旧正则 \([^()]{2,240}:[01]?\.\d{1,2}\) 不允许括号内
+                    # 再出现括号，而角色 tag 恰恰带嵌套括号（esper zero f (neverness to
+                    # everness)、mint_(nte)），导致模型已正确分组仍被判为无分组、连拒
+                    # 多轮后放弃（实测翻车）。改为只匹配结尾的权重语法，天然兼容嵌套。
+                    if not re.search(r":\s*\d+(?:\.\d+)?\s*\)", _all_text):
                         _tw_lines = "\n".join(
                             f"  - {_cn}：触发词「{_tw or '（库未配置触发词）'}」"
                             for _cn, _tw in _char_loras
