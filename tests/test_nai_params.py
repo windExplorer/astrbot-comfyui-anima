@@ -1,9 +1,11 @@
 """NAI 生图参数归一的自测（不需网络 / AstrBot 运行环境）。
 
-覆盖 v6.2.1 新增的三件事：
+覆盖 v6.2.1~v6.2.2 新增的能力：
   1) 采样器人类写法 → NAI 内部名（含采样器名里带的 Karras 调度词）；
   2) 噪声调度写法归一（大小写 / 装饰词）；
-  3) cfg 自适应：0~1 → CFG Rescale（缩放引导值），>1 → 引导强度 scale。
+  3) cfg 自适应：0~1 → CFG Rescale（缩放引导值），>1 → 引导强度 scale；
+  4) 平台默认画师串「自动补」开关默认关闭（源码级检查：main.py 的分支顺序、前端开关、
+     LLM 工具说明文案），确保「用户没给画师串就不补」这条约定不会被后续改动悄悄破坏。
 
 运行：
     uv run --no-project --with aiohttp python tests/test_nai_params.py
@@ -11,6 +13,7 @@
 """
 import os
 import sys
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -103,13 +106,45 @@ def test_cfg_split():
     print("   ✓ v4/v5 重缩放兜底 0、旧模型兜底 0.3（共 13 项）")
 
 
+def test_artist_autofill_gate():
+    """源码级回归：平台默认画师串必须「默认不补」。
+
+    约定（v6.2.2 用户明确要求）：调用方给了提示词时不再自动补平台默认画师串——
+    提示词里可能已自带画师串，或调用方会显式传 artist。负面提示词相反：没传就用默认。
+    这条约定横跨 main.py（分支）+ 前端开关 + 工具说明，改动时极易只改一半，故做源码级检查。
+    """
+    print("== 4. 平台默认画师串「自动补」开关（源码级） ==")
+    main_src = Path(ROOT, "main.py").read_text(encoding="utf-8")
+    vue_src = Path(ROOT, "webui-src", "src", "views", "PlatformsView.vue").read_text(encoding="utf-8")
+
+    checks = [
+        ('main.py 读取平台开关', 'plat.get("auto_artist")' in main_src),
+        ('main.py 有「未开启则不补」分支', "elif not _auto_artist:" in main_src),
+        (
+            "main.py 未开启分支排在平台默认串分支之前",
+            main_src.index("elif not _auto_artist:")
+            < main_src.index('elif _def_an:'),
+        ),
+        ('第 1 个启用预设的兜底分支仍在（开关开启后可用）',
+         '_apresets[0].get("content")' in main_src),
+        ("前端有「自动补画师串」开关", 'v-model:value="editing.auto_artist"' in vue_src),
+        ("前端新建平台时默认 false", "base.auto_artist = false;" in vue_src),
+        ("LLM 工具说明写明不传则不补", "**不会**补任何默认画师串" in main_src),
+    ]
+    for name, ok in checks:
+        assert ok, f"检查未通过：{name}"
+        print(f"   ✓ {name}")
+    print("   ✓ 共 7 项")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     test_sampler_aliases()
     test_noise_aliases()
     test_cfg_split()
-    print("\n全部通过：NAI 采样器 / 噪声调度 / cfg 归一逻辑符合预期。")
+    test_artist_autofill_gate()
+    print("\n全部通过：NAI 采样器 / 噪声调度 / cfg 归一 + 画师串开关均符合预期。")
     return 0
 
 

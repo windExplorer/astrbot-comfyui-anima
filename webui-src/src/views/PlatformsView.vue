@@ -190,10 +190,16 @@
           <n-form-item label="噪声调度">
             <n-select v-model:value="editing.defaults.noise_schedule" :options="noiseOptions" />
           </n-form-item>
+          <n-form-item label="自动补画师串">
+            <n-space align="center">
+              <n-switch v-model:value="editing.auto_artist" size="small" />
+              <span class="hint">默认关：出图未点名画师串时不补任何画师串（提示词里常已自带，叠加会打架）。开启后才按下方「默认画师串」（未设则第一个启用预设）自动补</span>
+            </n-space>
+          </n-form-item>
           <n-form-item label="默认画师串">
             <div style="width:100%">
               <n-select v-model:value="editing.default_artist" :options="artistPresetOptions" filterable placeholder="留空=使用第一个启用的画师串预设" />
-              <div class="hint">出图未点名画师串时自动使用该预设内容；对话里「加xxx画师串」的点名优先级更高</div>
+              <div class="hint">仅在「自动补画师串」开启、且出图未点名画师串时生效；对话里「加xxx画师串」的点名优先级更高</div>
             </div>
           </n-form-item>
           <n-form-item label="默认负面提示词">
@@ -670,6 +676,8 @@ function emptyPlatform(type: string) {
   };
   if (type === "nai") {
     base.via_middle_station = false;
+    // 自动补画师串：默认关（未点名画师串时不补，避免与提示词自带的画师串叠加打架）
+    base.auto_artist = false;
     base.default_artist = "";
     base.default_negative = "";
     base.defaults = { size: "portrait", steps: 28, scale: 6, cfg_rescale: 0.3, sampler: "k_dpmpp_2m_sde", noise_schedule: "karras", negative: "" };

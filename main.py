@@ -4061,17 +4061,20 @@ class ComfyUIDrawPlugin(Star):
         #   ⓪ 哨兵 _NAI_ARTIST_NONE（指令路径传的「明确不用画师串」）→ 不补任何默认；
         #   ① 调用方显式指定（LLM 的 artist 参数/用户点名）——可传画师串预设名（支持包含匹配），
         #      未命中预设则按原文当作画师 tag 使用；
-        #   ② 平台「默认画师串」（default_artist，填预设名）；
-        #   ③ 第一个启用的画师串预设。
-        #   ②③ 仅 LLM/对话链路生效：artist 为空 = 未指定，沿用平台默认；指令路径
-        #   始终传显式值（画师串名或哨兵），NAI 指令画图绝不擅自补默认画师串。
+        #   ② 平台「默认画师串」（default_artist，填预设名）+ ③ 第一个启用的画师串预设
+        #      ——**只有在平台条目打开 auto_artist 开关时才生效（默认关闭）**。
+        # 为什么默认关（v6.2.2，用户约定）：调用方给提示词时，画师串通常已经在提示词里
+        # （从 NAI 网页端/站点整段贴出来的串写法千变万化，靠正则只能兜住常见形式），
+        # 或者由调用方显式传 artist——此时再叠一份平台默认串会让两份画师串打架、画风跑偏。
+        # 「用户没传就用默认」只适用于负面提示词（见上方 negative 分支），不适用于画师串。
+        # 指令路径始终传显式值（画师串名或哨兵），也绝不擅自补默认。
         if ptype == "nai":
             _apresets = self._platform_store().artist_presets(enabled_only=True)
             _req = (artist or "").strip()
             _def_an = (plat.get("default_artist") or "").strip()
-            # 提示词里已自带画师串（用户从 NAI 网页端/站点整段贴出来的串，形如
-            # "artist:xxx,, yyy,," 或 "artists: ..."）→ 不再叠加平台默认画师串：
-            # 两份画师串会互相打架，也违背「用户给了提示词就原样画、不画蛇添足加料」的约定。
+            _auto_artist = bool(plat.get("auto_artist"))  # 平台条目开关，默认关
+            # 提示词里已自带画师串（形如 "artist:xxx,, yyy,," 或 "artists: ..."）→
+            # 即便开了 auto_artist 也不叠加：两份画师串会互相打架。
             _prompt_has_artist = bool(
                 re.search(r"(?:^|[\s,(\[])artists?\s*[:：]", positive or "", re.IGNORECASE)
             )
@@ -4090,6 +4093,11 @@ class ComfyUIDrawPlugin(Star):
                 artist = ((_hit.get("content") if _hit else _req) or "").strip()
                 logger.info(
                     f"【画师串】 {_hit.get('name') if _hit else '（未匹配预设，按原文使用）'} → {artist[:60]}"
+                )
+            elif not _auto_artist:
+                artist = ""
+                logger.info(
+                    "【画师串】 未指定画师串，且平台未开启「自动补画师串」→ 本次不使用画师串"
                 )
             elif _prompt_has_artist:
                 artist = ""
@@ -9668,7 +9676,8 @@ class ComfyUIDrawPlugin(Star):
           用户没给的参数就别传（走平台默认）。
         - 反向场景：用户只随口说「画个XX」（没说死内容）时，才由你补全标签与质量词。
         - NAI 平台：提示词里已经带 artist: 画师串时，artist 也按用户原样传，
-          插件检测到自带画师串也不会再叠加平台默认画师串。
+          插件默认**不会**再补任何画师串（提示词自带或你显式传的都算已指定）。
+        - 负面提示词不同：用户没给负向时，插件会照常套用平台/插件里启用的默认负面词，你不用管。
         - 采样器写法直接用用户给的原字符串（如 dpm++2msde / DPM++ 2M SDE Karras），
           插件会自动归一成 NAI 内部名，末尾的 Karras 等调度词会被识别成噪声调度。
 
@@ -9772,7 +9781,11 @@ class ComfyUIDrawPlugin(Star):
                 识别不出的写法会回落平台默认采样器（日志有告警），不要凭感觉编采样器名。
             noise_schedule(string): 噪声调度（仅 nai 类）：karras / native / exponential / polyexponential；
                 不传=平台默认（一般 karras）。用户写了「噪声调度 / Noise schedule / Karras」就照填。
-            artist(string): NAI 画师串（仅 nai 类）；可传预设名（自动匹配）或画师串原文；不传=平台默认画师串。
+            artist(string): NAI 画师串（仅 nai 类）；可传预设名（自动匹配）或画师串原文。
+                ★不传时**不会**补任何默认画师串（默认行为）：画师串往往已经在 prompt 里，或者由你自己传，
+                再叠一份平台默认串会两份打架、画风跑偏。所以——用户明确要画师串（「用XX画师串」「加画师串」）
+                时才传；用户已把画师串写进 prompt 时也不要传（插件检测到自带串也不会再补）。
+                （仅当管理员在该平台条目上打开了「自动补画师串」开关时，不传才会自动套平台默认画师串。）
                 ★以上平台参数未传时回落平台配置默认值，不要无脑传；负向未传时 NAI 会自动套用插件已启用的负向模板。
 
         补充说明：
