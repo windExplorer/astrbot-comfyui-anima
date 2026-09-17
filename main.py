@@ -4069,6 +4069,12 @@ class ComfyUIDrawPlugin(Star):
             _apresets = self._platform_store().artist_presets(enabled_only=True)
             _req = (artist or "").strip()
             _def_an = (plat.get("default_artist") or "").strip()
+            # 提示词里已自带画师串（用户从 NAI 网页端/站点整段贴出来的串，形如
+            # "artist:xxx,, yyy,," 或 "artists: ..."）→ 不再叠加平台默认画师串：
+            # 两份画师串会互相打架，也违背「用户给了提示词就原样画、不画蛇添足加料」的约定。
+            _prompt_has_artist = bool(
+                re.search(r"(?:^|[\s,(\[])artists?\s*[:：]", positive or "", re.IGNORECASE)
+            )
             if _req == _NAI_ARTIST_NONE:
                 artist = ""
                 logger.info("【画师串】 NAI 指令未指定画师串，不使用默认画师串")
@@ -4085,6 +4091,9 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(
                     f"【画师串】 {_hit.get('name') if _hit else '（未匹配预设，按原文使用）'} → {artist[:60]}"
                 )
+            elif _prompt_has_artist:
+                artist = ""
+                logger.info("【画师串】 提示词已自带 artist 串，跳过平台默认画师串（不叠加）")
             elif _def_an:
                 _hit = next(
                     (p for p in _apresets if (p.get("name") or "").strip() == _def_an), None
@@ -4218,18 +4227,29 @@ class ComfyUIDrawPlugin(Star):
                     # 实际生效参数：调用方覆盖（LLM 传入）优先，否则回落平台 defaults；
                     # 归档时记录真实生效值，大图详情才能显示本次实际用的 cfg/steps/采样器。
                     _eff_steps = steps if steps is not None else _defaults.get("steps")
-                    _eff_scale = cfg if cfg is not None else _defaults.get("scale")
-                    _eff_cfg = cfg if cfg is not None else _defaults.get("cfg")
-                    _eff_sampler = sampler if sampler else _defaults.get("sampler")
-                    _eff_noise = noise_schedule if noise_schedule else _defaults.get("noise_schedule")
+                    if ptype == "nai":
+                        # 与 nai_client 共用同一套解析：cfg 自适应拆成「引导强度 / CFG Rescale」、
+                        # 采样器与噪声归一（否则详情里显示的是用户原话，实际请求却是另一个值）。
+                        _eff_scale, _eff_rescale = nai_client.resolve_nai_cfg(cfg, _defaults, model)
+                        _eff_sampler = sampler or _defaults.get("sampler")
+                        _eff_sampler = (
+                            nai_client.normalize_nai_sampler(_eff_sampler or "")[0] or _eff_sampler
+                        )
+                        _eff_noise = noise_schedule or _defaults.get("noise_schedule")
+                        _eff_noise = nai_client.normalize_nai_noise(_eff_noise or "") or _eff_noise
+                    else:
+                        _eff_scale = cfg if cfg is not None else _defaults.get("scale")
+                        _eff_rescale = _defaults.get("cfg_rescale")
+                        _eff_sampler = sampler if sampler else _defaults.get("sampler")
+                        _eff_noise = noise_schedule if noise_schedule else _defaults.get("noise_schedule")
                     for _k, _v in (("steps", _eff_steps), ("scale", _eff_scale),
-                                   ("cfg_rescale", _defaults.get("cfg_rescale")),
+                                   ("cfg_rescale", _eff_rescale),
                                    ("sampler", _eff_sampler), ("noise_schedule", _eff_noise)):
                         if _v is not None:
                             _extra[_k] = _v
-                    # 顶部 cfg/steps 列：NAI 引导系数官方叫 scale，defaults 里 cfg/scale 都可能存在，
-                    # 取其一填入 cfg 列（大图详情的「CFG」行即可显示）；steps 同理。
-                    _cfg_val = _eff_cfg if _eff_cfg is not None else _eff_scale
+                    # 顶部 cfg/steps 列：NAI 引导系数官方叫 scale；用户给的 cfg 已按语义拆分
+                    # （>1 进 scale、0~1 进重缩放），这里填引导强度；steps 同理。
+                    _cfg_val = _eff_scale
                     _steps_val = _eff_steps
                     _final = self.gallery.archive_image(
                         img_path,
@@ -9637,7 +9657,21 @@ class ComfyUIDrawPlugin(Star):
         5) 补互动/站位标签：side_by_side、holding_hands、hugging、looking_at_each_other、kissing_cheek 等；
            「谁左谁右」只是软约束、无法精确摆位，用户要求精确构图时建议图生图/ControlNet。
         详细规则与示例见技能 comfyui-draw 的「画多人 / 多人场景」章节。
-        
+
+        ★★★用户已经给出提示词时【原样绘制】，严禁画蛇添足（最高优先级的省事原则）：
+        - 触发场景：用户直接贴出提示词，或贴了站点的出图参数块——参数块形如
+          「正向 / Negative prompt（负面）/ Sampler（采样器）/ Steps（步数）/ Scale 或 CFG /
+          Noise schedule（噪声调度）/ Seed」，标题中英文都可能出现。
+        - 做法：正向逐字填 prompt、负向逐字填 negative_prompt，参数逐项对应填
+          steps / sampler / cfg / noise_schedule / seed；**不改写、不翻译、不补质量前缀、
+          不加画师串/风格词/服装/背景等任何额外内容**——用户已经指定了画面，加料只会画错。
+          用户没给的参数就别传（走平台默认）。
+        - 反向场景：用户只随口说「画个XX」（没说死内容）时，才由你补全标签与质量词。
+        - NAI 平台：提示词里已经带 artist: 画师串时，artist 也按用户原样传，
+          插件检测到自带画师串也不会再叠加平台默认画师串。
+        - 采样器写法直接用用户给的原字符串（如 dpm++2msde / DPM++ 2M SDE Karras），
+          插件会自动归一成 NAI 内部名，末尾的 Karras 等调度词会被识别成噪声调度。
+
         ★★★提示词规范（按目标工作流的底模选写法，写错会直接毁图）：
         - anima / illustrious / noobai（动漫标签系）：英文 Danbooru 标签 + 质量前缀
           （masterpiece, best quality, very aesthetic, absurdres）；禁自然语言长句、禁 Pony 质量词。
@@ -9726,10 +9760,18 @@ class ComfyUIDrawPlugin(Star):
                 ★走 NAI 且要「画风/画师串/角色/服装/体位/异种/捆绑」等精确效果时：先调 nai_codex 检索「所长 NovelAI 法典」拿现成 tag 串
                 （含 artist: 画师串与权重记号）再原样拼进本工具 prompt，不要凭记忆拼 NAI 标签；普通泛化画面可直接写英文标签不必查。
                 nai_codex 的 scope 默认 sfw（常规册），仅用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
-            cfg(number): 引导系数（仅 nai/openai 类，NAI 称 scale）；不传=平台默认（NAI 约 6）。
-            steps(number): 采样步数（仅 nai/openai 类）；不传=平台默认（NAI 约 28）。
-            sampler(string): 采样器（仅 nai/openai 类）；不确定不要传，传错会报错。
-            noise_schedule(string): 噪声调度（仅 nai 类）；不传=平台默认。
+            cfg(number): CFG（仅 nai/openai 类）。NAI 按数值自适应落到哪个字段：0~1 → 「CFG Rescale
+                （缩放引导值，官方字段 cfg）」；>1 → 「提示词引导强度」（NAI 网页端叫 Guidance / 旧称
+                CFG Scale，官方字段 scale，常用 4~8）。不传=平台默认（引导约 6；重缩放 v4/v5 为 0）。
+                用户参数块里的 Scale / CFG / CFG scale 一律填这里，照数值填即可。
+            steps(number): 采样步数（仅 nai/openai 类）；不传=平台默认（NAI 约 28，官方上限 50）。用户写了 steps/步数 就照填。
+            sampler(string): 采样器（仅 nai/openai 类）。★直接用用户给的写法即可（大小写、空格、加号随便，
+                插件会自动归一）：dpm++2msde / DPM++ 2M SDE / DPM++ 2M SDE Karras / DPM++ 2M /
+                DPM++ SDE / DPM++ 2S a / DPM++ 3M SDE / Euler a / Euler / DPM2，或 NAI 内部名
+                （k_dpmpp_2m_sde 等）；末尾带 Karras 等调度词会被识别成噪声调度。
+                识别不出的写法会回落平台默认采样器（日志有告警），不要凭感觉编采样器名。
+            noise_schedule(string): 噪声调度（仅 nai 类）：karras / native / exponential / polyexponential；
+                不传=平台默认（一般 karras）。用户写了「噪声调度 / Noise schedule / Karras」就照填。
             artist(string): NAI 画师串（仅 nai 类）；可传预设名（自动匹配）或画师串原文；不传=平台默认画师串。
                 ★以上平台参数未传时回落平台配置默认值，不要无脑传；负向未传时 NAI 会自动套用插件已启用的负向模板。
 

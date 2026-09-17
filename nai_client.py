@@ -281,6 +281,150 @@ def _nai_relay_size(width: int, height: int) -> str:
 
 
 # ---------------------------------------------------------------------- #
+# NAI 生图参数归一（采样器 / 噪声调度 / CFG）
+# ---------------------------------------------------------------------- #
+# 为什么需要归一：LLM 工具（comfyui_draw）与用户说的是「人类写法」，而 NAI 上游
+# 只认内部枚举名，且**无法识别时不报错、静默回落默认值**（官方 normalizeV4Sampler、
+# Nai2API 服务端都是 unknown → k_euler_ancestral）。用户点名「DPM++ 2M SDE」却被
+# 静默换成别的采样器，肉眼几乎发现不了，属于「假生效」。故在客户端做一次归一。
+
+# v4/v5 官方支持的采样器内部名（严格对齐 Nai2API normalizeV4Sampler 白名单）
+_NAI_V4_SAMPLERS = (
+    "k_euler", "k_euler_ancestral", "k_dpm_2", "k_dpm_fast",
+    "k_dpmpp_2m", "k_dpmpp_2m_sde", "k_dpmpp_3m_sde",
+    "k_dpmpp_sde", "k_dpmpp_2s_ancestral",
+)
+
+# 噪声调度（官方取值）：(压扁后的识别词, 官方值)。检查顺序不能改：
+# "polyexponential" 必须先于 "exponential"，否则会被截成 exponential。
+_NAI_NOISE_WORDS = (
+    ("polyexponential", "polyexponential"),
+    ("exponential", "exponential"),
+    ("karras", "karras"),
+    ("native", "native"),
+)
+
+# 采样器别名表：key = 压扁形式（只留小写字母数字）→ NAI 内部名。
+# 覆盖三类写法：① NAI 内部名本身；② A1111 / ComfyUI 系 UI 名（DPM++ 2M SDE…）；
+# ③ 站点贴图里常见的简写（dpm++2msde）。压扁后 `++`/空格/下划线/点都被抹掉，
+# 所以 "DPM++ 2M SDE"、"dpm++2msde"、"dpm_pp_2m_sde" 都落到同一个 key。
+_NAI_SAMPLER_ALIASES = {
+    # ① NAI 内部名（幂等）
+    "keuler": "k_euler",
+    "keulerancestral": "k_euler_ancestral",
+    "kdpm2": "k_dpm_2",
+    "kdpmfast": "k_dpm_fast",
+    "kdpmpp2m": "k_dpmpp_2m",
+    "kdpmpp2msde": "k_dpmpp_2m_sde",
+    "kdpmpp3msde": "k_dpmpp_3m_sde",
+    "kdpmppsde": "k_dpmpp_sde",
+    "kdpmpp2sancestral": "k_dpmpp_2s_ancestral",
+    # ② A1111 / 网页端写法
+    "euler": "k_euler",
+    "eulera": "k_euler_ancestral",
+    "eulerancestral": "k_euler_ancestral",
+    "euleraancestral": "k_euler_ancestral",
+    "dpm2": "k_dpm_2",
+    "dpmfast": "k_dpm_fast",
+    "dpm2m": "k_dpmpp_2m",
+    "dpmpp2m": "k_dpmpp_2m",
+    "dpm2msde": "k_dpmpp_2m_sde",
+    "dpmpp2msde": "k_dpmpp_2m_sde",
+    "dpm3msde": "k_dpmpp_3m_sde",
+    "dpmpp3msde": "k_dpmpp_3m_sde",
+    "dpmsde": "k_dpmpp_sde",
+    "dpmppsde": "k_dpmpp_sde",
+    "dpm2sa": "k_dpmpp_2s_ancestral",
+    "dpmpp2sa": "k_dpmpp_2s_ancestral",
+    "2sa": "k_dpmpp_2s_ancestral",
+    "2sancestral": "k_dpmpp_2s_ancestral",
+}
+
+# CFG Rescale 兜底值：v4/v5 官方网页端默认 0（不重缩放），旧模型 0.3
+_DEFAULT_RESCALE_V45 = 0.0
+_DEFAULT_RESCALE_LEGACY = 0.3
+
+
+def _squash(s) -> str:
+    """压扁成「只含小写字母数字」的 key（用于宽松匹配人类写法）。"""
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
+
+def normalize_nai_sampler(sampler) -> tuple[str, str]:
+    """把人类/WebUI 写法的采样器名归一为 (NAI 内部采样器名, 顺带识别出的噪声调度)。
+
+    - 识别成功：第一项为内部名（如 "DPM++2Msde" → "k_dpmpp_2m_sde"）。
+    - 名字里带了调度词（"DPM++ 2M SDE Karras"）：第二项返回 "karras"
+      （调用方在用户未显式给 noise_schedule 时采用）。
+    - 完全不认识（如 "UniPC"/"PLMS"）：第一项为 ""，由调用方决定兜底；
+      第二项仍可能带出调度词（此时采样器仍走兜底）。
+    """
+    key = _squash(sampler)
+    if not key:
+        return "", ""
+    noise = ""
+    for word, canon in _NAI_NOISE_WORDS:
+        if word in key:
+            key = key.replace(word, "")
+            noise = noise or canon
+    return _NAI_SAMPLER_ALIASES.get(key, ""), noise
+
+
+def normalize_nai_noise(value) -> str:
+    """把噪声调度写法归一为官方取值（karras/native/exponential/polyexponential）。
+
+    容错大小写与装饰词（"Karras" / "karras schedule" / "KARRAS" 都 → "karras"）；
+    认不出返回 ""（调用方回落默认）。"""
+    key = _squash(value)
+    if not key:
+        return ""
+    for word, canon in _NAI_NOISE_WORDS:
+        if word in key:
+            return canon
+    return ""
+
+
+def resolve_nai_cfg(cfg, defaults: dict | None = None, model: str = "") -> tuple[float, float]:
+    """把「CFG」自适应拆成 (提示词引导强度 scale, CFG Rescale)，均按官方范围 clamp。
+
+    背景：NAI 里「CFG」是两回事，网页端也是两个框——
+      · 引导强度 Guidance（旧称 CFG Scale，官方字段 `scale`，常用 4~8，范围 1~20）；
+      · CFG Rescale / 缩放引导值（官方字段 `cfg`，范围 **0~1**，v4/v5 网页端默认 0）。
+    中转站（Nai2API）同样：`scale`=提示词引导值、`cfg`=缩放引导值、两者都被 clamp 到各自范围。
+
+    但 LLM 工具只暴露一个 `cfg` 参数（用户嘴里也只有一个「CFG」），于是按数值自适应：
+      · 0 < cfg <= 1 → 视为 CFG Rescale（引导强度回落平台默认）；
+      · cfg > 1      → 视为引导强度（Rescale 回落平台默认）。
+    此前一律当作引导强度，用户给 0.3 这类重缩放值会被 clamp 成 1.0 —— 引导强度被
+    悄悄压到最低（画面糊、不听话），而重缩放根本没生效，属于双错。
+
+    defaults 为平台配置的 defaults（取 scale / cfg_rescale）；model 用于判断 v4/v5
+    以决定 Rescale 兜底值（v4/v5 为 0，旧模型 0.3）。"""
+    _d = defaults or {}
+    _v45 = bool(re.match(r"nai-diffusion-[45]", str(model or "")))
+    _rescale_def = _DEFAULT_RESCALE_V45 if _v45 else _DEFAULT_RESCALE_LEGACY
+    try:
+        _base_scale = float(_d.get("scale", 6))
+    except (TypeError, ValueError):
+        _base_scale = 6.0
+    try:
+        _base_rescale = float(_d.get("cfg_rescale", _rescale_def))
+    except (TypeError, ValueError):
+        _base_rescale = _rescale_def
+    _base_scale = max(1.0, min(20.0, _base_scale))
+    _base_rescale = max(0.0, min(1.0, _base_rescale))
+    if cfg is None or cfg == "":
+        return _base_scale, _base_rescale
+    try:
+        _v = float(cfg)
+    except (TypeError, ValueError):
+        return _base_scale, _base_rescale
+    if 0.0 <= _v <= 1.0:
+        return _base_scale, max(0.0, min(1.0, _v))
+    return max(1.0, min(20.0, _v)), _base_rescale
+
+
+# ---------------------------------------------------------------------- #
 # NAI（官方 / 中转）
 # ---------------------------------------------------------------------- #
 
@@ -313,39 +457,48 @@ async def _gen_nai(p: dict, *, prompt: str, negative: str, width: int, height: i
         ).strip("{} ,")
 
     # 实际生效的生图参数：调用方覆盖（LLM 传入）优先，否则回落平台 defaults。
-    # cfg 即 NAI 引导系数（官方 API 字段名 scale；中转站同时认 cfg/scale）。
     _d = p.get("defaults", {}) or {}
     try:
         _steps = int(steps) if steps is not None else int(_d.get("steps", 28))
     except (TypeError, ValueError):
         _steps = 28
     _steps = max(1, min(50, _steps))  # 官方 steps 上限 50（对齐 Nai2API MAX_STEPS）
-    try:
-        _scale = float(cfg) if cfg is not None else float(_d.get("scale", 6))
-    except (TypeError, ValueError):
-        _scale = 6.0
-    _scale = max(1.0, min(20.0, _scale))
-    # CFG Rescale（提示词引导重缩放，官方范围 0~1）：统一取平台 defaults.cfg_rescale。
-    # 注意 LLM 传入的 cfg 覆盖是「引导系数 scale」，与重缩放无关，不要联动
-    # （此前误读 defaults.cfg（不存在，兜底 7.0）再被 clamp 成 1.0，导致中转站
-    # 与官方直连的重缩放值不一致）。
-    _rescale_default = 0.0 if _is_v45 else 0.3
-    try:
-        _cfg_rescale = float(_d.get("cfg_rescale", _rescale_default))
-    except (TypeError, ValueError):
-        _cfg_rescale = _rescale_default
-    _cfg_rescale = max(0.0, min(1.0, _cfg_rescale))
-    _sampler = (sampler or _d.get("sampler") or "k_dpmpp_2m_sde")
-    # v4/v5 官方支持的采样器白名单（不在列表的值上游会 400，回落官方网页端默认）
-    if _is_v45:
-        _v4_samplers = (
-            "k_euler", "k_euler_ancestral", "k_dpm_2", "k_dpm_fast",
-            "k_dpmpp_2m", "k_dpmpp_2m_sde", "k_dpmpp_3m_sde",
-            "k_dpmpp_sde", "k_dpmpp_2s_ancestral",
+    # cfg / 引导强度 / CFG Rescale：一个入参自适应拆两个字段（见 resolve_nai_cfg）。
+    _scale, _cfg_rescale = resolve_nai_cfg(cfg, _d, model)
+
+    # ── 采样器：人类写法 → NAI 内部名（用户/LLM 说的「DPM++2Msde」上游并不认识） ──
+    _sampler_raw = str(sampler or _d.get("sampler") or "k_dpmpp_2m_sde").strip()
+    _sampler_norm, _noise_in_sampler = normalize_nai_sampler(_sampler_raw)
+    if _sampler_norm:
+        _sampler = _sampler_norm
+        if _sampler_norm != _sampler_raw:
+            logger.info(f"【平台·NAI】采样器归一：{_sampler_raw!r} → {_sampler_norm!r}")
+    else:
+        # 认不出就原样透传（旧模型可能有 v3 专属采样器名），v4/v5 由下方白名单兜底
+        _sampler = _sampler_raw
+        logger.warning(f"【平台·NAI】采样器「{_sampler_raw}」无法识别，按默认采样器处理")
+    # v4/v5 官方支持的采样器白名单（不在列表的值上游 normalizeV4Sampler 会静默换成
+    # k_euler_ancestral —— 这里先自己兜底并打日志，避免「用户点名却静默降级」）
+    if _is_v45 and _sampler not in _NAI_V4_SAMPLERS:
+        logger.warning(f"【平台·NAI】采样器「{_sampler}」不在 v4/v5 白名单，回落 k_euler_ancestral")
+        _sampler = "k_euler_ancestral"
+
+    # ── 噪声调度：优先用户显式传值 → 采样器名里带的调度词（DPM++ 2M SDE Karras）→ 平台默认 ──
+    if noise_schedule:
+        _noise = (
+            normalize_nai_noise(noise_schedule)
+            or _noise_in_sampler
+            or normalize_nai_noise(_d.get("noise_schedule"))
+            or "karras"
         )
-        if _sampler not in _v4_samplers:
-            _sampler = "k_euler_ancestral"
-    _noise = (noise_schedule or _d.get("noise_schedule") or "karras")
+    else:
+        _noise = _noise_in_sampler or normalize_nai_noise(_d.get("noise_schedule")) or "karras"
+    logger.info(
+        f"【平台·NAI】生效参数：model={model} 中转={'是' if via_middle else '否'} "
+        f"steps={_steps} scale(引导)={_scale} cfg(重缩放)={_cfg_rescale} "
+        f"sampler={_sampler} noise={_noise} size={width}x{height}"
+        + (f" seed={seed}" if seed not in (None, -1) else "")
+    )
 
     results: list[bytes] = []
     # 自定义请求头（条目式）：支持 {{api_key}} 等占位符

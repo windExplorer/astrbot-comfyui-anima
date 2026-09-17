@@ -2,6 +2,53 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.2.1（NAI 平台：采样器/噪声/cfg 归一 — 用户写的「DPM++2Msde」此前被静默换掉）
+
+需求（用户提出）：核对 `comfyui_draw` 走 NAI 平台时能不能传**正向 / 负面提示词**与**调度器参数**
+（采样器 / 步数 / scale / cfg / 噪声调度），并且**用户已经给了提示词就原样画，不要画蛇添足加内容**。
+
+结论：正向 / 负面 / 参数本来就支持（`prompt` → `tag`、`negative_prompt` → `negative`、
+`steps` / `sampler` / `cfg` / `noise_schedule` / `artist` 逐项透传），但有三个**「假生效」**问题：
+
+1. **采样器名认不出却被静默换掉**：LLM 工具（和用户）说的是人类写法（`dpm++2msde`、
+   `DPM++ 2M SDE Karras`），而 NAI 上游只认内部枚举名（`k_dpmpp_2m_sde`）。
+   旧代码拿内部白名单硬比，命中不了就回落 `k_euler_ancestral` ——
+   用户点名了采样器、实际跑的是另一个，日志里也不出声（上游 `normalizeV4Sampler`/Nai2API
+   同样是 unknown → 静默替换），肉眼几乎无法发现。
+2. **噪声调度没归一**：`Karras` / `karras schedule` 这类写法原样透传；
+   而「DPM++ 2M SDE **Karras**」这种把调度写在采样器名里的常见写法完全没被识别。
+3. **cfg 语义只有一个入口**：NAI 网页端「CFG」其实是两个框——引导强度（Guidance，官方字段
+   `scale`，常用 4~8）与 CFG Rescale（缩放引导值，官方字段 `cfg`，**0~1**，v4/v5 默认 0）；
+   中转站（Nai2API）同样 `scale` 1~20、`cfg` 0~1。旧代码把 LLM 的 `cfg` 一律当引导强度，
+   于是用户按网页端习惯给 `0.3` 这类重缩放值时会被 clamp 成 `1.0` ——
+   引导强度被压到最低（画面糊、不听话）、重缩放又根本没生效，属双重错误。
+
+修复（`nai_client.py` 新增「NAI 生图参数归一」一节，`main.py` 配套）：
+
+- **采样器归一** `normalize_nai_sampler()`：压扁写法（去空格/加号/下划线、忽略大小写）后查别名表，
+  覆盖 A1111 系 UI 名（`DPM++ 2M SDE`、`DPM++ 2S a`、`DPM++ 3M SDE`、`DPM2`、`Euler a`、`DPM fast`…）、
+  站点简写（`dpm++2msde`）与 NAI 内部名本身（幂等）；名字里带的 `Karras` 等调度词会被拆出来。
+  识别不出则原样透传（保留旧模型可能有 v3 专属采样器的余地）+ **打日志告警**，
+  彻底消灭「静默降级」。
+- **噪声调度归一** `normalize_nai_noise()`：`karras / native / exponential / polyexponential`
+  四种官方取值，忽略大小写与装饰词（`karras schedule` 也认）。
+  优先级：用户显式传值 → 采样器名里带的调度词 → 平台默认 → `karras`。
+- **cfg 自适应拆分** `resolve_nai_cfg()`：一个入参按数值落到正确字段 ——
+  `0~1` → CFG Rescale（引导强度回落平台默认）、`>1` → 引导强度（重缩放回落平台默认），
+  各自按官方范围 clamp（scale 1~20 / rescale 0~1）。该方法被 `_gen_nai` 与
+  `_do_draw_nai_style` 的**归档**共用，因此大图详情里显示的也是**真实生效值**（此前显示的是用户原话）。
+- **参数日志**：`_gen_nai` 每次出图前打印一行生效参数（steps / scale / cfg / sampler / noise / 型号 / 是否中转），
+  采样器被归一或被兜底时另有 INFO/WARNING，用户与排障都能一眼核对。
+- **不画蛇添足**：提示词里已自带画师串（用户从网页端整段贴出的串，形如 `artist:xxx,,`）时，
+  **不再叠加平台默认画师串**（两份画师串会互相打架）；`comfyui_draw` 的说明补上一条铁律 ——
+  用户贴出提示词/参数块时逐字原样绘制，不改写、不翻译、不补质量前缀与任何额外内容，
+  参数块的中英文标题（Sampler/采样器、Steps/步数、Noise/噪声）按语义对应填入。
+
+测试：新增 `tests/test_nai_params.py`（50 项断言：18 个采样器写法 + 9 项白名单自映射 + 10 个噪声写法 +
+13 个 cfg 拆分/越界/容错/兜底）。cfg 用例刻意让平台默认取「引导 6 / 重缩放 0.1」两个不同的值，
+任一分支走错（拿默认值顶替或字段串位）都会被立刻抓到。运行：
+`uv run --no-project --with aiohttp python tests/test_nai_params.py`。
+
 ## v6.2.0（工作流页：星标 + 星标筛选 + 排序）
 
 需求：工作流太多太乱，要**星标**（可只看星标）与**排序**（按创建时间 / 更新时间，正序 / 倒序；
