@@ -23,6 +23,26 @@
       <span class="filter-hint">类型按「是否配置 boogu 指令节点(boogu_node) 或多槽位提示词(prompt_slots)」自动判定</span>
     </div>
 
+    <!-- 星标筛选 + 排序（v6.2.0）：工作流多了以后按需挑常用的 -->
+    <div class="filter-bar">
+      <n-checkbox v-model:checked="starOnly" size="small">★ 仅看星标</n-checkbox>
+      <span class="filter-hint">星标 {{ starredCount }} / {{ workflows.length }}</span>
+      <n-select
+        v-model:value="sortField"
+        size="small"
+        style="width: 150px"
+        :options="sortFieldOptions"
+      />
+      <n-select
+        v-model:value="sortOrder"
+        size="small"
+        style="width: 110px"
+        :options="sortOrderOptions"
+      />
+      <n-button size="small" quaternary @click="resetSort">重置排序</n-button>
+      <span class="filter-hint">创建时间＝列表顺序（新加的在最前）；「更新时间」按最后一次编辑</span>
+    </div>
+
     <!-- 关键词搜索：名称 / 别名 / 底模 / 服务器 / 工作流文件名 / 默认 LoRA；前端即时过滤，与类型筛选叠加生效 -->
     <div class="filter-bar">
       <n-input
@@ -45,7 +65,12 @@
         style="padding:60px"
       />
       <div v-else class="card-grid">
-        <div v-for="({ w, i }, _) in filteredWorkflows" :key="i" class="wf-card">
+        <div
+          v-for="({ w, i }, _) in filteredWorkflows"
+          :key="i"
+          class="wf-card"
+          :class="{ 'is-star': w.starred === true }"
+        >
           <div
             class="card-cover"
             :class="{ 'is-drag': coverDragIdx === i }"
@@ -59,6 +84,12 @@
             <span class="cover-drop-tip">松开设置封面</span>
           </div>
           <div class="card-head">
+            <span
+              class="card-star"
+              :class="{ on: w.starred === true }"
+              :title="w.starred === true ? '取消星标' : '加星标（可筛选）'"
+              @click.stop="toggleStar(i)"
+            >{{ w.starred === true ? "★" : "☆" }}</span>
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
             <n-tag v-if="w.enabled === false" size="small" type="error" :bordered="false">已停用</n-tag>
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
@@ -291,9 +322,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
+import { lsGet, lsSet } from "@/api/storage";
 import { parseAliases, truncate } from "@/utils/format";
 import { useRefresh } from "@/composables/useRefresh";
 import { useDevice } from "@/composables/useDevice";
@@ -376,9 +408,57 @@ function wfMatches(w: any, kw: string): boolean {
     .toLowerCase();
   return hay.includes(kw);
 }
+// ── 星标与排序（v6.2.0）────────────────────────────────────────────
+// 星标存在工作流条目的 starred 字段；「更新时间」用 updated_at（毫秒），保存编辑时打点。
+// 「创建时间」不存字段：数组顺序即创建顺序（新建是 unshift 到最前 → 索引越小越新），
+// 这样老配置无需迁移就能按创建排序。
+const wxLs = { star: "anima_wf_star_only", field: "anima_wf_sort_field", order: "anima_wf_sort_order" };
+const starOnly = ref(lsGet(wxLs.star) === "1");
+const sortField = ref<"created" | "updated" | "name">(
+  (["created", "updated", "name"] as const).includes(lsGet(wxLs.field) as any)
+    ? (lsGet(wxLs.field) as "created" | "updated" | "name")
+    : "created",
+);
+const sortOrder = ref<"desc" | "asc">(lsGet(wxLs.order) === "asc" ? "asc" : "desc"); // 默认倒序
+watch([starOnly, sortField, sortOrder], () => {
+  lsSet(wxLs.star, starOnly.value ? "1" : "0");
+  lsSet(wxLs.field, sortField.value);
+  lsSet(wxLs.order, sortOrder.value);
+});
+
+const sortFieldOptions = [
+  { label: "按创建时间", value: "created" },
+  { label: "按更新时间", value: "updated" },
+  { label: "按名称", value: "name" },
+];
+const sortOrderOptions = [
+  { label: "倒序（新→旧）", value: "desc" },
+  { label: "正序（旧→新）", value: "asc" },
+];
+const starredCount = computed(() => workflows.value.filter((w) => w.starred === true).length);
+
+function resetSort() {
+  sortField.value = "created";
+  sortOrder.value = "desc";
+}
+
+/** 星标开关：直接写回 config（与启用/停用同一套保存方式）。 */
+async function toggleStar(idx: number) {
+  const w = workflows.value[idx];
+  if (!w) return;
+  const next = w.starred !== true;
+  w.starred = next;
+  try {
+    await apiPost("config", { config: { workflows: workflows.value } });
+  } catch (e: any) {
+    w.starred = !next; // 失败回滚
+    message.error(e.message || "保存星标失败");
+  }
+}
+
 const filteredWorkflows = computed(() => {
   const kw = searchText.value.trim().toLowerCase();
-  return workflows.value
+  const rows = workflows.value
     .map((w, i) => ({ w, i }))
     .filter(({ w }) => {
       // 类型筛选
@@ -386,9 +466,26 @@ const filteredWorkflows = computed(() => {
         const comic = isComicW(w);
         if (filterType.value === "comic" ? !comic : comic) return false;
       }
+      // 星标筛选
+      if (starOnly.value && w.starred !== true) return false;
       // 关键词搜索
       return wfMatches(w, kw);
     });
+  // 排序：dir=-1 表示倒序（默认）。同值一律回落到「创建顺序（新的在前）」保证稳定。
+  const dir = sortOrder.value === "asc" ? 1 : -1;
+  rows.sort((x, y) => {
+    let d = 0;
+    if (sortField.value === "name") {
+      d = String(x.w.name || "").localeCompare(String(y.w.name || ""), "zh-Hans-CN");
+    } else if (sortField.value === "updated") {
+      d = Number(x.w.updated_at || 0) - Number(y.w.updated_at || 0);
+    } else {
+      d = y.i - x.i; // 创建：索引越小越新 → 「越新越大」
+    }
+    if (d === 0) d = y.i - x.i;
+    return dir * d;
+  });
+  return rows;
 });
 
 // LoRA 下拉选项：按工作流底模筛选（与 availLoras 逻辑一致：底模为空则全部，LoRA 底模为空则通用）
@@ -574,6 +671,8 @@ async function saveEdit() {
     if (v.denoise_off) v.default_denoise = -1;
     delete v.denoise_off;
     v.kind = (v.kind === "comic") ? "comic" : "draw";
+    // v6.2.0：打「更新时间」戳（供列表按更新时间排序；创建时间用数组顺序表示）
+    v.updated_at = Date.now();
     // prompt_slots 必须是合法 JSON（数组或对象）：后端解析失败只会记日志并跳过，
     // 用户侧表现为「填了却没生效」，因此在保存前拦截，避免静默失效。
     const psRaw = String(v.prompt_slots || "").trim();
@@ -808,6 +907,14 @@ onMounted(load);
   flex-direction: column;
   gap: 8px;
 }
+/* 星标（v6.2.0）：★ 高亮 + 卡片描边 */
+.wf-card.is-star { border-color: rgba(250, 173, 20, 0.6); }
+.card-star {
+  cursor: pointer; font-size: 15px; line-height: 1; opacity: 0.45;
+  color: var(--text-color, #888); user-select: none; flex: 0 0 auto;
+}
+.card-star:hover { opacity: 0.85; }
+.card-star.on { opacity: 1; color: #faad14; }
 .card-cover { position: relative; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; }
 .card-cover.is-drag { outline: 2px dashed var(--accent); outline-offset: -2px; background: rgba(0, 122, 255, 0.08); }
 .card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }

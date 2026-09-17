@@ -205,6 +205,18 @@
             "hint": "关闭（false）后该工作流不可使用：用户显式指定时提示「已停用」，自动/回退选择默认工作流时也会跳过它。列表仍会展示并标注「已停用」，可随时再启用。",
             "default": true
           },
+          "starred": {
+            "type": "bool",
+            "description": "星标（由 WebUI 维护，勿手动改）",
+            "hint": "在 WebUI「工作流」页点卡片上的 ☆ 切换；可用「仅看星标」筛选常用的工作流。",
+            "default": false
+          },
+          "updated_at": {
+            "type": "int",
+            "description": "最后更新时间戳（由 WebUI 维护，勿手动改）",
+            "hint": "毫秒时间戳，编辑保存时自动写入，供「按更新时间」排序使用；「创建时间」不存字段（新建的排在最前即视为最新）。",
+            "default": 0
+          },
           "base_model": {
             "type": "string",
             "description": "底模（基座模型）",

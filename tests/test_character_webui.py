@@ -387,6 +387,21 @@ async def main() -> int:
     check("LoRA/工作流封面缺省仍是缩略图",
           str(_li2.get("url", "")).startswith("data:image"), str(_li2.get("url", ""))[:40])
 
+    print("\n[17] 工作流星标与排序（v6.2.0）")
+    _wv = (ROOT / "webui-src" / "src" / "views" / "WorkflowsView.vue").read_text(encoding="utf-8")
+    check("卡片有星标开关", "toggleStar(i)" in _wv and "card-star" in _wv)
+    check("有「仅看星标」筛选", "仅看星标" in _wv and "starOnly" in _wv)
+    check("排序三项可选", 'label: "按创建时间"' in _wv and 'label: "按更新时间"' in _wv and 'label: "按名称"' in _wv)
+    check("排序方向可选", 'label: "倒序（新→旧）"' in _wv and 'label: "正序（旧→新）"' in _wv)
+    check("默认创建时间倒序",
+          'sortField = ref<"created" | "updated" | "name">' in _wv and 'lsGet(wxLs.order) === "asc" ? "asc" : "desc"' in _wv)
+    check("选择记忆到本地", "lsSet(wxLs.star" in _wv and "lsSet(wxLs.field" in _wv)
+    check("保存编辑打更新时间戳", "v.updated_at = Date.now()" in _wv)
+    check("星标失败会回滚", "w.starred = !next; // 失败回滚" in _wv)
+    _schema = (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+    check("schema 声明星标字段", '"starred"' in _schema)
+    check("schema 声明更新时间字段", '"updated_at"' in _schema)
+
     print("\n[9] 路由已注册（内嵌页）")
     src = (ROOT / "webui_api.py").read_text(encoding="utf-8")
     for _ep in ("character/list", "character/detail", "character/save", "character/delete",
