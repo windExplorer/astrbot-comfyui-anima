@@ -365,6 +365,94 @@ async def main() -> int:
           int(_store3.get_character(int(_cz3["id"])).get("cover_ref_id") or 0) > 0,
           str(_store3.get_character(int(_cz3["id"])).get("cover_ref_id")))
 
+    print("\n[12] v6.3.0 创建者 / 来源 / 出图自动关联")
+    _actor = "测试君(10001)"
+    cz2 = store.create_character("关联测试", source="command", created_by=_actor)
+    a_def = store.add_anchor(cz2["id"], "默认装", "1girl, black hair", created_by=_actor,
+                             source="command")
+    _c2 = store.get_character(int(cz2["id"]))
+    check("角色卡记录创建者与创建方式",
+          (_c2.get("created_by") or "") == _actor and (_c2.get("source") or "") == "command",
+          str((_c2.get("created_by"), _c2.get("source"))))
+    _a2r = store.get_anchor(int(cz2["id"]), int(a_def["id"]))
+    check("锚点记录创建者与创建方式",
+          (_a2r.get("created_by") or "") == _actor and (_a2r.get("source") or "") == "command",
+          str((_a2r.get("created_by"), _a2r.get("source"))))
+    # 已有卡的创建者不被后续写入改写（只在为空时回填）
+    store.create_character("关联测试", note="补记", created_by="别人(20002)")
+    check("重复建卡不改写创建者",
+          (store.get_character(int(cz2["id"])).get("created_by") or "") == _actor,
+          store.get_character(int(cz2["id"])).get("created_by"))
+
+    # 引用式落地：文件留在原地（模拟 gallery），删记录不删文件
+    _ext_dir = tmp / "gallery_sim"
+    _ext_dir.mkdir(exist_ok=True)
+    _ext_files = []
+    for i in range(8):
+        f = _ext_dir / f"gen_{i}.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([i]) * 64)
+        _ext_files.append(f)
+    _lk = store.store_ref_link(cz2["id"], str(_ext_files[0]), anchor_id=int(a_def["id"]),
+                              created_by=_actor, origin="auto")
+    check("store_ref_link 引用外部文件",
+          _lk is not None and bool(_lk.get("external")) and Path(_lk["path"]).exists(),
+          str(_lk))
+    check("引用图落库带来源与创建者",
+          (_lk.get("origin"), _lk.get("created_by")) == ("auto", _actor), str(_lk))
+    _lk2 = store.store_ref_link(cz2["id"], str(_ext_files[0]), anchor_id=int(a_def["id"]))
+    check("同图重复引用命中去重", bool(_lk2.get("dedup")) and int(_lk2["id"]) == int(_lk["id"]),
+          str(_lk2.get("dedup")))
+    store.delete_ref(int(_lk["id"]))
+    check("删除引用记录不删外部文件", _ext_files[0].exists(), str(_ext_files[0]))
+
+    # 自动关联（走 character.auto_link_generated）
+    a_sw = store.add_anchor(cz2["id"], "泳装", "1girl, black hair, swimsuit")
+    hits2 = [(store.get_character(int(cz2["id"])), store.get_anchor(int(cz2["id"]), int(a_def["id"])))]
+    for i in range(5):
+        _ln = await character.auto_link_generated(
+            plugin, [(store.get_character(int(cz2["id"])),
+                      store.get_anchor(int(cz2["id"]), int(a_sw["id"])))],
+            str(_ext_files[i + 1]), actor=_actor,
+        )
+    _sw_refs = store.list_refs(int(cz2["id"]), anchor_id=int(a_sw["id"]))
+    check("自动关联挂到命中的锚点下",
+          len(_sw_refs) == 5 and all((r.get("origin") or "") == "auto" for r in _sw_refs),
+          str([(r["id"], r.get("anchor_id"), r.get("origin")) for r in _sw_refs]))
+    _c3 = store.get_character(int(cz2["id"]))
+    check("首图自动成为封面", int(_c3.get("cover_ref_id") or 0) > 0, str(_c3.get("cover_ref_id")))
+    # 封面已被自动设过 → 之后不再被改（人工封面优先的语义）
+    _cover_first = int(_c3.get("cover_ref_id") or 0)
+    await character.auto_link_generated(plugin, hits2, str(_ext_files[7]), actor=_actor)
+    check("已有封面不会被自动关联改写",
+          int(store.get_character(int(cz2["id"])).get("cover_ref_id") or 0) == _cover_first,
+          str(store.get_character(int(cz2["id"])).get("cover_ref_id")))
+
+    # 上限清理：只裁 auto，手工图不动
+    store._conn_get().execute("DELETE FROM character_refs WHERE character_id=?", (int(cz2["id"]),))
+    store._conn_get().commit()
+    _manual = store.store_ref_link(cz2["id"], str(_ext_files[0]), anchor_id=int(a_def["id"]),
+                                   origin="upload")
+    for i in range(5):
+        await character.auto_link_generated(plugin, hits2, str(_ext_files[i + 1]), actor=_actor)
+    plugin._c = dict(cfg, auto_link_ref=True, auto_link_keep=2)
+    for i in range(2):
+        await character.auto_link_generated(plugin, hits2, str(_ext_files[i + 6]), actor=_actor)
+    _kept = store.list_refs(int(cz2["id"]), anchor_id=int(a_def["id"]))
+    _auto_kept = [r for r in _kept if (r.get("origin") or "") == "auto"]
+    check("auto_link_keep 只裁自动图",
+          len(_auto_kept) == 2 and any(int(r["id"]) == int(_manual["id"]) for r in _kept),
+          str([(r["id"], r.get("origin")) for r in _kept]))
+    check("自动关联的图仍指向外部文件",
+          all(bool(r.get("external")) for r in _auto_kept), str(_auto_kept))
+
+    # 开关关闭 → 不再关联
+    plugin._c = dict(cfg, auto_link_ref=False, auto_link_keep=2)
+    _before = len(store.list_refs(int(cz2["id"])))
+    _none = await character.auto_link_generated(plugin, hits2, str(_ext_files[0]), actor=_actor)
+    check("auto_link_ref=false 时不关联",
+          (not _none) and len(store.list_refs(int(cz2["id"]))) == _before, str(_none))
+    plugin._c = cfg
+
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1
 

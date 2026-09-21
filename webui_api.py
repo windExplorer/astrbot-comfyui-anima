@@ -1841,6 +1841,10 @@ class WebUIApi:
     # ------------------------------------------------------------------ #
     # 角色卡片（Character Card）：列表 / 详情 / 保存 / 删除 / 锚点 / 导入导出
     # ------------------------------------------------------------------ #
+    # WebUI 侧写入的创建者标识（v6.3.0）。面板只有口令鉴权、没有「用户」概念，
+    # 因此统一记渠道名；QQ 侧的指令 / AI 工具写的是「昵称( QQ号)」。
+    _CHAR_WEBUI_ACTOR = "WebUI 控制台"
+
     @staticmethod
     def _character_store(plugin):
         return getattr(plugin, "character", None)
@@ -1879,6 +1883,12 @@ class WebUIApi:
                 "total": len(rows),
                 "enabled": bool(cfg.get("enabled", True)),
                 "can_edit": True,  # WebUI 本身即管理面（独立 WebUI 需 token、内嵌页在面板内）
+                # 供前端在列表上说明「图是怎么进去的」：自动关联开着几张、封面会不会自动改
+                "auto_link": {
+                    "enabled": bool(cfg.get("auto_link_ref", True)),
+                    "keep": int(cfg.get("auto_link_keep", 6) or 0),
+                    "cover": bool(cfg.get("auto_link_cover", True)),
+                },
             })
         except Exception as e:
             return error_response(f"读取角色卡片失败: {e}")
@@ -1923,6 +1933,7 @@ class WebUIApi:
                     lora_name=(body.get("lora_name") or "").strip(),
                     note=(body.get("note") or "").strip(),
                     enabled=bool(body.get("enabled", True)),
+                    source="webui", created_by=self._CHAR_WEBUI_ACTOR,
                 )
                 return json_response({"ok": True, "created": True, "id": int(ch["id"])})
             upd: dict = {"name": name}
@@ -2000,6 +2011,7 @@ class WebUIApi:
                 lora_name=(body.get("lora_name") or "").strip(),
                 skip_trigger_words=bool(body.get("skip_trigger_words", True)),
                 note=(body.get("note") or "").strip(),
+                created_by=self._CHAR_WEBUI_ACTOR, source="webui",
             )
             if a is None:
                 return error_response("新增锚点失败")
@@ -2110,6 +2122,7 @@ class WebUIApi:
             ref = await _char_mod.land_ref(
                 self.plugin, int(ch["id"]), data_bytes, filename=filename,
                 note="WebUI 上传", anchor_id=anchor_id,
+                created_by=self._CHAR_WEBUI_ACTOR, origin="upload",
             )
             if ref is None:
                 return error_response("参考图落地失败")
@@ -2208,6 +2221,7 @@ class WebUIApi:
             ref = await _char_mod.land_ref(
                 self.plugin, int(ch["id"]), Path(src).read_bytes(),
                 filename=Path(src).name, note=f"来自图库 {sha[:12]}", anchor_id=_aid,
+                created_by=self._CHAR_WEBUI_ACTOR, origin="gallery",
             )
             if ref is None:
                 return error_response("参考图落地失败")

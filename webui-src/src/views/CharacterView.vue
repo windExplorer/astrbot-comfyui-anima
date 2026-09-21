@@ -33,9 +33,10 @@
         <code>2girls</code> 计数标签与每个角色一个 <code>(标签:1.2)</code> 分组。
         也可以用对话设定（说「记住小叽的样子是…」）或 <code>/角色</code> 指令管理。
         <br />
-        <strong>参考图</strong>：每个角色可存 0~N 张定妆图（自动做 NSFW 打标），
-        其中路径可直接作为图生图的参考；<strong>补全标签</strong>会调用 danbooru 标签服务给候选，
-        人工确认后再落库。
+        <strong>参考图</strong>：出图只要命中了某个锚点，成品图就会<strong>自动挂到那个锚点下</strong>
+        （引用图库原文件，不额外占盘），也可点「详情 → 参考图 → 上传图片」拖拽上传；
+        卡片、锚点、图片都记录<strong>创建者与创建方式</strong>，老数据未记的显示「未记录」。
+        <strong>补全标签</strong>会调用 danbooru 标签服务给候选，人工确认后再落库。
       </div>
     </n-card>
 
@@ -68,9 +69,11 @@
             </div>
             <div class="char-anchor-names">{{ anchorNames(c) || '（无锚点）' }}</div>
             <div v-if="c.lora_name" class="char-lora" :title="c.lora_name">LoRA：{{ c.lora_name }}</div>
+            <div class="char-by" :title="`创建方式：${srcLabel(c.source)}`">
+              👤 {{ c.created_by || NO_REC }} · {{ fmtTime(c.created_at) }}
+            </div>
             <div class="char-ops" @click.stop>
-              <n-button size="tiny" type="primary" ghost @click="openDetail(c)">详情 / 图片</n-button>
-              <n-button size="tiny" quaternary @click="openDetail(c)">锚点</n-button>
+              <n-button size="tiny" type="primary" ghost @click="openDetail(c)">详情</n-button>
               <n-popconfirm @positive-click="removeCardById(c)">
                 <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
                 删除「{{ c.name }}」及其全部锚点与图片？此操作不可恢复。
@@ -94,149 +97,253 @@
       </div>
     </n-card>
 
-    <!-- 详情抽屉 -->
-    <n-drawer v-model:show="detailOpen" :width="560" placement="right">
+    <!-- 详情抽屉（v6.3.0 改版：封面 + 元信息条 + 分区标签页） -->
+    <n-drawer v-model:show="detailOpen" :width="720" placement="right">
       <n-drawer-content :title="detail ? `角色卡：${detail.name}` : '角色卡'" closable>
         <template v-if="detail">
-          <n-form label-placement="left" label-width="86" size="small">
-            <n-form-item label="角色名"><n-input v-model:value="form.name" /></n-form-item>
-            <n-form-item label="别名">
-              <n-input v-model:value="form.aliasesText" placeholder="逗号分隔，如：小叽酱,叽叽" />
-            </n-form-item>
-            <n-form-item label="绑定人格">
-              <n-select
-                v-model:value="form.persona_name"
-                :options="mergedPersonaOptions"
-                filterable
-                tag
-                clearable
-                placeholder="AstrBot 人格名（用户说「画你」时命中）"
-              />
-            </n-form-item>
-            <n-form-item label="作品"><n-input v-model:value="form.work" placeholder="如 Neverness to Everness" /></n-form-item>
-            <n-form-item label="关联 LoRA">
-              <n-select
-                v-model:value="form.lora_name"
-                :options="mergedLoraOptions"
-                filterable
-                tag
-                clearable
-                placeholder="只列「角色」分类的 LoRA；也可直接输入名称"
-              />
-            </n-form-item>
-            <n-form-item label="备注"><n-input v-model:value="form.note" type="textarea" :rows="2" /></n-form-item>
-            <n-form-item label="启用"><n-switch v-model:value="form.enabled" /></n-form-item>
-            <n-form-item label=" ">
-              <n-space>
-                <n-button type="primary" :loading="saving" @click="saveCard">保存卡片</n-button>
-                <n-popconfirm @positive-click="removeCard">
-                  <template #trigger><n-button type="error" ghost>删除角色</n-button></template>
-                  删除「{{ detail.name }}」及其全部锚点？此操作不可恢复。
-                </n-popconfirm>
-              </n-space>
-            </n-form-item>
-          </n-form>
+          <div class="dt-head">
+            <div class="dt-cover" title="点击查看大图" @click.stop="openCoverViewer">
+              <img v-if="dtCoverUrl" :src="dtCoverUrl" :alt="detail.name" />
+              <div v-else class="dt-cover-ph">{{ (detail.name || '?').slice(0, 2) }}</div>
+              <span v-if="dtCoverAuto" class="dt-cover-tag">自动</span>
+            </div>
+            <div class="dt-ident">
+              <div class="dt-name">
+                <span class="dt-name-txt">{{ detail.name }}</span>
+                <n-tag v-for="al in (detail.aliases || []).slice(0, 3)" :key="al" size="tiny" :bordered="false">
+                  {{ al }}
+                </n-tag>
+                <n-tag v-if="!detail.enabled" size="tiny" type="warning" :bordered="false">已停用</n-tag>
+              </div>
+              <div class="dt-chips">
+                <n-tag v-if="detail.persona_name" size="small" type="success" :bordered="false">
+                  人格 {{ detail.persona_name }}
+                </n-tag>
+                <n-tag v-if="detail.work" size="small" :bordered="false">作品 {{ detail.work }}</n-tag>
+                <n-tag v-if="detail.lora_name" size="small" type="info" :bordered="false">
+                  LoRA {{ detail.lora_name }}
+                </n-tag>
+              </div>
+              <n-descriptions :column="2" label-placement="left" size="small" bordered class="dt-meta">
+                <n-descriptions-item label="创建者">{{ detail.created_by || NO_REC }}</n-descriptions-item>
+                <n-descriptions-item label="创建方式">{{ srcLabel(detail.source) }}</n-descriptions-item>
+                <n-descriptions-item label="创建时间">{{ fmtTime(detail.created_at) }}</n-descriptions-item>
+                <n-descriptions-item label="最近更新">{{ fmtTime(detail.updated_at) }}</n-descriptions-item>
+                <n-descriptions-item label="主锚点">{{ primaryAnchorName }}</n-descriptions-item>
+                <n-descriptions-item label="锚点 / 图片">
+                  {{ (detail.anchors || []).length }} 个 / {{ (detail.refs || []).length }} 张
+                </n-descriptions-item>
+              </n-descriptions>
+            </div>
+          </div>
 
-          <n-divider>锚点（{{ detail.anchors?.length || 0 }} 个）</n-divider>
-          <div class="anchor-head">
-            <n-space size="small">
-              <n-button size="small" type="primary" ghost @click="openAnchorCreate">＋ 新增锚点</n-button>
-              <n-button size="small" :loading="suggesting" @click="suggestTags">🔎 从标签服务补全</n-button>
-            </n-space>
-          </div>
-          <div v-for="a in detail.anchors || []" :key="a.id" class="anchor-item">
-            <div class="anchor-top">
-              <span class="anchor-name">{{ a.name }}</span>
-              <n-tag v-if="isPrimary(a)" size="small" type="success" :bordered="false">主锚点</n-tag>
-              <n-tag size="small" :bordered="false">权重 {{ a.weight }}</n-tag>
-              <n-tag v-if="a.lora_name" size="small" type="info" :bordered="false">LoRA {{ a.lora_name }}</n-tag>
-            </div>
-            <div class="anchor-pos">{{ a.positive }}</div>
-            <div v-if="a.negative" class="anchor-neg">负向：{{ a.negative }}</div>
-            <div class="anchor-ops">
-              <n-button size="tiny" @click="openAnchorEdit(a)">编辑</n-button>
-              <n-button size="tiny" quaternary @click="setPrimary(a)">设为主锚点</n-button>
-              <n-button size="tiny" quaternary @click="pickRefFilesFor(a.id)">＋ 传图</n-button>
-              <n-popconfirm @positive-click="removeAnchor(a)">
-                <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
-                删除锚点「{{ a.name }}」？（其图片会保留，降级为角色级）
-              </n-popconfirm>
-            </div>
-            <!-- 该锚点下的图片（v6.1.0：锚点可挂多图） -->
-            <div v-if="anchorRefs(a.id).length" class="anchor-refs">
-              <div
-                v-for="r in anchorRefs(a.id)"
-                :key="r.id"
-                class="anchor-ref"
-                :title="`id=${r.id}${r.is_cover ? '（封面）' : ''}`"
-              >
-                <img
-                  v-if="refUrls[r.id]"
-                  :src="refUrls[r.id]"
-                  :alt="'ref ' + r.id"
-                  loading="lazy"
-                  class="ref-clickable"
-                  title="点击查看原图"
-                  @click.stop="openRefViewer(r)"
-                />
-                <div v-else class="anchor-ref-ph">…</div>
-                <span v-if="r.is_cover" class="anchor-ref-cover">★</span>
+          <n-tabs type="line" size="small" class="dt-tabs">
+            <!-- ---- 锚点：服装 / 形象提示词 ---- -->
+            <n-tab-pane name="anchor" :tab="`锚点 · ${(detail.anchors || []).length}`">
+              <div class="pane-bar">
+                <n-button size="small" type="primary" ghost @click="openAnchorCreate">＋ 新增锚点</n-button>
+                <n-button size="small" :loading="suggesting" @click="suggestTags">🔎 从标签服务补全</n-button>
+                <span class="dim">锚点 = 这个角色的一套外观/服装提示词，出图命中谁就注入谁</span>
               </div>
-            </div>
-          </div>
-          <div v-if="!(detail.anchors || []).length" class="empty">还没有锚点，点「＋ 新增锚点」添加（至少一个才能注入）。</div>
+              <div v-for="a in detail.anchors || []" :key="a.id" class="anchor-item">
+                <div class="anchor-top">
+                  <span class="anchor-name">{{ a.name }}</span>
+                  <n-tag v-if="isPrimary(a)" size="small" type="success" :bordered="false">主锚点</n-tag>
+                  <n-tag size="small" :bordered="false">{{ kindLabel(a.kind) }}</n-tag>
+                  <n-tag size="small" :bordered="false">权重 {{ a.weight }}</n-tag>
+                  <n-tag v-if="a.lora_name" size="small" type="info" :bordered="false">LoRA {{ a.lora_name }}</n-tag>
+                  <span class="anchor-spacer"></span>
+                  <n-button size="tiny" @click="openAnchorEdit(a)">编辑</n-button>
+                  <n-button v-if="!isPrimary(a)" size="tiny" quaternary @click="setPrimary(a)">设为主锚点</n-button>
+                  <n-button size="tiny" quaternary @click="openUpload(Number(a.id))">传图</n-button>
+                  <n-popconfirm @positive-click="removeAnchor(a)">
+                    <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
+                    删除锚点「{{ a.name }}」？（其图片会保留，降级为角色级）
+                  </n-popconfirm>
+                </div>
+                <div class="anchor-pos">{{ a.positive }}</div>
+                <div v-if="a.negative" class="anchor-neg">负向：{{ a.negative }}</div>
+                <div v-if="a.note" class="anchor-neg">备注：{{ a.note }}</div>
+                <div class="rec-meta">
+                  <span>👤 {{ a.created_by || NO_REC }}</span>
+                  <span>{{ fmtTime(a.created_at) }}</span>
+                  <n-tag size="tiny" :bordered="false">{{ srcLabel(a.source) }}</n-tag>
+                  <span v-if="anchorRefs(a.id).length" class="dim">挂图 {{ anchorRefs(a.id).length }} 张</span>
+                </div>
+                <div v-if="anchorRefs(a.id).length" class="anchor-refs">
+                  <div
+                    v-for="r in anchorRefs(a.id)"
+                    :key="r.id"
+                    class="anchor-ref"
+                    :title="`id=${r.id} ${originLabel(r.origin)} ${r.created_by || NO_REC} ${fmtTime(r.created_at)}`"
+                  >
+                    <img
+                      v-if="refUrls[r.id]"
+                      :src="refUrls[r.id]"
+                      :alt="'ref ' + r.id"
+                      loading="lazy"
+                      class="ref-clickable"
+                      @click.stop="openRefViewer(r)"
+                    />
+                    <div v-else class="anchor-ref-ph">{{ r.exists === false ? '缺' : '…' }}</div>
+                    <span v-if="r.is_cover" class="anchor-ref-cover">★</span>
+                  </div>
+                </div>
+              </div>
+              <div v-if="!(detail.anchors || []).length" class="empty">
+                还没有锚点，点「＋ 新增锚点」添加（至少一个才能注入）。
+              </div>
+            </n-tab-pane>
 
-          <n-divider>参考图（{{ detail.refs?.length || 0 }} 张）</n-divider>
-          <div class="anchor-head">
-            <n-space size="small" align="center">
-              <span class="ref-upload-label">上传到</span>
-              <n-select
-                v-model:value="uploadAnchorId"
-                size="small"
-                style="width: 150px"
-                :options="uploadTargetOptions"
-              />
-              <n-button size="small" type="primary" ghost @click="pickRefFiles">＋ 上传图片</n-button>
-              <n-input v-model:value="refSha" size="small" placeholder="图库 sha" style="width: 120px" />
-              <n-button size="small" @click="importRefFromGallery">从图库导入</n-button>
-            </n-space>
-          </div>
-          <input ref="refInput" type="file" accept="image/*" multiple style="display:none" @change="onRefFiles" />
-          <div v-if="(detail.refs || []).length" class="ref-grid">
-            <div v-for="r in detail.refs" :key="r.id" class="ref-item" :class="{ 'ref-is-cover': r.is_cover }">
-              <img
-                v-if="refUrls[r.id]"
-                :src="refUrls[r.id]"
-                :alt="'ref ' + r.id"
-                loading="lazy"
-                class="ref-clickable"
-                title="点击查看原图"
-                @click.stop="openRefViewer(r)"
-              />
-              <div v-else class="ref-ph">加载中…</div>
-              <div class="ref-meta">
-                <span>#{{ r.id }}</span>
-                <n-tag size="tiny" :bordered="false">{{ refAnchorName(r) }}</n-tag>
-                <n-tag v-if="r.is_cover" size="tiny" type="warning" :bordered="false">★封面</n-tag>
-                <n-tag v-else-if="r.is_cover_auto" size="tiny" :bordered="false">自动封面</n-tag>
-                <n-tag v-if="nsfwText(r)" size="tiny" :type="nsfwType(r)" :bordered="false">{{ nsfwText(r) }}</n-tag>
-                <span v-if="r.url" class="ref-src" :title="r.url">联网</span>
+            <!-- ---- 参考图 ---- -->
+            <n-tab-pane name="ref" :tab="`参考图 · ${(detail.refs || []).length}`">
+              <div class="pane-bar">
+                <n-button size="small" type="primary" ghost @click="openUpload(0)">⬆ 上传图片</n-button>
+                <span class="dim">
+                  支持拖拽；出图命中锚点时插件会自动把成品图挂到对应锚点下
+                  <template v-if="autoLink">
+                    （当前：每锚点保留最近 {{ autoLink.keep || '不限' }} 张）
+                  </template>
+                </span>
               </div>
-              <div class="ref-ops">
-                <n-button v-if="!r.is_cover" size="tiny" quaternary @click="setCover(r)">设为封面</n-button>
-                <n-popconfirm @positive-click="removeRef(r)">
-                  <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
-                  删除这张参考图？
-                </n-popconfirm>
+              <div v-for="g in refGroups" :key="g.key" class="ref-group">
+                <div class="ref-group-head">
+                  <span class="ref-group-name">{{ g.name }}</span>
+                  <n-button size="tiny" quaternary @click="openUpload(g.anchorId)">＋ 上传到此处</n-button>
+                </div>
+                <div class="ref-grid">
+                  <div
+                    v-for="r in g.items"
+                    :key="r.id"
+                    class="ref-item"
+                    :class="{ 'ref-is-cover': r.is_cover, 'ref-missing': r.exists === false }"
+                  >
+                    <img
+                      v-if="refUrls[r.id]"
+                      :src="refUrls[r.id]"
+                      :alt="'ref ' + r.id"
+                      loading="lazy"
+                      class="ref-clickable"
+                      title="点击查看原图"
+                      @click.stop="openRefViewer(r)"
+                    />
+                    <div v-else class="ref-ph">{{ r.exists === false ? '文件已不在' : '加载中…' }}</div>
+                    <div class="ref-meta">
+                      <span>#{{ r.id }}</span>
+                      <n-tag size="tiny" :bordered="false" :type="originType(r.origin)">
+                        {{ originLabel(r.origin) }}
+                      </n-tag>
+                      <n-tag v-if="r.is_cover" size="tiny" type="warning" :bordered="false">★封面</n-tag>
+                      <n-tag v-else-if="r.is_cover_auto" size="tiny" :bordered="false">自动封面</n-tag>
+                      <n-tag v-if="nsfwText(r)" size="tiny" :type="nsfwType(r)" :bordered="false">
+                        {{ nsfwText(r) }}
+                      </n-tag>
+                    </div>
+                    <div class="ref-who">
+                      <span class="ref-who-name">{{ r.created_by || NO_REC }}</span>
+                      <span class="ref-who-time">{{ fmtTime(r.created_at) }}</span>
+                    </div>
+                    <div class="ref-ops">
+                      <n-button v-if="!r.is_cover" size="tiny" quaternary @click="setCover(r)">设为封面</n-button>
+                      <n-popconfirm @positive-click="removeRef(r)">
+                        <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
+                        删除这张参考图？<template v-if="r.external">（图库里的原图不会被删）</template>
+                      </n-popconfirm>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-          <div v-else class="empty">
-            还没有参考图。可上传该角色的定妆图（多张），并选择挂到某个锚点下；第一张会自动作为封面。
-          </div>
+              <div v-if="!(detail.refs || []).length" class="empty">
+                还没有参考图。出图命中锚点后会自动挂在这里，也可以点「⬆ 上传图片」拖拽上传。
+              </div>
+            </n-tab-pane>
+
+            <!-- ---- 身份与设置 ---- -->
+            <n-tab-pane name="info" tab="身份与设置">
+              <n-form label-placement="left" label-width="86" size="small">
+                <n-form-item label="角色名"><n-input v-model:value="form.name" /></n-form-item>
+                <n-form-item label="别名">
+                  <n-input v-model:value="form.aliasesText" placeholder="逗号分隔，如：小叽酱,叽叽" />
+                </n-form-item>
+                <n-form-item label="绑定人格">
+                  <n-select
+                    v-model:value="form.persona_name"
+                    :options="mergedPersonaOptions"
+                    filterable
+                    tag
+                    clearable
+                    placeholder="AstrBot 人格名（用户说「画你」时命中）"
+                  />
+                </n-form-item>
+                <n-form-item label="作品"><n-input v-model:value="form.work" placeholder="如 Neverness to Everness" /></n-form-item>
+                <n-form-item label="关联 LoRA">
+                  <n-select
+                    v-model:value="form.lora_name"
+                    :options="mergedLoraOptions"
+                    filterable
+                    tag
+                    clearable
+                    placeholder="只列「角色」分类的 LoRA；也可直接输入名称"
+                  />
+                </n-form-item>
+                <n-form-item label="备注"><n-input v-model:value="form.note" type="textarea" :rows="2" /></n-form-item>
+                <n-form-item label="启用"><n-switch v-model:value="form.enabled" /></n-form-item>
+                <n-form-item label=" ">
+                  <n-space>
+                    <n-button type="primary" :loading="saving" @click="saveCard">保存卡片</n-button>
+                    <n-popconfirm @positive-click="removeCard">
+                      <template #trigger><n-button type="error" ghost>删除角色</n-button></template>
+                      删除「{{ detail.name }}」及其全部锚点？此操作不可恢复。
+                    </n-popconfirm>
+                  </n-space>
+                </n-form-item>
+              </n-form>
+            </n-tab-pane>
+          </n-tabs>
         </template>
       </n-drawer-content>
     </n-drawer>
+
+    <!-- 上传参考图弹窗（v6.3.0：拖拽 + 多选 + 预览，替代原「点一下直接开系统文件框」） -->
+    <n-modal v-model:show="uploadOpen" preset="card" :title="`上传参考图 · ${detail?.name || ''}`" style="max-width: 640px">
+      <n-form label-placement="top" size="small">
+        <n-form-item label="挂到哪个锚点（决定这张图属于哪套服装/形象）">
+          <n-select v-model:value="uploadAnchorId" :options="uploadTargetOptions" />
+        </n-form-item>
+      </n-form>
+      <n-upload
+        multiple
+        accept="image/*"
+        :default-open="uploadOpen"
+        :custom-request="onUploadRequest"
+        :show-file-list="true"
+        @clear="onUploadClear"
+      >
+        <n-upload-dragger>
+          <div class="drop-title">把图片拖进来，或点击选择</div>
+          <div class="drop-sub">
+            可一次多张；PNG / JPG / WebP / GIF，单张上限 12MB，单次最多 {{ UPLOAD_MAX }} 张
+          </div>
+        </n-upload-dragger>
+      </n-upload>
+      <div class="up-status">
+        <span v-if="uploading">上传中… 成功 {{ upOk }} 张，重复 {{ upDup }} 张，失败 {{ upErr }} 张</span>
+        <span v-else-if="upDone" class="dim">
+          本次已上传 {{ upOk }} 张<template v-if="upDup">（{{ upDup }} 张已存在，未重复入库）</template><template v-if="upErr">，失败 {{ upErr }} 张</template>
+        </span>
+        <span v-else class="dim">上传完成后会自动刷新角色卡；关闭弹窗即结束。</span>
+      </div>
+      <n-divider style="margin: 10px 0">从图库导入（按 sha，已有成品图不必重复上传）</n-divider>
+      <div class="tool-grid">
+        <n-input v-model:value="refSha" size="small" placeholder="图库图片的 sha（可在图库页复制）" />
+        <n-button size="small" :disabled="!refSha.trim()" @click="importRefFromGallery">导入</n-button>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="closeUpload">完成</n-button>
+        </n-space>
+      </template>
+    </n-modal>
 
     <!-- 新建角色 -->
     <n-modal v-model:show="createOpen" preset="card" title="新建角色卡" style="max-width: 520px">
@@ -356,15 +463,65 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref, watch } from "vue";
 import {
-  NButton, NCard, NDataTable, NDivider, NDrawer, NDrawerContent, NForm, NFormItem,
-  NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NSwitch, NTag,
+  NButton, NCard, NDataTable, NDivider, NDrawer, NDrawerContent, NDescriptions,
+  NDescriptionsItem, NForm, NFormItem, NInput, NInputNumber, NModal, NPopconfirm,
+  NSelect, NSpace, NSwitch, NTabPane, NTabs, NTag, NUpload, NUploadDragger,
   useDialog, useMessage,
+  type UploadCustomRequestOptions,
 } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import ItemViewer from "@/components/ItemViewer.vue";
+import { fmtTime } from "@/utils/format";
 
 const message = useMessage();
 const dialog = useDialog();
+
+/** 老数据没记创建者（v6.3.0 才有该字段），统一显示成这个，别用空白糊弄过去。 */
+const NO_REC = "未记录";
+/** 单次上传张数上限（与后端 5 张/批的宽松限制解耦， purely 前端体验约束）。 */
+const UPLOAD_MAX = 10;
+
+/** `source`（角色卡/锚点的创建渠道）→ 中文。未知值原样显示，便于发现新渠道没映射。 */
+function srcLabel(src: string | undefined | null): string {
+  const k = (src || "").trim().toLowerCase();
+  const m: Record<string, string> = {
+    webui: "WebUI 创建",
+    command: "指令创建",
+    llm: "AI 对话创建",
+    import: "导入",
+    user: NO_REC,
+  };
+  return m[k] || (k ? src! : NO_REC);
+}
+
+/** `origin`（参考图入库渠道）→ 中文。 */
+function originLabel(o: string | undefined | null): string {
+  const k = (o || "").trim().toLowerCase();
+  const m: Record<string, string> = {
+    upload: "上传",
+    command: "指令录入",
+    tool: "AI 录入",
+    gallery: "图库导入",
+    auto: "出图自动关联",
+    web: "联网抓取",
+    import: "导入",
+  };
+  return m[k] || (k || "上传");
+}
+
+function originType(o: string | undefined | null): "default" | "info" | "success" | "warning" {
+  const k = (o || "").trim().toLowerCase();
+  if (k === "auto") return "info";
+  if (k === "upload") return "success";
+  if (k === "web" || k === "import") return "warning";
+  return "default";
+}
+
+function kindLabel(k: string | undefined | null): string {
+  return ({ full: "外观+服装", appearance: "仅外观", outfit: "仅服装" } as Record<string, string>)[
+    (k || "full") as string
+  ] || "外观+服装";
+}
 
 const loading = ref(false);
 const saving = ref(false);
@@ -377,6 +534,8 @@ const createOpen = ref(false);
 const anchorOpen = ref(false);
 const importOpen = ref(false);
 const importText = ref("");
+/** 后端 character_card 的自动关联配置（列表接口带回来，只用于页面上的说明文案）。 */
+const autoLink = ref<{ enabled: boolean; keep: number; cover: boolean } | null>(null);
 
 // v6.1.2：下拉框的「空」必须是 null，不能是空字符串——
 // `n-select` 只要 value 非 null 就认为「有值」，会显示清空按钮（看着空、其实得手点清空）。
@@ -432,6 +591,18 @@ const columns = [
   { title: "作品", key: "work", width: 150, render: (row: any) => row.work || "—" },
   { title: "关联 LoRA", key: "lora_name", width: 120, render: (row: any) => row.lora_name || "—" },
   {
+    title: "创建者", key: "created_by", width: 130,
+    render: (row: any) => row.created_by || NO_REC,
+  },
+  {
+    title: "创建方式", key: "source", width: 96,
+    render: (row: any) => srcLabel(row.source),
+  },
+  {
+    title: "创建时间", key: "created_at", width: 130,
+    render: (row: any) => fmtTime(row.created_at),
+  },
+  {
     title: "锚点", key: "anchor_count", width: 150,
     render: (row: any) => {
       const names = (row.anchors || []).map((a: any) => a.name).join("、");
@@ -462,6 +633,7 @@ async function reload() {
   try {
     const data = await apiGet("character/list", { keyword: keyword.value.trim() });
     characters.value = data?.characters || [];
+    autoLink.value = data?.auto_link || null;
     loadCovers();
   } catch (e: any) {
     message.error(`读取角色卡片失败：${e?.message || e}`);
@@ -791,7 +963,6 @@ function rememberExtra(lora: string, persona: string) {
 }
 
 // ---------------- 参考图（M3）----------------
-const refInput = ref<HTMLInputElement | null>(null);
 const refUrls = reactive<Record<number, string>>({});
 const refSha = ref("");
 const suggesting = ref(false);
@@ -799,13 +970,15 @@ const suggestOpen = ref(false);
 const suggestText = ref("");
 const suggestQuery = ref("");
 
-function pickRefFiles() {
-  refInput.value?.click();
-}
-
-// ---------------- 锚点级图片（v6.1.0）----------------
+// ---------------- 锚点级图片（v6.1.0）+ 上传弹窗（v6.3.0）----------------
 /** 上传目标：0 = 角色级（不绑定锚点），其余 = 锚点 id。 */
 const uploadAnchorId = ref<number>(0);
+const uploadOpen = ref(false);
+const uploading = ref(false);
+const upDone = ref(false);
+const upOk = ref(0);
+const upDup = ref(0);
+const upErr = ref(0);
 
 const uploadTargetOptions = computed(() => [
   { label: "角色级（不绑定）", value: 0 },
@@ -819,17 +992,78 @@ function anchorRefs(aid: number) {
   return (detail.value?.refs || []).filter((r: any) => Number(r.anchor_id || 0) === Number(aid));
 }
 
-function refAnchorName(r: any) {
-  const aid = Number(r?.anchor_id || 0);
-  if (!aid) return "角色级";
-  const a = (detail.value?.anchors || []).find((x: any) => Number(x.id) === aid);
-  return a ? `@${a.name}` : `@锚点${aid}`;
+/** 参考图按锚点分组（角色级单独一组），详情页「参考图」分区用它展示。 */
+const refGroups = computed(() => {
+  const refs = detail.value?.refs || [];
+  const groups: { key: string; name: string; anchorId: number; items: any[] }[] = [];
+  for (const a of detail.value?.anchors || []) {
+    const items = refs.filter((r: any) => Number(r.anchor_id || 0) === Number(a.id));
+    if (items.length) groups.push({ key: `a${a.id}`, name: `锚点：${a.name}`, anchorId: Number(a.id), items });
+  }
+  const loose = refs.filter((r: any) => !Number(r.anchor_id || 0));
+  if (loose.length) groups.push({ key: "loose", name: "角色级（未绑定锚点）", anchorId: 0, items: loose });
+  return groups;
+});
+
+/** 打开上传弹窗；anchorId 非 0 表示从某个锚点的「传图」进来，预选好目标。 */
+function openUpload(anchorId = 0) {
+  uploadAnchorId.value = Number(anchorId) || 0;
+  upOk.value = 0;
+  upDup.value = 0;
+  upErr.value = 0;
+  upDone.value = false;
+  uploading.value = false;
+  uploadOpen.value = true;
 }
 
-/** 指定锚点后打开文件选择（锚点条目里的「＋ 传图」）。 */
-function pickRefFilesFor(aid: number) {
-  uploadAnchorId.value = Number(aid) || 0;
-  refInput.value?.click();
+function closeUpload() {
+  uploadOpen.value = false;
+}
+
+function onUploadClear() {
+  upOk.value = 0;
+  upDup.value = 0;
+  upErr.value = 0;
+  upDone.value = false;
+}
+
+/**
+ * n-upload 的自定义上传：页面跑在 sandbox iframe 里，不能自己 fetch，
+ * 必须走 bridge（apiPost）；所以这里只负责「读文件 → 交给后端 → 报成败」。
+ */
+async function onUploadRequest({ file, onFinish, onError }: UploadCustomRequestOptions) {
+  if (!detail.value) return onError();
+  if (Number(upOk.value + upDup.value + upErr.value) >= UPLOAD_MAX) {
+    message.warning(`单次最多上传 ${UPLOAD_MAX} 张`);
+    return onError();
+  }
+  uploading.value = true;
+  try {
+    const raw = file.file as File | undefined;
+    if (!raw) throw new Error("没读到文件内容");
+    const dataUrl = await fileToDataUrl(raw);
+    const r = await apiPost(
+      "character/ref/upload",
+      {
+        character_id: detail.value.id,
+        filename: raw.name || file.name,
+        data: dataUrl,
+        anchor_id: Number(uploadAnchorId.value) || 0,
+      },
+      { timeout: 30000 },
+    );
+    if (r?.dedup) upDup.value += 1;
+    else upOk.value += 1;
+    onFinish();
+    await refreshDetail();
+  } catch (e: any) {
+    upErr.value += 1;
+    message.error(`「${file.name}」上传失败：${e?.message || e}`);
+    onError();
+  } finally {
+    uploading.value = false;
+    upDone.value = true;
+  }
 }
 
 async function setCover(r: any) {
@@ -848,6 +1082,28 @@ async function setCover(r: any) {
 const viewerShow = ref(false);
 const viewerSrc = ref("");
 const viewerTitle = ref("");
+
+/** 详情抽屉顶部那张封面：显式封面 > 自动封面（第一张图）。 */
+const dtCoverRef = computed(() => {
+  const refs: any[] = detail.value?.refs || [];
+  return refs.find((r) => r.is_cover) || refs.find((r) => r.is_cover_auto) || null;
+});
+const dtCoverUrl = computed(() => {
+  const r = dtCoverRef.value;
+  return r ? refUrls[r.id] || "" : "";
+});
+const dtCoverAuto = computed(() => !!(dtCoverRef.value && !dtCoverRef.value.is_cover));
+const primaryAnchorName = computed(() => {
+  const pid = Number(detail.value?.primary_anchor_id || 0);
+  const a = (detail.value?.anchors || []).find((x: any) => Number(x.id) === pid);
+  return a ? a.name : "—";
+});
+
+/** 点封面 → 打开大图查看器（没有封面时不响应）。 */
+function openCoverViewer() {
+  const r = dtCoverRef.value;
+  if (r) openRefViewer(r);
+}
 
 /** 点缩略图 → 拉**原图**进大图查看器（列表里的都是缩略图，放大才不发糊）。 */
 async function openRefViewer(r: any) {
@@ -897,39 +1153,6 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-async function onRefFiles(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const files = Array.from(input.files || []);
-  input.value = "";
-  if (!files.length || !detail.value) return;
-  saving.value = true;
-  let ok = 0;
-  const errs: string[] = [];
-  for (const f of files.slice(0, 5)) {
-    try {
-      const dataUrl = await fileToDataUrl(f);
-      await apiPost(
-        "character/ref/upload",
-        {
-          character_id: detail.value.id,
-          filename: f.name,
-          data: dataUrl,
-          anchor_id: Number(uploadAnchorId.value) || 0,
-        },
-        { timeout: 30000 },
-      );
-      ok += 1;
-    } catch (err: any) {
-      errs.push(`${f.name}: ${err?.message || err}`);
-    }
-  }
-  saving.value = false;
-  if (ok) message.success(`已上传 ${ok} 张参考图`);
-  if (errs.length) message.error(`有 ${errs.length} 张失败：${errs[0]}`);
-  await openDetail({ id: detail.value.id });
-  await reload();
-}
-
 function removeRef(r: any) {
   dialog.warning({
     title: "删除参考图",
@@ -948,6 +1171,13 @@ function removeRef(r: any) {
       }
     },
   });
+}
+
+/** 重新拉当前角色详情（上传图片后立刻看到；列表也同步刷新）。 */
+async function refreshDetail() {
+  if (!detail.value) return;
+  await openDetail({ id: detail.value.id });
+  await reload();
 }
 
 async function importRefFromGallery() {
@@ -1056,18 +1286,60 @@ onMounted(() => {
   background: rgba(128, 128, 128, 0.16); padding: 1px 4px; border-radius: 4px;
 }
 .empty { text-align: center; opacity: 0.6; padding: 18px 0; font-size: 13px; }
-.anchor-head { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.dim { font-size: 12px; opacity: 0.6; }
+
+/* ---- 详情抽屉头部（v6.3.0）---- */
+.dt-head { display: flex; gap: 14px; align-items: flex-start; }
+.dt-cover {
+  position: relative; flex: 0 0 108px; width: 108px; height: 144px;
+  border-radius: 10px; overflow: hidden; cursor: zoom-in;
+  border: 1px solid rgba(128, 128, 128, 0.25); background: rgba(128, 128, 128, 0.12);
+}
+.dt-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dt-cover-ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 600; opacity: 0.35; letter-spacing: 2px;
+}
+.dt-cover-tag {
+  position: absolute; right: 4px; bottom: 4px; font-size: 10px; padding: 0 5px;
+  border-radius: 4px; background: rgba(0, 0, 0, 0.5); color: #fff;
+}
+.dt-ident { flex: 1 1 auto; min-width: 0; }
+.dt-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dt-name-txt { font-size: 17px; font-weight: 600; }
+.dt-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 8px; }
+.dt-meta { width: 100%; }
+.dt-tabs { margin-top: 10px; }
+
+/* ---- 分区工具条 ---- */
+.pane-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;
+}
+
+/* ---- 锚点条目 ---- */
 .anchor-item {
   border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 8px;
   padding: 8px 10px; margin-bottom: 8px;
 }
 .anchor-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.anchor-spacer { flex: 1 1 auto; }
 .anchor-name { font-weight: 600; }
 .anchor-pos { font-size: 12px; line-height: 1.6; margin-top: 6px; word-break: break-word; }
 .anchor-neg { font-size: 12px; opacity: 0.7; margin-top: 4px; word-break: break-word; }
-.anchor-ops { display: flex; gap: 6px; margin-top: 8px; }
+.rec-meta {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 6px; font-size: 11px; opacity: 0.72;
+}
 .hint { font-size: 12px; opacity: 0.6; margin-left: 8px; }
 .tip-inline { display: block; margin: 0 0 10px 92px; }
+
+/* ---- 参考图 ---- */
+.ref-group { margin-bottom: 14px; }
+.ref-group-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  border-left: 3px solid rgba(64, 128, 255, 0.5); padding-left: 6px;
+}
+.ref-group-name { font-size: 13px; font-weight: 600; }
 .ref-grid { display: flex; flex-wrap: wrap; gap: 10px; }
 .ref-item {
   width: 132px; border: 1px solid rgba(128, 128, 128, 0.2);
@@ -1082,12 +1354,21 @@ onMounted(() => {
   display: flex; align-items: center; justify-content: center; gap: 4px;
   font-size: 11px; opacity: 0.8; margin: 4px 0 2px; flex-wrap: wrap;
 }
-.ref-src { opacity: 0.7; }
+.ref-who {
+  display: flex; flex-direction: column; font-size: 10px; opacity: 0.62;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.ref-who-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-missing { border-color: rgba(255, 77, 79, 0.6); }
 .ref-clickable { cursor: zoom-in; }
 .anchor-ref img.ref-clickable { cursor: zoom-in; }
-.ref-upload-label { font-size: 12px; opacity: 0.7; }
 .ref-is-cover { border-color: rgba(250, 173, 20, 0.75) !important; }
 .ref-ops { display: flex; align-items: center; justify-content: center; gap: 2px; }
+
+/* ---- 上传弹窗 ---- */
+.drop-title { font-size: 15px; font-weight: 600; }
+.drop-sub { font-size: 12px; opacity: 0.65; margin-top: 6px; line-height: 1.7; }
+.up-status { margin-top: 10px; font-size: 12px; min-height: 18px; }
 
 /* ---- 卡片视图（v6.1.0）---- */
 .char-grid {
@@ -1136,6 +1417,10 @@ onMounted(() => {
 }
 .char-lora {
   margin-top: 2px; font-size: 11px; opacity: 0.6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.char-by {
+  margin-top: 4px; font-size: 10px; opacity: 0.55;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .char-ops { display: flex; align-items: center; gap: 4px; margin-top: 8px; flex-wrap: wrap; }

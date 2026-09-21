@@ -12,6 +12,8 @@
    - 多角色：生成计数标签 + 每角色一个 ``(标签:权重)`` 分组，并把模型自己写的权重分组
      （通常就是它每轮重新发明的角色外观）**剥掉**，避免两套描述打架；
    - 锚点自带 ``lora_name`` 时，返回给调用方并入 loras 参数。
+4. **回写**（v6.3.0）：出图命中了哪个锚点，就把成品图按那个锚点自动关联进角色卡
+   （``auto_link_generated``）—— 引用 ``gallery/`` 里的原文件、不复制，省掉人工「存参考图」。
 """
 
 import logging
@@ -440,12 +442,15 @@ async def land_ref(
     url: str = "",
     note: str = "",
     anchor_id: int = 0,
+    created_by: str = "",
+    origin: str = "upload",
 ) -> dict | None:
     """参考图落地：写文件（内容寻址）→ NSFW 打标 → 落库，返回记录。
 
     `url` 非空表示来源是联网抓取，受 `character_card.allow_web_fetch` 约束
     （关闭时直接拒绝，避免用户没授权就联网落图）。
     `anchor_id`（v6.1.0）：把图片挂到某个锚点下（0 = 角色级），前端可按锚点分组展示。
+    `created_by` / `origin`（v6.3.0）：谁从哪个渠道存进来的，详情页要展示。
     """
     store = getattr(self, "character", None)
     if store is None:
@@ -458,7 +463,8 @@ async def land_ref(
         )
     _ext = Path(filename).suffix if filename else ".png"
     ref = store.store_ref_bytes(
-        char_id, data, ext=_ext or ".png", url=_url, note=note, anchor_id=anchor_id
+        char_id, data, ext=_ext or ".png", url=_url, note=note, anchor_id=anchor_id,
+        created_by=created_by, origin=origin,
     )
     if ref is None:
         return None
@@ -471,6 +477,99 @@ async def land_ref(
             except Exception as e:
                 logger.warning(f"【角色卡】 NSFW 分数回写失败: {e}")
     return ref
+
+
+def actor_label(event) -> str:
+    """把消息事件压成「谁」：`昵称(QQ号)`；取不到就退回 QQ 号，再取不到返回空串。
+
+    角色卡 / 锚点 / 参考图都要记创建者（v6.3.0），而三个入口（指令、AI 工具、WebUI）
+    只有这里能拿到发送者身份，所以统一由调用方先算好字符串再传进存储层。
+    """
+    if event is None:
+        return ""
+    try:
+        name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
+    except Exception:
+        name = ""
+    try:
+        uid = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
+    except Exception:
+        uid = ""
+    if name and uid:
+        return f"{name}({uid})"
+    if name:
+        return name
+    return f"QQ:{uid}" if uid else ""
+
+
+async def auto_link_generated(
+    self,
+    hits: list[tuple[dict, dict]],
+    img_path: str,
+    actor: str = "",
+    nsfw_score: float = -1,
+    note: str = "出图自动关联",
+) -> list[dict]:
+    """出图成功后，把成品图自动挂到本次命中的每个锚点下（v6.3.0）。
+
+    用户在卡片里配好锚点、又用这个锚点出了图——这张成片本来就是该锚点最真实的样例，
+    以前只能靠「/角色 参考图 记住」或 WebUI 手工上传，现在出图即入库。
+
+    - **引用而非复制**：图片留在 gallery/ 里（`store_ref_link`，`external=1`），
+      不再抄一份进角色目录；删角色卡里的这条记录不会动图库文件。
+    - **封面只在角色原本一张图都没有时**才自动设，绝不覆盖人工挑选的封面。
+    - **只清理 `origin='auto'` 的历史图**（每锚点保留 `auto_link_keep` 张，0=不限），
+      手工上传/指令录入的图属于用户资产，永不自动删。
+
+    失败只记日志，绝不影响出图（调用方也已包一层 try）。
+    """
+    import asyncio as _aio
+
+    store = getattr(self, "character", None)
+    if store is None or not hits:
+        return []
+    cfg = _cfg(self)
+    if not cfg.get("auto_link_ref", True):
+        return []
+    p = Path(str(img_path or ""))
+    if not p.exists() or not p.is_file():
+        return []
+    try:
+        _keep = int(cfg.get("auto_link_keep", 6) or 0)
+    except (TypeError, ValueError):
+        _keep = 6
+    _auto_cover = bool(cfg.get("auto_link_cover", True))
+    out: list[dict] = []
+    # sha 在别处算好再传进去：CharacterStore 的连接属于本线程（to_thread 里用 sqlite
+    # 会直接抛「created in a thread can only be used in that same thread」），
+    # 唯独文件 IO 适合丢线程池。
+    _sha = await _aio.to_thread(store.file_sha256, str(p))
+    for card, anchor in hits:
+        try:
+            cid = int(card["id"])
+            aid = int((anchor or {}).get("id") or 0)
+            # 「原本有没有图」必须在插入前问，插完再判永远是 True
+            _had_refs = bool(store.list_refs(cid))
+            ref = store.store_ref_link(
+                cid, str(p), sha256=_sha, anchor_id=aid, note=note,
+                nsfw_score=float(nsfw_score) if nsfw_score is not None else -1,
+                created_by=actor or "", origin="auto",
+            )
+            if ref is None or ref.get("dedup"):
+                continue
+            out.append(ref)
+            if _auto_cover and not _had_refs and not int(card.get("cover_ref_id") or 0):
+                store.set_cover_ref(cid, int(ref["id"]))
+            if _keep > 0:
+                store.trim_auto_refs(cid, aid, _keep)
+        except Exception as e:
+            logger.warning(f"【角色卡】 出图自动关联失败（不影响出图）: {e}")
+    if out:
+        logger.info(
+            f"【角色卡】 本次成品图自动关联 {len(out)} 张："
+            + "、".join(f"{c.get('name')}/{a.get('name')}" for c, a in hits)
+        )
+    return out
 
 
 async def suggest_anchor(self, name: str, work: str = "") -> dict:

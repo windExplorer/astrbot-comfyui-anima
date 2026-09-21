@@ -7,6 +7,10 @@
   每套含正标签串、负标签串、建议权重、可选覆盖 LoRA、是否抑制全局触发词
 - ``character_refs``    参考图（0~N 张）：本地路径 / 来源 URL / sha256 / NSFW 打标
 
+三张表都带 ``created_at`` + ``created_by``（谁建的）；角色卡另有 ``source``（创建方式），
+参考图另有 ``origin``（上传 / 指令 / 工具 / 图库 / 出图自动关联）与 ``external``
+（文件不归本插件所有，如直接引用 gallery/ 里的成品图 —— 删记录时**不得**删文件）。
+
 设计要点（见 ``docs/TODO-角色卡片.md``）：
 
 - **persona ↔ character 为可选 1:1 绑定**：``characters.persona_name`` 非空即表示该卡是
@@ -28,10 +32,13 @@ from pathlib import Path
 logger = logging.getLogger("astrbot_plugin_comfyui_anima.character")
 
 # 角色卡可写字段白名单（update 用，防注入任意列名）
+# `created_by` 可写只为「老数据回填一次」服务（见 create_character 的合并分支）；
+# 各调用方的 update 入参都是显式字段名，不会由前端传。
 _CHAR_FIELDS = {
     "name", "aliases", "persona_name", "work", "lora_name",
     "primary_anchor_id", "source", "note", "enabled",
     "cover_ref_id",  # v6.1.0：角色封面（指向 character_refs.id，0 = 自动取第一张）
+    "created_by",    # v6.3.0：谁建的
 }
 _ANCHOR_FIELDS = {
     "name", "kind", "positive", "negative", "weight",
@@ -40,6 +47,18 @@ _ANCHOR_FIELDS = {
 
 # 锚点种类：appearance=只写外观；outfit=服装/造型；full=外观+服装（默认，最常用）
 ANCHOR_KINDS = ("full", "appearance", "outfit")
+
+# 角色卡「创建方式」（characters.source）。历史数据统一是 "user"，前端按「未记录」展示。
+CHAR_SOURCES = ("webui", "command", "llm", "import", "user")
+
+# 参考图来源（character_refs.origin）：决定前端展示文案，也决定自动清理的范围——
+# 只有 auto 会被 auto_link_keep 上限裁掉，人工录入的一律保留。
+REF_ORIGIN_UPLOAD = "upload"    # WebUI 上传
+REF_ORIGIN_COMMAND = "command"  # /角色 参考图 记住
+REF_ORIGIN_TOOL = "tool"        # comfyui_character 工具 add_ref
+REF_ORIGIN_GALLERY = "gallery"  # 从图库按 sha 导入（人工点选）
+REF_ORIGIN_AUTO = "auto"        # 出图命中锚点后自动关联（v6.3.0）
+REF_ORIGIN_WEB = "web"          # 联网抓取直链
 
 
 def _json_list(raw) -> list[str]:
@@ -197,6 +216,30 @@ class CharacterStore:
                 "cover_ref_id": "INTEGER NOT NULL DEFAULT 0",
             },
         )
+        # 缺列迁移（v6.3.0）：把「谁、以什么方式」补齐到三张表
+        #   *.created_by       —— 创建者（QQ 昵称(号) / WebUI 控制台 / 导入）
+        #   character_anchors.source —— 锚点的创建渠道（角色卡早有该字段，锚点此前没有）
+        #   character_refs.origin    —— 图片来源渠道（upload/command/tool/gallery/auto/web）
+        #   character_refs.external  —— 1 = 文件不归本卡所有（图库成品图），删记录时不删盘
+        self._ensure_columns(
+            "characters",
+            {"created_by": "TEXT NOT NULL DEFAULT ''"},
+        )
+        self._ensure_columns(
+            "character_anchors",
+            {
+                "created_by": "TEXT NOT NULL DEFAULT ''",
+                "source": "TEXT NOT NULL DEFAULT 'user'",
+            },
+        )
+        self._ensure_columns(
+            "character_refs",
+            {
+                "created_by": "TEXT NOT NULL DEFAULT ''",
+                "origin": "TEXT NOT NULL DEFAULT 'upload'",
+                "external": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_anchor_char ON character_anchors(character_id)"
         )
@@ -231,6 +274,20 @@ class CharacterStore:
             d["weight"] = 1.2
         return d
 
+    @staticmethod
+    def _row_to_ref(row) -> dict | None:
+        """参考图行 → dict：`external` 转 bool、`nsfw_score` 转 float，前端拿到的形状稳定。"""
+        if row is None:
+            return None
+        d = dict(row)
+        d["external"] = bool(d.get("external") or 0)
+        try:
+            d["nsfw_score"] = float(d.get("nsfw_score") if d.get("nsfw_score") is not None else -1)
+        except (TypeError, ValueError):
+            d["nsfw_score"] = -1.0
+        d.setdefault("origin", REF_ORIGIN_UPLOAD)
+        return d
+
     def _find_char_row(self, key):
         """按 id（int / 纯数字串）或名称（大小写不敏感）精确查一行。"""
         conn = self._conn_get()
@@ -262,8 +319,13 @@ class CharacterStore:
         source: str = "user",
         note: str = "",
         enabled: bool = True,
+        created_by: str = "",
     ) -> dict:
-        """新建角色卡。同名（大小写不敏感）或命中已有别名时**返回已有卡**并补齐传入字段。"""
+        """新建角色卡。同名（大小写不敏感）或命中已有别名时**返回已有卡**并补齐传入字段。
+
+        `source` = 创建方式（webui / command / llm / import），`created_by` = 谁建的；
+        两者只在**新建**时写入，已有卡不会被覆盖（谁建的应当永远是当初那个人）。
+        """
         _name = (name or "").strip()
         if not _name:
             raise ValueError("角色名不能为空")
@@ -279,6 +341,9 @@ class CharacterStore:
             ):
                 if (v or "").strip() and not (exist[k] or "").strip():
                     upd[k] = v.strip()
+            # 老数据没记「谁建的」→ 这次知道了就补上（只在为空时回填，不改写既有归属）
+            if (created_by or "").strip() and not (exist["created_by"] or "").strip():
+                upd["created_by"] = created_by.strip()
             if upd:
                 self.update_character(int(exist["id"]), **upd)
             return self.get_character(int(exist["id"]))
@@ -287,13 +352,14 @@ class CharacterStore:
         cur = conn.execute(
             """INSERT INTO characters
                (name, aliases, persona_name, work, lora_name, primary_anchor_id,
-                source, note, enabled, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                source, note, enabled, created_at, updated_at, created_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 _name, _dump_list(aliases), (persona_name or "").strip(),
                 (work or "").strip(), (lora_name or "").strip(), 0,
                 (source or "user").strip(), (note or "").strip(),
                 1 if enabled else 0, now, now,
+                (created_by or "").strip(),
             ),
         )
         conn.commit()
@@ -462,8 +528,14 @@ class CharacterStore:
         lora_name: str = "",
         skip_trigger_words: bool = True,
         note: str = "",
+        created_by: str = "",
+        source: str = "user",
     ) -> dict | None:
-        """新增锚点。角色的第一个锚点自动成为主锚点。"""
+        """新增锚点。角色的第一个锚点自动成为主锚点。
+
+        `created_by` / `source`（v6.3.0）：谁在哪个渠道建的（webui / command / llm / import），
+        详情页要按「服装/形象提示词」逐条展示创建人与创建方式。
+        """
         ch = self.get_character(char_id)
         if ch is None:
             return None
@@ -477,13 +549,15 @@ class CharacterStore:
         cur = conn.execute(
             """INSERT INTO character_anchors
                (character_id, name, kind, positive, negative, weight, lora_name,
-                skip_trigger_words, note, sort_order, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                skip_trigger_words, note, sort_order, created_at, updated_at,
+                created_by, source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(ch["id"]), _name, _kind, _pos, (negative or "").strip(),
                 float(weight or 1.2), (lora_name or "").strip(),
                 1 if skip_trigger_words else 0, (note or "").strip(),
                 self._next_sort_order(int(ch["id"])), now, now,
+                (created_by or "").strip(), (source or "user").strip(),
             ),
         )
         aid = int(cur.lastrowid)
@@ -689,12 +763,15 @@ class CharacterStore:
         note: str = "",
         nsfw_score: float = -1,
         anchor_id: int = 0,
+        created_by: str = "",
+        origin: str = REF_ORIGIN_UPLOAD,
     ) -> dict | None:
         """把图片字节落盘到角色参考图目录并落库（内容寻址，同角色同图去重）。
 
         文件名用 `sha256[:16] + ext`：同图重复上传只占一份空间、直接返回已有记录。
         `anchor_id`（v6.1.0）：把这张图挂到某个**锚点**下（0 = 角色级，不绑定锚点）。
         同一张图已存在但本次指定了不同锚点时，**只更新归属**而不新建记录。
+        `created_by` / `origin`（v6.3.0）：谁传的吗、从哪个渠道来的，供详情页展示。
         """
         ch = self.get_character(char_id)
         if ch is None:
@@ -721,7 +798,7 @@ class CharacterStore:
         ).fetchone()
         if exist is not None:
             logger.info(f"【角色卡】 参考图已存在（同 sha），复用记录 id={exist['id']}")
-            d = dict(exist)
+            d = self._row_to_ref(exist)
             d["dedup"] = True
             # 本次显式指定了锚点且与原归属不同 → 只挪归属（不重复占盘）
             _want = int(anchor_id or 0)
@@ -742,10 +819,12 @@ class CharacterStore:
             raise
         cur = conn.execute(
             """INSERT INTO character_refs
-               (character_id, anchor_id, path, url, sha256, nsfw_score, note, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (character_id, anchor_id, path, url, sha256, nsfw_score, note, created_at,
+                created_by, origin, external)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (int(ch["id"]), int(anchor_id or 0), str(out), (url or "").strip(), sha,
-             float(nsfw_score), (note or "").strip(), time.time()),
+             float(nsfw_score), (note or "").strip(), time.time(),
+             (created_by or "").strip(), (origin or REF_ORIGIN_UPLOAD).strip(), 0),
         )
         conn.commit()
         logger.info(
@@ -755,13 +834,14 @@ class CharacterStore:
         row = conn.execute(
             "SELECT * FROM character_refs WHERE id=?", (int(cur.lastrowid),)
         ).fetchone()
-        d = dict(row)
+        d = self._row_to_ref(row)
         d["dedup"] = False
         return d
 
     def store_ref_from_path(
         self, char_id, src_path, url: str = "", note: str = "",
         nsfw_score: float = -1, anchor_id: int = 0,
+        created_by: str = "", origin: str = REF_ORIGIN_UPLOAD,
     ) -> dict | None:
         """从本地已有文件落地一张参考图（复制进角色目录）。"""
         p = Path(str(src_path))
@@ -770,7 +850,107 @@ class CharacterStore:
         return self.store_ref_bytes(
             char_id, p.read_bytes(), ext=p.suffix or ".png",
             url=url, note=note, nsfw_score=nsfw_score, anchor_id=anchor_id,
+            created_by=created_by, origin=origin,
         )
+
+    @staticmethod
+    def file_sha256(file_path) -> str:
+        """分块算文件 sha（大图别整张读进内存）。失败返回空串＝调用方按「未知 sha」处理。"""
+        import hashlib as _hl
+
+        try:
+            _h = _hl.sha256()
+            with open(str(file_path), "rb") as f:
+                for _chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    _h.update(_chunk)
+            return _h.hexdigest()
+        except Exception as e:
+            logger.warning(f"【角色卡】 计算文件 sha 失败 {file_path}: {e}")
+            return ""
+
+    def store_ref_link(
+        self, char_id, file_path, sha256: str = "", url: str = "", note: str = "",
+        nsfw_score: float = -1, anchor_id: int = 0,
+        created_by: str = "", origin: str = REF_ORIGIN_AUTO,
+    ) -> dict | None:
+        """**引用**磁盘上已有的图片作为参考图（不复制、不占第二份空间）。
+
+        用于「出图命中锚点 → 自动把 gallery/ 里的成品图挂到该锚点下」：图库本身
+        就是内容寻址存储，再抄一份进 characters/<名>_<id>/ 纯属浪费。代价是这条记录
+        依赖外部文件，所以标 `external=1`，`delete_ref` 只删记录**不删文件**。
+        去重仍按 sha256：同一张图重复关联不会堆记录。
+        """
+        ch = self.get_character(char_id)
+        if ch is None:
+            return None
+        p = Path(str(file_path))
+        if not p.exists() or not p.is_file():
+            raise ValueError(f"文件不存在: {file_path}")
+        _sha = (sha256 or "").strip() or self.file_sha256(p)
+        if not _sha:
+            raise ValueError("无法计算图片 sha，拒绝引用落地")
+        conn = self._conn_get()
+        exist = conn.execute(
+            "SELECT * FROM character_refs WHERE character_id=? AND sha256=?",
+            (int(ch["id"]), _sha),
+        ).fetchone()
+        if exist is not None:
+            d = self._row_to_ref(exist)
+            d["dedup"] = True
+            _want = int(anchor_id or 0)
+            if _want and _want != int(exist["anchor_id"] or 0):
+                try:
+                    self.set_ref_anchor(int(exist["id"]), _want)
+                    d["anchor_id"] = _want
+                except Exception as e:
+                    logger.warning(f"【角色卡】 关联图改归属失败（保持原样）: {e}")
+            return d
+        cur = conn.execute(
+            """INSERT INTO character_refs
+               (character_id, anchor_id, path, url, sha256, nsfw_score, note, created_at,
+                created_by, origin, external)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (int(ch["id"]), int(anchor_id or 0), str(p), (url or "").strip(), _sha,
+             float(nsfw_score), (note or "").strip(), time.time(),
+             (created_by or "").strip(), (origin or REF_ORIGIN_AUTO).strip(), 1),
+        )
+        conn.commit()
+        logger.info(
+            f"【角色卡】 角色「{ch['name']}」关联图片 id={cur.lastrowid}"
+            f"（来源={origin}，锚点={int(anchor_id or 0)}，引用 {p.name}）"
+        )
+        row = conn.execute(
+            "SELECT * FROM character_refs WHERE id=?", (int(cur.lastrowid),)
+        ).fetchone()
+        d = self._row_to_ref(row)
+        d["dedup"] = False
+        return d
+
+    def trim_auto_refs(self, char_id, anchor_id: int = 0, keep: int = 6) -> int:
+        """把某锚点下「自动关联」的图裁到最近 `keep` 张（只删记录，外部文件不动）。
+
+        只裁 `origin='auto'`：手工上传/指令录入的图是用户资产，永不自动清理。
+        `keep<=0` = 不限。返回删除的记录数。
+        """
+        if int(keep or 0) <= 0:
+            return 0
+        ch = self.get_character(char_id)
+        if ch is None:
+            return 0
+        rows = self._conn_get().execute(
+            "SELECT id FROM character_refs"
+            " WHERE character_id=? AND anchor_id=? AND origin=? ORDER BY id DESC",
+            (int(ch["id"]), int(anchor_id or 0), REF_ORIGIN_AUTO),
+        ).fetchall()
+        drop = [int(r["id"]) for r in rows[int(keep):]]
+        for _rid in drop:
+            self.delete_ref(_rid)
+        if drop:
+            logger.info(
+                f"【角色卡】 「{ch['name']}」锚点 {anchor_id} 自动关联图超出上限，"
+                f"清理 {len(drop)} 条记录（保留最近 {keep} 张）"
+            )
+        return len(drop)
 
     def set_ref_anchor(self, ref_id, anchor_id: int = 0) -> dict | None:
         """把一张图挪到某个锚点下（0 = 角色级）。锚点必须属于同一角色，否则忽略归属改为 0。"""
@@ -836,7 +1016,7 @@ class CharacterStore:
         row = self._conn_get().execute(
             "SELECT * FROM character_refs WHERE id=?", (int(ref_id),)
         ).fetchone()
-        return dict(row) if row is not None else None
+        return self._row_to_ref(row)
 
     def update_ref_nsfw(self, ref_id, score: float) -> None:
         """回写 NSFW 置信度（落地时先落库、检测是异步的，故分开写）。"""
@@ -868,7 +1048,7 @@ class CharacterStore:
         _first_id = 0
         out = []
         for r in rows:
-            d = dict(r)
+            d = self._row_to_ref(r)
             # 文件被外部删掉时标记出来，前端可提示（不自动清库，便于排查）
             d["exists"] = bool(d.get("path") and Path(d["path"]).exists())
             if not _first_id:
@@ -895,6 +1075,8 @@ class CharacterStore:
         """删除参考图记录；文件仅当没有其它记录引用同一路径时才删（内容寻址可能共享）。
 
         若删的正是该角色的封面（`cover_ref_id`），一并清空封面设置（回落到自动取第一张）。
+        `external` 记录（引用 gallery 里的成品图）**永不删文件**——那是图库的资产，
+        可能还被图库页面、其他角色的引用共享。
         """
         row = self.get_ref(ref_id)
         if row is None:
@@ -910,7 +1092,7 @@ class CharacterStore:
         except Exception as e:
             logger.warning(f"【角色卡】 清理封面引用失败: {e}")
         conn.commit()
-        if delete_file and row.get("path"):
+        if delete_file and row.get("path") and not int(row.get("external") or 0):
             still = conn.execute(
                 "SELECT COUNT(*) AS c FROM character_refs WHERE path=?", (row["path"],)
             ).fetchone()["c"]
@@ -948,6 +1130,7 @@ class CharacterStore:
                 persona_name=c.get("persona_name") or "",
                 work=c.get("work") or "", lora_name=c.get("lora_name") or "",
                 source=c.get("source") or "import", note=c.get("note") or "",
+                created_by=c.get("created_by") or "导入",
             )
             for a in (c.get("anchors") or []):
                 if not isinstance(a, dict) or not (a.get("positive") or "").strip():
@@ -963,6 +1146,8 @@ class CharacterStore:
                     weight=a.get("weight") or 1.2, lora_name=a.get("lora_name") or "",
                     skip_trigger_words=bool(a.get("skip_trigger_words", True)),
                     note=a.get("note") or "",
+                    created_by=a.get("created_by") or "导入",
+                    source=a.get("source") or "import",
                 )
             # 主锚点恢复（v6.0.0 修正）：
             #   ① 优先按导出的 primary_anchor_name 精确匹配（新版导出会带该字段）；
@@ -1013,11 +1198,16 @@ class CharacterStore:
                 if _srcp and Path(_srcp).exists():
                     try:
                         _old_a = int(r.get("anchor_id") or 0)
+                        # 导入是**复制文件**，落地后归本卡所有；原来的 auto 渠道要降级为
+                        # import，否则 auto_link_keep 的上限清理会去删用户导入的副本。
+                        _org = (r.get("origin") or "upload").strip()
                         self.store_ref_from_path(
                             int(ch["id"]), _srcp,
                             url=r.get("url") or "", note=r.get("note") or "",
                             nsfw_score=float(r.get("nsfw_score") or -1),
                             anchor_id=_amap.get(_old_a, 0),
+                            created_by=r.get("created_by") or "导入",
+                            origin="import" if _org == REF_ORIGIN_AUTO else _org,
                         )
                         _ref_ok += 1
                     except Exception as e:

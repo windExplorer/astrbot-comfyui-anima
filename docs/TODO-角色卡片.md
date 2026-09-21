@@ -12,6 +12,29 @@
 | 入口 | `/角色 参考图 记住 <角色> [锚点名]`、`参考图 封面|取消封面`；工具 `add_ref(anchor_name)` + `set_cover` |
 | 接口/前端 | `character/cover/set`、`character/ref/anchor`；`CharacterView` 卡片/表格双视图（默认卡片，localStorage 记忆）、封面列、锚点条目内图片缩略图与「＋ 传图」 |
 | 测试 | `test_character.py` 79 项、`test_character_webui.py` 69 项 |
+
+### M5 落地情况（v6.3.0：出图自动关联 + 创建者留痕 + 上传弹窗 + 详情改版）
+
+| 需求 | 落地位置 |
+| --- | --- |
+| 配了锚点就该自动关联成品图 | `character.auto_link_generated()`，在 `_do_draw` 图库归档拿到 `_final` 后调用；命中关系来自注入阶段记下的 `_card_hits`（`auto_inject=false` 时锚点没参与出图 → 不记、不关联，避免错误归因） |
+| 不重复占盘 | `CharacterStore.store_ref_link()`：**引用** gallery 里的原文件（内容寻址、按 sha 去重），记录标 `external=1`；`delete_ref()` 对 external 记录**只删记录不删文件** |
+| 数量上限 | `trim_auto_refs(char, anchor, keep)`，只裁 `origin='auto'`；人工上传 / 指令录入 / 图库导入的图永不自动删 |
+| 封面 | 仅当角色**原本一张图都没有**时才自动设（`auto_link_cover`），人工挑过的封面永不被覆盖 |
+| 谁 / 何时 / 怎么建的 | 三表补 `created_by`；`character_anchors` 补 `source`；`character_refs` 补 `origin` + `external`（全部走 `_ensure_columns` 迁移，老库平滑升级，老数据显示「未记录」） |
+| 身份来源 | `character.actor_label(event)` → `昵称(QQ号)`；WebUI 无用户体系 → 固定 `WebUI 控制台`；LLM 工具无 event → 用 `plugin._last_event` 反推触发者，写成 `AI 工具·昵称(号)` |
+| 配置 | `character_card.auto_link_ref`(true) / `auto_link_keep`(6) / `auto_link_cover`(true)；`character/list` 回 `auto_link` 供前端说明文案 |
+| 上传体验 | `CharacterView.vue` 上传弹窗：`n-upload` + `n-upload-dragger` 拖拽多选，`:custom-request` 走 bridge `apiPost`（页面在 sandbox iframe 里，不能自己 fetch），逐张回报成功/重复/失败 |
+| 详情排版 | 抽屉 560 → 720：顶部封面缩略图 + 身份 chips + `n-descriptions` 元信息（创建者/方式/时间/更新/主锚点/计数），下面 `n-tabs` 分「锚点 / 参考图 / 身份与设置」；参考图按锚点分组，每张显示来源、上传人、时间，缺文件红框提示 |
+| 测试 | `test_character.py` 92 项（新增 13 项覆盖创建者留痕、引用式落地、外部文件不被删、上限只裁 auto、封面只在空卡时设） |
+
+踩坑记录（务必别改回去）：`auto_link_generated` 里**只有文件 IO 能进线程池**（`file_sha256`），
+`store_ref_link` 必须留在事件循环里同步调用 —— `CharacterStore` 的连接是本线程创建的，
+放进 `asyncio.to_thread` 直接抛 `SQLite objects created in a thread can only be used in that same thread`，
+表现为「出图正常但参考图一张都没关联上」（只有一行 warning）。
+
+已知边界：`_do_draw_nai_style`（NAI / OpenAI 兼容平台）在平台分流处 `return`，**不走角色卡注入**，
+因此也不会自动关联 —— 那是「第三方平台不支持 LoRA/工作流」这条既有取舍的延伸，不是本版的回归。
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）

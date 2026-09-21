@@ -2,6 +2,65 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.3.0（角色卡：出图自动关联锚点 + 创建者留痕 + 拖拽上传 + 详情排版改版）
+
+需求（用户明确，三条）：① 「按道理如果用户配置了锚点，应该自动关联生成的图片」；② WebUI 上传
+角色卡图片「有点呆」——点一下直接弹系统文件框，没有弹窗、不能拖拽；③ 角色卡详情排版丑，而且
+**看不到是谁、什么时候、以什么方式创建的角色卡**，服装/形象提示词（锚点）同样查不到出处。
+
+问题定位：
+
+- 出图链路在 `_do_draw` 归档成品图后就把它交给图库和发送流程了，`land_ref` 只有三个人工入口
+  （WebUI 上传 / `/角色 参考图 记住` / 工具 `add_ref`），**没有任何回写**，所以「配了锚点」和
+  「图挂到锚点下」完全是两件事。
+- 数据层根本没有「创建者」这个概念：`characters` 只有 `source`（且除工具外所有入口都写死默认值
+  `"user"`，等于没记录）、`character_anchors` 连 `source` 都没有、`character_refs` 只有一句
+  `note`（"WebUI 上传" / "指令录入"）；WebUI 侧只有口令鉴权、没有用户体系，所以「谁」只能记渠道名。
+
+修复：
+
+- **自动关联（`character.auto_link_generated`）**：注入阶段把命中的 `(角色卡, 锚点)` 记进
+  `_card_hits`，图库归档拿到 `_final` 后按锚点挂图。三条刻意的取舍：
+  - **引用不复制** —— 新增 `CharacterStore.store_ref_link()`，记录直接指向 `gallery/` 里的成品
+    （内容寻址、按 sha 去重、`external=1`），一张 2~3MB 的图不再抄第二份；`delete_ref()` 对外部
+    记录只删记录**不删文件**，反之图库里删原图，卡片侧靠既有的 `exists` 显示「文件已不在」+ 红框。
+  - **上限只裁自动图** —— `trim_auto_refs()` 按锚点保留最近 `auto_link_keep`（默认 6）张
+    `origin='auto'`，人工上传 / 指令录入 / 图库导入的永不自动删。
+  - **封面只在空卡时设** —— 角色原本一张图都没有才自动设封面，人工挑过的封面永不被覆盖。
+  - `auto_inject=false` 时锚点没参与出图 → 不记命中、不关联（否则是错误归因）；NSFW 复用出图链路
+    已算的 `_nsfw_pre`，不再推理第二次。
+- **创建者留痕**：三表补 `created_by`，`character_anchors` 补 `source`，`character_refs` 补
+  `origin` + `external`（全走 `_ensure_columns` 迁移，老库平滑升级、老数据显示「未记录」而不是空白）。
+  身份统一由 `character.actor_label(event)` 生成 `昵称(QQ号)`；WebUI 写 `WebUI 控制台`；
+  LLM 工具没有 event，用 `plugin._last_event` 反推触发者写成 `AI 工具·昵称(号)`；
+  `/角色` 各写入点 `source="command"`、工具 `source="llm"`、WebUI `source="webui"`、导入 `created_by="导入"`。
+  重复建卡只在 `created_by` 为空时回填，不改写既有归属。
+- **上传弹窗**：`n-upload` + `n-upload-dragger` 支持拖拽与多选，`:custom-request` 逐张走 bridge
+  `apiPost`（页面跑在没有 `allow-same-origin` 的 sandbox iframe 里，组件不能自己 fetch），
+  弹窗内含归属锚点选择、从图库按 sha 导入、成功/重复/失败计数；删掉原来的隐藏 `input type=file`。
+- **详情排版**：抽屉 560 → 720，顶部封面缩略图 + 角色名/别名 + 人格/作品/LoRA chips +
+  `n-descriptions` 元信息条（创建者 / 创建方式 / 创建时间 / 最近更新 / 主锚点 / 锚点与图片数），
+  下面 `n-tabs` 分「锚点 / 参考图 / 身份与设置」；锚点条目把操作按钮提到标题行、补类型标签与
+  「谁在何时以何种方式创建」；参考图按锚点分组，每张显示来源标签、上传人、时间，缺文件红框提示。
+  列表卡片与表格视图同步补创建者 / 创建方式 / 创建时间。
+- **配置**：`character_card` 新增 `auto_link_ref`（默认 true）、`auto_link_keep`（默认 6，0=不限）、
+  `auto_link_cover`（默认 true），`character/list` 回 `auto_link` 供前端说明「每锚点保留最近 N 张」。
+
+踩坑：`auto_link_generated` 最初把 `store_ref_link` 整个丢进 `asyncio.to_thread`，测试表现为
+「出图正常但一张也没关联上」，只有一行 warning —— sqlite 连接是本线程创建的，跨线程用直接抛
+`SQLite objects created in a thread can only be used in that same thread`。现只把**文件哈希**放线程池
+（`CharacterStore.file_sha256`），库操作留在事件循环内同步执行。
+
+测试与验证：`tests/test_character.py` 79 → 92 项（新增 13 项覆盖创建者留痕、引用式落地、外部文件
+不被删、上限只裁 auto、封面只在空卡时设、开关关闭不关联），`test_character_webui.py` 97 项全绿；
+前端用桩桥（伪造 `window.AstrBotPluginPage`）在本地无头 Chrome 实测：列表 / 详情三个分区 / 上传弹窗
+均正常渲染、控制台无报错，选择文件上传后 `character/ref/upload` 正确带上 `character_id` +
+`anchor_id` 且列表由 5 张刷新为 6 张。拖拽事件因 `DataTransfer.webkitGetAsEntry()` 在合成事件下
+返回 `null` 无法脚本模拟，走的是 naive-ui 官方 `n-upload-dragger` 用法。
+
+已知边界：`_do_draw_nai_style`（NAI / OpenAI 兼容平台）在平台分流处提前 `return`，本来就不走角色卡
+注入，因此也不会自动关联 —— 属既有取舍的延伸，不是本版回归。
+
 ## v6.2.2（NAI 平台：不再默认补画师串 — 「没传就用默认」只适用于负面提示词）
 
 需求（用户明确）：调用方**已经给了提示词**时，不要再自动补平台默认画师串。理由：画师串往往

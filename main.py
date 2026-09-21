@@ -4584,6 +4584,8 @@ class ComfyUIDrawPlugin(Star):
         # 现改为「先清理不可信的模型产物（sanitize → LLM 改写/翻译），再叠加用户确认过的
         # 确定性锚点」，注入点移到下方 `await _llm_task` 之后（见「角色卡片注入（时序后移）」）。
         _card_lora_names: list[str] = []
+        # 本次命中的 (角色卡, 锚点)：出图成功后要按锚点把成品图自动关联回卡片（v6.3.0）
+        _card_hits: list = []
         # ── 跨后端语法垃圾清理（v5.14.0，确定性，不赌 LLM 自觉）────────────
         # 必须在 LLM 翻译/整理之前：<lora:>、@语法、score_9 这类垃圾不会被子流程剔除。
         if not _fixed_prompt and (positive or "").strip():
@@ -4715,6 +4717,10 @@ class ComfyUIDrawPlugin(Star):
                 _hits = await character.resolve_hits(self, event, _u_text, positive)
                 if _hits and _cc_cfg.get("auto_inject", True):
                     _cres = character.inject(self, positive, _hits, _cc_cfg, negative=negative)
+                    # 记下命中的锚点：图出来后按 (角色, 锚点) 自动关联回卡片。
+                    # 只有**真的注入了锚点**才算命中——auto_inject=false 时锚点没参与出图，
+                    # 把图挂上去反而是错误归因。
+                    _card_hits = list(_hits)
                     if (_cres.get("prompt") or "").strip():
                         positive = _cres["prompt"]
                     # 负向：与锚点负向**合并**（旧实现是直接覆盖，会把原有负向提示词丢掉）
@@ -5605,6 +5611,31 @@ class ComfyUIDrawPlugin(Star):
                             # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。
                             if _final:
                                 img_path = _final
+                                # 角色卡自动关联（v6.3.0）：本次用了谁的锚点，成品就挂回谁的锚点。
+                                # 引用 gallery 里的这张原图（不复制），因此**必须在归档之后**做。
+                                if _card_hits:
+                                    try:
+                                        _ns = -1.0
+                                        # 复用出图链路已跑的 NSFW 结果，不再重复推理一次
+                                        if (
+                                            isinstance(_nsfw_pre, tuple)
+                                            and len(_nsfw_pre) >= 3
+                                            and _nsfw_pre[2]
+                                            and _nsfw_pre[1] is not None
+                                        ):
+                                            _ns = float(_nsfw_pre[1])
+                                        _linked = await character.auto_link_generated(
+                                            self, _card_hits, img_path,
+                                            actor=character.actor_label(event) or (user_name or ""),
+                                            nsfw_score=_ns,
+                                        )
+                                        if _linked:
+                                            logger.info(
+                                                f"【角色卡】 成品图已自动关联参考图 "
+                                                f"{[int(x['id']) for x in _linked]}"
+                                            )
+                                    except Exception as _ae:
+                                        logger.warning(f"【角色卡】 出图自动关联异常（不影响出图）: {_ae}")
                         except Exception as _ge:
                             logger.warning(f"【图库】 归档失败（不影响出图）: {_ge}")
 
@@ -6235,6 +6266,8 @@ class ComfyUIDrawPlugin(Star):
             persona_name=flags.get("人格") or flags.get("persona") or "",
             work=flags.get("作品") or flags.get("work") or "",
             lora_name=flags.get("lora") or "",
+            source="command",
+            created_by=character.actor_label(event),
         )
         anchor_name = flags.get("锚点") or flags.get("anchor") or "默认装"
         _want_new = True
@@ -6244,7 +6277,10 @@ class ComfyUIDrawPlugin(Star):
                 _want_new = False
                 break
         if _want_new:
-            store.add_anchor(int(ch["id"]), anchor_name, positive)
+            store.add_anchor(
+                int(ch["id"]), anchor_name, positive,
+                created_by=character.actor_label(event), source="command",
+            )
         await self._send(
             event,
             f"已记住「{ch['name']}」的锚点「{anchor_name}」：\n{positive}"
@@ -6351,10 +6387,11 @@ class ComfyUIDrawPlugin(Star):
                     f"「{ch['name']}」已有同名锚点「{anchor_name}」，已改为更新：\n{positive}",
                 )
                 return
-            a = store.add_anchor(
+            _new_a = store.add_anchor(
                 int(ch["id"]), anchor_name, positive,
                 negative=flags.get("negative") or flags.get("负向") or "",
                 weight=_wv, lora_name=flags.get("lora") or "",
+                created_by=character.actor_label(event), source="command",
             )
             await self._send(
                 event,
@@ -6484,6 +6521,7 @@ class ComfyUIDrawPlugin(Star):
                         self, int(ch["id"]), _data,
                         filename=Path(p).name, note="指令录入",
                         anchor_id=_aid,
+                        created_by=character.actor_label(event), origin="command",
                     )
                     if ref is not None:
                         _ok_n += 1
@@ -12178,6 +12216,13 @@ class ComfyUIDrawPlugin(Star):
         if store is None:
             return "角色卡片功能未启用（存储初始化失败），无法操作。"
         _act = (action or "").strip().lower()
+        # 「谁」：工具没有 event 参数，用插件记录的最近事件反推触发者（v6.3.0）。
+        # 取不到就只写渠道名——写清「AI 建的」比留空有用得多。
+        try:
+            _tool_actor = character.actor_label(getattr(plugin, "_last_event", None))
+        except Exception:
+            _tool_actor = ""
+        _actor_llm = f"AI 工具·{_tool_actor}" if _tool_actor else "AI 工具"
         if not _act:
             return (
                 "缺少 action 参数。可用：list / get / save / update / delete / add_anchor / "
@@ -12227,6 +12272,7 @@ class ComfyUIDrawPlugin(Star):
                 ch = store.create_character(
                     name, aliases=aliases, persona_name=persona_name,
                     work=work, lora_name=lora, source="llm",
+                    created_by=_actor_llm,
                 )
                 _an = (anchor_name or "默认装").strip() or "默认装"
                 _w = float(weight or 1.2)
@@ -12244,7 +12290,7 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     store.add_anchor(
                         int(ch["id"]), _an, positive, negative=negative,
-                        weight=_w, lora_name=lora,
+                        weight=_w, lora_name=lora, created_by=_actor_llm, source="llm",
                     )
                     _msg = f"已记住「{ch['name']}」的锚点「{_an}」"
                 if (persona_name or "").strip():
@@ -12304,6 +12350,7 @@ class ComfyUIDrawPlugin(Star):
                 a = store.add_anchor(
                     int(ch["id"]), anchor_name, positive, negative=negative,
                     weight=float(weight or 1.2), lora_name=lora,
+                    created_by=_actor_llm, source="llm",
                 )
                 if a is None:
                     return "新增锚点失败。"
@@ -12417,6 +12464,8 @@ class ComfyUIDrawPlugin(Star):
                     ref = await character.land_ref(
                         self, int(ch["id"]), data, filename=_fname,
                         url=_u if _is_web else "", note="工具录入", anchor_id=_aid,
+                        created_by=_actor_llm,
+                        origin="web" if _is_web else "tool",
                     )
                 except Exception as e:
                     return f"参考图落地失败：{e}"
