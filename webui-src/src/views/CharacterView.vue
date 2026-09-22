@@ -524,7 +524,7 @@ import {
   NUploadDragger, useDialog, useMessage,
   type UploadCustomRequestOptions,
 } from "naive-ui";
-import { apiGet, apiPost } from "@/api/bridge";
+import { apiGet, apiPost, characterRefUrl, isStandaloneMode } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import ItemViewer from "@/components/ItemViewer.vue";
 import { fmtTime } from "@/utils/format";
@@ -780,6 +780,8 @@ watch(viewMode, (v) => {
 
 // ---------------- 封面（v6.1.0）----------------
 const coverUrls = reactive<Record<number, string>>({});
+/** 每张封面当前用的是哪条 ref —— 换封面后要能识别出「同一角色、不同图」并重新取图。 */
+const coverRefId = reactive<Record<number, number>>({});
 
 function coverRef(c: any) {
   const refs: any[] = c?.refs || [];
@@ -799,12 +801,20 @@ function anchorNames(c: any) {
 async function loadCovers() {
   const todo = characters.value
     .map((c: any) => ({ cid: Number(c.id), ref: coverRef(c) }))
-    .filter((x) => x.ref && !coverUrls[x.cid]);
+    // ★不能只判「缓存里有没有」：换了封面（设为封面 / 删掉当前封面 / 自动关联改了回落图）时
+    //   缓存里躺着的是**旧图**，不重取就得刷新浏览器才更新 —— v6.3.2 就是这么漏的。
+    .filter((x) => x.ref && (!coverUrls[x.cid] || coverRefId[x.cid] !== Number(x.ref.id)));
   if (!todo.length) return;
   let idx = 0;
   const worker = async () => {
     while (idx < todo.length) {
       const it = todo[idx++];
+      coverRefId[it.cid] = Number(it.ref.id); // 先记账，单张失败也不反复重试
+      if (isStandaloneMode() && it.ref.exists !== false) {
+        // 独立服务走直链：省掉 base64+JSON，还能让浏览器缓存；320 在高 DPI 下偏软，取 640
+        coverUrls[it.cid] = characterRefUrl(it.ref.id, 640, String(it.ref.sha256 || "").slice(0, 10));
+        continue;
+      }
       try {
         const d = await apiGet("character/ref/image", { id: it.ref.id, size: 320 });
         if (d?.url) coverUrls[it.cid] = d.url;
@@ -820,6 +830,7 @@ async function removeCardById(c: any) {
   try {
     await apiPost("character/delete", { id: c.id });
     delete coverUrls[c.id];
+    delete coverRefId[c.id];
     message.success("已删除");
     await reload();
   } catch (e: any) {
@@ -1232,7 +1243,7 @@ function openCoverViewer() {
   if (r) openRefViewer(r);
 }
 
-/** 点缩略图 → 拉**原图**进大图查看器（列表里的都是缩略图，放大才不发糊）。 */
+/** 点缩略图 → 用**原图**进大图查看器（列表里的都是缩略图，放大才不发糊）。 */
 async function openRefViewer(r: any) {
   viewerNsfw.value = isNsfw(r);
   viewerTitle.value = detail.value
@@ -1240,11 +1251,32 @@ async function openRefViewer(r: any) {
     : `图片 #${r.id}`;
   viewerShow.value = true;
   viewerSrc.value = refUrls[r.id] || ""; // 先用缩略图占位，原图到了即刻替换
+  if (!r?.id) return;
+  if (isStandaloneMode()) {
+    // 独立服务：二进制直链，原图不缩放、浏览器还能缓存
+    viewerSrc.value = characterRefUrl(r.id, 0, String(r.sha256 || "").slice(0, 10));
+    return;
+  }
   try {
-    const d = await apiGet("character/ref/image", { id: r.id, size: "orig" });
-    if (d?.url) viewerSrc.value = d.url;
-  } catch {
-    /* 拉不到原图就保留缩略图展示 */
+    // 内嵌页只能走 bridge：原图几 MB 时 6s 默认超时不够用，显式放宽
+    const d = await apiGet("character/ref/image", { id: r.id, size: "orig" }, { timeout: 30000 });
+    if (d?.url) {
+      viewerSrc.value = d.url;
+      return;
+    }
+    throw new Error("原图响应为空");
+  } catch (e: any) {
+    // 静默退回 640 缩略图会让人以为「图本身就是糊的」，所以再要一张大缩略图并把原因说出来
+    try {
+      const t = await apiGet("character/ref/image", { id: r.id, size: 1600 }, { timeout: 20000 });
+      if (t?.url) {
+        viewerSrc.value = t.url;
+        message.warning(`原图读取失败（${e?.message || e}），已按 1600px 显示`);
+        return;
+      }
+    } catch {
+      /* 连大缩略图也没有就保留当前占位图 */
+    }
   }
 }
 

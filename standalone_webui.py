@@ -228,6 +228,8 @@ class StandaloneWebUI:
         # 必须注册在静态路由之前。带 token 鉴权 + 防目录穿越。
         app.router.add_get("/lora/file", self._handle_lora_file)
         app.router.add_get("/workflow/file", self._handle_lora_file)
+        # 角色卡参考图直链（原图不缩放、可缓存），必须排在下面的通配静态路由之前
+        app.router.add_get("/char/ref", self._handle_char_ref)
         # 静态资源：index.html 之外的 js/css/图等
         app.router.add_get("/{path:.+}", self._handle_static)
 
@@ -297,6 +299,55 @@ class StandaloneWebUI:
         except Exception as e:
             return _err(f"读取图片失败: {e}", status=500)
         ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        return web.Response(body=raw, content_type=ctype,
+                            headers={"Cache-Control": "public, max-age=31536000"})
+
+    async def _handle_char_ref(self, request: web.Request) -> web.Response:
+        """角色卡参考图直链：/char/ref?id=<refId>[&size=N]。
+
+        为什么要有这条路由：查看大图原先只能走 `character/ref/image` 的 base64 + JSON 通道，
+        几 MB 的原图编成 data URL 动辄几秒，超过 bridge 默认 6s 就被前端静默退回 640px 缩略图
+        —— 用户看到的就是「大图不清楚」。直链让 <img> 直接加载原图二进制并可被浏览器缓存。
+
+        路径取自数据库而非用户拼接，所以只校验文件存在；给了 `size` 才缩放。
+        """
+        denied = self._authed(request)
+        if denied is not None:
+            return denied
+        store = getattr(self.plugin, "character", None)
+        if store is None:
+            return _err("角色卡片模块未启用", status=500)
+        _id = (request.query.get("id", "") or "").strip()
+        if not _id.isdigit():
+            return _err("缺少 id 参数", status=400)
+        ref = store.get_ref(int(_id))
+        if ref is None:
+            return _err("参考图不存在", status=404)
+        p = Path(str(ref.get("path") or ""))
+        if not p.exists() or not p.is_file():
+            return _err("参考图文件缺失", status=404)
+        size = self._qint(request, "size", 0)
+        if 0 < size < 200000:
+            try:
+                data_url = await asyncio.to_thread(self._thumb_cached, p, size)
+                if data_url and data_url.startswith("data:"):
+                    header, _, b64 = data_url.partition(",")
+                    ctype = header.replace("data:", "").split(";")[0] or "image/jpeg"
+                    try:
+                        raw = base64.b64decode(b64)
+                    except Exception:
+                        raw = await asyncio.to_thread(p.read_bytes)
+                        ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+                    return web.Response(body=raw, content_type=ctype,
+                                        headers={"Cache-Control": "public, max-age=86400"})
+            except Exception as e:
+                _log.warning(f"[独立WebUI] 角色参考图缩略失败（回退原图）: {e}")
+        try:
+            raw = await asyncio.to_thread(p.read_bytes)
+        except Exception as e:
+            return _err(f"读取图片失败: {e}", status=500)
+        ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        # 参考图按内容寻址落盘、id 不会换文件，前端再带 ?v=<sha> 兜底，故可长缓存
         return web.Response(body=raw, content_type=ctype,
                             headers={"Cache-Control": "public, max-age=31536000"})
 

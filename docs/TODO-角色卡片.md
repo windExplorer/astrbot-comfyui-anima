@@ -54,6 +54,16 @@ v6.3.1 的打码只覆盖了抽屉三处，**列表页封面走的是另一条�
 `isCoverBlurred(c) = isBlurred(coverRef(c))` —— 关键是必须复用 `coverRef()`（显式 `cover_ref_id`
 优先、未设回落第一张），不能拿 `refs[0]` 凑，否则「显式封面是 NSFW 但第一张不是」这种组合会漏遮。
 遮罩 `pointer-events: none`，点卡片照常进抽屉。
+
+### M6.2（v6.3.3：换封面实时刷新 + 大图走原图直链）
+
+| 问题 | 根因 | 落点 |
+| --- | --- | --- |
+| 设为封面后列表还是旧图，要刷新浏览器 | `loadCovers()` 筛子是 `!coverUrls[cid]`，只问「有没有缓存」不问「缓存的是不是现在这张」；`cid` 不变 → 永远命中旧缓存 | 加 `coverRefId[cid]` 记账，待办条件改为「没缓存 **或** ref id 变了」；记账在取图之前，单张失败不反复重试 |
+| 大图是缩略图画质 | 查看器确实请求 `size=orig`，但原图是 **base64 塞 JSON** 传回，几 MB 时超 bridge 默认 6s → `catch {}` 静默退回 640 缩略图 | 独立通道加二进制直链 `GET /char/ref?id=[&size=]`（`_handle_char_ref`，注册必须在通配静态路由之前；给 size 才缩放，原图长缓存）；前端 `characterRefUrl(id, size, ver)` 带 token + sha 片段做缓存击穿。内嵌页仍走 bridge 但超时放宽 30s，失败退到 `size=1600` 并 `message.warning` 说明原因，不再静默 |
+
+列表封面在独立模式下也改用直链（取 640，高 DPI 下比原 320 清晰）；`exists === false` 的图仍走
+bridge 分支，避免直链 404 显示成破图标。
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）

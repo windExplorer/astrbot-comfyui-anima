@@ -365,6 +365,19 @@ export function standaloneImgUrl(sha: string, size?: number): string {
   return base + (qs.length ? "?" + qs.join("&") : "");
 }
 
+/** 角色卡参考图直链（**仅独立模式**）：/char/ref?id=…[&size=…]，带 token。
+ *  大图必须用它 —— 走 `character/ref/image` 的 base64+JSON 通道时，几 MB 的原图很容易超过
+ *  bridge 默认 6s 超时，前端只能静默退回 640px 缩略图，看着就是「大图发糊」。
+ *  `ver` 传图片 sha 片段做缓存击穿。内嵌页没有这条路由，调用前必须先判 isStandaloneMode()。 */
+export function characterRefUrl(id: number | string, size?: number, ver = ""): string {
+  const qs: string[] = ["id=" + encodeURIComponent(String(id))];
+  if (size && size > 0) qs.push("size=" + size);
+  if (ver) qs.push("v=" + encodeURIComponent(ver));
+  const token = standaloneToken();
+  if (token) qs.push("token=" + encodeURIComponent(token));
+  return "/char/ref?" + qs.join("&");
+}
+
 /** 缩略图/大图拉取封装：独立模式返回直链 URL（<img> 直接用），内嵌页返回 base64 data URL。 */
 export async function fetchThumb(sha: string, size = 300, timeout = 15000): Promise<string> {
   if (isStandaloneMode()) {

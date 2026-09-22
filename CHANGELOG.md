@@ -2,6 +2,45 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.3.3（修复：设置封面不实时刷新 / 大图不是原图画质）
+
+现象（用户实测两条）：① 点「设为封面」后列表封面还是旧图，**必须刷新浏览器**才更新；
+② 点开大图看着是缩略图画质，不是原图。
+
+根因：
+
+- **封面不更新**：`loadCovers()` 的待办筛子是 `!coverUrls[cid]` —— 只问「这张卡有没有缓存」，
+  不问「缓存的是不是现在这张图」。换封面时 `cid` 不变、缓存里躺着旧 data URL，于是永远命中缓存；
+  刷新浏览器才好的原因就是这个缓存随页面重建才清空。
+- **大图发糊**：查看器确实请求了 `size=orig`，但内嵌页/独立页的大图都是 **base64 塞进 JSON**
+  传回来的 —— 几 MB 原图编码 + 序列化 +（内嵌页）postMessage 转发，很容易超过 bridge 默认
+  **6 秒超时**，而 `openRefViewer` 的 `catch {}` 把失败整个吞掉、静默留着 640px 缩略图占位，
+  看起来就像「原图本来就是糊的」。
+
+修复：
+
+- 新增 `coverRefId[cid]` 记账，待办条件改成「没缓存 **或** 缓存对应的 ref id 变了」，
+  换封面 / 删掉当前封面（回落成另一张）/ 自动关联改封面都能立刻反映；删卡时一并清账。
+  记账放在取图**之前**，单张失败不会每张都重试。
+- 独立通道新增**参考图二进制直链** `GET /char/ref?id=<refId>[&size=N]`
+  （`standalone_webui._handle_char_ref`，带 token 鉴权，注册在通配静态路由**之前**）：
+  给了 `size` 才缩放，否则原图字节直返 + `Cache-Control: max-age=31536000`。
+  前端 `bridge.characterRefUrl(id, size, ver)` 生成带 token 的 URL，`ver` 传 sha 片段做缓存击穿。
+  - 查看器：独立模式直接用该直链（原图、浏览器缓存、不经 base64）；内嵌页仍走 bridge，但
+    **超时放宽到 30s**，失败再退一步要 `size=1600` 的大缩略图，并把原因 `message.warning` 说出来，
+    不再静默假装是原图。
+  - 列表封面：独立模式下也改用直链（取 640，比原来的 320 在高 DPI 下更清晰）；
+    文件已不在（`exists === false`）时仍走 bridge 分支，避免显示破图标。
+
+验证（桩服务器实现 `/api/character/*` + `/char/ref`，真走独立模式传输）：列表封面初始为
+`/char/ref?id=101&size=640&v=sha101&token=…`，点「设为封面」后**未刷新浏览器**即变成
+`id=102&v=sha102`；点缩略图 → 查看器 `currentSrc` 为 `/char/ref?id=101&v=sha101`（无 size = 原图直链）。
+再把 `__ANIMA_STANDALONE__` 关掉模拟 AstrBot 内嵌页，确认走的是
+`character/ref/image {id:"101", size:"orig"}`。控制台无报错。
+`test_character.py` 99 项、`test_character_webui.py` 109 项仍全绿；
+`vue-tsc` 对 `CharacterView.vue` / `ItemViewer.vue` 无新增错误（`bridge.ts` 第 74/121 行两处
+类型报错是既有问题，本次只在 368 行加函数，未一并改）。
+
 ## v6.3.2（修复：角色卡列表封面没打码）
 
 现象（用户实测）：v6.3.1 的 NSFW 打码只覆盖了抽屉里的三处（参考图分区、锚点缩略图、抽屉封面），
