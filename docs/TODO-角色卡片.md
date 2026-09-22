@@ -35,6 +35,17 @@
 
 已知边界：`_do_draw_nai_style`（NAI / OpenAI 兼容平台）在平台分流处 `return`，**不走角色卡注入**，
 因此也不会自动关联 —— 那是「第三方平台不支持 LoRA/工作流」这条既有取舍的延伸，不是本版的回归。
+
+### M6 落地情况（v6.3.1：创建者记全 QQ / 锚点图就地删 / 参考图 NSFW 打码）
+
+| 问题 | 根因与落点 |
+| --- | --- |
+| 创建者只有昵称、QQ 号丢了 | AstrBot 4.28.1 的 `get_sender_id()` 要求 `sender.user_id` 是 **str** 才返回，OneBot11/NapCat 给 int → 空串。`character.actor_label()` 自己兜底：`message_obj.sender` 的 `user_id/qq/uid` + `card/cardname/nickname/nick`，再兜私聊 `umo` 尾段（群聊尾段是**群号**，不可当用户 id；`is_private_chat` 是方法不是 property） |
+| 面板里「谁」没有来源 | 面板只有口令鉴权、无用户体系 → 角色卡页工具栏加**操作者身份**（昵称 + QQ，存 localStorage），写入时随 `created_by` 上报；后端 `WebUIApi._norm_actor()` 只规范化（压控制字符/限长 48/空回落「WebUI 控制台」），不校验真伪；raw 上传走 `x-created-by` 头；**更新卡片不改写创建者** |
+| 锚点图片删不掉 | v6.3.0 把删除按钮只留在了「参考图」分区 → 锚点缩略图补左上角 ✕ 就地删除；参考图分区去掉 `popconfirm + dialog` 的二次确认，并把「引用记录只删记录、图库原图不动」写进确认文案 |
+| NSFW 图不打码 | 只存了 `nsfw_score` 从没参与渲染。口径与图库同源：`character/list` 回 `nsfw.{threshold,blur_default,enabled}`（取 `gallery._nsfw_*`，三项分别兜底）；缩略图 ≥ 阈值 → `blur(12px)` + 🔞 遮罩；`ItemViewer` 新增可选 `nsfw`/`blur-global`，大图右下角可临时解除；开关存 `anima_char_nsfw_blur`，未手动拧过时跟随插件默认；`nsfw_score < 0`（未检测）不打码 |
+
+测试：`test_character.py` 99 项（+7 身份取值）、`test_character_webui.py` 109 项（+12 身份上报与 NSFW 口径）。
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）

@@ -106,7 +106,14 @@ async def main() -> int:
             return str(_gal_img)
 
         def _nsfw_threshold(self):
-            return 0.5
+            # 故意用 0.42 这种「一眼看得出不是默认值」的数，验证前端拿到的阈值真来自图库
+            return 0.42
+
+        def _nsfw_default_blur(self):
+            return False
+
+        def _nsfw_enabled(self):
+            return True
 
     class _FakeDanbooru:
         async def search(self, query):
@@ -452,6 +459,68 @@ async def main() -> int:
     check("未知路径不拦截（返回 None）",
           StandaloneWebUI._route_methods("/not/registered") is None)
     check("独立通道已放宽 body 上限", "_MAX_UPLOAD_BYTES" in ssrc)
+
+    print("\n[18] 创建者上报与 NSFW 口径（v6.3.1）")
+    _norm = webui_api.WebUIApi._norm_actor
+    check("身份上报压掉换行与制表", _norm("甲\n乙\t丙 ") == "甲 乙 丙", repr(_norm("甲\n乙\t丙 ")))
+    check("身份超长被截断", len(_norm("x" * 300)) == 48, str(len(_norm("x" * 300))))
+    check("身份为空回落渠道名", _norm("") == "WebUI 控制台", _norm(""))
+
+    set_req(body={"name": "身份测试", "created_by": "云端之风(1479221500)"})
+    _rc = _payload(await api.character_save())
+    _cid2 = int(_rc["id"])
+    check("面板建卡记下自报身份",
+          (store.get_character(_cid2).get("created_by") or "") == "云端之风(1479221500)",
+          str(store.get_character(_cid2).get("created_by")))
+    set_req(body={"id": _cid2, "name": "身份测试", "created_by": "别人(999)"})
+    _payload(await api.character_save())
+    check("更新卡片不改写创建者",
+          store.get_character(_cid2)["created_by"] == "云端之风(1479221500)",
+          str(store.get_character(_cid2)["created_by"]))
+
+    set_req(body={"character_id": _cid2, "anchor_name": "默认装", "positive": "1girl, x",
+                  "created_by": "小明(123)"})
+    _payload(await api.character_anchor_save())
+    _a2 = store.get_anchor(_cid2, "默认装")
+    check("面板建锚点记身份与方式",
+          (_a2.get("created_by"), _a2.get("source")) == ("小明(123)", "webui"), str((_a2.get("created_by"), _a2.get("source"))))
+
+    _b64a = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"a" * 70).decode()
+    set_req(raw=json.dumps({"character_id": _cid2, "filename": "u.png",
+                            "data": _b64a, "created_by": "小红(456)"}).encode(),
+            headers={"content-type": "application/json"})
+    _up = _payload(await api.character_ref_upload())
+    _ref_u = store.get_ref(int(_up["id"]))
+    check("面板上传图记身份与 origin",
+          (_ref_u.get("created_by"), _ref_u.get("origin")) == ("小红(456)", "upload"),
+          str((_ref_u.get("created_by"), _ref_u.get("origin"))))
+    # 独立通道是 raw 二进制 + 头，身份走 x-created-by
+    set_req(raw=b"\x89PNG\r\n\x1a\n" + b"b" * 70,
+            headers={"x-character-id": str(_cid2), "x-created-by": "小风(789)"})
+    _up2 = _payload(await api.character_ref_upload())
+    check("raw 上传用 x-created-by 头",
+          store.get_ref(int(_up2["id"])).get("created_by") == "小风(789)",
+          str(store.get_ref(int(_up2["id"])).get("created_by")))
+    _b64c = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"c" * 70).decode()
+    set_req(raw=json.dumps({"character_id": _cid2, "filename": "n.png", "data": _b64c}).encode(),
+            headers={"content-type": "application/json"})
+    _up3 = _payload(await api.character_ref_upload())
+    check("未上报身份回落渠道名",
+          store.get_ref(int(_up3["id"])).get("created_by") == "WebUI 控制台",
+          str(store.get_ref(int(_up3["id"])).get("created_by")))
+    set_req(body={"character_id": _cid2, "sha": "cafebabe", "created_by": "小绿(321)"})
+    _fg = _payload(await api.character_ref_from_gallery())
+    _ref_g = store.get_ref(int(_fg["id"]))
+    check("图库导入记身份与 origin",
+          (_ref_g.get("created_by"), _ref_g.get("origin")) == ("小绿(321)", "gallery"),
+          str((_ref_g.get("created_by"), _ref_g.get("origin"))))
+
+    set_req()
+    _ld = _payload(await api.character_list())
+    check("列表回传 NSFW 阈值（来自图库）",
+          abs(float((_ld.get("nsfw") or {}).get("threshold") or 0) - 0.42) < 1e-6, str(_ld.get("nsfw")))
+    check("列表回传打码默认开关",
+          (_ld.get("nsfw") or {}).get("blur_default") is False, str(_ld.get("nsfw")))
 
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1

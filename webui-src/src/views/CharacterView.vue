@@ -22,6 +22,32 @@
             <n-radio-button value="card">卡片</n-radio-button>
             <n-radio-button value="table">表格</n-radio-button>
           </n-radio-group>
+          <n-popover v-model:show="actorOpen" trigger="click" placement="bottom-end" style="width: 280px">
+            <template #trigger>
+              <n-button size="small" :type="myActor ? 'default' : 'warning'" ghost>
+                👤 {{ myActor || '点我设置身份' }}
+              </n-button>
+            </template>
+            <div class="actor-pop">
+              <div class="dim">
+                面板只有访问口令、没有登录用户，所以「谁建的」由你自己报：填了之后在本面板建的卡、锚点、上传的图都会记成你。
+              </div>
+              <n-input v-model:value="actorName" size="small" placeholder="昵称（如 云端之风）" style="margin-top: 8px" />
+              <n-input v-model:value="actorQq" size="small" placeholder="QQ 号（如 1479221500）" style="margin-top: 6px" />
+              <n-space justify="end" style="margin-top: 10px">
+                <n-button size="tiny" @click="actorOpen = false">取消</n-button>
+                <n-button size="tiny" type="primary" @click="saveActor">保存</n-button>
+              </n-space>
+            </div>
+          </n-popover>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <span class="blur-switch">
+                NSFW 打码<n-switch v-model:value="blurGlobal" size="small" style="margin-left: 6px" />
+              </span>
+            </template>
+            打码口径与图库一致（当前阈值 {{ nsfwThreshold }}）；点开放大后右下角可临时解除
+          </n-tooltip>
           <n-button type="primary" @click="reload">查询</n-button>
           <n-button type="primary" ghost @click="openCreate">＋ 新建角色</n-button>
           <n-button @click="doExport">导出 JSON</n-button>
@@ -103,8 +129,14 @@
         <template v-if="detail">
           <div class="dt-head">
             <div class="dt-cover" title="点击查看大图" @click.stop="openCoverViewer">
-              <img v-if="dtCoverUrl" :src="dtCoverUrl" :alt="detail.name" />
+              <img
+                v-if="dtCoverUrl"
+                :src="dtCoverUrl"
+                :alt="detail.name"
+                :class="{ 'nsfw-blur': isBlurred(dtCoverRef) }"
+              />
               <div v-else class="dt-cover-ph">{{ (detail.name || '?').slice(0, 2) }}</div>
+              <div v-if="isBlurred(dtCoverRef)" class="nsfw-mask"><span>🔞</span></div>
               <span v-if="dtCoverAuto" class="dt-cover-tag">自动</span>
             </div>
             <div class="dt-ident">
@@ -175,6 +207,7 @@
                     v-for="r in anchorRefs(a.id)"
                     :key="r.id"
                     class="anchor-ref"
+                    :class="{ 'ref-missing': r.exists === false }"
                     :title="`id=${r.id} ${originLabel(r.origin)} ${r.created_by || NO_REC} ${fmtTime(r.created_at)}`"
                   >
                     <img
@@ -183,10 +216,14 @@
                       :alt="'ref ' + r.id"
                       loading="lazy"
                       class="ref-clickable"
+                      :class="{ 'nsfw-blur': isBlurred(r) }"
                       @click.stop="openRefViewer(r)"
                     />
                     <div v-else class="anchor-ref-ph">{{ r.exists === false ? '缺' : '…' }}</div>
+                    <div v-if="isBlurred(r)" class="nsfw-mask"><span>🔞</span></div>
                     <span v-if="r.is_cover" class="anchor-ref-cover">★</span>
+                    <!-- 就地删除：锚点条目里看图时不必再切到「参考图」分区找按钮 -->
+                    <button class="anchor-ref-del" title="删除这张图" @click.stop="removeRef(r)">✕</button>
                   </div>
                 </div>
               </div>
@@ -224,10 +261,15 @@
                       :alt="'ref ' + r.id"
                       loading="lazy"
                       class="ref-clickable"
+                      :class="{ 'nsfw-blur': isBlurred(r) }"
                       title="点击查看原图"
                       @click.stop="openRefViewer(r)"
                     />
                     <div v-else class="ref-ph">{{ r.exists === false ? '文件已不在' : '加载中…' }}</div>
+                    <div v-if="isBlurred(r)" class="nsfw-mask">
+                      <span>🔞</span>
+                      <span class="nsfw-mask-tip">点击查看</span>
+                    </div>
                     <div class="ref-meta">
                       <span>#{{ r.id }}</span>
                       <n-tag size="tiny" :bordered="false" :type="originType(r.origin)">
@@ -245,10 +287,7 @@
                     </div>
                     <div class="ref-ops">
                       <n-button v-if="!r.is_cover" size="tiny" quaternary @click="setCover(r)">设为封面</n-button>
-                      <n-popconfirm @positive-click="removeRef(r)">
-                        <template #trigger><n-button size="tiny" type="error" quaternary>删除</n-button></template>
-                        删除这张参考图？<template v-if="r.external">（图库里的原图不会被删）</template>
-                      </n-popconfirm>
+                      <n-button size="tiny" type="error" quaternary @click="removeRef(r)">删除</n-button>
                     </div>
                   </div>
                 </div>
@@ -447,7 +486,13 @@
     </n-modal>
 
     <!-- 导入 -->
-    <ItemViewer v-model:show="viewerShow" :src="viewerSrc" :title="viewerTitle" />
+    <ItemViewer
+      v-model:show="viewerShow"
+      :src="viewerSrc"
+      :title="viewerTitle"
+      :nsfw="viewerNsfw"
+      :blur-global="blurGlobal"
+    />
     <n-modal v-model:show="importOpen" preset="card" title="导入角色卡片 JSON" style="max-width: 620px">
       <n-input v-model:value="importText" type="textarea" :rows="10" placeholder='把导出的 JSON 粘贴到这里（{"version":1,"characters":[…] }）' />
       <template #footer>
@@ -465,11 +510,12 @@ import { computed, h, onMounted, reactive, ref, watch } from "vue";
 import {
   NButton, NCard, NDataTable, NDivider, NDrawer, NDrawerContent, NDescriptions,
   NDescriptionsItem, NForm, NFormItem, NInput, NInputNumber, NModal, NPopconfirm,
-  NSelect, NSpace, NSwitch, NTabPane, NTabs, NTag, NUpload, NUploadDragger,
-  useDialog, useMessage,
+  NPopover, NSelect, NSpace, NSwitch, NTabPane, NTabs, NTag, NTooltip, NUpload,
+  NUploadDragger, useDialog, useMessage,
   type UploadCustomRequestOptions,
 } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
+import { lsGet, lsSet } from "@/api/storage";
 import ItemViewer from "@/components/ItemViewer.vue";
 import { fmtTime } from "@/utils/format";
 
@@ -536,6 +582,47 @@ const importOpen = ref(false);
 const importText = ref("");
 /** 后端 character_card 的自动关联配置（列表接口带回来，只用于页面上的说明文案）。 */
 const autoLink = ref<{ enabled: boolean; keep: number; cover: boolean } | null>(null);
+
+// ---------------- 操作者身份（v6.3.1）----------------
+// 面板只有口令鉴权、没有「用户」概念，所以创建者由使用者自报：存本地、随写入上报，
+// 后端只做规范化（限长/去控制字符），空则回落「WebUI 控制台」。
+const ACTOR_NAME_KEY = "anima_actor_name";
+const ACTOR_QQ_KEY = "anima_actor_qq";
+const actorName = ref(lsGet(ACTOR_NAME_KEY) || "");
+const actorQq = ref(lsGet(ACTOR_QQ_KEY) || "");
+const actorOpen = ref(false);
+const myActor = computed(() => {
+  const n = actorName.value.trim();
+  const q = actorQq.value.trim();
+  if (n && q) return `${n}(${q})`;
+  if (n) return n;
+  return q ? `QQ:${q}` : "";
+});
+
+function saveActor() {
+  lsSet(ACTOR_NAME_KEY, actorName.value.trim());
+  lsSet(ACTOR_QQ_KEY, actorQq.value.trim());
+  actorOpen.value = false;
+  message.success(
+    myActor.value ? `以后在面板创建的内容会记为「${myActor.value}」` : "已清除身份，将记为「WebUI 控制台」"
+  );
+}
+
+// ---------------- NSFW 打码（v6.3.1，口径与图库一致）----------------
+const BLUR_KEY = "anima_char_nsfw_blur";
+const nsfwThreshold = ref(0.5);
+const blurGlobal = ref(lsGet(BLUR_KEY) == null ? true : lsGet(BLUR_KEY) === "1");
+watch(blurGlobal, (v) => lsSet(BLUR_KEY, v ? "1" : "0"));
+
+/** 分数未知（-1，未跑过检测）不打码；只有明确 ≥ 阈值才打码。 */
+function isNsfw(r: any): boolean {
+  const s = Number(r?.nsfw_score ?? -1);
+  return s >= 0 && s >= nsfwThreshold.value;
+}
+
+function isBlurred(r: any): boolean {
+  return blurGlobal.value && isNsfw(r);
+}
 
 // v6.1.2：下拉框的「空」必须是 null，不能是空字符串——
 // `n-select` 只要 value 非 null 就认为「有值」，会显示清空按钮（看着空、其实得手点清空）。
@@ -634,6 +721,9 @@ async function reload() {
     const data = await apiGet("character/list", { keyword: keyword.value.trim() });
     characters.value = data?.characters || [];
     autoLink.value = data?.auto_link || null;
+    if (data?.nsfw?.threshold != null) nsfwThreshold.value = Number(data.nsfw.threshold);
+    // 用户没手动拧过开关时，跟随插件配置的图库 NSFW 默认值
+    if (lsGet(BLUR_KEY) == null && data?.nsfw) blurGlobal.value = data.nsfw.blur_default !== false;
     loadCovers();
   } catch (e: any) {
     message.error(`读取角色卡片失败：${e?.message || e}`);
@@ -761,6 +851,7 @@ async function createCard() {
       persona_name: nv(createForm.persona_name),
       work: createForm.work.trim(),
       lora_name: nv(createForm.lora_name),
+      created_by: myActor.value,
     });
     await apiPost("character/anchor/save", {
       character_id: r.id,
@@ -768,6 +859,7 @@ async function createCard() {
       positive: createForm.positive.trim(),
       kind: "full",
       weight: 1.2,
+      created_by: myActor.value,
     });
     createOpen.value = false;
     message.success(`已创建「${createForm.name.trim()}」`);
@@ -863,6 +955,7 @@ async function saveAnchor() {
       weight: Number(anchorForm.weight || 1.2),
       lora_name: nv(anchorForm.lora_name),
       skip_trigger_words: anchorForm.skip_trigger_words,
+      created_by: myActor.value,
     });
     anchorOpen.value = false;
     message.success("锚点已保存");
@@ -1049,6 +1142,7 @@ async function onUploadRequest({ file, onFinish, onError }: UploadCustomRequestO
         filename: raw.name || file.name,
         data: dataUrl,
         anchor_id: Number(uploadAnchorId.value) || 0,
+        created_by: myActor.value,
       },
       { timeout: 30000 },
     );
@@ -1082,6 +1176,8 @@ async function setCover(r: any) {
 const viewerShow = ref(false);
 const viewerSrc = ref("");
 const viewerTitle = ref("");
+/** 当前查看的那张是否 NSFW（传给查看器决定初始打码与切换按钮）。 */
+const viewerNsfw = ref(false);
 
 /** 详情抽屉顶部那张封面：显式封面 > 自动封面（第一张图）。 */
 const dtCoverRef = computed(() => {
@@ -1107,6 +1203,7 @@ function openCoverViewer() {
 
 /** 点缩略图 → 拉**原图**进大图查看器（列表里的都是缩略图，放大才不发糊）。 */
 async function openRefViewer(r: any) {
+  viewerNsfw.value = isNsfw(r);
   viewerTitle.value = detail.value
     ? `${detail.value.name} · #${r.id}${r.is_cover ? "（封面）" : ""}`
     : `图片 #${r.id}`;
@@ -1156,7 +1253,10 @@ function fileToDataUrl(file: File): Promise<string> {
 function removeRef(r: any) {
   dialog.warning({
     title: "删除参考图",
-    content: `确认删除参考图 #${r.id}？`,
+    // 引用式记录（出图自动关联 / 图库导入）删掉只是解除归属，gallery 里的原图不动 —— 说清楚，
+    // 否则用户会以为点删除会把成品图一起清掉。
+    content: `确认删除参考图 #${r.id}？`
+      + (r.external ? "（这条是引用图库原图，只删记录，图库里的图不会被删）" : ""),
     positiveText: "删除",
     negativeText: "取消",
     onPositiveClick: async () => {
@@ -1189,6 +1289,7 @@ async function importRefFromGallery() {
       character_id: detail.value.id,
       sha,
       anchor_id: Number(uploadAnchorId.value) || 0,
+      created_by: myActor.value,
     });
     refSha.value = "";
     message.success("已从图库导入");
@@ -1364,6 +1465,29 @@ onMounted(() => {
 .anchor-ref img.ref-clickable { cursor: zoom-in; }
 .ref-is-cover { border-color: rgba(250, 173, 20, 0.75) !important; }
 .ref-ops { display: flex; align-items: center; justify-content: center; gap: 2px; }
+
+/* ---- NSFW 打码（与图库同一套观感）---- */
+.ref-item { position: relative; }
+.nsfw-blur { filter: blur(12px); transform: scale(1.06); }
+.nsfw-mask {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 4px;
+  color: #fff; font-size: 16px; border-radius: inherit; cursor: zoom-in;
+  background: rgba(0, 0, 0, 0.18); pointer-events: none;
+}
+.nsfw-mask-tip { font-size: 10px; font-weight: 600; background: rgba(0, 0, 0, 0.5); padding: 1px 7px; border-radius: 20px; }
+.blur-switch { display: inline-flex; align-items: center; font-size: 12px; opacity: 0.85; }
+.actor-pop { max-width: 280px; }
+
+/* ---- 锚点缩略图的就地删除 ---- */
+.anchor-ref-del {
+  position: absolute; top: -5px; left: -5px; width: 17px; height: 17px;
+  border-radius: 50%; border: none; cursor: pointer; line-height: 1;
+  font-size: 10px; color: #fff; background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.anchor-ref-del:hover { background: #d03050; }
+.anchor-ref.ref-missing { border-radius: 6px; box-shadow: 0 0 0 2px rgba(255, 77, 79, 0.7); }
 
 /* ---- 上传弹窗 ---- */
 .drop-title { font-size: 15px; font-weight: 600; }

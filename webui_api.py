@@ -1842,8 +1842,45 @@ class WebUIApi:
     # 角色卡片（Character Card）：列表 / 详情 / 保存 / 删除 / 锚点 / 导入导出
     # ------------------------------------------------------------------ #
     # WebUI 侧写入的创建者标识（v6.3.0）。面板只有口令鉴权、没有「用户」概念，
-    # 因此统一记渠道名；QQ 侧的指令 / AI 工具写的是「昵称( QQ号)」。
+    # 因此默认记渠道名；使用者可在角色卡页自报「昵称 + QQ」（v6.3.1），自报值优先。
     _CHAR_WEBUI_ACTOR = "WebUI 控制台"
+    _CHAR_ACTOR_MAX = 48
+
+    @classmethod
+    def _norm_actor(cls, raw) -> str:
+        """规范化前端上报的「我是谁」：压掉换行/控制字符、限长，空则回落渠道名。
+
+        不校验真伪 —— 能进面板的人本来就有写权限，这里只防把 500 字或换行塞进列表展示。
+        """
+        s = re.sub(r"[\r\n\t\x00-\x1f\x7f]", " ", str(raw or ""))
+        s = re.sub(r"\s+", " ", s).strip()
+        return s[: cls._CHAR_ACTOR_MAX] or cls._CHAR_WEBUI_ACTOR
+
+    @staticmethod
+    def _character_nsfw_policy(plugin) -> dict:
+        """参考图打码要用的口径，与图库同源（别在前端另写一个 0.5）。
+
+        三项分别取：旧版本图库可能缺 `_nsfw_default_blur` / `_nsfw_enabled`，
+        一起 try 会让阈值也跟着丢，所以每项各自兜底。
+        """
+        out = {"threshold": 0.5, "blur_default": True, "enabled": True}
+        g = getattr(plugin, "gallery", None)
+        if g is None:
+            return out
+        for _key, _meth, _dflt in (
+            ("threshold", "_nsfw_threshold", 0.5),
+            ("blur_default", "_nsfw_default_blur", True),
+            ("enabled", "_nsfw_enabled", True),
+        ):
+            try:
+                out[_key] = getattr(g, _meth)()
+            except Exception:
+                out[_key] = _dflt
+        try:
+            out["threshold"] = float(out["threshold"])
+        except (TypeError, ValueError):
+            out["threshold"] = 0.5
+        return out
 
     @staticmethod
     def _character_store(plugin):
@@ -1889,6 +1926,8 @@ class WebUIApi:
                     "keep": int(cfg.get("auto_link_keep", 6) or 0),
                     "cover": bool(cfg.get("auto_link_cover", True)),
                 },
+                # 参考图 NSFW 打码口径（阈值与默认开关都跟图库同源，前端不自己写死）
+                "nsfw": self._character_nsfw_policy(self.plugin),
             })
         except Exception as e:
             return error_response(f"读取角色卡片失败: {e}")
@@ -1933,7 +1972,7 @@ class WebUIApi:
                     lora_name=(body.get("lora_name") or "").strip(),
                     note=(body.get("note") or "").strip(),
                     enabled=bool(body.get("enabled", True)),
-                    source="webui", created_by=self._CHAR_WEBUI_ACTOR,
+                    source="webui", created_by=self._norm_actor(body.get("created_by")),
                 )
                 return json_response({"ok": True, "created": True, "id": int(ch["id"])})
             upd: dict = {"name": name}
@@ -2011,7 +2050,7 @@ class WebUIApi:
                 lora_name=(body.get("lora_name") or "").strip(),
                 skip_trigger_words=bool(body.get("skip_trigger_words", True)),
                 note=(body.get("note") or "").strip(),
-                created_by=self._CHAR_WEBUI_ACTOR, source="webui",
+                created_by=self._norm_actor(body.get("created_by")), source="webui",
             )
             if a is None:
                 return error_response("新增锚点失败")
@@ -2078,6 +2117,7 @@ class WebUIApi:
                 ctype = "application/json"
             char_key = ""
             anchor_id = 0
+            actor_raw = ""
             filename = f"ref_{uuid.uuid4().hex}.png"
             data_bytes = None
             if "json" in ctype:
@@ -2086,6 +2126,7 @@ class WebUIApi:
                 except Exception:
                     payload = {}
                 char_key = str(payload.get("character_id") or payload.get("character_name") or "").strip()
+                actor_raw = str(payload.get("created_by") or "")
                 try:
                     anchor_id = int(payload.get("anchor_id") or 0)
                 except Exception:
@@ -2102,6 +2143,7 @@ class WebUIApi:
             else:
                 data_bytes = raw
                 char_key = (request.headers.get("x-character-id") or "").strip()
+                actor_raw = request.headers.get("x-created-by") or ""
                 try:
                     anchor_id = int(request.headers.get("x-anchor-id") or 0)
                 except Exception:
@@ -2122,7 +2164,7 @@ class WebUIApi:
             ref = await _char_mod.land_ref(
                 self.plugin, int(ch["id"]), data_bytes, filename=filename,
                 note="WebUI 上传", anchor_id=anchor_id,
-                created_by=self._CHAR_WEBUI_ACTOR, origin="upload",
+                created_by=self._norm_actor(actor_raw), origin="upload",
             )
             if ref is None:
                 return error_response("参考图落地失败")
@@ -2221,7 +2263,7 @@ class WebUIApi:
             ref = await _char_mod.land_ref(
                 self.plugin, int(ch["id"]), Path(src).read_bytes(),
                 filename=Path(src).name, note=f"来自图库 {sha[:12]}", anchor_id=_aid,
-                created_by=self._CHAR_WEBUI_ACTOR, origin="gallery",
+                created_by=self._norm_actor(body.get("created_by")), origin="gallery",
             )
             if ref is None:
                 return error_response("参考图落地失败")

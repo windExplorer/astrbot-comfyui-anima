@@ -479,27 +479,79 @@ async def land_ref(
     return ref
 
 
-def actor_label(event) -> str:
-    """把消息事件压成「谁」：`昵称(QQ号)`；取不到就退回 QQ 号，再取不到返回空串。
+def _first_text(*vals) -> str:
+    """取第一个非空文本（None / 空串 / 纯空白都跳过）。"""
+    for v in vals:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
 
-    角色卡 / 锚点 / 参考图都要记创建者（v6.3.0），而三个入口（指令、AI 工具、WebUI）
-    只有这里能拿到发送者身份，所以统一由调用方先算好字符串再传进存储层。
+
+def _sender_attr(sender, *names) -> str:
+    """按候选字段名依次取 sender 上的属性（不同 OneBot11 实现字段名不统一）。"""
+    if sender is None:
+        return ""
+    vals = []
+    for n in names:
+        try:
+            vals.append(getattr(sender, n, None))
+        except Exception:
+            vals.append(None)
+    return _first_text(*vals)
+
+
+def actor_label(event) -> str:
+    """把消息事件压成「谁」：`昵称(QQ号)`；只拿到一项就退化成 `QQ:号` 或 `昵称`。
+
+    ★ 不能只信 AstrBot 的 ``get_sender_id()``：4.28.1 里它要求 ``sender.user_id`` 是 **str**
+    才返回（``astrbot/core/platform/astr_message_event.py`` 的 isinstance 判定），而
+    OneBot11 / NapCat 实际给的是 **int** → 直接返回空串，表现就是「创建者只记到昵称、QQ 号丢了」。
+    所以这里自己再兜一层原始字段；昵称同理（群名片在 ``card``、昵称在 ``nickname``）。
     """
     if event is None:
         return ""
     try:
+        sender = getattr(getattr(event, "message_obj", None), "sender", None)
+    except Exception:
+        sender = None
+
+    name = ""
+    try:
         name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
     except Exception:
         name = ""
+    if not name:
+        name = _sender_attr(sender, "card", "cardname", "card_name", "nickname", "nick", "user_name")
+
+    uid = ""
     try:
         uid = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
     except Exception:
         uid = ""
+    if not uid:
+        uid = _sender_attr(sender, "user_id", "user_Id", "qq", "uid")
+    if not uid:
+        # 最后兜底：私聊的 umo 形如 `aiocqhttp:Private_Message:1479221500`，尾段就是对方号；
+        # 群聊尾段是**群号**，拿它当用户 id 会把整群记成创建者，所以只在私聊用。
+        # 注意 is_private_chat 是方法不是 property（直接读属性恒为真值）。
+        try:
+            priv = getattr(event, "is_private_chat", None)
+            if callable(priv) and bool(priv()):
+                _umo = str(getattr(event, "unified_msg_origin", "") or "")
+                _seg = _umo.rsplit(":", 1)[-1].strip()
+                if _seg.isdigit() and _umo.count(":") >= 2:
+                    uid = _seg
+        except Exception:
+            pass
+
     if name and uid:
         return f"{name}({uid})"
-    if name:
-        return name
-    return f"QQ:{uid}" if uid else ""
+    if uid:
+        return f"QQ:{uid}"
+    return name
 
 
 async def auto_link_generated(

@@ -2,6 +2,51 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.3.1（角色卡修复：创建者丢了 QQ 号 / 锚点图删不掉 / NSFW 图不打码）
+
+现象（用户实测反馈三条）：① 创建者只记到昵称，**QQ 号是空的**；② 锚点条目里的图片没有删除入口，
+「现在图片无法删除」；③ 有的参考图是 NSFW，面板里直接原样显示，需要模糊效果。
+
+根因：
+
+- **QQ 号丢失**：`actor_label()` 依赖 AstrBot 的 `event.get_sender_id()`，而 4.28.1 的实现是
+  `if sender and isinstance(sender.user_id, str): return sender.user_id` —— OneBot11 / NapCat 回上来的
+  `user_id` 是 **int**，判定不成立直接返回空串，于是「昵称(QQ号)」退化成只剩昵称。
+  （同一个坑还潜伏在插件其它用 `get_sender_id()` 的地方，本次只修角色卡这条链路，其余未动。）
+- **删不掉**：v6.3.0 改版时把删除按钮留在了「参考图」分区，锚点分区只剩缩略图；而且参考图分区里
+  `n-popconfirm` 套 `dialog.warning` 成了二次确认，点起来像「没反应」。
+- **不打码**：角色卡只存了 `nsfw_score`，前端只把它做成一个小标签，从没参与渲染。
+
+修复：
+
+- `character.actor_label()`：核心接口返回空时**自己兜底**读 `message_obj.sender` 的
+  `user_id / qq / uid`（int 也收）与 `card / cardname / nickname / nick`；再兜一层私聊 `umo` 尾段。
+  群聊的 `umo` 尾段是**群号**，绝不能当用户 id 用（会把整群记成创建者），所以只在
+  `is_private_chat()` 为真时取 —— 注意它是方法不是 property，直接读属性恒为真值。
+- 面板侧「谁」：面板只有口令鉴权、没有登录用户，因此角色卡页工具栏新增**操作者身份**
+  （昵称 + QQ 两个输入，存 localStorage，沙箱 iframe 下走 `lsGet/lsSet` 兜底），建卡 / 建锚点 /
+  上传 / 图库导入都带上 `created_by`；后端 `_norm_actor()` 只做规范化（压换行与控制字符、限长 48、
+  空则回落「WebUI 控制台」），不校验真伪 —— 能进面板的人本来就有写权限。**更新卡片不会改写创建者**。
+  raw 二进制上传（独立通道形态）走 `x-created-by` 头。
+- 锚点条目缩略图加**就地删除**（左上角 ✕ + 确认），不必再切到「参考图」分区找按钮；
+  参考图分区的删除去掉二次确认，并把「引用图库原图的记录只删记录、图库里的图不会被删」
+  写进确认文案。
+- NSFW 打码：口径与图库同源 —— `character/list` 新增回传 `nsfw.{threshold, blur_default, enabled}`
+  （取自 `gallery._nsfw_threshold() / _nsfw_default_blur() / _nsfw_enabled()`，三项**分别**兜底，
+  避免旧图库缺某个方法时连阈值一起丢）。缩略图（参考图分区、锚点分区、抽屉封面）分数 ≥ 阈值时
+  `blur(12px)` + 🔞 遮罩「点击查看」；点开放大后右下角可**临时解除/恢复**（`ItemViewer` 新增
+  `nsfw` / `blur-global` 两个可选 props，其它调用方不受影响）；工具栏「NSFW 打码」开关存本地
+  `anima_char_nsfw_blur`，用户没拧过开关时跟随插件配置的默认值。`nsfw_score < 0`（未检测）不打码。
+
+测试：`tests/test_character.py` 92 → 99 项（新增 7 项钉住身份取值：int user_id、群名片优先、
+私聊 umo 兜底、**群聊不得把群号当用户 id**、无事件返回空）；`tests/test_character_webui.py`
+97 → 109 项（新增 12 项：`_norm_actor` 规范化与回落、建卡/建锚点/上传/图库导入都记到自报身份、
+更新不改写创建者、raw 上传读 `x-created-by`、列表回传阈值 0.42 与打码默认开关）。
+前端实测（桩桥 + 无头 Chrome）：设置身份后按钮显示「👤 冒烟昵称(123456789)」，上传的新参考图
+创建者正是该身份；锚点缩略图 ✕ → 确认 → `character/ref/delete {id:101}` → 缩略图 3 → 2；
+0.91 / 0.77 / 0.5 三张打码、0.02 与 -1 不打码；点打码图进大图初始为模糊，点「🔞 恢复模糊」解除。
+`tests/test_logic.py` 的 LoRA 分离注入断言仍是 v6.3.0 之前既有失败（`workflow_builder` 未动）。
+
 ## v6.3.0（角色卡：出图自动关联锚点 + 创建者留痕 + 拖拽上传 + 详情排版改版）
 
 需求（用户明确，三条）：① 「按道理如果用户配置了锚点，应该自动关联生成的图片」；② WebUI 上传

@@ -9,8 +9,16 @@
         <div class="iv-imgs" @click="onClose">
           <figure class="iv-fig">
             <div class="iv-imgwrap">
-              <img v-if="resolvedSrc" :src="resolvedSrc" alt="" />
+              <img v-if="resolvedSrc" :src="resolvedSrc" alt="" :class="{ 'ivw-nsfw-blur': blurred }" />
               <div v-else class="iv-loading">封面加载中…</div>
+              <button
+                v-if="nsfw"
+                class="ivw-blur-btn"
+                :class="{ on: blurred }"
+                @click.stop="blurred = !blurred"
+              >
+                {{ blurred ? "🔞 解除模糊" : "🔞 恢复模糊" }}
+              </button>
             </div>
             <figcaption class="iv-cap">{{ resolvedTitle }}</figcaption>
           </figure>
@@ -59,6 +67,10 @@ const props = defineProps<{
   images?: Array<{ fname: string; title?: string; fields?: ItemViewerField[] }>;
   /** 当前在 images 中的索引 */
   index?: number;
+  /** 本项是否 NSFW：为真时按 blurGlobal 决定初始打码，并显示「解除/恢复模糊」按钮 */
+  nsfw?: boolean;
+  /** 全局打码开关（关掉时即使 nsfw 也不打码） */
+  blurGlobal?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -70,6 +82,8 @@ const emit = defineEmits<{
 const resolvedSrc = ref<string>("");
 const resolvedTitle = ref<string>("");
 const resolvedFields = ref<ItemViewerField[]>([]);
+/** NSFW 打码状态：每次打开/切图都按 props 重算，避免上一张的「解除」状态残留到下一张。 */
+const blurred = ref(false);
 
 const canNav = computed(() => Array.isArray(props.images) && props.images.length > 1);
 const navIndex = computed(() => props.index ?? 0);
@@ -93,8 +107,9 @@ function applyItem(fname?: string, title?: string, fields?: ItemViewerField[]) {
 
 // show 打开或 index 导航时重新解析当前项
 watch(
-  () => [props.show, props.index] as const,
-  ([v, idx]) => {
+  () => [props.show, props.index, props.nsfw, props.blurGlobal] as const,
+  ([, idx]) => {
+    blurred.value = Boolean(props.nsfw) && props.blurGlobal !== false;
     if (Array.isArray(props.images) && props.images.length) {
       const cur = props.images[Math.max(0, Math.min(props.images.length - 1, idx ?? 0))] || {};
       applyItem(cur.fname, cur.title, cur.fields);
@@ -217,6 +232,27 @@ function onClose() {
   padding: 60px;
   font-size: 13px;
 }
+/* NSFW 打码：与图库 ImageViewer 同一套观感（模糊 + 放大遮边，避免打码后露出四角） */
+.ivw-nsfw-blur {
+  filter: blur(22px) !important;
+  transform: scale(1.06);
+}
+.ivw-blur-btn {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 5px 14px;
+  font-size: 12px;
+  border-radius: 16px;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 107, 107, 0.7);
+}
+.ivw-blur-btn:hover { background: rgba(255, 107, 107, 0.3); }
+.ivw-blur-btn.on { background: #ff6b6b; border-color: #ff6b6b; }
 .iv-info {
   width: 380px;
   flex: 0 0 380px;

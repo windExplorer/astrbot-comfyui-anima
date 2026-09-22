@@ -18,6 +18,7 @@ import asyncio
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -452,6 +453,54 @@ async def main() -> int:
     check("auto_link_ref=false 时不关联",
           (not _none) and len(store.list_refs(int(cz2["id"]))) == _before, str(_none))
     plugin._c = cfg
+
+    print("\n[13] v6.3.1 创建者身份取值（QQ 号兜底）")
+
+    class _Sender:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    class _Ev:
+        """最小事件桩：字段名与 AstrBot 的 message_obj.sender 对齐。"""
+
+        def __init__(self, sender=None, sid="", name="", private=False, umo=""):
+            self.message_obj = SimpleNamespace(sender=sender)
+            self._sid, self._name, self._priv, self._umo = sid, name, private, umo
+
+        def get_sender_id(self):
+            return self._sid
+
+        def get_sender_name(self):
+            return self._name
+
+        def is_private_chat(self):
+            return self._priv
+
+        @property
+        def unified_msg_origin(self):
+            return self._umo
+
+    # ★核心回归点：AstrBot 的 get_sender_id() 只在 user_id 是 str 时才返回值，
+    # 而 OneBot11 / NapCat 给的是 int → 旧实现只剩昵称，QQ 号丢失。
+    check("int 型 user_id 也能记到号",
+          character.actor_label(_Ev(_Sender(user_id=1479221500, nickname="云端之风"))) == "云端之风(1479221500)",
+          character.actor_label(_Ev(_Sender(user_id=1479221500, nickname="云端之风"))))
+    check("群名片优先于空昵称",
+          character.actor_label(_Ev(_Sender(user_id=123, card="小明"))) == "小明(123)",
+          character.actor_label(_Ev(_Sender(user_id=123, card="小明"))))
+    check("核心返回 str 时照用",
+          character.actor_label(_Ev(_Sender(user_id=1), sid="1479221500", name="云端之风")) == "云端之风(1479221500)")
+    check("只有号 → QQ:号",
+          character.actor_label(_Ev(_Sender(user_id=99999))) == "QQ:99999",
+          character.actor_label(_Ev(_Sender(user_id=99999))))
+    check("私聊无 sender 时取 umo 尾段",
+          character.actor_label(_Ev(None, private=True, umo="aiocqhttp:Private_Message:13579")) == "QQ:13579")
+    # 群聊的 umo 尾段是**群号**，拿它当用户 id 会把整群记成创建者
+    check("群聊不把群号当用户 id",
+          character.actor_label(_Ev(None, private=False, umo="aiocqhttp:Group_Message:24680")) == "",
+          character.actor_label(_Ev(None, private=False, umo="aiocqhttp:Group_Message:24680")))
+    check("无事件返回空串", character.actor_label(None) == "")
 
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 0 if _fail == 0 else 1
