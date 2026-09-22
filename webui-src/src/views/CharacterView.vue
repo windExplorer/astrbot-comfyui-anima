@@ -78,8 +78,18 @@
           @click="openDetail(c)"
         >
           <div class="char-cover">
-            <img v-if="coverUrls[c.id]" :src="coverUrls[c.id]" :alt="c.name" loading="lazy" />
+            <img
+              v-if="coverUrls[c.id]"
+              :src="coverUrls[c.id]"
+              :alt="c.name"
+              loading="lazy"
+              :class="{ 'nsfw-blur': isCoverBlurred(c) }"
+            />
             <div v-else class="char-cover-ph">{{ (c.name || '?').slice(0, 2) }}</div>
+            <div v-if="isCoverBlurred(c)" class="nsfw-mask">
+              <span>🔞</span>
+              <span class="nsfw-mask-tip">点卡片查看</span>
+            </div>
             <n-tag v-if="c.persona_name" class="char-badge" size="tiny" type="success" :bordered="false">人格</n-tag>
             <n-tag v-if="!c.enabled" class="char-badge char-badge-right" size="tiny" :bordered="false">停用</n-tag>
           </div>
@@ -658,14 +668,30 @@ const columns = [
   { title: "角色名", key: "name", width: 140 },
   {
     title: "封面", key: "cover", width: 74,
-    render: (row: any) =>
-      coverUrls[row.id]
-        ? h("img", {
-            src: coverUrls[row.id],
+    render: (row: any) => {
+      const url = coverUrls[row.id];
+      if (!url) return h("span", { style: "opacity:.4" }, "—");
+      const blurred = isCoverBlurred(row);
+      return h(
+        "div",
+        { style: "position:relative;width:48px;height:48px;border-radius:6px;overflow:hidden" },
+        [
+          h("img", {
+            src: url,
             alt: row.name,
-            style: "width:48px;height:48px;object-fit:cover;border-radius:6px;display:block",
-          })
-        : h("span", { style: "opacity:.4" }, "—"),
+            class: blurred ? "nsfw-blur" : "",
+            style: "width:100%;height:100%;object-fit:cover;display:block",
+          }),
+          blurred
+            ? h(
+                "div",
+                { class: "tbl-cover-mask", title: "NSFW 已打码，点「查看/编辑」进详情看原图" },
+                "🔞"
+              )
+            : null,
+        ].filter(Boolean)
+      );
+    },
   },
   {
     title: "别名", key: "aliases", width: 160,
@@ -758,6 +784,11 @@ const coverUrls = reactive<Record<number, string>>({});
 function coverRef(c: any) {
   const refs: any[] = c?.refs || [];
   return refs.find((r) => r.is_cover) || refs.find((r) => r.is_cover_auto) || null;
+}
+
+/** 列表（卡片 / 表格）的封面也要跟着打码：封面到底是哪张由 coverRef 决定，别只看第一张。 */
+function isCoverBlurred(c: any): boolean {
+  return isBlurred(coverRef(c));
 }
 
 function anchorNames(c: any) {
@@ -1478,6 +1509,11 @@ onMounted(() => {
 .nsfw-mask-tip { font-size: 10px; font-weight: 600; background: rgba(0, 0, 0, 0.5); padding: 1px 7px; border-radius: 20px; }
 .blur-switch { display: inline-flex; align-items: center; font-size: 12px; opacity: 0.85; }
 .actor-pop { max-width: 280px; }
+/* 表格视图的小封面：48px 放不下一行提示文字，只留角标 + 悬停提示 */
+.tbl-cover-mask {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; background: rgba(0, 0, 0, 0.18); cursor: help;
+}
 
 /* ---- 锚点缩略图的就地删除 ---- */
 .anchor-ref-del {

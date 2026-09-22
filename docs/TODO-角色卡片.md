@@ -46,6 +46,14 @@
 | NSFW 图不打码 | 只存了 `nsfw_score` 从没参与渲染。口径与图库同源：`character/list` 回 `nsfw.{threshold,blur_default,enabled}`（取 `gallery._nsfw_*`，三项分别兜底）；缩略图 ≥ 阈值 → `blur(12px)` + 🔞 遮罩；`ItemViewer` 新增可选 `nsfw`/`blur-global`，大图右下角可临时解除；开关存 `anima_char_nsfw_blur`，未手动拧过时跟随插件默认；`nsfw_score < 0`（未检测）不打码 |
 
 测试：`test_character.py` 99 项（+7 身份取值）、`test_character_webui.py` 109 项（+12 身份上报与 NSFW 口径）。
+
+### M6.1（v6.3.2：列表封面补打码）
+
+v6.3.1 的打码只覆盖了抽屉三处，**列表页封面走的是另一条渲染路径**（卡片视图 `:src="coverUrls[c.id]"`、
+表格视图在 `columns.render` 里手工 `h("img")`），两处都没接判断。修法是新增
+`isCoverBlurred(c) = isBlurred(coverRef(c))` —— 关键是必须复用 `coverRef()`（显式 `cover_ref_id`
+优先、未设回落第一张），不能拿 `refs[0]` 凑，否则「显式封面是 NSFW 但第一张不是」这种组合会漏遮。
+遮罩 `pointer-events: none`，点卡片照常进抽屉。
 > 提出日期：2026-09-16
 > 来源：用户需求「画一张你和薄荷的合照」中「你」= bot 人格角色，模型不检索绘画锚点，凭空造形象
 > 关联：`comfyui_draw` docstring 的「角色一致性」「bot 自身入画」「多人分组」规则（v5.13.8~v5.14.3 已建立但只靠模型自觉）
