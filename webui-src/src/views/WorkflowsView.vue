@@ -143,6 +143,22 @@
           旧版工作流（未引用基础工作流）：仅可调整基础字段，节点/采样器等实现细节已收敛到新版。
           建议在「工作流」页用基础工作流重建后再删除本条。
         </n-alert>
+        <!-- v7.0.9：基础工作流是最高优先级——先选它，其余配置项才出现 -->
+        <template v-if="!legacy">
+          <n-form-item label="基础工作流（第一步：不选无法继续）">
+            <n-select
+              v-model:value="editForm.base_id"
+              :options="baseWfOptions"
+              filterable
+              placeholder="选择基础工作流（上传/管理见「基础工作流」页）"
+            />
+          </n-form-item>
+          <n-alert v-if="!hasBase" type="info" style="margin-bottom: 10px">
+            请先选择基础工作流——节点定位、类型、底模、采样器/放大/保存等默认值都由它解析得出。
+          </n-alert>
+        </template>
+
+        <template v-if="legacy || hasBase">
         <div class="form-grid">
           <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
           <n-form-item label="绑定服务器">
@@ -206,60 +222,103 @@
           <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="可上传/抓取；新版沿用基础工作流封面亦可自行更换" /></n-form-item>
         </div>
 
-        <n-divider style="margin:8px 0">── 基础工作流 (v7.0.0) ──</n-divider>
-        <n-form-item label="基础工作流">
-          <n-select
-            v-model:value="editForm.base_id"
-            :options="baseWfOptions"
-            filterable
-            clearable
-            placeholder="不使用（旧版：按下方节点配置 + 工作流文件运行）"
-          />
-        </n-form-item>
-        <template v-if="(editForm.base_id || '').trim()">
-          <div class="form-hint" style="margin: 0 0 8px; margin-left: 0">
-            本模式下节点全部按解析自动定位，下方「节点配置」自动忽略（保留仅作参考）。
-          </div>
+        <n-divider style="margin:8px 0">── 语义覆盖（留空 = 跟随基础工作流） ──</n-divider>
+        <div class="form-hint" style="margin: 0 0 8px; margin-left: 0">
+          基础工作流当前值：{{ baseHint || "（解析数据缺失）" }}
+        </div>
+        <template v-if="hasBase">
           <n-form-item label="LLM 注入说明（用本工作流出图时告知 LLM 的用法；留空不注入）">
             <n-input v-model:value="editForm.llm_notes" type="textarea" :rows="2" placeholder="如：本工作流专画头像，用户要头像时优先选用" />
           </n-form-item>
+
+          <n-divider style="margin:4px 0 8px">— 采样器 —</n-divider>
           <div class="form-grid">
-            <n-form-item label="固定种子（留空=随机）">
+            <n-form-item label="固定种子（留空 = 每次随机）">
               <n-input v-model:value="editForm.fixed_seed" placeholder="数字；用户显式指定种子时以用户为准" />
             </n-form-item>
-            <n-form-item label="保存格式（留空=跟随基础工作流）">
-              <n-select v-model:value="editForm.save_format" :options="saveFormatOptions" />
+            <n-form-item label="步数">
+              <n-input
+                v-model:value="editForm.ov_steps"
+                :placeholder="baseDefaults.sampler_defaults?.steps != null ? `跟随：${baseDefaults.sampler_defaults.steps}` : '跟随基础工作流'"
+              />
+            </n-form-item>
+            <n-form-item label="CFG">
+              <n-input
+                v-model:value="editForm.ov_cfg"
+                :placeholder="baseDefaults.sampler_defaults?.cfg != null ? `跟随：${baseDefaults.sampler_defaults.cfg}` : '跟随基础工作流'"
+              />
+            </n-form-item>
+            <n-form-item label="采样器">
+              <n-select
+                v-model:value="editForm.ov_sampler"
+                :options="samplerOptions"
+                filterable
+                tag
+                clearable
+                :placeholder="baseDefaults.sampler_defaults?.sampler_name ? `跟随：${baseDefaults.sampler_defaults.sampler_name}` : '跟随基础工作流'"
+              />
+            </n-form-item>
+            <n-form-item label="调度器">
+              <n-select
+                v-model:value="editForm.ov_scheduler"
+                :options="schedulerOptions"
+                filterable
+                tag
+                clearable
+                :placeholder="baseDefaults.sampler_defaults?.scheduler ? `跟随：${baseDefaults.sampler_defaults.scheduler}` : '跟随基础工作流'"
+              />
+            </n-form-item>
+            <n-form-item label="噪点 denoise">
+              <n-input
+                v-model:value="editForm.ov_denoise"
+                :disabled="selectedBaseKind !== 'img2img'"
+                :placeholder="selectedBaseKind !== 'img2img' ? '文生图固定为 1（只读）' : (baseDefaults.sampler_defaults?.denoise != null ? `跟随：${baseDefaults.sampler_defaults.denoise}` : '跟随基础工作流')"
+              />
             </n-form-item>
           </div>
+          <n-button size="tiny" quaternary @click="resetSampler">↺ 恢复默认（清空采样器覆盖）</n-button>
+
+          <n-divider style="margin:10px 0 8px">— 放大 —</n-divider>
           <div class="form-grid">
-            <n-form-item label="保存质量 %（留空=跟随）">
-              <n-input v-model:value="editForm.save_quality" placeholder="1-100，仅 webp/jpg 有意义" />
-            </n-form-item>
             <n-form-item label="放大模式">
               <n-select v-model:value="editForm.upscale_mode" :options="upscaleModeOptions" />
             </n-form-item>
-          </div>
-          <div class="form-grid" v-if="editForm.upscale_mode === 'inject'">
-            <n-form-item label="注入放大模型名">
-              <n-input v-model:value="editForm.upscale_model_name" placeholder="如 4x-UltraSharp.pth" />
+            <n-form-item label="放大模型">
+              <n-select
+                v-model:value="editForm.upscale_model_name"
+                :options="upscaleModelOptions"
+                filterable
+                tag
+                clearable
+                placeholder="跟随基础工作流；数据源见「配置项」页放大模型"
+              />
             </n-form-item>
+          </div>
+          <n-button size="tiny" quaternary @click="resetUpscale">↺ 恢复默认（清空放大覆盖）</n-button>
+
+          <n-divider style="margin:10px 0 8px">— 清理显存 / 保存 —</n-divider>
+          <div class="form-grid">
             <n-form-item label="清理显存">
               <n-select v-model:value="editForm.cleanup_mode" :options="cleanupModeOptions" />
             </n-form-item>
+            <n-form-item label="保存格式">
+              <n-select
+                v-model:value="editForm.save_format"
+                :options="saveFormatOptions"
+                :placeholder="baseDefaults.save?.output_ext ? `跟随：${baseDefaults.save.output_ext}` : '跟随基础工作流'"
+              />
+            </n-form-item>
+            <n-form-item label="保存质量 %">
+              <n-input
+                v-model:value="editForm.save_quality"
+                :placeholder="baseDefaults.save?.quality != null ? `跟随：${baseDefaults.save.quality}` : '跟随基础工作流'"
+              />
+            </n-form-item>
           </div>
-          <div class="form-grid">
-            <n-form-item label="步数（留空=跟随）"><n-input v-model:value="editForm.ov_steps" /></n-form-item>
-            <n-form-item label="CFG（留空=跟随）"><n-input v-model:value="editForm.ov_cfg" /></n-form-item>
-            <n-form-item label="采样器（可搜索/可手输）">
-              <n-select v-model:value="editForm.ov_sampler" :options="samplerOptions" filterable tag clearable placeholder="留空=跟随基础工作流" />
-            </n-form-item>
-            <n-form-item label="调度器（可搜索/可手输）">
-              <n-select v-model:value="editForm.ov_scheduler" :options="schedulerOptions" filterable tag clearable placeholder="留空=跟随基础工作流" />
-            </n-form-item>
-            <n-form-item v-if="selectedBaseKind === 'img2img'" label="噪点 denoise（留空=跟随）">
-              <n-input v-model:value="editForm.ov_denoise" />
-            </n-form-item>
-          </div>
+          <n-space :size="8">
+            <n-button size="tiny" quaternary @click="resetCleanup">↺ 恢复默认（清空清理覆盖）</n-button>
+            <n-button size="tiny" quaternary @click="resetSave">↺ 恢复默认（清空保存覆盖）</n-button>
+          </n-space>
           <n-form-item v-if="builtinLoras.length" label="基础工作流内置 LoRA（不可删除，可禁用）">
             <div style="width:100%; display:flex; flex-direction:column; gap:6px">
               <div v-for="b in builtinLoras" :key="b.node" style="display:flex; align-items:center; gap:8px">
@@ -290,8 +349,14 @@
         </div>
         <n-form-item label="禁止改变默认宽高">
           <n-switch v-model:value="editForm.lock_size" />
-          <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
+          <span class="form-hint">
+            开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）
+            <template v-if="baseDefaults.latent?.default_width">
+              ｜基础工作流：{{ baseDefaults.latent.default_width }}×{{ baseDefaults.latent.default_height }}
+            </template>
+          </span>
         </n-form-item>
+        <n-button size="tiny" quaternary @click="resetSize">↺ 恢复默认（宽高回填基础工作流值并清空限制）</n-button>
 
         <template v-if="legacy">
         <n-divider style="margin:8px 0">── 节点配置（旧版） ──</n-divider>
@@ -388,6 +453,7 @@
             <div class="form-hint">从全局 LoRA 库下拉选择（可搜索）；保存后写回 loras_text（名称|权重|0/1）</div>
           </div>
         </n-form-item>
+        </template>
       </n-form>
       <template #footer>
         <n-space justify="end">
@@ -464,6 +530,16 @@ const baseModelOptions = computed(() => {
 
 // ---- 基础工作流（v7.0.0） ----
 const baseWfs = ref<any[]>([]);
+// 放大模型下拉数据源：配置项页 kind=upscale_model（v7.0.9）
+const upscaleOptions = ref<any[]>([]);
+async function loadUpscaleOptions() {
+  try {
+    const d = await apiGet("options/list", { kind: "upscale_model" });
+    upscaleOptions.value = (Array.isArray(d?.items) ? d.items : []).filter((o: any) => o.enabled !== false);
+  } catch {
+    upscaleOptions.value = [];
+  }
+}
 const baseWfOptions = computed(() => [
   { label: "不使用（旧版模式）", value: "" },
   ...baseWfs.value.map((b) => ({ label: b.name || b.file_name || `#${b.id}`, value: String(b.id) })),
@@ -472,6 +548,71 @@ const selectedBase = computed(() =>
   baseWfs.value.find((b) => String(b.id) === String(editForm.base_id || "")) || null
 );
 const selectedBaseKind = computed(() => selectedBase.value?.roles?.kind || "");
+/** 是否已选定基础工作流（新版必须选定才能配置其余项） */
+const hasBase = computed(() => !!String(editForm.base_id || "").trim());
+/** 基础工作流的解析默认值（用于表单下方「跟随值」提示与恢复默认） */
+const baseDefaults = computed<any>(() => selectedBase.value?.roles || {});
+const baseHint = computed(() => {
+  const r = baseDefaults.value || {};
+  const sd = r.sampler_defaults || {};
+  const save = r.save || {};
+  const lat = r.latent || {};
+  const up = r.upscale || {};
+  const bits: string[] = [];
+  if (sd.steps != null) bits.push(`步数 ${sd.steps}`);
+  if (sd.cfg != null) bits.push(`CFG ${sd.cfg}`);
+  if (sd.sampler_name) bits.push(`采样器 ${sd.sampler_name}`);
+  if (sd.scheduler) bits.push(`调度器 ${sd.scheduler}`);
+  if (sd.denoise != null) bits.push(`噪点 ${sd.denoise}`);
+  if (lat.default_width && lat.default_height) bits.push(`宽高 ${lat.default_width}×${lat.default_height}`);
+  bits.push(up.apply ? `放大 跟随（${up.model_name || "内置"}）` : "放大 无（默认禁用）");
+  bits.push((r.cleanup_nodes || []).length ? "清理显存 跟随" : "清理显存 无（默认禁用）");
+  if (save.output_ext || save.quality != null) {
+    bits.push(`保存 ${save.output_ext || "默认"}${save.quality != null ? ` / 质量 ${save.quality}` : ""}`);
+  }
+  return bits.join("｜");
+});
+// 放大模型下拉（配置项页 kind=upscale_model）+ 基础图当前模型兜底
+const upscaleModelOptions = computed(() => {
+  const opts = (upscaleOptions.value || []).map((o: any) => ({
+    label: o.note ? `${o.name}（${o.note}）` : o.name,
+    value: o.name,
+  }));
+  const cur = String(baseDefaults.value?.upscale?.model_name || "").trim();
+  if (cur && !opts.some((o: any) => o.value === cur)) {
+    opts.unshift({ label: `${cur}（基础工作流当前）`, value: cur });
+  }
+  return opts;
+});
+
+/** 恢复默认 = 清空覆盖项，回到「跟随基础工作流」 */
+function resetSampler() {
+  editForm.ov_steps = "";
+  editForm.ov_cfg = "";
+  editForm.ov_sampler = "";
+  editForm.ov_scheduler = "";
+  editForm.ov_denoise = "";
+  editForm.fixed_seed = "";
+}
+function resetUpscale() {
+  editForm.upscale_mode = "";
+  editForm.upscale_model_name = "";
+}
+function resetCleanup() {
+  editForm.cleanup_mode = "";
+}
+function resetSave() {
+  editForm.save_format = "";
+  editForm.save_quality = "";
+}
+function resetSize() {
+  editForm.max_width = "";
+  editForm.max_height = "";
+  editForm.lock_size = false;
+  const lat = baseDefaults.value?.latent || {};
+  if (lat.default_width) editForm.default_width = lat.default_width;
+  if (lat.default_height) editForm.default_height = lat.default_height;
+}
 // 新版只读展示：底模 / 类型 / C站链接 都来自所选基础工作流
 const selectedBaseKindLabel = computed(() => {
   const k = selectedBaseKind.value;
@@ -566,7 +707,27 @@ async function load() {
   loadBaseWfs();
   loadBasemodelNames();
   loadServers();
+  loadUpscaleOptions();
 }
+
+// 选定基础工作流后回填「默认宽高」（业务参数，直接取值；采样器/放大/保存等
+// 走「留空=跟随」语义，不做填充，只在表单里显示跟随值）
+watch(
+  () => editForm.base_id,
+  (nv) => {
+    if (!String(nv || "").trim()) return;
+    const lat = selectedBase.value?.roles?.latent || {};
+    if (!lat.default_width || !lat.default_height) return;
+    const curW = Number(editForm.default_width || 0);
+    const curH = Number(editForm.default_height || 0);
+    if (!curW || curW === 512) editForm.default_width = lat.default_width;
+    if (!curH || curH === 512) editForm.default_height = lat.default_height;
+    // 若基础图保存节点没有 quality/output_ext 能力，清掉不可用的保存覆盖
+    const save = selectedBase.value?.roles?.save || {};
+    if (!save.has_quality) editForm.save_quality = "";
+    if (!save.has_output_ext) editForm.save_format = "";
+  }
+);
 
 function aliasStr(raw: string): string {
   const a = parseAliases(raw);

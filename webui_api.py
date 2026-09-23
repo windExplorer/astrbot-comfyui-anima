@@ -1101,6 +1101,62 @@ class WebUIApi:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    # ------------------ 通用配置项（v7.0.9：放大模型等动态枚举） ------------------
+
+    def _option_store(self):
+        """懒加载通用配置项存储（挂 plugin.data_dir，热更新 reload 后重建）。"""
+        store = getattr(self, "_option_store_inst", None)
+        if store is None:
+            try:
+                from .option_store import OptionStore
+            except ImportError:
+                from option_store import OptionStore
+            store = OptionStore(getattr(self.plugin, "data_dir", None) or Path("data"))
+            self._option_store_inst = store
+        return store
+
+    async def options_list(self):
+        """读取配置项。query: kind（如 upscale_model）留空=全部。"""
+        try:
+            kind = (request.query.get("kind", "") or "").strip()
+            return json_response({"items": self._option_store().list_all(kind)})
+        except Exception as e:
+            return error_response(f"读取配置项失败: {e}")
+
+    async def options_save(self):
+        try:
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                return error_response("请求体必须是对象")
+            oid, err = self._option_store().save(body)
+            if err:
+                return error_response(f"保存失败: {err}")
+            return json_response({"id": oid, "msg": "保存成功"})
+        except Exception as e:
+            return error_response(f"保存失败: {e}")
+
+    async def options_delete(self):
+        try:
+            body = await request.json(default={}) or {}
+            oid = body.get("id")
+            if not oid:
+                return error_response("缺少 id")
+            err = self._option_store().delete(int(oid))
+            if err:
+                return error_response(f"删除失败: {err}")
+            return json_response({"msg": "删除成功"})
+        except Exception as e:
+            return error_response(f"删除失败: {e}")
+
+    async def options_reseed(self):
+        """补齐预设。body: {kind} 留空=全部预设分类。"""
+        try:
+            body = await request.json(default={}) or {}
+            added = self._option_store().reseed_defaults((body.get("kind") or "").strip())
+            return json_response({"added": added, "msg": f"已补齐 {added} 条预设"})
+        except Exception as e:
+            return error_response(f"补齐预设失败: {e}")
+
     async def basemodels_list(self):
         try:
             return json_response({"items": self._basemodel_store().list_all()})
@@ -3405,6 +3461,10 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/basemodels/save", _h("basemodels_save"), ["POST"], "底模保存"),
         (f"{prefix}/basemodels/delete", _h("basemodels_delete"), ["POST"], "底模删除"),
         (f"{prefix}/basemodels/reseed", _h("basemodels_reseed"), ["POST"], "补齐默认底模"),
+        (f"{prefix}/options/list", _h("options_list"), ["GET"], "配置项列表"),
+        (f"{prefix}/options/save", _h("options_save"), ["POST"], "配置项保存"),
+        (f"{prefix}/options/delete", _h("options_delete"), ["POST"], "配置项删除"),
+        (f"{prefix}/options/reseed", _h("options_reseed"), ["POST"], "配置项补齐预设"),
         (f"{prefix}/basemodels/fetch", _h("basemodels_fetch"), ["POST"], "底模 C站抓取"),
         (f"{prefix}/basemodels/upload_image", _h("basemodels_upload_image"), ["POST"], "底模封面上传"),
         (f"{prefix}/basemodels/image", _h("basemodel_image"), ["GET"], "底模封面读取"),

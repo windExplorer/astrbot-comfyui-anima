@@ -59,7 +59,46 @@
       </div>
     </n-spin>
 
+    <n-divider style="margin: 16px 0 10px">── 放大模型 ──</n-divider>
+    <div class="filter-bar">
+      <n-button size="small" :loading="upLoading" @click="upReseed">↻ 补充预设</n-button>
+      <n-button size="small" type="primary" @click="openUpForm(null)">＋ 新增放大模型</n-button>
+      <span class="filter-hint">出图工作流的「放大模型」下拉数据源；名称须与 ComfyUI 服务器 models/upscale_models/ 里的文件名一致</span>
+    </div>
+    <n-spin :show="upLoading">
+      <n-data-table
+        :columns="upColumns"
+        :data="upscaleModels"
+        size="small"
+        :bordered="false"
+        :single-line="false"
+        :max-height="320"
+      />
+    </n-spin>
+
     <CoverEditor v-model:show="coverShow" title="设置底模封面" scope="bm" @confirm="onCoverConfirm" />
+
+    <!-- 放大模型编辑 -->
+    <n-modal v-model:show="upShow" preset="card" :title="upTitle" class="bm-modal" :bordered="false">
+      <n-form label-placement="top">
+        <n-form-item label="模型文件名（须与服务器上的文件名一致）">
+          <n-input v-model:value="upForm.name" placeholder="如 4x-UltraSharp.pth" />
+        </n-form-item>
+        <n-form-item label="备注（倍率/风格，仅展示）">
+          <n-input v-model:value="upForm.note" placeholder="如 4x｜通用锐利" />
+        </n-form-item>
+        <n-form-item label="在下拉中可选">
+          <n-switch v-model:value="upForm.enabled" />
+          <span class="form-hint">关闭后仍保留配置，但工作流下拉里不再出现</span>
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <div class="modal-footer">
+          <n-button @click="upShow = false">取消</n-button>
+          <n-button type="primary" :loading="upSaving" @click="saveUp">保存</n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="bm-modal" :bordered="false">
@@ -100,10 +139,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, h, onMounted, reactive, ref } from "vue";
 import {
   useMessage, useDialog, NButton, NSpin, NForm, NFormItem, NInput,
-  NModal, NSelect, NSwitch, NTag, NEmpty, NDivider,
+  NModal, NSelect, NSwitch, NTag, NEmpty, NDivider, NDataTable,
 } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { useDevice } from "@/composables/useDevice";
@@ -228,7 +267,103 @@ async function onCoverConfirm(name: string) {
   }
 }
 
-onMounted(load);
+// ---------------- 放大模型（配置项：kind=upscale_model） ----------------
+const upscaleModels = ref<any[]>([]);
+const upLoading = ref(false);
+const upSaving = ref(false);
+const upShow = ref(false);
+const upTitle = ref("新增放大模型");
+const upForm = ref<Record<string, any>>({ id: null, name: "", note: "", enabled: true });
+
+const upColumns = [
+  { title: "模型文件名", key: "name" },
+  { title: "备注", key: "note", width: 220 },
+  {
+    title: "状态", key: "enabled", width: 90,
+    render: (r: any) => (r.enabled ? "可选" : "已停用"),
+  },
+  {
+    title: "操作", key: "actions", width: 130,
+    render: (r: any) => [
+      h(NButton, { size: "tiny", onClick: () => openUpForm(r) }, { default: () => "编辑" }),
+      h(NButton, {
+        size: "tiny", type: "error", style: "margin-left:6px",
+        onClick: () => delUp(r),
+      }, { default: () => "删除" }),
+    ],
+  },
+];
+
+async function loadUpscaleModels() {
+  upLoading.value = true;
+  try {
+    const d = await apiGet("options/list", { kind: "upscale_model" });
+    upscaleModels.value = Array.isArray(d?.items) ? d.items : [];
+  } catch (e: any) {
+    message.error(e?.message || "读取放大模型失败");
+  } finally {
+    upLoading.value = false;
+  }
+}
+
+function openUpForm(r: any | null) {
+  upTitle.value = r ? "编辑放大模型" : "新增放大模型";
+  upForm.value = {
+    id: r?.id ?? null,
+    name: r?.name || "",
+    note: r?.note || "",
+    enabled: r?.enabled !== false,
+  };
+  upShow.value = true;
+}
+
+async function saveUp() {
+  const name = String(upForm.value.name || "").trim();
+  if (!name) { message.warning("模型文件名必填"); return; }
+  upSaving.value = true;
+  try {
+    await apiPost("options/save", { kind: "upscale_model", ...upForm.value, name });
+    message.success("已保存");
+    upShow.value = false;
+    await loadUpscaleModels();
+  } catch (e: any) {
+    message.error(e?.message || "保存失败");
+  } finally {
+    upSaving.value = false;
+  }
+}
+
+function delUp(r: any) {
+  dialog.warning({
+    title: "删除放大模型",
+    content: `确定删除「${r.name}」吗？（仅删除本配置，不影响服务器上的模型文件）`,
+    positiveText: "删除",
+    negativeText: "取消",
+    onPositiveClick: () => {
+      apiPost("options/delete", { id: r.id })
+        .then(() => { message.success("已删除"); loadUpscaleModels(); })
+        .catch((e: any) => message.error(e?.message || "删除失败"));
+    },
+  });
+}
+
+async function upReseed() {
+  upLoading.value = true;
+  try {
+    const d = await apiPost("options/reseed", { kind: "upscale_model" });
+    message.success(d?.msg || "已补齐预设");
+    await loadUpscaleModels();
+  } catch (e: any) {
+    message.error(e?.message || "补齐失败");
+  } finally {
+    upLoading.value = false;
+  }
+}
+
+onMounted(() => {
+  load();
+  loadUpscaleModels();
+});
 </script>
 
 <style scoped>

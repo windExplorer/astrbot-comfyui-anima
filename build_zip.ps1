@@ -57,6 +57,7 @@ $includeList = @(
     "basemodel_store.py",
     "workflow_store.py",
     "workflow_parser.py",
+    "option_store.py",
     "character.py",
     "story_store.py",
     "quota_store.py",

@@ -961,6 +961,18 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 基础工作流库初始化失败（功能不可用）: {e}", exc_info=True)
 
+        # 通用配置项（v7.0.9）：放大模型等动态枚举
+        self.options = None
+        try:
+            try:
+                from .option_store import OptionStore
+            except ImportError:
+                from option_store import OptionStore
+            self.options = OptionStore(self.data_dir)
+            logger.info(f"【初始化】 配置项已就绪: {self.options.db_path}")
+        except Exception as e:
+            logger.warning(f"【初始化】 配置项初始化失败（功能不可用）: {e}", exc_info=True)
+
         # 独立业务操作日志（oplog）：与 AstrBot logging 解耦，关键事件直接落盘
         self.oplog = None
         try:
@@ -1018,6 +1030,7 @@ class ComfyUIDrawPlugin(Star):
                 "character_store", "character",
                 "basemodel_store",
                 "workflow_store",
+                "option_store",
                 "story_store",
                 "quota_store", "oplog_store", "token_store",
                 "nsfw_detector", "translate_client",

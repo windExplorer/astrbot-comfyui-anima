@@ -263,6 +263,36 @@ def test_list_nodes():
     print("== 10. 节点清单（详情表格） OK")
 
 
+def test_option_store():
+    """通用配置项：放大模型预设/增删改查/补齐（v7.0.9）。"""
+    from option_store import OptionStore, DEFAULT_OPTIONS, KIND_UPSCALE_MODEL
+
+    tmp = Path(tempfile.mkdtemp())
+    st = OptionStore(tmp)
+    rows = st.list_all(KIND_UPSCALE_MODEL)
+    assert len(rows) == len(DEFAULT_OPTIONS[KIND_UPSCALE_MODEL])
+    names = {r["name"] for r in rows}
+    for must in ("4x-UltraSharp.pth", "RealESRGAN_x4plus_anime_6B.pth",
+                 "2x-AnimeSharpV4_RCAN.safetensors", "4x-ClearRealityV1.pth"):
+        assert must in names, must
+    # 增 / 改（同名去重）/ 停用 / 删
+    oid, err = st.save({"kind": KIND_UPSCALE_MODEL, "name": "MyCustom_4x.pth", "note": "自建"})
+    assert err is None and oid
+    oid2, err2 = st.save({"kind": KIND_UPSCALE_MODEL, "name": "MyCustom_4x.pth", "note": "自建2"})
+    assert err2 is None and oid2 == oid and len(st.list_all(KIND_UPSCALE_MODEL)) == len(rows) + 1
+    st.save({"id": oid, "kind": KIND_UPSCALE_MODEL, "name": "MyCustom_4x.pth", "enabled": False})
+    assert len(st.list_all(KIND_UPSCALE_MODEL, only_enabled=True)) == len(rows)
+    assert st.delete(oid) is None
+    # 非空库不重复播种；reseed 只补缺
+    st2 = OptionStore(tmp)
+    assert len(st2.list_all(KIND_UPSCALE_MODEL)) == len(rows)
+    assert st2.reseed_defaults(KIND_UPSCALE_MODEL) == 0
+    st2.delete(st2.list_all(KIND_UPSCALE_MODEL)[0]["id"])
+    assert st2.reseed_defaults(KIND_UPSCALE_MODEL) == 1
+    assert st2.save({"kind": KIND_UPSCALE_MODEL, "name": ""})[1]
+    print("== 11. 配置项（放大模型预设/CRUD/补齐） OK")
+
+
 def test_bypass_alpha_chain():
     """alpha 工作流（Split→放大→Join→清理→保存）：绕过须整链删除并接回 VAEDecode。"""
     p = json.loads(json.dumps(WF_STD))
@@ -298,6 +328,7 @@ if __name__ == "__main__":
     test_basemodel_match()
     test_basemodel_defaults()
     test_list_nodes()
+    test_option_store()
     test_bypass_alpha_chain()
     print("\n基础工作流体系测试全部通过")
 
