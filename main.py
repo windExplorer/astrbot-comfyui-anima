@@ -4414,6 +4414,19 @@ class ComfyUIDrawPlugin(Star):
             return ""
 
     @staticmethod
+    def _file_size_note(path) -> str:
+        """人类可读的文件大小（结果卡「大小」用）；读不到返回空串。"""
+        try:
+            _n = os.path.getsize(str(path or ""))
+        except Exception:
+            return ""
+        if _n >= 1024 * 1024:
+            return f"{_n / 1024 / 1024:.2f} MB"
+        if _n >= 1024:
+            return f"{_n / 1024:.1f} KB"
+        return f"{_n} B"
+
+    @staticmethod
     def _upscale_measured_note(in_w, in_h, out_w, out_h) -> str:
         """按「出图尺寸 ÷ 输入尺寸」推算放大倍率（v7.4.4）。
 
@@ -6804,7 +6817,8 @@ class ComfyUIDrawPlugin(Star):
                         except Exception as _e:
                             logger.warning(f"【出图·报告】 生成小报告失败: {_e}")
                         _cost = time.time() - _draw_start
-                        _sd_done = locals().get("_card_sampler") or {}
+                        # v7.4.5：结果卡**只报结果**（尺寸 / 大小 / 耗时；时间在页脚），
+                        # 不再重复绘制中卡片那套 LoRA / 采样参数 / 提示词——各司其职。
                         _done_info = {
                             "kicker": self._card_kicker(wf),
                             "workflow": (f"{wf.get('name') or '(未命名)'} · "
@@ -6812,21 +6826,14 @@ class ComfyUIDrawPlugin(Star):
                             "right_top": f"耗时 {_cost:.1f} 秒",
                             "device": self._card_device(srv_key),
                             "today": self._card_today(),
-                            "loras": _card_loras,
+                            "loras": [],
                             "params": self._card_chips([
                                 ("尺寸", f"{locals().get('_real_w') or w}×"
                                          f"{locals().get('_real_h') or h}"),
                                 ("大小", locals().get("_fs_fmt")),
                                 ("耗时", f"{_cost:.1f} 秒"),
-                                ("步数", _sd_done.get("steps")),
-                                ("CFG", _sd_done.get("cfg")),
-                                ("采样器", _sd_done.get("sampler_name")),
-                                ("调度器", _sd_done.get("scheduler")),
-                                ("噪点", _sd_done.get("denoise")),
-                                ("放大", self._upscale_note(wf, prompt)),
-                                ("种子", (seeds_used[0] if seeds_used else None)),
                             ]),
-                            "prompt": positive,
+                            "prompt": "",
                         }
                         if not await self._send_draw_card(event, _done_info, "done") and _rpt_text:
                             try:

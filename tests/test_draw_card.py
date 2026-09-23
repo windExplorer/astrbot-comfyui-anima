@@ -114,10 +114,15 @@ def test_prompt_not_truncated():
     _fp = find_font()
     assert _fp, "找不到可用字体"
     _f = _F.truetype(_fp, 34)
-    lines = _wrap(long_prompt, _f, _draw_probe(), 700, max_lines=0)
+    _probe = _draw_probe()
+    lines = _wrap(long_prompt, _f, _probe, 700, max_lines=0)
     assert len(lines) >= 3, lines
     assert not any(ln.endswith("…") for ln in lines), lines
     assert "".join(lines).replace(" ", "") == long_prompt.replace(" ", ""), lines
+    # 折行必须**用满宽度**：最长一行要接近 max_w（曾因单位没换算只用了半宽）
+    _widest = max(_probe.textlength(ln, font=_f) for ln in lines) / 2  # 字体是 2x 超采样
+    assert _widest <= 700, _widest
+    assert _widest > 700 * 0.6, f"折行只用了 {_widest:.0f}/700 宽度（应是接近满宽）"
     # 指定行数时才会省略（仅失败原因这种兜底用）
     capped = _wrap(long_prompt, _f, _draw_probe(), 700, max_lines=2)
     assert len(capped) == 2 and capped[-1].endswith("…"), capped

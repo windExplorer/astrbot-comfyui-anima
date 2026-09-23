@@ -162,13 +162,16 @@ def _wrap(text: str, font, draw, max_w: int, max_lines: int = 0) -> list[str]:
     text = re.sub(r"\s+", " ", str(text or "").strip())
     if not text:
         return []
+    # 传进来的是**输出像素**宽度，而字体是超采样后的（字号 ×S），textlength 也按超采样算，
+    # 所以这里必须先换算，否则实际只用了 max_w/S 的宽度（曾导致提示词只占左边一半）。
+    _mw = max(0, int(max_w)) * S
     tokens = re.findall(r"[A-Za-z0-9_\-'’\.]+|\s+|[^\s]", text)
     lines: list[str] = []
     cur = ""
     truncated = False
     for tk in tokens:
         cand = cur + tk
-        if draw.textlength(cand.strip(), font=font) <= max_w or not cur.strip():
+        if draw.textlength(cand.strip(), font=font) <= _mw or not cur.strip():
             cur = cand
         else:
             lines.append(cur.strip())
@@ -180,7 +183,7 @@ def _wrap(text: str, font, draw, max_w: int, max_lines: int = 0) -> list[str]:
         lines.append(cur.strip())
     if truncated and lines:
         last = lines[-1]
-        while last and draw.textlength(last + "…", font=font) > max_w:
+        while last and draw.textlength(last + "…", font=font) > _mw:
             last = last[:-1]
         lines[-1] = last + "…"
     return lines
