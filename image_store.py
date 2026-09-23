@@ -181,7 +181,10 @@ class ImageStore:
                 model      TEXT DEFAULT NULL,
                 negative   TEXT DEFAULT NULL,
                 extra      TEXT DEFAULT NULL,
-                platform_name TEXT DEFAULT NULL
+                platform_name TEXT DEFAULT NULL,
+                in_w       INTEGER DEFAULT NULL,
+                in_h       INTEGER DEFAULT NULL,
+                upscale    TEXT DEFAULT NULL
             )""",
         )
         # 兼容已存在的旧库：缺列则补上
@@ -210,6 +213,11 @@ class ImageStore:
             ("negative", "TEXT DEFAULT NULL"),
             ("extra", "TEXT DEFAULT NULL"),
             ("platform_name", "TEXT DEFAULT NULL"),
+            # v7.1.0：请求尺寸（注入工作流的 w×h）与放大倍率说明；
+            # 老图这两列为空 → UI 显示「—」，不假装有
+            ("in_w", "INTEGER DEFAULT NULL"),
+            ("in_h", "INTEGER DEFAULT NULL"),
+            ("upscale", "TEXT DEFAULT NULL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -573,6 +581,10 @@ class ImageStore:
         seed=None,
         w=None,
         h=None,
+        # v7.1.0：请求尺寸（注入工作流的 w×h）与放大倍率说明（如「4×（4x-UltraSharp.pth）」）
+        in_w=None,
+        in_h=None,
+        upscale: str = "",
         denoise=None,
         cfg=None,
         steps=None,
@@ -679,7 +691,8 @@ class ImageStore:
                         "loras=?, seed=?, w=?, h=?, denoise=?, cfg=?, steps=?, is_img2img=?, "
                         "ref_sha256=?, source=?, size_bytes=?, cost_sec=?, "
                         "user_id=?, user_name=?, session_id=?, trigger_msg=?, status=?, "
-                        "platform=?, model=?, negative=?, extra=?, platform_name=? "
+                        "platform=?, model=?, negative=?, extra=?, platform_name=?, "
+                        "in_w=?, in_h=?, upscale=? "
                         "WHERE sha256=?",
                         (
                             prompt, prompt_raw, workflow, loras_json,
@@ -689,6 +702,7 @@ class ImageStore:
                             user_id or "", user_name or "", session_id or "",
                             trigger_msg or "", status,
                             platform or "comfyui", model or "", negative or "", extra_json, platform_name or "",
+                            in_w, in_h, upscale or "",
                             sha,
                         ),
                     )
@@ -754,9 +768,10 @@ class ImageStore:
                  use_count, starred, created_at, size_bytes, cost_sec,
                  user_id, user_name, session_id, group_id, group_name, trigger_msg, status,
                  nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps,
-                 platform, model, negative, extra, platform_name)
+                 platform, model, negative, extra, platform_name,
+                 in_w, in_h, upscale)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,
-                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -768,6 +783,7 @@ class ImageStore:
                     _nsfw, _nsfw_score, None, _nsfw_checked,
                     cfg, steps,
                     platform or "comfyui", model or "", negative or "", extra_json, platform_name or "",
+                    in_w, in_h, upscale or "",
                 ),
             )
             conn.commit()
@@ -1006,6 +1022,10 @@ class ImageStore:
             "seed": row["seed"],
             "w": row["w"],
             "h": row["h"],
+            # v7.1.0：输入尺寸（请求尺寸）与放大倍率说明
+            "in_w": row["in_w"] if "in_w" in row.keys() else None,
+            "in_h": row["in_h"] if "in_h" in row.keys() else None,
+            "upscale": row["upscale"] if "upscale" in row.keys() else None,
             "denoise": row["denoise"],
             "cfg": row["cfg"],
             "steps": row["steps"],

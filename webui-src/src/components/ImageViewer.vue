@@ -72,6 +72,12 @@
                 <n-input v-model:value="newTag" size="small" placeholder="加标签后回车" style="width:140px" @keyup.enter="addTag" />
               </span>
             </span></div>
+            <!-- v7.1.0：输入尺寸（请求尺寸）与放大倍率；老图无这两项数据 → 不显示假值 -->
+            <div v-if="item.in_w && item.in_h" class="iv-row">
+              <span class="k">输入尺寸</span>
+              <span class="v">{{ item.in_w }} × {{ item.in_h }}</span>
+            </div>
+            <div v-if="item.upscale" class="iv-row"><span class="k">放大</span><span class="v">{{ item.upscale }}</span></div>
             <div v-if="item.w && item.h" class="iv-row"><span class="k">尺寸</span><span class="v">{{ item.w }} × {{ item.h }}</span></div>
             <div v-if="item.size_bytes != null" class="iv-row"><span class="k">大小</span><span class="v">{{ fmtBytes(item.size_bytes) }}</span></div>
             <div v-if="item.cost_sec != null" class="iv-row"><span class="k">耗时</span><span class="v">{{ fmtDuration(item.cost_sec) }}</span></div>
@@ -165,6 +171,11 @@ interface ViewerImage {
   workflow?: string;
   w?: number;
   h?: number;
+  /** v7.1.0：请求尺寸（注入工作流的宽高） */
+  in_w?: number;
+  in_h?: number;
+  /** v7.1.0：放大倍率说明，如「4×（4x-UltraSharp.pth）」 */
+  upscale?: string;
   size_bytes?: number;
   cost_sec?: number;
   created_at?: number | string;

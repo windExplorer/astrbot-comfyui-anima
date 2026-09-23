@@ -324,6 +324,41 @@ def _budget_ratio(budget: float, w: int, h: int) -> float:
         return 1.0
 
 
+# 放大模型名里的倍率：`4x-UltraSharp.pth`（数字在前）或 `RealESRGAN_x2plus.pth`（x 在前）
+_UPSCALE_FACTOR_RE_A = re.compile(r"(?<![0-9.])(\d{1,2}(?:\.\d)?)\s*x", re.IGNORECASE)
+_UPSCALE_FACTOR_RE_B = re.compile(r"x\s*(\d{1,2}(?:\.\d)?)(?![0-9])", re.IGNORECASE)
+
+
+def _upscale_factor_of_model(name: str) -> float | None:
+    """从放大模型文件名解析倍率：4x-UltraSharp.pth→4、RealESRGAN_x2plus.pth→2。
+
+    解析不到（自定义命名）返回 None —— 调用方按「不展示」处理（不瞎猜）。
+    """
+    t = str(name or "").strip()
+    if not t:
+        return None
+    for _re_ in (_UPSCALE_FACTOR_RE_A, _UPSCALE_FACTOR_RE_B):
+        m = _re_.search(t)
+        if not m:
+            continue
+        try:
+            f = float(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if 0 < f <= 16:
+            return f
+    return None
+
+
+def _upscale_label(model: str) -> str:
+    """生成展示用文案：`4×（4x-UltraSharp.pth）`；解析不到倍率时只给模型名。"""
+    name = str(model or "").strip()
+    if not name:
+        return ""
+    f = _upscale_factor_of_model(name)
+    return f"{f:g}×（{name}）" if f else name
+
+
 def _size_tier_table(ratio_items: list | None) -> dict:
     """档位 × 比例对照表（供 WebUI 展示与文档）。
 
@@ -1375,13 +1410,20 @@ class ComfyUIDrawPlugin(Star):
                 if not isinstance(items, list):
                     continue
                 changed = False
+                seen: set[str] = set()
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    if not item.get("__template_key"):
-                        item["__template_key"] = uuid.uuid4().hex
+                    _k = str(item.get("__template_key") or "").strip()
+                    # v7.1.0：不只补空值，**重复的 key 也重新生成**——服务器/工作流的
+                    # 绑定值就是它，重复会让「按 key 绑定」指向错误的服务器
+                    # （历史上 WebUI 保存兜底曾把多条统一写成 "default"）。
+                    if not _k or _k in seen:
+                        _k = uuid.uuid4().hex
+                        item["__template_key"] = _k
                         changed = True
                         patched += 1
+                    seen.add(_k)
                 if changed:
                     self.config[key] = items
             if patched:
@@ -1389,7 +1431,9 @@ class ComfyUIDrawPlugin(Star):
                     self.config.save_config()
                 except Exception:
                     pass
-                logger.info(f"【初始化】 已为 {patched} 个旧配置项补 __template_key 并落盘")
+                logger.info(
+                    f"【初始化】 已为 {patched} 个配置项补/修正 __template_key（保证唯一）并落盘"
+                )
         except Exception as e:
             logger.warning(f"【初始化】 补 __template_key 失败（可忽略）: {e}")
 
@@ -2803,20 +2847,42 @@ class ComfyUIDrawPlugin(Star):
                 "error": f"{type(e).__name__}: {e}",
             }
 
-    def _resolve_server(self, server_name: str | None = None) -> dict:
+    def _resolve_server(self, server_ref: str | None = None) -> dict:
+        """按**服务器唯一 key**（`__template_key`）挑服务器，兼容旧数据的「名字」引用。
+
+        v7.1.0 起工作流绑定的是 key（改名不断链）：传入值先按 key 精确匹配；
+        匹配不到再按「名字」匹配（老工作流里存的是名字）并打日志提示重新保存。
+        未传绑定值时：取**启用的那个**作为默认（多个启用取第一个并告警，
+        不再报错——「启用的就是默认」）；都没启用则退回第一个。
+        """
         servers = self._servers()
         if not servers:
             raise ValueError("未配置任何 ComfyUI 服务器，请先在插件配置中添加。")
-        if server_name:
+        ref = str(server_ref or "").strip()
+        if ref:
             for s in servers:
-                if s.get("name") == server_name:
+                if str(s.get("__template_key") or "").strip() == ref:
                     return s
-            raise ValueError(f"找不到名为「{server_name}」的 ComfyUI 服务器。")
+            for s in servers:
+                if str(s.get("name") or "").strip() == ref:
+                    logger.info(
+                        f"【服务器】 工作流绑定的是旧版「名字」{ref!r}，已按名字匹配到 "
+                        f"{s.get('name')!r}；在 WebUI 重新保存该工作流后会自动改用唯一 key"
+                    )
+                    return s
+            raise ValueError(
+                f"绑定的服务器不存在（key/名字={ref!r}），请到 WebUI「工作流」页重新选择服务器。"
+            )
         enabled = [s for s in servers if s.get("enabled")]
         if len(enabled) == 1:
             return enabled[0]
         if len(enabled) > 1:
-            raise ValueError("配置了多个启用(enabled=true)的服务器，请只启用一个。")
+            logger.warning(
+                f"【服务器】 配置了 {len(enabled)} 个启用的服务器"
+                f"（{', '.join(str(s.get('name') or '?') for s in enabled)}），"
+                f"取第一个 {enabled[0].get('name')!r} 作为默认；建议只启用一个。"
+            )
+            return enabled[0]
         # 未显式启用则使用第一个
         return servers[0]
 
@@ -4063,7 +4129,37 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     @staticmethod
     def _server_key(server: dict) -> str:
-        return str(server.get("name") or server.get("url") or "default")
+        """本地队列用的服务器标识（v7.1.0）。
+
+        优先唯一 key（`__template_key`）：服务器改名后队列统计不再断成两份；
+        退回名字/URL 以兼容未迁移的老配置。
+        """
+        return str(
+            server.get("__template_key") or server.get("name") or server.get("url") or "default"
+        )
+
+    def _upscale_note(self, wf: dict, prompt: dict | None = None) -> str:
+        """放大倍率说明（图库/卡片展示用，v7.1.0）。
+
+        取「实际会用的放大模型」：优先读已改写后的工作流节点 `model_name`（最真实），
+        退回配置里的 `upscale_model_name`；`upscale_mode=bypass`（绕过放大链）时返回空。
+        倍率从模型名解析（4x-UltraSharp→4×、RealESRGAN_x2plus→2×），
+        解析不到只给模型名；没有放大则返回空串（调用方按「不展示」处理）。
+        """
+        try:
+            if str((wf or {}).get("upscale_mode") or "").strip().lower() == "bypass":
+                return ""
+            _name = ""
+            _node = str((wf or {}).get("upscale_node_id") or "").strip()
+            if _node and isinstance(prompt, dict):
+                _inputs = ((prompt.get(_node) or {}).get("inputs") or {})
+                _name = str(_inputs.get("model_name") or _inputs.get("upscale_model") or "").strip()
+            if not _name:
+                _name = str((wf or {}).get("upscale_model_name") or "").strip()
+            return _upscale_label(_name)
+        except Exception as _e:
+            logger.debug(f"【放大】 倍率解析失败（忽略）: {_e}")
+            return ""
 
     def _local_queue_ahead(self, key: str) -> int:
         """当前服务器上、本次提交之前已排队的任务数量（即"前面还有几位"）。"""
@@ -4463,6 +4559,9 @@ class ComfyUIDrawPlugin(Star):
                         seed=seed,
                         w=_real_w,
                         h=_real_h,
+                        # v7.1.0：平台链路的请求尺寸（平台出图无放大链，upscale 留空）
+                        in_w=_w,
+                        in_h=_h,
                         is_img2img=False,
                         cfg=_cfg_val,
                         steps=_steps_val,
@@ -4880,9 +4979,13 @@ class ComfyUIDrawPlugin(Star):
             )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
-                f"实际选用工作流={wf.get('name')!r}（server={wf.get('server_name')!r}）"
+                f"实际选用工作流={wf.get('name')!r}"
+                f"（server_key={wf.get('server_key')!r}, 旧值 server_name={wf.get('server_name')!r}）"
             )
-            server = self._resolve_server(wf.get("server_name") or None)
+            # v7.1.0：优先按服务器唯一 key 绑定，兼容旧的「名字」引用
+            server = self._resolve_server(
+                wf.get("server_key") or wf.get("server_name") or None
+            )
         except ValueError as e:
             # 配置类问题：原因是插件自己给出的可读文案，直接说明
             msg = str(e)
@@ -5916,6 +6019,11 @@ class ComfyUIDrawPlugin(Star):
                                 seed=(seeds_used[0] if seeds_used else None),
                                 w=_real_w,
                                 h=_real_h,
+                                # v7.1.0：请求尺寸（注入工作流的 w×h）+ 放大倍率说明
+                                # （解析放大模型名；解析不到/已绕过则为空 → UI 不展示）
+                                in_w=w,
+                                in_h=h,
+                                upscale=self._upscale_note(wf, prompt),
                                 denoise=(denoise if is_img2img else None),
                                 cfg=_sampler.get("cfg"),
                                 steps=_sampler.get("steps"),
@@ -7261,7 +7369,9 @@ class ComfyUIDrawPlugin(Star):
         wf_name = m.group(1) if m else None
         try:
             wf = self._resolve_workflow(wf_name)
-            server = self._resolve_server(wf.get("server_name") or None)
+            server = self._resolve_server(
+                wf.get("server_key") or wf.get("server_name") or None
+            )
         except ValueError as e:
             await self._send(event, str(e))
             return

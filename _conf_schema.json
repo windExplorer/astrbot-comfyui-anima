@@ -10,13 +10,14 @@
         "items": {
           "__template_key": {
             "type": "string",
-            "description": "模板标识键（自动生成，勿手动修改）",
+            "description": "唯一 key（自动生成，只读）",
+            "hint": "服务器在工作流里的绑定值就是它：新增条目自动生成、保证唯一、**不要手改**（改了工作流会找不到服务器）。服务器改名不影响绑定关系。WebUI 配置页只读展示。",
             "default": ""
           },
           "name": {
             "type": "string",
             "description": "服务器名称",
-            "hint": "自定义标识，用于工作流绑定（server_name 填它）。",
+            "hint": "给人看的名字，可随时修改（改名字不会影响工作流绑定——绑定用的是上面的唯一 key）。",
             "default": "server1"
           },
           "url": {
@@ -25,10 +26,16 @@
             "hint": "需包含 http(s)://，例如 http://127.0.0.1:8188",
             "default": "http://127.0.0.1:8188"
           },
+          "device": {
+            "type": "string",
+            "description": "设备配置（可选，仅展示）",
+            "hint": "填这台机器的硬件信息，出图信息卡片与服务器列表会展示，例如：RTX 4090D 24G｜i9-13900K｜64G｜Win11。",
+            "default": ""
+          },
           "enabled": {
             "type": "bool",
-            "description": "是否启用",
-            "hint": "多个服务器只能启用一个，否则绘图会报错。",
+            "description": "设为默认服务器",
+            "hint": "**启用的那个就是默认服务器**：工作流未绑定（server_key 留空）时用它出图。建议只启用一台；若启用了多台，取列表里第一台并打警告（v7.1.0 起不再报错）。",
             "default": false
           },
           "client_id": {
@@ -242,10 +249,16 @@
             "hint": "Civitai 模型页面链接（含 ?modelVersionId= 会精确匹配版本）。WebUI 卡片点「抓取封面」可自动下载该模型的封面图到本地并填入 image。",
             "default": ""
           },
+          "server_key": {
+            "type": "string",
+            "description": "绑定服务器（唯一 key）",
+            "hint": "填该服务器条目里的「唯一 key」（WebUI 工作流编辑弹窗的下拉会自动填，无需手写）。留空 = 用默认服务器（启用的那个）。服务器改名不影响绑定；旧数据里存的服务器名字仍能按名字匹配（重新保存后自动升级为 key）。",
+            "default": ""
+          },
           "server_name": {
             "type": "string",
-            "description": "绑定服务器",
-            "hint": "填上面服务器的 name；只有一个服务器时可留空。",
+            "description": "绑定服务器（旧版：名字，兼容保留）",
+            "hint": "旧版字段：早期版本按服务器「名字」绑定，改名会断链。v7.1.0 起改用 server_key，此字段仅作兼容读取；在 WebUI 重新保存工作流后会写入 server_key。",
             "default": ""
           },
           "is_anima": {

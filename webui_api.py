@@ -449,15 +449,19 @@ class WebUIApi:
             # 安全合并：仅覆盖顶层键，保留未提交键
             cfg = self.plugin.config
             # 兜底：template_list（workflows/loras/comfyui_servers）元素补 __template_key，
-            # 避免历史数据/自定义弹窗保存缺该字段导致 AstrBot 格式校验失败
+            # 避免历史数据/自定义弹窗保存缺该字段导致 AstrBot 格式校验失败。
+            # ★v7.1.0：不再统一写死 "default"（多条目会撞成同一个 key，服务器/工作流
+            # 的绑定值就是它 → 指向错误对象）；空值与**重复值**都重新生成唯一 key。
             for _tl_key in ("workflows", "loras", "comfyui_servers"):
                 if _tl_key in new_cfg and isinstance(new_cfg[_tl_key], list):
-                    _fixed = []
+                    _seen: set = set()
                     for _it in new_cfg[_tl_key]:
-                        if isinstance(_it, dict) and not (_it.get("__template_key") or _it.get("template")):
-                            _it["__template_key"] = "default"
-                        _fixed.append(_it)
-                    new_cfg[_tl_key] = _fixed
+                        if not isinstance(_it, dict):
+                            continue
+                        _tk = str(_it.get("__template_key") or "").strip()
+                        if not _tk or _tk in _seen or str(_it.get("template") or "") == _tk:
+                            _it["__template_key"] = uuid.uuid4().hex
+                        _seen.add(str(_it["__template_key"]))
             for k, v in new_cfg.items():
                 try:
                     cfg[k] = v

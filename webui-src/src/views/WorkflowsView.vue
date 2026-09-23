@@ -107,7 +107,7 @@
             <n-tag size="tiny" :bordered="false">
               {{ legacy ? (w.base_model?.trim() || "不限底模") : (baseOf(w)?.basemodel_name || "底模未关联") }}
             </n-tag>
-            <span class="meta-item">{{ w.server_name?.trim() || "默认服务器" }}</span>
+            <span class="meta-item">{{ serverLabel(w) }}</span>
             <span v-if="legacy && w.workflow_name" class="meta-item">{{ w.workflow_name }}</span>
             <span v-if="!legacy && baseOf(w)" class="meta-item">{{ baseOf(w)?.name }}</span>
             <a
@@ -176,7 +176,7 @@
             <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
             <n-form-item label="绑定服务器">
               <n-select
-                v-model:value="editForm.server_name"
+                v-model:value="editForm.server_key"
                 :options="serverOptions"
                 clearable
                 placeholder="默认服务器"
@@ -359,7 +359,7 @@
               <div class="form-grid">
                 <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 动漫日常" /></n-form-item>
                 <n-form-item label="绑定服务器">
-                  <n-select v-model:value="editForm.server_name" :options="serverOptions" clearable placeholder="默认服务器" />
+                  <n-select v-model:value="editForm.server_key" :options="serverOptions" clearable placeholder="默认服务器" />
                 </n-form-item>
               </div>
               <n-form-item label="描述（仅备注展示，不参与名称匹配）">
@@ -865,14 +865,35 @@ const selectedBaseBasemodel = computed(
 const selectedBaseCivitai = computed(() => String(selectedBase.value?.civitai_url || "").trim());
 
 // 绑定服务器下拉：来自插件配置的服务器列表（comfyui_servers）
+// v7.1.0：**label = 服务器名字（+设备），value = 唯一 key（__template_key）**——
+// 服务器改名不再让工作流绑定断链；旧数据里存的名字仍能按名字匹配（见后端 _resolve_server）。
 const servers = ref<any[]>([]);
 const serverOptions = computed(() => [
-  { label: "默认服务器", value: "" },
+  { label: "默认服务器（未绑定）", value: "" },
   ...servers.value
-    .map((s: any) => String(s?.name || "").trim())
-    .filter(Boolean)
-    .map((n) => ({ label: n, value: n })),
+    .filter((s: any) => String(s?.__template_key || "").trim())
+    .map((s: any) => {
+      const nm = String(s?.name || "").trim() || "(未命名服务器)";
+      const dev = String(s?.device || "").trim();
+      const def = s?.enabled ? "（默认）" : "";
+      return { label: `${nm}${def}${dev ? `｜${dev}` : ""}`, value: String(s.__template_key) };
+    }),
 ]);
+
+/** 展示用：工作流绑定的是哪台服务器（key → 名字；老数据的名字也能显示并标注） */
+function serverLabel(w: any): string {
+  const key = String(w?.server_key || "").trim();
+  if (key) {
+    const s = servers.value.find((x: any) => String(x?.__template_key || "") === key);
+    return s ? (String(s.name || "").trim() || key) : `未知服务器（key ${key.slice(0, 6)}…）`;
+  }
+  const legacy = String(w?.server_name || "").trim();
+  if (legacy) {
+    const hit = servers.value.find((x: any) => String(x?.name || "").trim() === legacy);
+    return hit ? `${legacy}（旧版绑定）` : `${legacy}（旧版绑定·可能已改名）`;
+  }
+  return "默认服务器";
+}
 async function loadServers() {
   try {
     const cfg = await apiGet("config");
@@ -1076,7 +1097,7 @@ const searchText = ref("");
 // 单条工作流是否命中搜索词（空词视为全命中）
 function wfMatches(w: any, kw: string): boolean {
   if (!kw) return true;
-  const hay = [w.name, w.aliases, w.base_model, w.server_name, w.workflow_name, w.loras_text]
+  const hay = [w.name, w.aliases, w.base_model, w.server_key, w.server_name, serverLabel(w), w.workflow_name, w.loras_text]
     .map((v) => (Array.isArray(v) ? v.join(" ") : String(v ?? "")))
     .join(" ")
     .toLowerCase();
@@ -1231,7 +1252,7 @@ function buildCover(w: any): { fname: string; title: string; fields: ItemViewerF
     { key: "类型", value: (w.image_node || "").trim() ? "图生图" : "文生图" },
     { key: "基础工作流", value: base?.name || `#${w.base_id}` },
     { key: "底模", value: base?.basemodel_name || "未关联底模" },
-    { key: "服务器", value: w.server_name?.trim() || "默认" },
+    { key: "服务器", value: serverLabel(w) },
     { key: "状态", value: w.enabled === false ? "已停用" : "启用" },
     { key: "描述", value: (w.desc || "").trim() || "—" },
     { key: "默认尺寸", value: size },
@@ -1241,7 +1262,7 @@ function buildCover(w: any): { fname: string; title: string; fields: ItemViewerF
     { key: "名称", value: w.name },
     { key: "别名", value: aliasStr(w.aliases || "") },
     { key: "底模", value: w.base_model?.trim() || "通用" },
-    { key: "服务器", value: w.server_name?.trim() || "默认" },
+    { key: "服务器", value: serverLabel(w) },
     { key: "工作流文件", value: w.workflow_name?.trim() || "—" },
     { key: "Anima 模式", value: w.is_anima ? "是" : "否" },
     { key: "默认尺寸", value: size },
@@ -1297,6 +1318,17 @@ function openForm(idx: number, prefill?: any) {
     desc: w.desc || "",
     base_model: w.base_model || "",
     aliases: w.aliases || "",
+    // v7.1.0：绑定值改用服务器唯一 key（旧数据里是名字 → 打开时自动迁移成 key，
+    // 保存后即完成升级；后端两种都认，所以没迁移也不会坏）
+    server_key: (() => {
+      const _k = String(w.server_key || "").trim();
+      if (_k) return _k;
+      const _old = String(w.server_name || "").trim();
+      if (!_old) return "";
+      const _hit = servers.value.find((x: any) => String(x?.name || "").trim() === _old);
+      return String(_hit?.__template_key || "");
+    })(),
+    // 旧字段保持原值（只读保留，避免数据丢失）
     server_name: w.server_name || "",
     workflow_name: w.workflow_name || "",
     is_anima: !!w.is_anima,
