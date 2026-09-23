@@ -3578,18 +3578,39 @@ class ComfyUIDrawPlugin(Star):
 
     def _card_kicker(self, wf: dict | None = None, platform_name: str = "",
                      model: str = "") -> str:
-        """左上小字：ComfyUI → 底模名；第三方平台 → 模型名。"""
+        """左上小字：ComfyUI → 底模名；第三方平台 → 模型名。
+
+        v7.4.1：不再带「底模 / 模型」前缀（用户反馈冠词多余，名字本身已经说明问题）。
+        """
         if platform_name:
-            return f"模型 {model or platform_name}"
+            return str(model or platform_name or "").strip()
         try:
             b = self._basemodel_of_workflow(wf or {}) or {}
             _name = str(b.get("name") or b.get("file_name") or "").strip()
             if _name:
-                return f"底模 {_name}"
+                return _name
         except Exception:
             pass
-        _bm = str((wf or {}).get("base_model") or "").strip()
-        return f"底模 {_bm}" if _bm else ""
+        return str((wf or {}).get("base_model") or "").strip()
+
+    def _card_today(self) -> int | None:
+        """卡片右上角「今日已出图 N 张」——全群所有人、只算成功发出去的成品图。
+
+        优先查图库（与「绘图统计」同口径：source='gen' 且 status=0 且未删除，按本地日期），
+        这样升级前的历史出图也能算进来；图库不可用时退回自管计数。
+        v7.4.1：此前用自管计数，只在本次升级后开始累计，显示的数偏小（用户反馈）。
+        """
+        try:
+            if self.gallery is not None:
+                _n = self.gallery.count_today_generated()
+                if _n is not None:
+                    return int(_n)
+        except Exception as e:
+            logger.debug(f"【出图卡片】 今日出图数查询失败（退回自管计数）: {e}")
+        try:
+            return self._card_module().today_count(self.data_dir)
+        except Exception:
+            return None
 
     def _card_device(self, srv_key: str = "", platform_name: str = "") -> str:
         """右上第二行：本地服务器设备名 / 云端平台名。"""
@@ -3670,7 +3691,7 @@ class ComfyUIDrawPlugin(Star):
             "workflow": _flow,
             "right_top": (f"耗时 {cost:.1f} 秒" if cost else ""),
             "device": self._card_device(srv_key, platform_name),
-            "today": self._card_module().today_count(self.data_dir),
+            "today": self._card_today(),
             "loras": _loras,
             "params": self._card_chips([
                 ("尺寸", size),
@@ -3691,15 +3712,21 @@ class ComfyUIDrawPlugin(Star):
         """
         try:
             cfg = self._card_cfg()
+            # v7.4.1：每个「不发」的分支都留日志——此前用户开了结果卡却没发，
+            # 日志里一点痕迹都没有，只能靠猜（真实原因就是下面这类门槛）。
             if not cfg.get("enabled", True):
+                logger.info("【出图卡片】 未发送：卡片总开关关闭")
                 return False
             if state == "done" and not cfg.get("result_enabled", True):
+                logger.info("【出图卡片】 未发送：结果卡开关关闭")
                 return False
             if state in ("failed", "blocked") and not cfg.get("fail_enabled", True):
+                logger.info("【出图卡片】 未发送：失败卡开关关闭")
                 return False
             # 发送范围：默认仅群聊（用户需求），可选所有会话
             scope = str(cfg.get("scope") or "group").strip().lower()
             if scope == "group" and self._is_private_event(event):
+                logger.info("【出图卡片】 未发送：发送范围为「仅群聊」，当前是私聊")
                 return False
             if not cfg.get("show_prompt", True):
                 info = dict(info)
@@ -3708,6 +3735,10 @@ class ComfyUIDrawPlugin(Star):
             path = mod.save(info, state=state, theme=str(cfg.get("theme") or ""),
                             cfg=cfg, data_dir=self.data_dir)
             if not path:
+                logger.warning(
+                    "【出图卡片】 渲染失败（未生成图片）——常见原因：Pillow 缺失、"
+                    "字体文件读不了（随包 assets/fonts/ResourceHanRoundedCN-Medium.woff2）"
+                )
                 return False
             # 走统一发送入口 → 卡片同样受「自动撤回」约束，不会在群里越堆越多
             await self._send_image_with_recall(
@@ -4686,7 +4717,7 @@ class ComfyUIDrawPlugin(Star):
                 "workflow": f"{pname} · 文生图",
                 "right_top": "",
                 "device": self._card_device(platform_name=pname),
-                "today": self._card_module().today_count(self.data_dir),
+                "today": self._card_today(),
                 "loras": [],
                 "params": self._card_chips([
                     ("模型", model),
@@ -4899,7 +4930,7 @@ class ComfyUIDrawPlugin(Star):
                     "workflow": f"{pname} · 文生图",
                     "right_top": f"耗时 {_plat_cost:.1f} 秒",
                     "device": self._card_device(platform_name=pname),
-                    "today": self._card_module().today_count(self.data_dir),
+                    "today": self._card_today(),
                     "loras": [],
                     "params": self._card_chips([
                         ("尺寸", f"{_lv.get('_real_w') or _w}×{_lv.get('_real_h') or _h}"),
@@ -6175,13 +6206,17 @@ class ComfyUIDrawPlugin(Star):
                 except Exception:
                     _card_sampler = {}
                 _ahead0 = self._local_queue_ahead(srv_key)
-                await self._send_draw_card(event, {
+                # v7.4.1：记住卡片有没有真的发出去——发了就不再补发排队文案（见下方提示块），
+                # 否则用户会连着收到「卡片」+「前面还有 N 个」，且卡片上的排队数还是提交前快照。
+                _card_pending_sent = await self._send_draw_card(event, {
                     "kicker": self._card_kicker(wf),
                     "workflow": (f"{wf.get('name') or '(未命名)'} · "
                                  f"{'图生图' if is_img2img else '文生图'}"),
-                    "right_top": f"排队 {_ahead0}" if _ahead0 > 0 else "排队 0",
+                    # v7.4.1：无排队时不写「排队 0」——提交前只能拿到本地队列快照，
+                    # 与中转站的实际队列位置可能不一致，宁可不显示（有排队才写）。
+                    "right_top": f"排队 {_ahead0}" if _ahead0 > 0 else "",
                     "device": self._card_device(srv_key),
-                    "today": self._card_module().today_count(self.data_dir),
+                    "today": self._card_today(),
                     "loras": _card_loras,
                     "params": self._card_chips([
                         ("尺寸", _size),
@@ -6197,6 +6232,7 @@ class ComfyUIDrawPlugin(Star):
                     "prompt": positive,
                 }, "queued" if _ahead0 > 0 else "drawing")
             except Exception as _ce:
+                _card_pending_sent = False
                 logger.warning(f"【出图卡片】 构建失败（忽略）: {_ce}")
             try:
                 result = await client.queue_prompt(prompt)
@@ -6252,9 +6288,14 @@ class ComfyUIDrawPlugin(Star):
                 # 无队列（ahead<=0）默认不发提示；仅当 queue_hint_only_when_queued=False
                 # 时才发「稍等，马上来」。只发这一条，避免与提交前提示重复。
                 # 伴侣 proactive（notify_pending=False）不发。
-                if self._cfg("return_queue_position", True) and notify_pending:
+                # v7.4.1：提交前发过卡片时不再补发排队文案——卡片右上角已有队列信息，
+                # 再来一条「前面还有 N 个」既重复、又和卡片上的数字打架（卡片是提交前快照）。
+                if (self._cfg("return_queue_position", True) and notify_pending
+                        and not locals().get("_card_pending_sent")):
                     if ahead > 0 or not self._cfg("queue_hint_only_when_queued", True):
                         await self._send(event, self._queue_hint(ahead))
+                elif notify_pending and locals().get("_card_pending_sent"):
+                    logger.info("【队列】 已发卡片，跳过「前面还有 N 个」文字提示（避免重复）")
 
                 # 等待出图：动态超时 = 基础超时 + 前面排队任务累加预估耗时。
                 # 排得越靠后，前面任务越多，等待就越久，故按 ahead 逐任务累加，
@@ -6654,11 +6695,12 @@ class ComfyUIDrawPlugin(Star):
                             pass
 
                     # 出图结果卡（v7.3.0）：出图结果信息由文字小报告改为卡片。
-                    # 受配置 show_draw_report 控制（默认关闭，关闭则不输出文件信息）；
-                    # 若上面已把报告并进图片那条消息（图文消息）则不再重复发。
+                    # v7.4.1：开关改为卡片配置的「出图完成发结果卡」(result_enabled，默认开)
+                    # ——此前误留成旧开关 show_draw_report（默认关），于是「开了也不发」。
+                    # 若上面已把报告并进图片那条消息（图文消息）则不再重复发；
                     # 卡片画不出来时退回原来的文字小报告，保证结果信息一定送达。
-                    if (not _nsfw_blocked and self._cfg("show_draw_report", False)
-                            and not _report_merged):
+                    _card_done_want = self._card_would_send(event, "done")
+                    if not _nsfw_blocked and not _report_merged and _card_done_want:
                         _rpt_text = ""
                         try:
                             _rpt_text = self._draw_report_text(img_path, w, h, _draw_start)
@@ -6672,7 +6714,7 @@ class ComfyUIDrawPlugin(Star):
                                          f"{'图生图' if is_img2img else '文生图'}"),
                             "right_top": f"耗时 {_cost:.1f} 秒",
                             "device": self._card_device(srv_key),
-                            "today": self._card_module().today_count(self.data_dir),
+                            "today": self._card_today(),
                             "loras": _card_loras,
                             "params": self._card_chips([
                                 ("尺寸", f"{locals().get('_real_w') or w}×"
@@ -6694,6 +6736,18 @@ class ComfyUIDrawPlugin(Star):
                                 await self._send(event, _rpt_text)
                             except Exception as _e:
                                 logger.warning(f"【出图·报告】 文字兜底失败: {_e}")
+                    else:
+                        # 「为什么没发结果卡」必须能在日志里查到（用户反馈：只有开关没有日志）
+                        if _nsfw_blocked:
+                            _skip_why = "图片被 NSFW 拦截"
+                        elif _report_merged:
+                            _skip_why = "报告已并入图片配文"
+                        elif not _card_done_want:
+                            _skip_why = ("卡片未启用 / 结果卡开关关闭 / 发送范围为仅群聊而当前是私聊"
+                                         "（原因见上面【出图卡片】日志）")
+                        else:
+                            _skip_why = "未知"
+                        logger.info(f"【出图卡片】 结果卡未发送：{_skip_why}")
             finally:
                 # 无论成功/失败/超时，均从本地队列移除本任务（try/finally 确保不泄漏）
                 self._local_queue_remove(srv_key, prompt_id)

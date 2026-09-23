@@ -1477,6 +1477,28 @@ class ImageStore:
             logger.warning(f"[图库] 回收站列表失败: {e}")
         return [self._row_to_dict(r) for r in rows]
 
+    def count_today_generated(self) -> int:
+        """今日出图数（全群所有人）：与「绘图统计」同口径。
+
+        只算成功发出去的成品图：`source='gen'` 且 `status=0` 且未删除（deleted=0），
+        按本地日期零点起算。注意与绘图统计一致：同一张图（内容相同）重复生成会被
+        内容寻址去重、不重复计数。
+        """
+        if not self.enabled() or not _HAS_SQLITE:
+            return 0
+        try:
+            conn = self._conn_get()
+            _start = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM images "
+                "WHERE source=? AND status=0 AND deleted=0 AND created_at>=?",
+                (SRC_GEN, _start),
+            ).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception as e:
+            logger.warning(f"[图库] 今日出图数统计失败: {e}")
+            return 0
+
     def profile_stats(self, user_id: str) -> dict:
         if not self.enabled() or not _HAS_SQLITE or not user_id:
             return {"total": 0, "public": 0, "private": 0, "favorites": 0,
