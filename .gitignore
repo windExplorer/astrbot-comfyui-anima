@@ -256,3 +256,5 @@ fonts/
 
 # 含密钥的本地配置（含真实 API key，绝不入库）
 docs/astrbot_plugin_private_companion_config.json
+# 卡片设计实验室（样张生成脚本与输出，仅本地使用，不入库）
+design_lab/
