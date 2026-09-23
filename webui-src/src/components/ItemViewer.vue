@@ -10,6 +10,11 @@
           <figure class="iv-fig">
             <div class="iv-imgwrap">
               <img v-if="resolvedSrc" :src="resolvedSrc" alt="" :class="{ 'ivw-nsfw-blur': blurred }" />
+              <!-- v7.0.15：无封面时也能打开详情（此前一直显示「封面加载中…」） -->
+              <div v-else-if="noCover" class="iv-loading iv-nocover">
+                <div class="iv-nocover-icon">🖼</div>
+                <div>暂无封面</div>
+              </div>
               <div v-else class="iv-loading">封面加载中…</div>
               <button
                 v-if="nsfw"
@@ -84,6 +89,8 @@ const resolvedTitle = ref<string>("");
 const resolvedFields = ref<ItemViewerField[]>([]);
 /** NSFW 打码状态：每次打开/切图都按 props 重算，避免上一张的「解除」状态残留到下一张。 */
 const blurred = ref(false);
+/** 当前项是否「没有封面」（无 fname 即无图；用于详情模式显示占位而不是一直转圈） */
+const noCover = ref(false);
 
 const canNav = computed(() => Array.isArray(props.images) && props.images.length > 1);
 const navIndex = computed(() => props.index ?? 0);
@@ -94,6 +101,7 @@ const navNextDisabled = computed(() => !canNav.value || navIndex.value >= navTot
 function applyItem(fname?: string, title?: string, fields?: ItemViewerField[]) {
   resolvedTitle.value = title ?? "";
   resolvedFields.value = fields ?? [];
+  noCover.value = !fname;
   if (fname) {
     resolvedSrc.value = "";
     // v6.1.3：大图查看器拉**原图**（此前拿的是 640px 缩略图，放大后发糊）
@@ -232,6 +240,15 @@ function onClose() {
   padding: 60px;
   font-size: 13px;
 }
+.iv-nocover {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 13px;
+}
+.iv-nocover-icon { font-size: 42px; line-height: 1; opacity: 0.7; }
 /* NSFW 打码：与图库 ImageViewer 同一套观感（模糊 + 放大遮边，避免打码后露出四角） */
 .ivw-nsfw-blur {
   filter: blur(22px) !important;

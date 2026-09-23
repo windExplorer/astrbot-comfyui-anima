@@ -79,7 +79,10 @@
             @drop.prevent="onDropCover(i, $event)"
           >
             <img v-if="w.image" v-cover-lazy="w.image" alt="" loading="lazy" />
-            <div v-else class="cover-empty">无封面</div>
+            <div v-else class="cover-empty">
+              <div>无封面</div>
+              <div class="cover-empty-tip">点击查看详情</div>
+            </div>
             <span class="cover-drop-tip">松开设置封面</span>
           </div>
           <div class="card-head">
@@ -120,7 +123,9 @@
             <n-button size="tiny" @click="editWorkflow(i)">编辑</n-button>
             <n-button size="tiny" @click="toggleEnabled(i)">{{ w.enabled === false ? "启用" : "停用" }}</n-button>
             <n-button size="tiny" @click="copyWorkflow(i)">复制</n-button>
-            <n-button size="tiny" @click="fetchCover(i)">抓封面</n-button>
+            <n-button size="tiny" @click="legacy ? fetchCover(i) : useBaseCover(i)">
+              {{ legacy ? "抓封面" : "默认封面" }}
+            </n-button>
             <n-button size="tiny" @click="openCoverEditor(i)">传封面</n-button>
             <n-button size="tiny" type="error" @click="removeWorkflow(i)">删除</n-button>
           </div>
@@ -1084,27 +1089,41 @@ const coverIndex = ref(0);
 
 // 由工作流对象构造封面查看项（导航用）
 function buildCover(w: any): { fname: string; title: string; fields: ItemViewerField[] } {
-  const fields: ItemViewerField[] = [
+  const isNew = !!String(w.base_id || "").trim();
+  const base = baseOf(w);
+  const size = (w.default_width && w.default_height)
+    ? `${w.default_width} × ${w.default_height}` : "—";
+  const fields: ItemViewerField[] = isNew ? [
+    { key: "类型", value: (w.image_node || "").trim() ? "图生图" : "文生图" },
+    { key: "基础工作流", value: base?.name || `#${w.base_id}` },
+    { key: "底模", value: base?.basemodel_name || "未关联底模" },
+    { key: "服务器", value: w.server_name?.trim() || "默认" },
+    { key: "状态", value: w.enabled === false ? "已停用" : "启用" },
+    { key: "描述", value: (w.desc || "").trim() || "—" },
+    { key: "默认尺寸", value: size },
+    { key: "预设 LoRA", value: w.loras_text?.trim() || "—" },
+    { key: "封面文件", value: w.image || "（未设置，可点卡片上的「默认封面」取基础工作流封面）" },
+  ] : [
     { key: "名称", value: w.name },
     { key: "别名", value: aliasStr(w.aliases || "") },
     { key: "底模", value: w.base_model?.trim() || "通用" },
     { key: "服务器", value: w.server_name?.trim() || "默认" },
     { key: "工作流文件", value: w.workflow_name?.trim() || "—" },
     { key: "Anima 模式", value: w.is_anima ? "是" : "否" },
-    { key: "默认尺寸", value: w.default_width && w.default_height ? `${w.default_width} × ${w.default_height}` : "—" },
+    { key: "默认尺寸", value: size },
     { key: "可用 LoRA", value: availLoras(w).join("、") || "无匹配 LoRA" },
     { key: "预设 LoRA", value: w.loras_text?.trim() || "—" },
     { key: "封面文件", value: w.image || "—" },
   ];
-  if (w.civitai_url) fields.push({ key: "C 站", value: w.civitai_url, href: w.civitai_url });
+  const civ = base?.civitai_url || w.civitai_url;
+  if (civ) fields.push({ key: "C 站", value: civ, href: civ });
   return { fname: w.image || "", title: w.name || "", fields };
 }
 
-// 打开大图（支持左右箭头在封面列表间导航）
+// 打开详情（支持左右箭头在封面列表间导航）；v7.0.15：没有封面也允许打开看字段
 function openImage(idx: number) {
   const w = workflows.value[idx];
   if (!w) return;
-  if (!w.image) { message.warning("该工作流暂无封面"); return; }
   coverImages.value = workflows.value.map(buildCover);
   coverIndex.value = idx;
   previewShow.value = true;
@@ -1365,6 +1384,30 @@ function applyCoverFetch(idx: number, w: any, chosenName: string) {
   }).catch((e: any) => message.error(e.message || "保存失败"));
 }
 
+/**
+ * 新版：取「基础工作流」的封面作为本工作流封面（v7.0.15）
+ * 只复制文件名（同一张图，不重复占空间）；基础工作流换封面后不会自动同步，可再次点此按钮。
+ */
+function useBaseCover(idx: number) {
+  const w = workflows.value[idx];
+  if (!w) return;
+  const base = baseOf(w);
+  if (!base) { message.warning("该工作流未关联基础工作流，无法取默认封面"); return; }
+  if (!base.image) {
+    message.warning(`基础工作流「${base.name}」还没有封面：请先到「基础工作流」页设置它的封面`);
+    return;
+  }
+  if (w.image === base.image) { message.info("当前已在使用基础工作流的封面"); return; }
+  dialog.info({
+    title: "使用默认封面",
+    content: `将使用基础工作流「${base.name}」的封面图作为本工作流的封面。`
+      + "（同一张图复用，不额外占空间；基础工作流以后换封面不会自动同步，可再点一次本按钮同步）",
+    positiveText: "使用",
+    negativeText: "取消",
+    onPositiveClick: () => applyCover(idx, base.image),
+  });
+}
+
 function fetchCover(idx: number) {
   const w = workflows.value[idx];
   if (!w) return;
@@ -1475,7 +1518,8 @@ onMounted(load);
 .card-cover { position: relative; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--bg-body); display: flex; align-items: center; justify-content: center; }
 .card-cover.is-drag { outline: 2px dashed var(--accent); outline-offset: -2px; background: rgba(0, 122, 255, 0.08); }
 .card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.cover-empty { color: var(--text-sub); font-size: 12px; }
+.cover-empty { color: var(--text-sub); font-size: 12px; text-align: center; display: flex; flex-direction: column; gap: 4px; }
+.cover-empty-tip { font-size: 11px; color: var(--accent); opacity: 0.85; }
 .cover-drop-tip { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--accent); background: var(--bg-panel); padding: 2px 8px; border-radius: 6px; opacity: 0; transition: opacity 0.15s; pointer-events: none; }
 .card-cover.is-drag .cover-drop-tip { opacity: 1; }
 .card-head { display: flex; align-items: center; justify-content: space-between; }
