@@ -2,6 +2,20 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.4.8（修：绘制中卡片的「采样器 / 调度器」一直不显示）
+
+**原因**：`workflow_builder.get_sampler_defaults()` 只提取 steps / cfg / denoise，
+**从来没提取过 `sampler_name` / `scheduler`**——而卡片的这两枚胶囊正是从它取值的，
+于是永远为空、永远不显示。纯属漏写，不是工作流的问题。
+
+修复：提取函数补上 `sampler_name` / `scheduler`（字符串字段，空白值不算有值），
+卡片、失败卡、图库归档的采样器信息一并受益；`/workflows/sampler` 接口返回值多了两个键
+（原有键不变，前端兼容）。
+
+验证：`test_workflow_v7` 新增第 13 组（采样器提取：euler/simple 命中、无采样器节点全 None、
+空白字段不算有值），13 组全过；`test_draw_card`、`test_image_store_today`、
+`test_size_helpers`、`test_nai_params`、`test_llm_tool_docstrings` 全过；compileall 通过。
+
 ## v7.4.7（卡片尺寸永远显示具体数值，不再出现「(默认)」）
 
 - 绘制中 / 失败卡片的「尺寸」不再显示「(默认)」——四层尺寸决策（用户传参 > 比例词 >

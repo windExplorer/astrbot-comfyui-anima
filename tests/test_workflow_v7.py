@@ -344,6 +344,23 @@ def test_match_by_filename():
     print("== 12. 旧版转新版（文件名匹配基础工作流） OK")
 
 
+def test_sampler_defaults_extract():
+    """采样器默认参数提取：steps/cfg/denoise + sampler_name/scheduler（v7.4.8）。"""
+    d = wb.get_sampler_defaults(WF_STD)
+    assert d["steps"] == 10 and d["cfg"] == 1 and d["denoise"] == 1, d
+    assert d["sampler_name"] == "euler", d
+    assert d["scheduler"] == "simple", d
+    # 没有采样器节点 → 全 None（卡片上对应胶囊不显示，不显示假值）
+    d2 = wb.get_sampler_defaults({"1": {"class_type": "VAELoader", "inputs": {}}})
+    assert all(v is None for v in d2.values()), d2
+    # 空白字段不当成有值
+    d3 = wb.get_sampler_defaults({"6": {"class_type": "KSampler", "inputs": {
+        "sampler_name": "", "scheduler": "  ", "steps": 5, "cfg": 2}}})
+    assert d3["sampler_name"] is None and d3["scheduler"] is None, d3
+    assert d3["steps"] == 5 and d3["cfg"] == 2, d3
+    print("== 13. 采样器默认参数提取（含 sampler_name/scheduler） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -357,4 +374,5 @@ if __name__ == "__main__":
     test_option_store()
     test_bypass_alpha_chain()
     test_match_by_filename()
-    print("\n基础工作流体系测试全部通过（12 组）")
+    test_sampler_defaults_extract()
+    print("\n基础工作流体系测试全部通过（13 组）")

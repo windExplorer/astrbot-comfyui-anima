@@ -189,13 +189,19 @@ def set_denoise(prompt: dict, denoise: float) -> bool:
 
 
 def get_sampler_defaults(prompt: dict) -> dict:
-    """提取工作流中采样器节点的默认参数（steps / cfg / denoise）。
+    """提取工作流中采样器节点的默认参数（steps / cfg / denoise / sampler_name / scheduler）。
 
     遍历所有采样器类节点（class_type 含 "sampler"），取第一个含对应字段的值。
-    返回 {"steps": int|None, "cfg": float|None, "denoise": float|None}；
+    返回 {"steps": int|None, "cfg": float|None, "denoise": float|None,
+          "sampler_name": str|None, "scheduler": str|None}；
     某个参数在所有采样器节点都缺失时为 None。
+    v7.4.8：补上 sampler_name / scheduler —— 出图卡片的「采样器 / 调度器」胶囊
+    一直靠它取值，此前漏提导致这两枚胶囊永远不显示。
     """
-    out: dict = {"steps": None, "cfg": None, "denoise": None}
+    out: dict = {
+        "steps": None, "cfg": None, "denoise": None,
+        "sampler_name": None, "scheduler": None,
+    }
     for node in prompt.values():
         if not isinstance(node, dict):
             continue
@@ -218,7 +224,16 @@ def get_sampler_defaults(prompt: dict) -> dict:
                 out["denoise"] = float(inputs["denoise"])
             except (ValueError, TypeError):
                 pass
-        if out["steps"] is not None and out["cfg"] is not None and out["denoise"] is not None:
+        if out["sampler_name"] is None and "sampler_name" in inputs:
+            _sn = str(inputs.get("sampler_name") or "").strip()
+            if _sn:
+                out["sampler_name"] = _sn
+        if out["scheduler"] is None and "scheduler" in inputs:
+            _sc = str(inputs.get("scheduler") or "").strip()
+            if _sc:
+                out["scheduler"] = _sc
+        if all(out[k] is not None for k in
+               ("steps", "cfg", "denoise", "sampler_name", "scheduler")):
             break
     return out
 
