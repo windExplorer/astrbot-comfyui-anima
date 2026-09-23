@@ -750,14 +750,15 @@ const upscaleModelOptions = computed(() => {
 function resetSampler() {
   editForm.ov_steps = "";
   editForm.ov_cfg = "";
-  editForm.ov_sampler = "";
-  editForm.ov_scheduler = "";
+  // 下拉用 null 表示「未选」（空串会显示空白却带清除叉叉）
+  editForm.ov_sampler = null;
+  editForm.ov_scheduler = null;
   editForm.ov_denoise = "";
   editForm.fixed_seed = "";
 }
 function resetUpscale() {
   editForm.upscale_mode = "";
-  editForm.upscale_model_name = "";
+  editForm.upscale_model_name = null;
 }
 function resetCleanup() {
   editForm.cleanup_mode = "";
@@ -1152,8 +1153,10 @@ function openForm(idx: number, prefill?: any) {
     fixed_seed: w.fixed_seed || "",
     ov_steps: w.ov_steps || "",
     ov_cfg: w.ov_cfg || "",
-    ov_sampler: w.ov_sampler || "",
-    ov_scheduler: w.ov_scheduler || "",
+    // v7.0.13：tag+clearable 的下拉「未选」必须用 null——空字符串会被 naive-ui
+    // 当成一个已选值：输入框显示空白、悬浮却出现清除叉叉（用户实测反馈）。
+    ov_sampler: w.ov_sampler || null,
+    ov_scheduler: w.ov_scheduler || null,
     ov_denoise: w.ov_denoise || "",
     upscale_mode: w.upscale_mode || "",
     cleanup_mode: w.cleanup_mode || "",
@@ -1180,7 +1183,8 @@ function openForm(idx: number, prefill?: any) {
     lora_anchor: w.lora_anchor || "",
     lora_clip: w.lora_clip || "",
     upscale_node_id: w.upscale_node_id || "",
-    upscale_model_name: w.upscale_model_name || "",
+    // 同上：放大模型是 tag+clearable 下拉，空值用 null 才是「未选」
+    upscale_model_name: w.upscale_model_name || null,
     default_steps: w.default_steps ?? 0,
     steps_off: !!w.steps_off,
     default_cfg: w.default_cfg ?? 0,
