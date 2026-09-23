@@ -189,6 +189,175 @@ try:
 except ImportError:  # pragma: no cover - 环境无 Pillow 时降级（不读像素尺寸）
     _PILImage = None
 
+# ---------------------------------------------------------------------- #
+# 尺寸档位（v7.0.18）
+#
+# 口径（与用户确认）：按**总像素预算**定档，而不是按长边——
+#   1K   ≈ 1.0 MP（SDXL 原生训练尺寸，832×1216 就是 1K 竖版 2:3）
+#   1.5K ≈ 2.3 MP
+#   2K   ≈ 4.2 MP
+#   4K   ≈ 8.3 MP（＝ UHD 3840×2160 的像素量；方形 2944²）
+# 这样「4K」不会变成 4096²＝16.8MP 那种必爆显存的尺寸。
+#
+# 倍率是**线性边长倍率**（1.0 / 1.5 / 2.0 / 2.9），比例词定长宽比、档位词定像素量，
+# 两者可自由组合（「2K 竖版」→ 832×1216 × 2 = 1664×2432）。
+# 具体比例基准尺寸见配置项 draw_ratio（1K 基准矩阵），本表只负责缩放与上限。
+# ---------------------------------------------------------------------- #
+_SIZE_ALIGN = 16  # 对齐到 16 的倍数（标签系底模要求）
+
+_SIZE_TIERS: tuple[tuple[str, str, float], ...] = (
+    ("1k", "1K", 1.0),
+    ("1.5k", "1.5K", 1.5),
+    ("2k", "2K", 2.0),
+    ("4k", "4K", 2.9),
+)
+
+_SIZE_TIER_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "1k": ("1k", "1K", "标清"),
+    "1.5k": ("1.5k", "1.5K"),
+    "2k": ("2k", "2K", "高清"),
+    "4k": ("4k", "4K", "超清"),
+}
+
+# 工作流「最高支持档位」的默认值（用户确认：默认最高 2K）
+_SIZE_TIER_DEFAULT = "2k"
+
+# 1K 基准方形像素量（用于换算像素预算）
+_SIZE_BASE_PX = 1024 * 1024
+
+
+def _align16(v: float) -> int:
+    """对齐全 16 的倍数（最小 16）。"""
+    try:
+        return max(_SIZE_ALIGN, int(round(float(v) / _SIZE_ALIGN)) * _SIZE_ALIGN)
+    except (TypeError, ValueError):
+        return _SIZE_ALIGN
+
+
+def _tier_key_norm(key: str) -> str:
+    k = str(key or "").strip().lower()
+    for _k, _label, _f in _SIZE_TIERS:
+        if _k == k:
+            return _k
+    return ""
+
+
+def _tier_factor(key: str) -> float:
+    k = _tier_key_norm(key)
+    for _k, _label, f in _SIZE_TIERS:
+        if _k == k:
+            return f
+    return 1.0
+
+
+def _tier_label(key: str) -> str:
+    k = _tier_key_norm(key)
+    for _k, label, _f in _SIZE_TIERS:
+        if _k == k:
+            return label
+    return str(key or "")
+
+
+def _tier_key_of_text(text: str) -> str | None:
+    """从文本里提取尺寸档位词（英文整词匹配，最长优先）。
+
+    「2K」「1.5K」「标清」等；`4kings` / `12k` 这类不会被误命中。
+    """
+    t = str(text or "").lower()
+    if not t:
+        return None
+    best: tuple[str, int] | None = None
+    for key, kws in _SIZE_TIER_KEYWORDS.items():
+        for kw in kws:
+            k = kw.lower()
+            hit = False
+            if k.isascii():
+                if re.search(rf"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])", t):
+                    hit = True
+            elif k in t:
+                hit = True
+            if hit and (best is None or len(k) > best[1]):
+                best = (key, len(k))
+    return best[0] if best else None
+
+
+def _scale_size_to_tier(w: int, h: int, tier_key: str) -> tuple[int, int]:
+    """把尺寸按档位倍率缩放（等比）。tier 未知或 1K 时只做对齐。"""
+    f = _tier_factor(tier_key)
+    try:
+        return _align16(float(w) * f), _align16(float(h) * f)
+    except (TypeError, ValueError):
+        return _align16(w), _align16(h)
+
+
+def _cap_size_to_tier(w: int, h: int, max_tier: str) -> tuple[int, int, bool]:
+    """按工作流「最高支持档位」把尺寸等比缩进像素预算内。
+
+    返回 (w, h, 是否发生缩放)。预算 = 1024² × (档位倍率)²，与长宽比无关。
+    max_tier 非法时按默认档位（2K）处理。
+    """
+    key = _tier_key_norm(max_tier) or _SIZE_TIER_DEFAULT
+    budget = float(_SIZE_BASE_PX) * (_tier_factor(key) ** 2)
+    try:
+        _w, _h = int(w), int(h)
+    except (TypeError, ValueError):
+        return w, h, False
+    if _w <= 0 or _h <= 0 or float(_w) * float(_h) <= budget:
+        return _w, _h, False
+    scale = (_budget_ratio(budget, _w, _h)) ** 0.5
+    nw, nh = _align16(_w * scale), _align16(_h * scale)
+    # 对齐（向上取整）后可能略微超出预算，按 16 逐级递减直到落回预算内
+    guard = 0
+    while float(nw) * float(nh) > budget and guard < 256:
+        if nw >= nh:
+            nw = max(_SIZE_ALIGN, nw - _SIZE_ALIGN)
+        else:
+            nh = max(_SIZE_ALIGN, nh - _SIZE_ALIGN)
+        guard += 1
+    return nw, nh, True
+
+
+def _budget_ratio(budget: float, w: int, h: int) -> float:
+    try:
+        return max(0.0, budget / float(int(w) * int(h)))
+    except Exception:
+        return 1.0
+
+
+def _size_tier_table(ratio_items: list | None) -> dict:
+    """档位 × 比例对照表（供 WebUI 展示与文档）。
+
+    ratio_items：draw_ratio 配置（1K 基准）；返回
+    {tiers:[{key,label,factor,budget_mp}], ratios:[{name,keywords,base, sizes:{key:"832×1216"}}]}
+    """
+    tiers = [
+        {"key": k, "label": label, "factor": f,
+         "budget_mp": round(_SIZE_BASE_PX * (f ** 2) / 1_000_000.0, 2)}
+        for k, label, f in _SIZE_TIERS
+    ]
+    ratios = []
+    for p in (ratio_items or []):
+        if not isinstance(p, dict):
+            continue
+        try:
+            bw, bh = int(p.get("width") or 0), int(p.get("height") or 0)
+        except (TypeError, ValueError):
+            continue
+        if bw <= 0 or bh <= 0:
+            continue
+        sizes = {}
+        for k, _label, f in _SIZE_TIERS:
+            sw, sh = _scale_size_to_tier(bw, bh, k)
+            sizes[k] = f"{sw}×{sh}"
+        ratios.append({
+            "name": str(p.get("name") or "").strip() or "未命名",
+            "keywords": str(p.get("keyword") or "").strip(),
+            "enabled": bool(p.get("enabled", True)),
+            "base": f"{bw}×{bh}",
+            "sizes": sizes,
+        })
+    return {"tiers": tiers, "ratios": ratios, "default_max_tier": _SIZE_TIER_DEFAULT}
+
 try:
     from astrbot.api.star import StarTools
 except ImportError:
@@ -1224,6 +1393,51 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 补 __template_key 失败（可忽略）: {e}")
 
+        # v7.0.18：draw_ratio 换成「1K 基准矩阵」（SDXL 原生尺寸）。
+        # 一次性迁移：只有当现有列表看起来**完全是旧内置预设**（template_key 全部属于旧集合、
+        # 且条目数与旧默认一致）时才整体替换；用户自己加过/改过就原样保留并打日志提示。
+        try:
+            _items = self.config.get("draw_ratio")
+            if isinstance(_items, list) and _items and not self.config.get("_size_presets_v2"):
+                _old_keys = {
+                    "square_1_1", "portrait_3_4", "portrait_2_3", "portrait_9_16",
+                    "landscape_4_3", "landscape_3_2", "landscape_16_9",
+                    "long_1_2", "ultrawide_21_9",
+                }
+                _cur_keys = {
+                    str(it.get("__template_key") or "") for it in _items if isinstance(it, dict)
+                }
+                _looks_default = bool(_cur_keys) and _cur_keys.issubset(_old_keys) and len(_items) == 9
+                if _looks_default:
+                    _sp = Path(__file__).resolve().parent / "_conf_schema.json"
+                    if _sp.exists():
+                        _sch = json.loads(_sp.read_text(encoding="utf-8"))
+                        _new = (_sch.get("draw_ratio") or {}).get("default") or []
+                        if isinstance(_new, list) and _new:
+                            self.config["draw_ratio"] = json.loads(json.dumps(_new))
+                            self.config["_size_presets_v2"] = True
+                            try:
+                                self.config.save_config()
+                            except Exception:
+                                pass
+                            logger.info(
+                                f"【初始化】 尺寸比例预设已升级为 1K 基准矩阵（{len(_new)} 条，"
+                                "SDXL 原生尺寸；档位×比例对照表见工作流「尺寸」页）"
+                            )
+                else:
+                    self.config["_size_presets_v2"] = True
+                    try:
+                        self.config.save_config()
+                    except Exception:
+                        pass
+                    logger.info(
+                        "【初始化】 尺寸比例预设保持自定义内容（未自动替换）；"
+                        "档位×比例对照表见工作流编辑弹窗「尺寸」页"
+                    )
+                    _items = None
+        except Exception as e:
+            logger.warning(f"【初始化】 尺寸比例预设迁移失败（可忽略）: {e}")
+
         # 兜底恢复：draw_ratio（尺寸比例预设）被清空时，自动从 _conf_schema.json 恢复内置默认。
         # 避免用户误清空后「竖版/横版/9:16」等比例词不再触发，且 UI 里逐条找回困难。
         try:
@@ -1976,31 +2190,33 @@ class ComfyUIDrawPlugin(Star):
 
     def _resolve_ratio_size(
         self, prompt_text: str, width: int | None, height: int | None
-    ) -> tuple[int | None, int | None]:
-        """根据用户文本检测「尺寸比例」，返回 (宽, 高)；未命中或用户已显式指定宽高时返回 (None, None)。
+    ) -> tuple[tuple[int, int] | None, str | None]:
+        """解析用户话里的「比例」与「档位」，返回 ((宽, 高) | None, 档位key | None)。
 
         规则：
-        - 用户已显式给出任意一个宽或高（width 或 height 非空）→ 不触发比例（用户优先）。
-        - 用户说了「默认尺寸 / 按工作流默认」→ 不触发比例（v7.0.17）。
-        - 否则在 prompt_text 里找 draw_ratio（template_list 数组）的 keyword 命中项
-          （enabled=true），取第一个命中项返回其 width/height。
-          ★ v7.0.17：英文关键词必须**整词**匹配，避免 `portrait` 命中 `portraiture`、
-          `wide` 命中 `widespread` 这类子串误触发。
-        - 都没有 → (None, None)，由调用方回退工作流默认尺寸。
+        - 用户已显式给出任意一个宽或高（width 或 height 非空）→ 不解析（用户优先）。
+        - 用户说了「默认尺寸 / 按工作流默认」→ 不解析（v7.0.17）。
+        - 比例：在 prompt_text 里找 draw_ratio（template_list，**1K 基准**）的 keyword 命中项
+          （enabled=true），取第一个命中项返回其 width/height；
+          ★ 英文关键词整词匹配（`portrait` 不命中 `portraiture`、`wide` 不命中 `widespread`）。
+        - 档位：找尺寸档位词（1K/1.5K/2K/4K/标清/高清/超清，v7.0.18），命中则返回档位 key，
+          由调用方按倍率缩放（比例定长宽比、档位定像素量，可自由组合，如「2K 竖版」）。
+        - 都没命中 → (None, None)，由调用方回退工作流默认尺寸。
         """
-        # 用户显式给过宽或高 → 以用户为准，不触发比例
+        # 用户显式给过宽或高 → 以用户为准，不触发比例/档位
         if width or height:
             return None, None
         text = (prompt_text or "").lower()
         if not text:
             return None, None
-        # 用户明确要「默认尺寸」→ 不套比例预设
+        # 用户明确要「默认尺寸」→ 不套比例预设、也不套档位
         if self._RATIO_SKIP_RE.search(text):
-            logger.info("【宽高】 用户明确要求默认尺寸，跳过 draw_ratio 比例预设")
+            logger.info("【宽高】 用户明确要求默认尺寸，跳过比例预设与档位缩放")
             return None, None
+        # 档位词（可与比例词同时出现）
+        tier_key = _tier_key_of_text(text)
+        ratio_wh: tuple[int, int] | None = None
         presets = self._cfg("draw_ratio", []) or []
-        if not presets:
-            return None, None
         for p in presets:
             if not isinstance(p, dict):
                 continue
@@ -2027,10 +2243,11 @@ class ComfyUIDrawPlugin(Star):
                 ph = p.get("height")
                 if pw and ph:
                     try:
-                        return int(pw), int(ph)
+                        ratio_wh = (int(pw), int(ph))
                     except (TypeError, ValueError):
-                        return None, None
-        return None, None
+                        ratio_wh = None
+                break
+        return ratio_wh, tier_key
 
     def _danbooru_cfg(self) -> dict:
         return self._cfg("danbooru", {}) or {}
@@ -4951,34 +5168,56 @@ class ComfyUIDrawPlugin(Star):
             )
 
         # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入
-        # 尺寸比例（全局 draw_ratio）：用户未显式指定宽高（width/height 均为空）时，
-        # 若**用户自己说的话**里命中某个比例关键词（竖版/横版/9:16 等），则用该比例的配置尺寸，
-        # 优先于工作流默认尺寸；用户显式给了宽高则始终以用户为准。
-        # v7.0.17：匹配文本改为用户原话（此前扫 LLM 画面描述，`portrait` 等英文词会误触发）
-        _ratio_w, _ratio_h = self._resolve_ratio_size(_ratio_src, width, height)
-        w = _ratio_w if _ratio_w is not None else (width or int(wf.get("default_width", 512) or 512))
-        h = _ratio_h if _ratio_h is not None else (height or int(wf.get("default_height", 512) or 512))
-        # 诊断：宽高最终取值与来源。排查「默认宽高不是工作流配置的 / 宽高搞反」时看这行——
-        # 来源优先级：比例预设（draw_ratio 关键词命中）> 用户显式传参 > 工作流默认 > 512 兜底。
-        if _ratio_w is not None:
-            _wh_src = f"比例预设（关键词命中，覆盖工作流默认）"
+        # 尺寸决策（v7.0.18 四层顺序，见 CHANGELOG）：
+        #   ① 输入侧：用户显式传参 > 用户原话的比例词/档位词 > 工作流默认宽高
+        #   ② 禁止改变尺寸（lock_size）：非图生图时恒用工作流默认宽高（忽略①）
+        #   ③ 最高支持档位（max_size_tier，默认 2K）：超预算等比降级
+        #   ④ 最大宽/高（max_width/max_height）：最后硬裁剪
+        # v7.0.17：比例/档位关键词只扫**用户原话**（此前扫 LLM 画面描述，`portrait` 会误触发）
+        _ratio_wh, _tier_req = self._resolve_ratio_size(_ratio_src, width, height)
+        _dw = int(wf.get("default_width", 512) or 512)
+        _dh = int(wf.get("default_height", 512) or 512)
+        _max_tier = _tier_key_norm(wf.get("max_size_tier")) or _SIZE_TIER_DEFAULT
+        if _ratio_wh is not None:
+            w, h = _ratio_wh
+            _wh_src = "比例预设（用户原话命中，覆盖工作流默认）"
         elif width or height:
+            w = width or _dw
+            h = height or _dh
             _wh_src = "用户显式传参"
         else:
+            w, h = _dw, _dh
             _wh_src = "工作流默认（default_width/height，未配置则兜底 512）"
+        # 档位缩放（比例定长宽比、档位定像素量）
+        if _tier_req:
+            _w0, _h0 = w, h
+            w, h = _scale_size_to_tier(w, h, _tier_req)
+            _wh_src += f" + 档位 {_tier_label(_tier_req)}（{_w0}x{_h0}→{w}x{h}）"
+        # ② 禁止改变尺寸（lock_size）优先级最高：恒用工作流默认宽高
+        if wf.get("lock_size") and not init_images:
+            if (w, h) != (_dw, _dh):
+                logger.info(
+                    f"【宽高】 已锁定工作流默认尺寸（lock_size），忽略 {_wh_src} -> {_dw}x{_dh}"
+                )
+            w, h = _dw, _dh
+            _wh_src = "锁定工作流默认尺寸（lock_size，忽略用户/比例/档位）"
+        # ③ 最高支持档位上限
+        _cw, _ch, _capped = _cap_size_to_tier(w, h, _max_tier)
+        if _capped:
+            logger.info(
+                f"【宽高】 超出工作流「最高支持档位 {_tier_label(_max_tier)}」，等比降级: {w}x{h} -> {_cw}x{_ch}"
+            )
+            w, h = _cw, _ch
+            _wh_src += f" + 档位上限降级({_tier_label(_max_tier)})"
         logger.info(
             f"【宽高】 决策：{_wh_src} -> {w}x{h}"
-            f"（比例命中={_ratio_w},{_ratio_h}；用户传参={width},{height}；"
-            f"工作流「{wf.get('name')!r}」默认={wf.get('default_width')},{wf.get('default_height')}；"
-            f"比例匹配文本来源={'用户原话' if _ratio_src != (positive or '') else '画面描述(退回)'}"
+            f"（比例={_ratio_wh and f'{_ratio_wh[0]}x{_ratio_wh[1]}' or '无'}；"
+            f"档位词={_tier_label(_tier_req) if _tier_req else '无'}；"
+            f"用户传参={width},{height}；工作流默认={_dw},{_dh}；"
+            f"最高支持档位={_tier_label(_max_tier)}；"
+            f"匹配文本来源={'用户原话' if _ratio_src != (positive or '') else '画面描述(退回)'}"
             f"={(_ratio_src or '')[:60]!r}）"
         )
-        # v7.0.2：禁止改变默认宽高（lock_size）——开启后忽略用户传参与比例预设，
-        # 恒用工作流默认宽高（图生图尺寸由参考图决定，不适用）。
-        if wf.get("lock_size") and not init_images:
-            w = int(wf.get("default_width", 512) or 512)
-            h = int(wf.get("default_height", 512) or 512)
-            logger.info(f"【宽高】 已锁定默认宽高（lock_size），忽略用户传参/比例预设 -> {w}x{h}")
         # v7.0.2：最大宽高限制（max_width/max_height，留空=不限制）——
         # 超限按比例等比缩到限内并对齐 8 的倍数（图生图不适用）。
         if not init_images and (w and h):
@@ -9496,7 +9735,9 @@ class ComfyUIDrawPlugin(Star):
             img2img_workflow(string): 图生图工作流名称，可选。仅当用户【当前这条消息】真的附带/引用了图片时才允许使用；
                 普通文字请求绝不要传此参数（传了会被迫走图生图）。调用前先调 comfyui_workflows 确认哪个工作流「支持图生图」，再填确切名称（优先选名称含「图生图」的）；不确定或查不到就留空用默认图生图工作流，禁止凭记忆/猜测填工作流名。
             width(number): 图片宽度，0 或不填表示使用工作流默认宽度。用户明确要求宽高时传入（如"1024x1024"、"宽512"）。
-            height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入。
+                ★用户说的是「档位」时**不要**传宽高：说「1K/1.5K/2K/4K」「标清/高清/超清」时插件会按档位自动缩放
+                （按总像素预算，且受工作流「最高支持档位」限制），你传了具体像素反而会绕过档位逻辑。
+            height(number): 图片高度，0 或不填表示使用工作流默认高度。用户明确要求宽高时传入；档位词同上，不要传。
             loras(array[string]): 要启用的 LoRA 名/关键字，每项可带权重（"catgirl:0.8" = 0.8 强度）。★硬规则：用户提到某 LoRA 的名字/关键字
                 （含"用XX lora画""你没用lora"这类纠正）必须先调 comfyui_loras 拿规范名——只写进 prompt 不会加载权重，角色会画错；
                 用户要求某风格/画风/角色/人物时，即使没给名字也应先调 comfyui_loras（keyword/category，角色传「角色」）查匹配项。

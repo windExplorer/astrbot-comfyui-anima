@@ -857,7 +857,8 @@ class StandaloneWebUI:
 
         # ---------- 底模库 / 基础工作流库 / 旧版目录 / 配置项（v7.0.0+） ----------
         if (path.startswith("/basemodels") or path.startswith("/baseworkflows")
-                or path.startswith("/legacyworkflows") or path.startswith("/options/")):
+                or path.startswith("/legacyworkflows") or path.startswith("/options/")
+                or path.startswith("/size_tiers")):
             return await self._api_lora_translate(path, request)
 
         # ---------- 统计 ----------
@@ -1310,6 +1311,7 @@ class StandaloneWebUI:
             "/basemodels/save": ("basemodels_save", "POST"),
             "/basemodels/delete": ("basemodels_delete", "POST"),
             "/basemodels/reseed": ("basemodels_reseed", "POST"),
+            "/size_tiers": ("size_tiers", "GET"),
             "/options/list": ("options_list", "GET"),
             "/options/save": ("options_save", "POST"),
             "/options/delete": ("options_delete", "POST"),

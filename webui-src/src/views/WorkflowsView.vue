@@ -415,8 +415,22 @@
                   <n-button size="tiny" quaternary @click="goConfig">管理预设 ↗</n-button>
                 </n-space>
                 <span class="form-hint">
-                  这些档位仍会按「用户话里的关键词」自动触发（如用户说「竖版」）；
-                  想要永远用工作流自己的尺寸，勾下方「禁止改变默认宽高」。
+                  基准值为 **1K**（SDXL 原生尺寸，如 832×1216 = 1K 竖版 2:3）；
+                  用户话里的比例词（竖版/方形/16:9）会按此触发。
+                </span>
+              </n-form-item>
+              <n-form-item label="最高支持尺寸档位">
+                <n-space :size="6" align="center" style="width:100%">
+                  <n-select
+                    v-model:value="editForm.max_size_tier"
+                    :options="tierOptions"
+                    style="min-width:220px"
+                  />
+                  <n-button size="tiny" quaternary @click="openTierTable">档位 × 比例对照表</n-button>
+                </n-space>
+                <span class="form-hint">
+                  按总像素预算：1K≈1.0MP｜1.5K≈2.3MP｜2K≈4.2MP（默认）｜4K≈8.3MP；
+                  超出该档的尺寸会等比降级（不会放大）。想彻底锁死用「禁止改变默认宽高」。
                 </span>
               </n-form-item>
               <div class="form-grid">
@@ -620,13 +634,42 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- v7.0.18：尺寸档位 × 比例对照表 -->
+    <n-modal
+      v-model:show="tierModalShow"
+      preset="card"
+      title="尺寸档位 × 比例对照表"
+      :bordered="false"
+      :style="{ width: '820px', maxWidth: '96vw' }"
+    >
+      <div class="form-hint" style="margin-top:0">
+        档位按**总像素预算**定义（不是长边）：1K≈1.0MP（SDXL 原生）、1.5K≈2.3MP、2K≈4.2MP、4K≈8.3MP（＝UHD 像素量）。
+        比例定长宽比、档位定像素量；用户话里同时出现两者时组合生效（如「2K 竖版」）。
+        实际出图再按工作流「最高支持尺寸档位」降级、按「最大宽/高」裁剪。
+      </div>
+      <n-data-table
+        :columns="tierColumns"
+        :data="tierRows"
+        size="small"
+        :bordered="false"
+        :single-line="false"
+        :max-height="420"
+      />
+      <template #footer>
+        <n-space justify="space-between" align="center">
+          <span class="form-hint">比例基准尺寸在「配置页 → 尺寸比例预设」里维护（1K 基准）</span>
+          <n-button @click="tierModalShow = false">关闭</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton, NAlert, NTabs, NTabPane } from "naive-ui";
+import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton, NAlert, NTabs, NTabPane, NDataTable } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { parseAliases, truncate } from "@/utils/format";
@@ -834,6 +877,47 @@ async function loadServers() {
     ratioPresets.value = [];
   }
 }
+// 尺寸档位 × 比例对照表（v7.0.18）：档位倍率由后端内置，比例基准来自 draw_ratio
+const tierTable = ref<any>({ tiers: [], ratios: [] });
+const tierModalShow = ref(false);
+const FALLBACK_TIERS = [
+  { key: "1k", label: "1K", budget_mp: 1.05 },
+  { key: "1.5k", label: "1.5K", budget_mp: 2.36 },
+  { key: "2k", label: "2K", budget_mp: 4.19 },
+  { key: "4k", label: "4K", budget_mp: 8.81 },
+];
+const tierOptions = computed(() => {
+  const ts = tierTable.value?.tiers?.length ? tierTable.value.tiers : FALLBACK_TIERS;
+  return ts.map((t: any) => ({ label: `${t.label}（≈${t.budget_mp}MP）`, value: t.key }));
+});
+const tierColumns = computed(() => {
+  const ts = tierTable.value?.tiers?.length ? tierTable.value.tiers : FALLBACK_TIERS;
+  return [
+    { title: "比例", key: "name", width: 120 },
+    { title: "触发关键词", key: "keywords", ellipsis: { tooltip: true } },
+    ...ts.map((t: any) => ({
+      title: `${t.label}（≈${t.budget_mp}MP）`,
+      key: `tier_${t.key}`,
+      width: 125,
+      render: (r: any) => (r.enabled === false ? "（已停用）" : (r.sizes?.[t.key] || "—")),
+    })),
+  ];
+});
+const tierRows = computed(() =>
+  (tierTable.value?.ratios || []).map((r: any, i: number) => ({ key: i, ...r }))
+);
+async function loadTierTable() {
+  try {
+    tierTable.value = await apiGet("size_tiers");
+  } catch {
+    tierTable.value = { tiers: [], ratios: [] };
+  }
+}
+function openTierTable() {
+  if (!tierTable.value?.tiers?.length) loadTierTable();
+  tierModalShow.value = true;
+}
+
 // 尺寸比例预设（全局配置 draw_ratio）：v7.0.17 起在「尺寸」页可直接套用
 const ratioPresets = ref<any[]>([]);
 const sizePresetOptions = computed(() =>
@@ -923,6 +1007,7 @@ async function load() {
   loadBasemodelNames();
   loadServers();
   loadUpscaleOptions();
+  loadTierTable();
 }
 
 // 选定基础工作流后回填「默认宽高」（业务参数，直接取值；采样器/放大/保存等
@@ -1244,6 +1329,8 @@ function openForm(idx: number, prefill?: any) {
       : (w.default_height ?? 512),
     max_width: w.max_width || "",
     max_height: w.max_height || "",
+    // v7.0.18：最高支持尺寸档位（旧数据缺省=2k，与后端默认一致）
+    max_size_tier: w.max_size_tier || "2k",
     lock_size: !!w.lock_size,
     image_node: w.image_node || "",
     lora_anchor: w.lora_anchor || "",

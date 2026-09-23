@@ -1157,6 +1157,18 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"补齐预设失败: {e}")
 
+    async def size_tiers(self):
+        """尺寸档位 × 比例对照表（v7.0.18）：比例来自 draw_ratio（1K 基准），档位倍率内置。"""
+        try:
+            try:
+                from .main import _size_tier_table
+            except ImportError:
+                from main import _size_tier_table
+            ratios = self.plugin._cfg("draw_ratio", []) if hasattr(self.plugin, "_cfg") else []
+            return json_response(_size_tier_table(ratios))
+        except Exception as e:
+            return error_response(f"读取尺寸档位表失败: {e}")
+
     async def basemodels_list(self):
         try:
             return json_response({"items": self._basemodel_store().list_all()})
@@ -3461,6 +3473,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/basemodels/save", _h("basemodels_save"), ["POST"], "底模保存"),
         (f"{prefix}/basemodels/delete", _h("basemodels_delete"), ["POST"], "底模删除"),
         (f"{prefix}/basemodels/reseed", _h("basemodels_reseed"), ["POST"], "补齐默认底模"),
+        (f"{prefix}/size_tiers", _h("size_tiers"), ["GET"], "尺寸档位对照表"),
         (f"{prefix}/options/list", _h("options_list"), ["GET"], "配置项列表"),
         (f"{prefix}/options/save", _h("options_save"), ["POST"], "配置项保存"),
         (f"{prefix}/options/delete", _h("options_delete"), ["POST"], "配置项删除"),

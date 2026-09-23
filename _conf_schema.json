@@ -451,10 +451,17 @@
             },
             "default": 512
           },
+          "max_size_tier": {
+            "type": "string",
+            "description": "最高支持尺寸档位",
+            "hint": "本工作流最高支持到哪一档（按总像素预算）：1K≈1.0MP、1.5K≈2.3MP、2K≈4.2MP（默认）、4K≈8.3MP。用户说「2K/4K」或比例词算出的尺寸超过该档时，会按比例降级到该档内（不会放大）。想彻底锁死用下方的「禁止改变默认宽高」。档位×比例对照表见工作流编辑弹窗「尺寸」页。",
+            "default": "2k",
+            "options": ["1k", "1.5k", "2k", "4k"]
+          },
           "max_width": {
             "type": "string",
             "description": "允许的最大宽度（留空=不限制）",
-            "hint": "用户/比例/默认算出的宽度超过该值时，按比例等比缩小并对齐 8 的倍数。留空不限制。图生图不适用。",
+            "hint": "最后一道硬裁剪：无论尺寸从哪来（用户传参/比例/档位/默认），超过该值就按比例等比缩小并对齐 8 的倍数。留空不限制。图生图不适用。",
             "default": ""
           },
           "max_height": {
@@ -1093,10 +1100,16 @@
       }
     }
   },
+  "_size_presets_v2": {
+    "type": "bool",
+    "description": "内部标记：尺寸预设是否已升级到 v2（1K 基准矩阵），请勿手动修改",
+    "hint": "插件自动维护。设为 false 会让插件在下次重载时尝试把内置预设升级为 1K 基准矩阵（仅当现有预设仍是旧内置内容时）。",
+    "default": false
+  },
   "draw_ratio": {
     "type": "template_list",
-    "description": "尺寸比例预设（全局，所有工作流通用）",
-    "hint": "当用户说「竖版 / 横版 / 方形 / 9:16 / 16:9」等比例词，且没有明确指定宽高时，按命中预设的尺寸出图（优先于工作流默认尺寸，但低于用户显式给出的 --w/--h 或 LLM 的 width/height）。点击“添加”可自定义比例；修改某个预设的 keyword/width/height 即可调整。★Anima 底模要求宽高为 16 的倍数（内置值均已合规）；显存 8G 建议长边 ≤1152（内置档），长边越大越吃显存，官方上限 1536 需 16G+ 显存。",
+    "description": "尺寸比例预设（全局，1K 基准；比例词 × 档位词共同决定尺寸）",
+    "hint": "这里的 width/height 是 **1K 基准**（SDXL 原生训练尺寸，如 832×1216 就是 1K 竖版 2:3）。用户说「竖版 / 方形 / 16:9」等比例词时按命中项取基准尺寸；若同时说了档位词（2K/4K/高清/超清），再按档位倍率等比放大：1K×1、1.5K×1.5、2K×2、4K×2.9（按总像素预算，4K≈8.3MP）。实际出图还会受工作流的「最高支持尺寸档位」（默认 2K）与「最大宽/高」限制。★档位×比例对照表见工作流编辑弹窗「尺寸」页；Anima 底模要求 16 的倍数（插件会自动对齐）。",
     "templates": {
       "default": {
         "name": "尺寸比例",
@@ -1150,67 +1163,67 @@
         "enabled": true
       },
       {
-        "__template_key": "portrait_3_4",
-        "name": "竖版 3:4",
-        "keyword": "竖版,竖图,竖屏,3:4,3比4,portrait",
-        "width": 864,
-        "height": 1152,
-        "enabled": true
-      },
-      {
         "__template_key": "portrait_2_3",
         "name": "竖版 2:3",
-        "keyword": "2:3,2比3",
-        "width": 768,
-        "height": 1152,
-        "enabled": true
-      },
-      {
-        "__template_key": "portrait_9_16",
-        "name": "竖版 9:16",
-        "keyword": "9:16,9比16,手机壁纸,vertical",
-        "width": 640,
-        "height": 1152,
-        "enabled": true
-      },
-      {
-        "__template_key": "landscape_4_3",
-        "name": "横版 4:3",
-        "keyword": "横版,横图,横屏,4:3,4比3,landscape",
-        "width": 1152,
-        "height": 864,
+        "keyword": "竖版,竖图,竖屏,2:3,2比3,832x1216,portrait",
+        "width": 832,
+        "height": 1216,
         "enabled": true
       },
       {
         "__template_key": "landscape_3_2",
         "name": "横版 3:2",
-        "keyword": "3:2,3比2",
+        "keyword": "横版,横图,横屏,3:2,3比2,1216x832,landscape",
+        "width": 1216,
+        "height": 832,
+        "enabled": true
+      },
+      {
+        "__template_key": "portrait_7_9",
+        "name": "竖版 7:9",
+        "keyword": "7:9,7比9,896x1152",
+        "width": 896,
+        "height": 1152,
+        "enabled": true
+      },
+      {
+        "__template_key": "landscape_9_7",
+        "name": "横版 9:7",
+        "keyword": "9:7,9比7,1152x896",
         "width": 1152,
+        "height": 896,
+        "enabled": true
+      },
+      {
+        "__template_key": "portrait_4_7",
+        "name": "竖版 4:7",
+        "keyword": "4:7,4比7,768x1344,长图",
+        "width": 768,
+        "height": 1344,
+        "enabled": true
+      },
+      {
+        "__template_key": "landscape_7_4",
+        "name": "横版 7:4",
+        "keyword": "7:4,7比4,1344x768",
+        "width": 1344,
         "height": 768,
+        "enabled": true
+      },
+      {
+        "__template_key": "portrait_9_16",
+        "name": "竖版 9:16",
+        "keyword": "9:16,9比16,手机壁纸,640x1536,vertical",
+        "width": 640,
+        "height": 1536,
         "enabled": true
       },
       {
         "__template_key": "landscape_16_9",
         "name": "横版 16:9",
-        "keyword": "16:9,16比9,宽屏,wide",
-        "width": 1152,
+        "keyword": "16:9,16比9,宽屏,1536x640,wide",
+        "width": 1536,
         "height": 640,
-        "enabled": true
-      },
-      {
-        "__template_key": "long_1_2",
-        "name": "长图 1:2",
-        "keyword": "长图,竖长图,1:2,1比2",
-        "width": 576,
-        "height": 1152,
-        "enabled": true
-      },
-      {
-        "__template_key": "ultrawide_21_9",
-        "name": "超宽 21:9",
-        "keyword": "21:9,21比9,超宽",
-        "width": 1152,
-        "height": 496,
         "enabled": true
       }
     ]
