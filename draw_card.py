@@ -293,21 +293,54 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
         _cyw = 90 * S + (_wb[1] + _wb[3]) / 2
         d.ellipse([PAD * S, _cyw - 4.5 * S, (PAD + 9) * S, _cyw + 4.5 * S], fill=c["accent"] + (255,))
         d.text(((PAD + 17) * S, 90 * S), _wf, font=f_status, fill=c["ink"] + (255,))
-    # 右上三行：状态补充 / 设备 / 今日出图统计
+    # 右上三行：状态胶囊 / 设备 / 今日出图统计
+    # v7.4.6：状态行从裸文字升级为胶囊徽章（淡强调底 + 描边），「排队 0」也显示；
+    # 胶囊里的数字用强调色并稍大，比一整串同色文字好看。
     _right = str(info.get("right_top") or "")
     if _right:
-        _qw = d.textlength(_right, font=f_pill)
-        d.text(((W - PAD) * S - _qw, 26 * S), _right, font=f_pill, fill=c["accent"] + (255,))
+        _m = re.search(r"\d[\d.]*", _right)
+        _f_num = f(18)
+        _segs: list[tuple[str, object, tuple]] = []
+        if _m:
+            _pre, _num, _post = _right[:_m.start()], _m.group(0), _right[_m.end():]
+            if _pre:
+                _segs.append((_pre, f_pill, c["sub"]))
+            _segs.append((_num, _f_num, c["accent"]))
+            if _post:
+                _segs.append((_post, f_pill, c["sub"]))
+        else:
+            _segs.append((_right, f_pill, c["accent"]))
+        _pw = sum(d.textlength(_t, font=_ft) for _t, _ft, _ in _segs) + 28 * S
+        _ph = 32 * S
+        _px = (W - PAD) * S - _pw
+        _py = 20 * S
+        # 半透明底必须走「独立图层 + alpha_composite」：ImageDraw 直接往不透明底图上
+        # 写半透明像素是不混合的（v7.2.0 踩过的坑），深色客户端下会变成一坨深色。
+        _hl = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(_hl).rounded_rectangle(
+            [_px, _py, _px + _pw, _py + _ph], radius=16 * S,
+            fill=c["accent"] + (30,), outline=c["accent"] + (100,), width=S,
+        )
+        img.alpha_composite(_hl)
+        _cx = _px + 14 * S
+        for _t, _ft, _col in _segs:
+            _b = _ink(_t, _ft)
+            d.text((_cx - _b[0], _py + _ph / 2 - (_b[1] + _b[3]) / 2), _t,
+                   font=_ft, fill=_col + (255,))
+            _cx += d.textlength(_t, font=_ft)
+        _ry_dev, _ry_stats = 58, 80
+    else:
+        _ry_dev, _ry_stats = 26, 50
     _dev = str(info.get("device") or "")
     if _dev:
         _dw = d.textlength(_dev, font=f_time)
-        d.text(((W - PAD) * S - _dw, 50 * S), _dev, font=f_time, fill=c["sub"] + (255,))
+        d.text(((W - PAD) * S - _dw, _ry_dev * S), _dev, font=f_time, fill=c["sub"] + (255,))
     _today = info.get("today")
     if _today is not None and cfg.get("today_count", True):
         _s1, _s3, _num = "今日已出图 ", " 张", str(int(_today))
         _tw = (d.textlength(_s1, font=f_time) + d.textlength(_num, font=f_status)
                + d.textlength(_s3, font=f_time))
-        _sx, _sy = (W - PAD) * S - _tw, 74 * S
+        _sx, _sy = (W - PAD) * S - _tw, _ry_stats * S
         d.text((_sx, _sy), _s1, font=f_time, fill=c["sub"] + (255,))
         _sx += d.textlength(_s1, font=f_time)
         d.text((_sx, _sy - 2 * S), _num, font=f_status, fill=c["accent"] + (255,))
@@ -330,8 +363,13 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     if reason:
         _label("失败原因", body_top)
         _py = (body_top + 26) * S
-        d.rounded_rectangle([PAD * S, _py, (W - PAD) * S, _py + reason_h * S], radius=10 * S,
-                            fill=c["accent"] + (26,), outline=c["accent"] + (80,), width=S)
+        # 同上：半透明底走独立图层（浅色/深色客户端观感一致）
+        _pl = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(_pl).rounded_rectangle(
+            [PAD * S, _py, (W - PAD) * S, _py + reason_h * S], radius=10 * S,
+            fill=c["accent"] + (26,), outline=c["accent"] + (80,), width=S,
+        )
+        img.alpha_composite(_pl)
         for _i, _ln in enumerate(reason_lines or [reason[:42]]):
             d.text(((PAD + 14) * S, _py + (7 + _i * 20) * S), _ln,
                    font=f_chip, fill=c["accent"] + (255,))

@@ -6373,8 +6373,8 @@ class ComfyUIDrawPlugin(Star):
                         "kicker": self._card_kicker(wf),
                         "workflow": (f"{wf.get('name') or '(未命名)'} · "
                                      f"{'图生图' if is_img2img else '文生图'}"),
-                        # 无排队时不写「排队 0」（没什么信息量）
-                        "right_top": f"排队 {ahead}" if ahead > 0 else "",
+                        # v7.4.6：「排队 0」也显示（做成胶囊徽章，无排队=空闲一目了然）
+                        "right_top": f"排队 {ahead}",
                         "device": self._card_device(srv_key),
                         "today": self._card_today(),
                         "loras": _card_loras,
