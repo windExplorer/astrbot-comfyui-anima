@@ -2,13 +2,20 @@
   <div class="workflows-view">
     <div class="view-head">
       <div>
-        <h2>工作流</h2>
-        <p>卡片式查看工作流：名称、别名、底模、服务器、是否 Anima；可编辑、查看封面与 LoRA 详情。</p>
+        <h2>{{ legacy ? "旧版工作流" : "工作流" }}</h2>
+        <p v-if="legacy">
+          旧版工作流（未引用基础工作流）：后续不再变动，仅可停用/删除；请逐步迁移到新版工作流。
+        </p>
+        <p v-else>
+          新版工作流：选择基础工作流后节点自动定位（无需手填节点 ID），并按需拨动语义开关
+          （采样器 / 放大 / 清理显存 / 保存格式 / LLM 说明）。旧版条目在「旧版工作流」页。
+        </p>
       </div>
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
-          <n-button type="primary" @click="addWorkflow">＋ 新增工作流</n-button>
+          <n-button v-if="!legacy" type="primary" @click="addWorkflow">＋ 新增工作流</n-button>
+          <n-button v-else @click="gotoNew">去新版新建</n-button>
         </div>
       </Teleport>
     </div>
@@ -16,7 +23,7 @@
     <!-- 星标筛选 + 排序（v6.2.0）：工作流多了以后按需挑常用的 -->
     <div class="filter-bar">
       <n-checkbox v-model:checked="starOnly" size="small">★ 仅看星标</n-checkbox>
-      <span class="filter-hint">星标 {{ starredCount }} / {{ workflows.length }}</span>
+      <span class="filter-hint">星标 {{ starredCount }} / {{ scopedWorkflows.length }}</span>
       <n-select
         v-model:value="sortField"
         size="small"
@@ -43,7 +50,7 @@
         placeholder="搜索名称 / 别名 / 底模 / 服务器 / 工作流文件…"
       />
       <span v-if="searchText.trim()" class="filter-hint">
-        匹配 {{ filteredWorkflows.length }} / {{ workflows.length }} 条
+        匹配 {{ filteredWorkflows.length }} / {{ scopedWorkflows.length }} 条
       </span>
     </div>
 
@@ -51,7 +58,9 @@
     <n-spin :show="loading">
       <n-empty
         v-if="!loading && !filteredWorkflows.length"
-        :description="searchText.trim() ? `没有匹配「${searchText.trim()}」的工作流。` : '没有符合筛选条件的工作流。'"
+        :description="searchText.trim()
+          ? `没有匹配「${searchText.trim()}」的工作流。`
+          : (legacy ? '没有旧版工作流（都已迁移到新版）。' : '还没有新版工作流：点「＋ 新增工作流」并选择基础工作流即可。')"
         style="padding:60px"
       />
       <div v-else class="card-grid">
@@ -119,6 +128,10 @@
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="wf-modal" :bordered="false">
       <n-form label-placement="top" :label-width="0" class="edit-form">
+        <n-alert v-if="legacy" type="warning" style="margin-bottom: 10px">
+          旧版工作流（未引用基础工作流）：仅可调整基础字段，节点/采样器等实现细节已收敛到新版。
+          建议在「工作流」页用基础工作流重建后再删除本条。
+        </n-alert>
         <div class="form-grid">
           <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
           <n-form-item label="底模">
@@ -227,21 +240,7 @@
           </n-form-item>
         </template>
 
-        <n-divider style="margin:8px 0">── 节点配置 ──</n-divider>
-        <div class="form-grid">
-          <n-form-item label="正提示词节点"><n-input v-model:value="editForm.positive_node" placeholder="如 6" /></n-form-item>
-          <n-form-item label="负提示词节点"><n-input v-model:value="editForm.negative_node" placeholder="如 7" /></n-form-item>
-          <n-form-item label="正向输入框名"><n-input v-model:value="editForm.positive_field" placeholder="留空默认 text；Qwen 系填 prompt" /></n-form-item>
-          <n-form-item label="负向输入框名"><n-input v-model:value="editForm.negative_field" placeholder="留空默认 text；Qwen 系填 negative_prompt" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="分辨率节点"><n-input v-model:value="editForm.resolution_node" placeholder="EmptyLatentImage，可留空自动探测" /></n-form-item>
-          <n-form-item label="输出节点"><n-input v-model:value="editForm.output_node" placeholder="出图节点（可选）" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="宽度字段"><n-input v-model:value="editForm.resolution_width_field" placeholder="width" /></n-form-item>
-          <n-form-item label="高度字段"><n-input v-model:value="editForm.resolution_height_field" placeholder="height" /></n-form-item>
-        </div>
+        <n-divider style="margin:8px 0">── 宽高 ──</n-divider>
         <div class="form-grid">
           <n-form-item label="默认宽度"><n-input-number v-model:value="editForm.default_width" style="width:100%" /></n-form-item>
           <n-form-item label="默认高度"><n-input-number v-model:value="editForm.default_height" style="width:100%" /></n-form-item>
@@ -258,6 +257,23 @@
           <n-switch v-model:value="editForm.lock_size" />
           <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
         </n-form-item>
+
+        <template v-if="legacy">
+        <n-divider style="margin:8px 0">── 节点配置（旧版） ──</n-divider>
+        <div class="form-grid">
+          <n-form-item label="正提示词节点"><n-input v-model:value="editForm.positive_node" placeholder="如 6" /></n-form-item>
+          <n-form-item label="负提示词节点"><n-input v-model:value="editForm.negative_node" placeholder="如 7" /></n-form-item>
+          <n-form-item label="正向输入框名"><n-input v-model:value="editForm.positive_field" placeholder="留空默认 text；Qwen 系填 prompt" /></n-form-item>
+          <n-form-item label="负向输入框名"><n-input v-model:value="editForm.negative_field" placeholder="留空默认 text；Qwen 系填 negative_prompt" /></n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="分辨率节点"><n-input v-model:value="editForm.resolution_node" placeholder="EmptyLatentImage，可留空自动探测" /></n-form-item>
+          <n-form-item label="输出节点"><n-input v-model:value="editForm.output_node" placeholder="出图节点（可选）" /></n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="宽度字段"><n-input v-model:value="editForm.resolution_width_field" placeholder="width" /></n-form-item>
+          <n-form-item label="高度字段"><n-input v-model:value="editForm.resolution_height_field" placeholder="height" /></n-form-item>
+        </div>
         <n-form-item label="宽高注入范围">
           <n-space vertical :size="4" style="width:100%">
             <n-select v-model:value="editForm.resolution_mode" :options="resolutionModeOptions" style="width:100%" />
@@ -303,6 +319,7 @@
           </n-space>
         </n-form-item>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
+        </template>
         <n-form-item label="默认 LoRA">
           <div class="lora-list">
             <div v-for="(row, ri) in (editForm.loraList || [])" :key="ri" class="lora-row">
@@ -349,7 +366,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton } from "naive-ui";
+import { useRouter } from "vue-router";
+import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton, NAlert } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { parseAliases, truncate } from "@/utils/format";
@@ -363,6 +381,12 @@ import { useCover } from "@/composables/useCover";
 const message = useMessage();
 const dialog = useDialog();
 const { isMobile } = useDevice();
+// v7.0.4：本组件同时服务两个页面——新版（默认，引用基础工作流）与旧版（未引用，只读维护）
+const props = withDefaults(defineProps<{ legacy?: boolean }>(), { legacy: false });
+const legacy = computed(() => !!props.legacy);
+const router = useRouter();
+const isLegacyEntry = (w: any) => !String(w?.base_id || "").trim();
+function gotoNew() { router.push({ name: "workflows" }); }
 const loading = ref(false);
 const saving = ref(false);
 const workflows = ref<any[]>([]);
@@ -520,7 +544,9 @@ const sortOrderOptions = [
   { label: "倒序（新→旧）", value: "desc" },
   { label: "正序（旧→新）", value: "asc" },
 ];
-const starredCount = computed(() => workflows.value.filter((w) => w.starred === true).length);
+const starredCount = computed(
+  () => scopedWorkflows.value.filter((w) => w.starred === true).length
+);
 
 function resetSort() {
   sortField.value = "created";
@@ -541,11 +567,18 @@ async function toggleStar(idx: number) {
   }
 }
 
+/** 本页可见的工作流（新版页看 base_id 非空的，旧版页看其余的） */
+const scopedWorkflows = computed(() =>
+  workflows.value.filter((w) => (legacy.value ? isLegacyEntry(w) : !isLegacyEntry(w)))
+);
+
 const filteredWorkflows = computed(() => {
   const kw = searchText.value.trim().toLowerCase();
   const rows = workflows.value
     .map((w, i) => ({ w, i }))
     .filter(({ w }) => {
+      // 页面范围（新版 / 旧版）
+      if (legacy.value ? !isLegacyEntry(w) : isLegacyEntry(w)) return false;
       // 星标筛选
       if (starOnly.value && w.starred !== true) return false;
       // 关键词搜索
@@ -739,7 +772,14 @@ function openForm(idx: number, prefill?: any) {
   editShow.value = true;
 }
 
-function addWorkflow() { openForm(-1); }
+function addWorkflow() {
+  if (legacy.value) {
+    message.warning("旧版页面不支持新增，请到「工作流」页新建");
+    gotoNew();
+    return;
+  }
+  openForm(-1);
+}
 function editWorkflow(idx: number) { openForm(idx); }
 function copyWorkflow(idx: number) {
   const src = workflows.value[idx];
@@ -751,6 +791,11 @@ function copyWorkflow(idx: number) {
 
 async function saveEdit() {
   if (!editForm.name || !editForm.name.trim()) { message.warning("名称必填"); return; }
+  // 新版工作流必须引用基础工作流（节点自动定位的前提）
+  if (!legacy.value && !String(editForm.base_id || "").trim()) {
+    message.warning("请选择「基础工作流」——新版工作流的节点由它自动定位");
+    return;
+  }
   editForm.name = editForm.name.trim();
   saving.value = true;
   try {
