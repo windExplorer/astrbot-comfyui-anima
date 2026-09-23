@@ -1435,6 +1435,136 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"重解析失败: {e}")
 
+    async def baseworkflows_nodes(self):
+        """基础工作流详情：节点清单（表格用）+ 文件/时间等元信息。query: id。"""
+        try:
+            wf_id = (request.query.get("id", "") or "").strip()
+            if not wf_id:
+                return error_response("缺少 id")
+            rec = self._workflow_store().get(int(wf_id), with_json=True)
+            if not rec:
+                return error_response("记录不存在", status_code=404)
+            try:
+                from .workflow_parser import list_nodes
+            except ImportError:
+                from workflow_parser import list_nodes
+            try:
+                prompt = json.loads(rec.get("wf_json") or "{}")
+            except Exception:
+                prompt = {}
+            store = self._workflow_store()
+            uploads = getattr(store, "uploads_dir", None)
+            return json_response({
+                "nodes": list_nodes(prompt),
+                "meta": {
+                    "id": rec.get("id"),
+                    "name": rec.get("name"),
+                    "file_name": rec.get("file_name"),
+                    "stored_file": rec.get("stored_file"),
+                    "file_path": str(Path(uploads) / (rec.get("stored_file") or "")) if uploads else "",
+                    "dir_path": str(uploads or ""),
+                    "sha256": rec.get("sha256"),
+                    "parse_ok": bool(rec.get("parse_ok")),
+                    "parse_msg": rec.get("parse_msg") or "",
+                    "basemodel_id": rec.get("basemodel_id") or 0,
+                    "civitai_url": rec.get("civitai_url") or "",
+                    "created_at": rec.get("created_at") or 0,
+                    "updated_at": rec.get("updated_at") or 0,
+                    "node_count": len(prompt) if isinstance(prompt, dict) else 0,
+                },
+            })
+        except Exception as e:
+            return error_response(f"读取节点清单失败: {e}")
+
+    # ------------------ 旧版 workflow 目录（v7.0.8：列表 + 一键解析入库） ------------------
+
+    def _workflow_dir(self) -> Path:
+        d = getattr(self.plugin, "workflow_dir", None)
+        if d is None:
+            d = (getattr(self.plugin, "data_dir", None) or Path.cwd()) / "workflow"
+        d = Path(d)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def legacyworkflows_list(self):
+        """列出旧版 workflow 目录里的 JSON 文件，并标注是否已入库（按文件名匹配）。"""
+        try:
+            wdir = self._workflow_dir()
+            imported = {
+                (r.get("file_name") or "").strip().lower(): r
+                for r in self._workflow_store().list_all()
+            }
+            items = []
+            for p in sorted(wdir.glob("*.json")):
+                try:
+                    st = p.stat()
+                except Exception:
+                    continue
+                rec = imported.get(p.name.lower())
+                items.append({
+                    "file": p.name,
+                    "size": st.st_size,
+                    "mtime": st.st_mtime,
+                    "imported": bool(rec),
+                    "imported_id": (rec or {}).get("id"),
+                    "imported_name": (rec or {}).get("name") or "",
+                })
+            return json_response({"dir": str(wdir), "items": items})
+        except Exception as e:
+            return error_response(f"读取旧版工作流目录失败: {e}")
+
+    async def legacyworkflows_import(self):
+        """把旧版 workflow 目录中的文件解析入库（原始文件同时复制到 workflow_uploads/）。
+
+        body: {"file": "xxx.json"} 单个；或 {"all": true} 全部未入库的。
+        """
+        try:
+            body = await request.json(default={}) or {}
+            wdir = self._workflow_dir()
+            store = self._workflow_store()
+            if body.get("all"):
+                names = [p.name for p in sorted(wdir.glob("*.json"))]
+            else:
+                one = (body.get("file") or "").strip()
+                if not one:
+                    return error_response("缺少 file 参数")
+                if "/" in one or "\\" in one or ".." in one:
+                    return error_response("非法文件名")
+                names = [one]
+            done: list[dict] = []
+            for name in names:
+                path = wdir / name
+                if not path.is_file():
+                    done.append({"file": name, "ok": False, "msg": "文件不存在"})
+                    continue
+                try:
+                    content = await asyncio.to_thread(path.read_text, "utf-8")
+                except Exception as e:
+                    done.append({"file": name, "ok": False, "msg": f"读取失败: {e}"})
+                    continue
+                wf_id, roles, err = store.import_json(
+                    Path(name).stem, content, original_filename=name
+                )
+                if err:
+                    done.append({"file": name, "ok": False, "msg": err})
+                    continue
+                # 顺带按匹配关键字关联底模
+                try:
+                    _bm = self._basemodel_store().match_model(
+                        (roles or {}).get("model_file") or "",
+                        (roles or {}).get("model_class") or "",
+                    )
+                    if _bm:
+                        store.update_meta(wf_id, {"basemodel_id": _bm["id"]})
+                except Exception:
+                    pass
+                done.append({"file": name, "ok": True, "id": wf_id})
+            ok_n = sum(1 for d in done if d.get("ok"))
+            return json_response({"results": done, "ok_count": ok_n,
+                                  "msg": f"成功 {ok_n} / {len(done)}"})
+        except Exception as e:
+            return error_response(f"导入失败: {e}")
+
     async def baseworkflows_json(self):
         """读取基础工作流原始 JSON 文本（前端预览/下载）。query: id。"""
         try:
@@ -3283,6 +3413,9 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/baseworkflows/delete", _h("baseworkflows_delete"), ["POST"], "基础工作流删除"),
         (f"{prefix}/baseworkflows/reparse", _h("baseworkflows_reparse"), ["POST"], "基础工作流重解析"),
         (f"{prefix}/baseworkflows/json", _h("baseworkflows_json"), ["GET"], "基础工作流原始 JSON"),
+        (f"{prefix}/baseworkflows/nodes", _h("baseworkflows_nodes"), ["GET"], "基础工作流节点清单/详情"),
+        (f"{prefix}/legacyworkflows", _h("legacyworkflows_list"), ["GET"], "旧版工作流目录文件列表"),
+        (f"{prefix}/legacyworkflows/import", _h("legacyworkflows_import"), ["POST"], "旧版工作流目录解析入库"),
         (f"{prefix}/baseworkflows/fetch", _h("baseworkflows_fetch"), ["POST"], "基础工作流 C站抓取"),
         (f"{prefix}/baseworkflows/meta", _h("baseworkflows_meta"), ["POST"], "基础工作流元数据更新"),
         (f"{prefix}/translate/test", _h("translate_test"), ["POST"], "翻译调试（测试三种翻译模式）"),

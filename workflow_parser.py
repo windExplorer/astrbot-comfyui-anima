@@ -146,6 +146,39 @@ def _walk_up_model(prompt: dict, start: str) -> tuple[str | None, list[str]]:
     return None, loras
 
 
+def list_nodes(prompt: dict) -> list[dict]:
+    """把工作流摊平成节点清单（供「详情」表格展示）。
+
+    返回 [{id, title, class_type, values}]：
+    - title：节点自带的 _meta.title（ComfyUI 界面上的中文名），无则空；
+    - values：输入项的可读概览（连线写作 `→ 节点ID.slot`，字面量截断到 60 字）。
+    """
+    out: list[dict] = []
+    if not isinstance(prompt, dict):
+        return out
+    for nid, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs") or {}
+        parts: list[str] = []
+        for k, v in inputs.items():
+            l = _link(v)
+            if l:
+                parts.append(f"{k} → {l[0]}[{l[1]}]")
+            else:
+                sv = str(v)
+                if len(sv) > 60:
+                    sv = sv[:60] + "…"
+                parts.append(f"{k} = {sv}")
+        out.append({
+            "id": str(nid),
+            "title": ((node.get("_meta") or {}).get("title") or ""),
+            "class_type": node.get("class_type") or "",
+            "values": "；".join(parts),
+        })
+    return out
+
+
 def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     """解析工作流。返回 (roles, errors)：errors 非空即拒绝入库。"""
     errors: list[str] = []

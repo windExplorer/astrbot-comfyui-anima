@@ -855,8 +855,9 @@ class StandaloneWebUI:
         if path.startswith("/lora/") or path == "/translate/test":
             return await self._api_lora_translate(path, request)
 
-        # ---------- 底模库 / 基础工作流库（v7.0.0） ----------
-        if path.startswith("/basemodels") or path.startswith("/baseworkflows"):
+        # ---------- 底模库 / 基础工作流库 / 旧版目录（v7.0.0+） ----------
+        if (path.startswith("/basemodels") or path.startswith("/baseworkflows")
+                or path.startswith("/legacyworkflows")):
             return await self._api_lora_translate(path, request)
 
         # ---------- 统计 ----------
@@ -1317,6 +1318,9 @@ class StandaloneWebUI:
             "/baseworkflows/delete": ("baseworkflows_delete", "POST"),
             "/baseworkflows/reparse": ("baseworkflows_reparse", "POST"),
             "/baseworkflows/json": ("baseworkflows_json", "GET"),
+            "/baseworkflows/nodes": ("baseworkflows_nodes", "GET"),
+            "/legacyworkflows": ("legacyworkflows_list", "GET"),
+            "/legacyworkflows/import": ("legacyworkflows_import", "POST"),
             "/baseworkflows/fetch": ("baseworkflows_fetch", "POST"),
             "/baseworkflows/meta": ("baseworkflows_meta", "POST"),
         }.get(path)

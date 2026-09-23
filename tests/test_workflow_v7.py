@@ -248,6 +248,21 @@ def test_basemodel_defaults():
     print("== 9. 默认底模播种/补齐 OK")
 
 
+def test_list_nodes():
+    """节点清单（详情表格数据源，v7.0.8）。"""
+    from workflow_parser import list_nodes
+
+    rows = list_nodes(WF_STD)
+    assert len(rows) == len(WF_STD)
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["6"]["class_type"] == "KSampler"
+    assert "model → 13[0]" in by_id["6"]["values"]
+    assert "positive → 3[0]" in by_id["6"]["values"]
+    assert by_id["12"]["values"].startswith("model_name = 4x-ClearRealityV1.pth")
+    assert list_nodes({}) == []
+    print("== 10. 节点清单（详情表格） OK")
+
+
 def test_bypass_alpha_chain():
     """alpha 工作流（Split→放大→Join→清理→保存）：绕过须整链删除并接回 VAEDecode。"""
     p = json.loads(json.dumps(WF_STD))
@@ -282,6 +297,7 @@ if __name__ == "__main__":
     test_package_import()
     test_basemodel_match()
     test_basemodel_defaults()
+    test_list_nodes()
     test_bypass_alpha_chain()
     print("\n基础工作流体系测试全部通过")
 

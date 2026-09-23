@@ -409,6 +409,8 @@ body {
 .wf-modal { width: 760px; max-width: 92vw; }
 .bm-modal { width: 640px; max-width: 92vw; }
 .bw-modal { width: 680px; max-width: 92vw; }
+/* 详情/旧目录导入这类表格弹窗需要更宽 */
+.bw-modal.wide { width: 920px; }
 
 /* 弹窗内表单过高时内部滚动（同样因为 teleport，scoped 样式不生效，统一在此兜底） */
 .lora-modal .edit-form,
@@ -425,7 +427,8 @@ body {
   .lora-modal.narrow,
   .wf-modal,
   .bm-modal,
-  .bw-modal { width: 92vw; }
+  .bw-modal,
+  .bw-modal.wide { width: 92vw; }
   .lora-modal .edit-form,
   .wf-modal .edit-form,
   .bm-modal .edit-form,
