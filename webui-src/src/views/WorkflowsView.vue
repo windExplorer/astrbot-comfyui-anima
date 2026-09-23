@@ -342,7 +342,13 @@
 
         <!-- ===== 新版工作流：按配置类型分页 ===== -->
         <template v-else-if="hasBase">
-          <n-tabs v-model:value="formTab" type="line" animated pane-style="padding-top:12px">
+          <!-- v7.0.14：页签内容区固定高度（内部滚动），避免切换页签时弹窗高度跳动 -->
+          <n-tabs
+            v-model:value="formTab"
+            type="line"
+            animated
+            pane-style="padding-top:12px; padding-right:8px; height:clamp(320px, 50vh, 560px); overflow-y:auto; overflow-x:hidden"
+          >
 
             <n-tab-pane name="basic" tab="基础信息">
               <div class="form-grid">
