@@ -70,7 +70,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, h } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch, h } from "vue";
+import { useRoute } from "vue-router";
 import { useMessage, NButton } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import ConfigSection from "@/components/ConfigSection.vue";
@@ -200,6 +201,24 @@ async function runTranslate() {
 
 useRefresh(load);
 onMounted(load);
+
+// v7.0.19：支持从其它页面深链到指定配置分组（?group=尺寸比例预设），
+// 打开后自动展开该分组并滚动到它——工作流「尺寸」页的「编辑预设 ↗」用的就是这个。
+const route = useRoute();
+async function applyDeepLink() {
+  const want = String(route.query.group || "").trim();
+  if (!want) return;
+  const idx = groups.value.findIndex((g: any) => g.name === want);
+  if (idx < 0) return;          // 分组不存在（配置项被清空等）→ 不折腾
+  expanded.value = Array.from(new Set([...expanded.value, want]));
+  await nextTick();
+  setTimeout(() => {
+    const nodes = document.querySelectorAll(".cfg-collapse .n-collapse-item");
+    nodes[idx]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 120);
+}
+watch(() => schema.value, () => { if (schema.value) applyDeepLink(); });
+watch(() => route.query.group, () => applyDeepLink());
 </script>
 
 <style scoped>

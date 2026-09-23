@@ -412,7 +412,7 @@
                     style="min-width:260px; flex:1"
                     @update:value="applySizePreset"
                   />
-                  <n-button size="tiny" quaternary @click="goConfig">管理预设 ↗</n-button>
+                  <n-button size="tiny" quaternary @click="goConfig">编辑预设（配置页）↗</n-button>
                 </n-space>
                 <span class="form-hint">
                   基准值为 **1K**（SDXL 原生尺寸，如 832×1216 = 1K 竖版 2:3）；
@@ -658,8 +658,14 @@
       />
       <template #footer>
         <n-space justify="space-between" align="center">
-          <span class="form-hint">比例基准尺寸在「配置页 → 尺寸比例预设」里维护（1K 基准）</span>
-          <n-button @click="tierModalShow = false">关闭</n-button>
+          <span class="form-hint">
+            比例基准尺寸在「配置页 → 尺寸比例预设」里维护（1K 基准）；
+            这里点「编辑预设」会直接展开并定位到那个分组。
+          </span>
+          <n-space :size="8">
+            <n-button size="small" @click="goConfig">编辑预设（配置页）↗</n-button>
+            <n-button @click="tierModalShow = false">关闭</n-button>
+          </n-space>
         </n-space>
       </template>
     </n-modal>
@@ -936,8 +942,10 @@ function applySizePreset(v: string | null) {
   markSizeTouched();
   message.success(`已套用尺寸预设 ${w}×${h}`);
 }
+/** 跳配置页并**自动展开/定位**到「尺寸比例预设」分组（v7.0.19，别再让用户自己找） */
 function goConfig() {
-  router.push("/config");
+  tierModalShow.value = false;
+  router.push({ path: "/config", query: { group: "尺寸比例预设" } });
 }
 const builtinLoras = computed<any[]>(() => selectedBase.value?.roles?.builtin_loras || []);
 const saveFormatOptions = [
