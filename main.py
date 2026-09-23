@@ -4872,6 +4872,32 @@ class ComfyUIDrawPlugin(Star):
             f"（比例命中={_ratio_w},{_ratio_h}；用户传参={width},{height}；"
             f"工作流「{wf.get('name')!r}」默认={wf.get('default_width')},{wf.get('default_height')}）"
         )
+        # v7.0.2：禁止改变默认宽高（lock_size）——开启后忽略用户传参与比例预设，
+        # 恒用工作流默认宽高（图生图尺寸由参考图决定，不适用）。
+        if wf.get("lock_size") and not init_images:
+            w = int(wf.get("default_width", 512) or 512)
+            h = int(wf.get("default_height", 512) or 512)
+            logger.info(f"【宽高】 已锁定默认宽高（lock_size），忽略用户传参/比例预设 -> {w}x{h}")
+        # v7.0.2：最大宽高限制（max_width/max_height，留空=不限制）——
+        # 超限按比例等比缩到限内并对齐 8 的倍数（图生图不适用）。
+        if not init_images and (w and h):
+            def _wh_limit(key: str):
+                v = str(wf.get(key) or "").strip()
+                return int(v) if v.isdigit() and int(v) > 0 else None
+            _maxw, _maxh = _wh_limit("max_width"), _wh_limit("max_height")
+            if _maxw or _maxh:
+                _factor = min(
+                    (_maxw / w) if _maxw else 1.0,
+                    (_maxh / h) if _maxh else 1.0,
+                    1.0,
+                )
+                if _factor < 1.0:
+                    _nw = max(64, int(round(w * _factor / 8)) * 8)
+                    _nh = max(64, int(round(h * _factor / 8)) * 8)
+                    logger.info(
+                        f"【宽高】 超出最大限制（max={_maxw}x{_maxh}），按比例缩放: {w}x{h} -> {_nw}x{_nh}"
+                    )
+                    w, h = _nw, _nh
         # resolution_mode 决定宽高的注入范围（默认 single，与旧行为逐字一致）：
         #   single：仅注入 resolution_node；留空则自动探测「第一个」EmptyLatentImage
         #   all   ：注入「所有」EmptyLatentImage —— 多 latent 串联工作流前后各有一个

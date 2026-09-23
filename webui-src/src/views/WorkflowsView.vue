@@ -246,6 +246,18 @@
           <n-form-item label="默认宽度"><n-input-number v-model:value="editForm.default_width" style="width:100%" /></n-form-item>
           <n-form-item label="默认高度"><n-input-number v-model:value="editForm.default_height" style="width:100%" /></n-form-item>
         </div>
+        <div class="form-grid">
+          <n-form-item label="允许的最大宽度（留空=不限制）">
+            <n-input v-model:value="editForm.max_width" placeholder="如 1536；超限按比例缩小" />
+          </n-form-item>
+          <n-form-item label="允许的最大高度（留空=不限制）">
+            <n-input v-model:value="editForm.max_height" placeholder="如 2048；超限按比例缩小" />
+          </n-form-item>
+        </div>
+        <n-form-item label="禁止改变默认宽高">
+          <n-switch v-model:value="editForm.lock_size" />
+          <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
+        </n-form-item>
         <n-form-item label="宽高注入范围">
           <n-space vertical :size="4" style="width:100%">
             <n-select v-model:value="editForm.resolution_mode" :options="resolutionModeOptions" style="width:100%" />
@@ -702,6 +714,9 @@ function openForm(idx: number, prefill?: any) {
     resolution_mode: w.resolution_mode || "single",
     default_width: w.default_width ?? 512,
     default_height: w.default_height ?? 512,
+    max_width: w.max_width || "",
+    max_height: w.max_height || "",
+    lock_size: !!w.lock_size,
     image_node: w.image_node || "",
     lora_anchor: w.lora_anchor || "",
     lora_clip: w.lora_clip || "",

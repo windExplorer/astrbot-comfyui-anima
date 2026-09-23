@@ -445,6 +445,24 @@
             },
             "default": 512
           },
+          "max_width": {
+            "type": "string",
+            "description": "允许的最大宽度（留空=不限制）",
+            "hint": "用户/比例/默认算出的宽度超过该值时，按比例等比缩小并对齐 8 的倍数。留空不限制。图生图不适用。",
+            "default": ""
+          },
+          "max_height": {
+            "type": "string",
+            "description": "允许的最大高度（留空=不限制）",
+            "hint": "同最大宽度，限制高度方向。留空不限制。图生图不适用。",
+            "default": ""
+          },
+          "lock_size": {
+            "type": "bool",
+            "description": "禁止改变默认宽高",
+            "hint": "开启后忽略用户传参与比例关键词，恒用工作流默认宽高。默认关。图生图不适用。",
+            "default": false
+          },
           "default_steps": {
             "type": "int",
             "description": "默认采样步数（steps）",
