@@ -1243,14 +1243,21 @@
   },
   "pre_draw_card": {
     "type": "object",
-    "description": "出图信息卡片（生图前发送）",
-    "hint": "提交给 ComfyUI **之前**发一张渐变信息卡：服务器/设备、队列、工作流、LoRA、尺寸、放大倍率、步数/CFG/采样器/调度器/噪点/种子。队列是「提交那一刻前面还有几个任务」的快照。字体用插件目录 fonts/ 下的霞鹜文楷（不入 zip，缺失时自动回退系统字体）。渲染或发送失败只记日志，不影响出图。",
+    "description": "出图卡片（提交前 / 出图完成 / 绘制失败）",
+    "hint": "同一套卡片覆盖三个时机：提交前（排队中·绘制中）、出图完成（结果信息）、绘制失败（失败原因）。卡片内容：顶部底模 / 状态 / 工作流（或平台）/ 队列·设备·今日出图数，中部失败原因·LoRA·参数·提示词，底部时间与品牌。9 套主题可选，绘制失败自动切朱红。字体随插件打包（ResourceHanRoundedCN），缺失自动回退系统字体。渲染或发送失败只记日志，不影响出图（失败卡会自动退化成原来的文字提示）。",
     "items": {
       "enabled": {
         "type": "bool",
-        "description": "启用信息卡片",
-        "hint": "默认开启。关闭后不在出图前发卡片。",
+        "description": "启用出图卡片",
+        "hint": "总开关。关闭后三个时机都不发卡片（绘制失败仍会退回文字提示，不会让用户收不到反馈）。",
         "default": true
+      },
+      "theme": {
+        "type": "string",
+        "description": "卡片主题",
+        "hint": "teal 青碧（默认）/ night 夜幕（深色）/ graphite 石墨灰 / indigo 靛蓝 / violet 紫罗兰 / amber 琥珀橙 / sunset 落日橙 / rose 樱粉 / crimson 朱红。绘制失败、被拦截时自动用朱红，不受此项影响。",
+        "default": "teal",
+        "options": ["teal", "night", "graphite", "indigo", "violet", "amber", "sunset", "rose", "crimson"]
       },
       "scope": {
         "type": "string",
@@ -1259,41 +1266,41 @@
         "default": "group",
         "options": ["group", "all"]
       },
-      "title": {
-        "type": "string",
-        "description": "卡片标题",
-        "hint": "卡片左上角标题文字。",
-        "default": "出图任务"
-      },
       "show_prompt": {
         "type": "bool",
         "description": "卡片里显示提示词",
-        "hint": "开启后卡片底部附一行正向提示词（截断 160 字）。默认关闭（群里有时不方便展示）。",
-        "default": false
+        "hint": "开启后卡片底部展示正向提示词（最多两行，超出省略号）。默认开启。",
+        "default": true
       },
-      "gradient_from": {
-        "type": "string",
-        "description": "渐变起始色（十六进制）",
-        "hint": "如 #6D5BF6（紫）。文字颜色会按渐变亮度自动选深/浅色。",
-        "default": "#6D5BF6"
+      "today_count": {
+        "type": "bool",
+        "description": "右上角显示今日出图数",
+        "hint": "开启后卡片右上角显示「今日已出图 N 张」（只统计成功发出的图，跨天自动归零）。",
+        "default": true
       },
-      "gradient_to": {
+      "result_enabled": {
+        "type": "bool",
+        "description": "出图完成发结果卡",
+        "hint": "开启后出图完成时发一张结果卡（尺寸/大小/耗时/参数/提示词），替代原来的文字小报告。开启时不再把报告并进图片配文，避免同一信息出现两次。",
+        "default": true
+      },
+      "fail_enabled": {
+        "type": "bool",
+        "description": "绘制失败发失败卡",
+        "hint": "开启后绘制失败（含平台生图失败、提交失败、超时、无图、配置错误）发一张朱红失败卡，把失败原因写进卡片。关闭或渲染失败时退回原来的文字提示。",
+        "default": true
+      },
+      "brand": {
         "type": "string",
-        "description": "渐变结束色（十六进制）",
-        "hint": "如 #1FA2C8（青）。",
-        "default": "#1FA2C8"
+        "description": "右下角品牌名",
+        "hint": "卡片右下角显示的名字（前面带一个渐变小方块）。",
+        "default": "ComfyUI萌绘"
       },
       "font_file": {
         "type": "string",
-        "description": "正文字体文件（可选）",
-        "hint": "默认 LXGWWenKai-Regular.ttf（放在插件目录 fonts/ 下）。可填绝对路径或插件目录内的相对路径；缺失则回退系统字体。",
-        "default": "LXGWWenKai-Regular.ttf"
-      },
-      "font_medium_file": {
-        "type": "string",
-        "description": "标题/强调字体文件（可选）",
-        "hint": "默认 LXGWWenKai-Medium.ttf（霞鹜文楷 v1.500 起 Bold 改名为 Medium）。缺失时退回正文字体。",
-        "default": "LXGWWenKai-Medium.ttf"
+        "description": "字体文件（可选）",
+        "hint": "留空即用随包字体 assets/fonts/ResourceHanRoundedCN-Medium.woff2；也可填绝对路径或插件目录内的相对路径（如 fonts/LXGWWenKai-Regular.ttf），缺失则回退系统字体。",
+        "default": ""
       }
     }
   },
