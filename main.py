@@ -2636,6 +2636,10 @@ class ComfyUIDrawPlugin(Star):
             return name
         needle = name.strip().lower()
         for w in self._workflows():
+            # v7.0.5：新版工作流（引用基础工作流）不再参与别名匹配——用户约定
+            # 「查询只按名称」（旧版别名常把 LLM 带偏）；旧版条目保持原行为。
+            if str(w.get("base_id") or "").strip():
+                continue
             wf_name = (w.get("name") or "").strip()
             raw = (w.get("aliases") or "").strip()
             if not raw:
@@ -4317,6 +4321,26 @@ class ComfyUIDrawPlugin(Star):
         wf["_base_sampler_defaults"] = sd
         # 底模信息（供日志/摘要）
         wf["_base_name"] = rec.get("name", "")
+        # 底模（模型族）配置驱动提示词行为：v7.0.5 起 anima/标签系不再由工作流上的
+        # 写死开关决定，而是读基础工作流关联底模的「提示词风格 / danbooru 适配」。
+        try:
+            _bm_id = int(rec.get("basemodel_id") or 0)
+            _bm = self.basemodels.get(_bm_id) if (_bm_id and self.basemodels) else None
+            if _bm:
+                wf["base_model"] = _bm.get("name") or wf.get("base_model") or ""
+                _tag_style = (
+                    (_bm.get("prompt_style") or "") == "danbooru"
+                    or bool(_bm.get("danbooru_ready"))
+                )
+                wf["is_anima"] = _tag_style
+                logger.info(
+                    f"【底模】 {_bm.get('name')}｜风格={_bm.get('prompt_style')}"
+                    f"｜danbooru适配={bool(_bm.get('danbooru_ready'))}"
+                    f"｜优先语种={_bm.get('priority_lang')}"
+                    f"→ 标签系翻译={'开' if _tag_style else '关'}"
+                )
+        except Exception as _e:
+            logger.warning(f"【底模】 读取底模配置失败（沿用工作流设置）: {_e}")
         # 采样器覆盖语义「改了才注入」：ov_* 有值才开
         if str(wf.get("ov_steps") or "").strip():
             try:
@@ -12223,10 +12247,13 @@ class ComfyUIDrawPlugin(Star):
             bm = (w.get("base_model") or "").strip()
             bm_tag = f" [底模 {bm}]" if bm else ""
             lines.append(f"- {name}{img_tag}{anima}{bm_tag}")
-            # v7.0.0：工作流自带的 LLM 注入说明（如「本工作流专画头像」）
+            # v7.0.5：新版工作流的「描述」与「LLM 注入说明」一并给出（名称仍是唯一匹配键）
+            _desc = (w.get("desc") or "").strip()
+            if _desc:
+                lines.append(f"  · 描述：{_desc[:200]}")
             _notes = (w.get("llm_notes") or "").strip()
             if _notes:
-                lines.append(f"  · 说明：{_notes[:300]}")
+                lines.append(f"  · 用法说明：{_notes[:300]}")
 
         default = self._cfg("default_workflow", "")
         default_real = self._cfg("default_workflow_real", "")

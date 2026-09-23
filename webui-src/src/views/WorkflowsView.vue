@@ -97,12 +97,23 @@
             <n-tag v-if="(w.base_id || '').trim()" size="small" type="warning" :bordered="false">v7</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">旧版</n-tag>
           </div>
-          <div class="card-alias">别名：{{ aliasStr(w.aliases) }}</div>
+          <div class="card-alias">
+            {{ legacy ? `别名：${aliasStr(w.aliases)}` : `描述：${(w.desc || "").trim() || "—"}` }}
+          </div>
           <div class="card-meta">
-            <n-tag size="tiny" :bordered="false">{{ w.base_model?.trim() || "不限底模" }}</n-tag>
+            <n-tag size="tiny" :bordered="false">
+              {{ legacy ? (w.base_model?.trim() || "不限底模") : (baseOf(w)?.basemodel_name || "底模未关联") }}
+            </n-tag>
             <span class="meta-item">{{ w.server_name?.trim() || "默认服务器" }}</span>
-            <span v-if="w.workflow_name" class="meta-item">{{ w.workflow_name }}</span>
-            <a v-if="w.civitai_url" :href="w.civitai_url" target="_blank" rel="noopener noreferrer" class="civ-link">C站 ↗</a>
+            <span v-if="legacy && w.workflow_name" class="meta-item">{{ w.workflow_name }}</span>
+            <span v-if="!legacy && baseOf(w)" class="meta-item">{{ baseOf(w)?.name }}</span>
+            <a
+              v-if="legacy ? w.civitai_url : baseOf(w)?.civitai_url"
+              :href="legacy ? w.civitai_url : baseOf(w)?.civitai_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="civ-link"
+            >C站 ↗</a>
           </div>
           <div class="card-loracfg">{{ (w.loras_text || "").trim() ? "已配默认 LoRA" : "未配默认 LoRA" }}</div>
           <div class="card-actions">
@@ -134,20 +145,42 @@
         </n-alert>
         <div class="form-grid">
           <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
-          <n-form-item label="底模">
-            <n-select v-model:value="editForm.base_model" :options="baseModelOptions" />
+          <n-form-item label="绑定服务器">
+            <n-select
+              v-model:value="editForm.server_name"
+              :options="serverOptions"
+              clearable
+              placeholder="默认服务器"
+            />
           </n-form-item>
         </div>
-        <n-form-item label="别名（逗号/换行分隔）"><n-input v-model:value="editForm.aliases" type="textarea" :rows="2" /></n-form-item>
-        <div class="form-grid">
-          <n-form-item label="绑定服务器"><n-input v-model:value="editForm.server_name" placeholder="如 server1" /></n-form-item>
-          <n-form-item label="工作流文件名"><n-input v-model:value="editForm.workflow_name" placeholder="如 sd.json" /></n-form-item>
-        </div>
-        <n-form-item label="Anima 工作流">
-          <n-switch v-model:value="editForm.is_anima" />
-          <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
+        <n-form-item v-if="!legacy" label="描述（仅备注展示，不参与名称匹配）">
+          <n-input v-model:value="editForm.desc" type="textarea" :rows="2" placeholder="如：日常出图用；或 头像专用，只出头像构图" />
         </n-form-item>
-        <n-form-item label="工作流类型">
+        <template v-if="legacy">
+          <n-form-item label="别名（逗号/换行分隔）"><n-input v-model:value="editForm.aliases" type="textarea" :rows="2" /></n-form-item>
+          <div class="form-grid">
+            <n-form-item label="底模">
+              <n-select v-model:value="editForm.base_model" :options="baseModelOptions" />
+            </n-form-item>
+            <n-form-item label="工作流文件名"><n-input v-model:value="editForm.workflow_name" placeholder="如 sd.json" /></n-form-item>
+          </div>
+          <n-form-item label="Anima 工作流">
+            <n-switch v-model:value="editForm.is_anima" />
+            <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
+          </n-form-item>
+        </template>
+        <n-form-item v-if="!legacy" label="底模 / 类型（来自基础工作流，只读）">
+          <n-space :size="6" align="center">
+            <n-tag size="small" :bordered="false">{{ selectedBaseKindLabel }}</n-tag>
+            <n-tag size="small" type="info" :bordered="false">底模：{{ selectedBaseBasemodel }}</n-tag>
+            <n-tag v-if="selectedBaseCivitai" size="small" :bordered="false">
+              <a :href="selectedBaseCivitai" target="_blank" rel="noopener noreferrer" class="civ-link">C站链接 ↗</a>
+            </n-tag>
+            <span v-else class="form-hint">C 站链接在「基础工作流」里配置</span>
+          </n-space>
+        </n-form-item>
+        <n-form-item v-else label="工作流类型">
           <span class="form-hint">普通生图 / 图生图（旧版表情包/漫画功能已在 v7.0.0 移除）</span>
         </n-form-item>
         <n-form-item label="启用该工作流">
@@ -167,8 +200,10 @@
           <n-form-item label="固定负向提示词（可选）"><n-input v-model:value="editForm.default_negative" type="textarea" :rows="2" placeholder="用户未传负向提示词时，用此覆盖工作流 JSON 内的负向提示词" /></n-form-item>
         </div>
         <div class="form-grid">
-          <n-form-item label="C 站链接（抓封面）"><n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" /></n-form-item>
-          <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="存于 lora_assets/，可抓取或上传" /></n-form-item>
+          <n-form-item v-if="legacy" label="C 站链接（抓封面）">
+            <n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" />
+          </n-form-item>
+          <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="可上传/抓取；新版沿用基础工作流封面亦可自行更换" /></n-form-item>
         </div>
 
         <n-divider style="margin:8px 0">── 基础工作流 (v7.0.0) ──</n-divider>
@@ -387,6 +422,13 @@ const legacy = computed(() => !!props.legacy);
 const router = useRouter();
 const isLegacyEntry = (w: any) => !String(w?.base_id || "").trim();
 function gotoNew() { router.push({ name: "workflows" }); }
+
+/** 取工作流引用的基础工作流记录（新版卡片展示底模/C站用） */
+function baseOf(w: any) {
+  const id = String(w?.base_id || "").trim();
+  if (!id) return null;
+  return baseWfs.value.find((b: any) => String(b.id) === id) || null;
+}
 const loading = ref(false);
 const saving = ref(false);
 const workflows = ref<any[]>([]);
@@ -430,6 +472,33 @@ const selectedBase = computed(() =>
   baseWfs.value.find((b) => String(b.id) === String(editForm.base_id || "")) || null
 );
 const selectedBaseKind = computed(() => selectedBase.value?.roles?.kind || "");
+// 新版只读展示：底模 / 类型 / C站链接 都来自所选基础工作流
+const selectedBaseKindLabel = computed(() => {
+  const k = selectedBaseKind.value;
+  return k === "img2img" ? "图生图" : (k === "t2i" ? "文生图" : "类型未知（未选基础工作流）");
+});
+const selectedBaseBasemodel = computed(
+  () => selectedBase.value?.basemodel_name || "未关联（去「配置项」页补底模并在基础工作流里选择）"
+);
+const selectedBaseCivitai = computed(() => String(selectedBase.value?.civitai_url || "").trim());
+
+// 绑定服务器下拉：来自插件配置的服务器列表（comfyui_servers）
+const servers = ref<any[]>([]);
+const serverOptions = computed(() => [
+  { label: "默认服务器", value: "" },
+  ...servers.value
+    .map((s: any) => String(s?.name || "").trim())
+    .filter(Boolean)
+    .map((n) => ({ label: n, value: n })),
+]);
+async function loadServers() {
+  try {
+    const cfg = await apiGet("config");
+    servers.value = Array.isArray(cfg.comfyui_servers) ? cfg.comfyui_servers : [];
+  } catch {
+    servers.value = [];
+  }
+}
 const builtinLoras = computed<any[]>(() => selectedBase.value?.roles?.builtin_loras || []);
 const saveFormatOptions = [
   { label: "跟随基础工作流", value: "" },
@@ -496,6 +565,7 @@ async function load() {
   }
   loadBaseWfs();
   loadBasemodelNames();
+  loadServers();
 }
 
 function aliasStr(raw: string): string {
@@ -742,6 +812,7 @@ function openForm(idx: number, prefill?: any) {
   Object.keys(editForm).forEach((k) => delete editForm[k]);
   Object.assign(editForm, JSON.parse(JSON.stringify({
     name: w.name || "",
+    desc: w.desc || "",
     base_model: w.base_model || "",
     aliases: w.aliases || "",
     server_name: w.server_name || "",

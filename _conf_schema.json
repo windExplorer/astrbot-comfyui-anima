@@ -320,6 +320,12 @@
             "obvious_hint": true,
             "default": ""
           },
+          "desc": {
+            "type": "string",
+            "description": "描述（备注展示，不参与名称匹配）",
+            "hint": "新版工作流用描述替代旧版别名：只做备注与 LLM 选择参考，按名称查询时不会命中描述。",
+            "default": ""
+          },
           "base_id": {
             "type": "string",
             "description": "基础工作流 ID（v7.0.0）",
