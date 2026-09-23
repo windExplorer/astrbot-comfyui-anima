@@ -1637,6 +1637,16 @@ class ComfyUIDrawPlugin(Star):
                     f.unlink()
         except Exception:
             pass
+        # v7.2.0：出图信息卡片的渲染产物同样定期清理（否则会无限堆积）
+        try:
+            _card_dir = Path(self.data_dir) / "card_render"
+            if _card_dir.is_dir():
+                now = time.time()
+                for f in _card_dir.iterdir():
+                    if f.is_file() and now - f.stat().st_mtime > max_age:
+                        f.unlink()
+        except Exception:
+            pass
         # 图库 LRU 清理（轻量，失败不致命）
         if self.gallery is not None:
             try:
@@ -3524,6 +3534,244 @@ class ComfyUIDrawPlugin(Star):
             except Exception as _e2:
                 logger.warning(f"【撤回】 回退 event.send 也失败: {_e2}")
             return ""
+
+    # ------------------------------------------------------------------ #
+    # 出图信息卡片（v7.2.0）：生图前发一张渐变信息卡，把本次出图的关键参数摊开
+    # ------------------------------------------------------------------ #
+    _CARD_DEFAULTS = {
+        "enabled": True,
+        "scope": "group",          # group=仅群聊 / all=所有会话
+        "title": "出图任务",
+        "show_prompt": False,
+        "font_file": "LXGWWenKai-Regular.ttf",
+        "font_medium_file": "LXGWWenKai-Medium.ttf",
+        "gradient_from": "#6D5BF6",   # 紫
+        "gradient_to": "#1FA2C8",     # 青
+    }
+
+    def _card_cfg(self) -> dict:
+        """读取出图卡片配置（容错：非 dict/异常都退回默认）。"""
+        try:
+            raw = self._cfg("pre_draw_card", {}) or {}
+            cfg = dict(self._CARD_DEFAULTS)
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if v is None or v == "":
+                        continue
+                    cfg[k] = v
+            return cfg
+        except Exception:
+            return dict(self._CARD_DEFAULTS)
+
+    @staticmethod
+    def _hex_rgb(s: str, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+        try:
+            t = str(s or "").strip().lstrip("#")
+            if len(t) == 3:
+                t = "".join(c * 2 for c in t)
+            if len(t) != 6:
+                return fallback
+            return tuple(int(t[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+        except Exception:
+            return fallback
+
+    def _card_font_path(self, cfg: dict, medium: bool = False) -> str | None:
+        """找字体文件：配置指定 → 插件 fonts/ 目录常见名 → 系统字体 → None。
+
+        字体不入 zip/仓库（霞鹜文楷全量版单个约 24MB），用户把 ttf 放进插件目录
+        `fonts/` 即可；缺失时自动回退系统字体（中文可能不如文楷好看，但不会崩）。
+        """
+        base = Path(__file__).resolve().parent
+        want = [
+            str(cfg.get("font_medium_file" if medium else "font_file") or "").strip(),
+            "LXGWWenKai-Medium.ttf" if medium else "LXGWWenKai-Regular.ttf",
+            "LXGWWenKai-Regular.ttf",
+        ]
+        for name in want:
+            if not name:
+                continue
+            p = Path(name)
+            for cand in ((p,) if p.is_absolute() else (base / name, base / "fonts" / name)):
+                try:
+                    if cand.is_file():
+                        return str(cand)
+                except Exception:
+                    continue
+        for cand in (
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+        ):
+            if os.path.exists(cand):
+                return cand
+        return None
+
+    def _render_draw_card(
+        self, rows: list[tuple[str, str]], *, title: str, subtitle: str = "", footer: str = ""
+    ) -> str | None:
+        """渲染出图信息卡片 PNG（渐变底 + 圆角 + 双列），返回文件路径；失败返回 None。
+
+        2x 超采样绘制再缩回，字边缘抗锯齿；渐变用 64px 小图算好再放大（快且平滑）。
+        """
+        if _PILImage is None:
+            return None
+        try:
+            from PIL import ImageDraw, ImageFont
+        except Exception:
+            return None
+        cfg = self._card_cfg()
+        try:
+            scale = 2
+            W = 780
+            pad = 34
+            radius = 26
+            base_fs = 20
+            # 画布高度：标题区 + 行高 + 提示词/页脚
+            row_h = 34
+            body_h = row_h * max(1, len(rows))
+            H = pad * 2 + 52 + 14 + body_h + (26 if footer else 0) + 30
+
+            f_regular = f_medium = None
+            _rp = self._card_font_path(cfg, medium=False)
+            _mp = self._card_font_path(cfg, medium=True) or _rp
+            for path, attr in ((_rp, "regular"), (_mp, "medium")):
+                if not path:
+                    continue
+                try:
+                    f = ImageFont.truetype(path, base_fs * scale)
+                    if attr == "regular":
+                        f_regular = f
+                    else:
+                        f_medium = f
+                except Exception:
+                    continue
+            if f_regular is None:
+                try:
+                    f_regular = ImageFont.load_default()
+                except Exception:
+                    return None
+            f_medium = f_medium or f_regular
+            f_title = ImageFont.truetype(_mp, int(base_fs * 1.55) * scale) if _mp else f_medium
+            f_small = ImageFont.truetype(_rp, int(base_fs * 0.82) * scale) if _rp else f_regular
+
+            c1 = self._hex_rgb(str(cfg.get("gradient_from")), (109, 91, 246))
+            c2 = self._hex_rgb(str(cfg.get("gradient_to")), (31, 162, 200))
+
+            # 对角渐变：小图求值 → 放大（BICUBIC 平滑）
+            gs = 64
+            small = _PILImage.new("RGB", (gs, gs))
+            sp = small.load()
+            for y in range(gs):
+                for x in range(gs):
+                    t = (x + y) / (2.0 * (gs - 1))
+                    sp[x, y] = (
+                        int(c1[0] + (c2[0] - c1[0]) * t),
+                        int(c1[1] + (c2[1] - c1[1]) * t),
+                        int(c1[2] + (c2[2] - c1[2]) * t),
+                    )
+            size_px = (W * scale, H * scale)
+            base = small.resize(size_px, _PILImage.BICUBIC).convert("RGBA")
+
+            # 文字与信息面板按渐变亮度自适应：
+            # 深色渐变 → 白字 + 深色面板；浅色渐变 → 深字 + 白色面板。
+            # ★Pillow 的 ImageDraw.Draw(im, "RGBA") **不做 alpha 混合**（直接把半透明像素
+            #   写进去，在浅色底上会露成灰白），所以这里统一用「独立图层 + alpha_composite」
+            #   真正混合；文字用不透明的深浅色，保证对比度。
+            _lum = (0.299 * (c1[0] + c2[0]) + 0.587 * (c1[1] + c2[1]) + 0.114 * (c1[2] + c2[2])) / 510.0
+            if _lum <= 0.62:
+                ink = (255, 255, 255, 255)
+                ink_dim = (214, 216, 240, 255)
+                panel_fill = (16, 14, 30, 84)
+                panel_edge = (255, 255, 255, 40)
+            else:
+                ink = (26, 24, 40, 255)
+                ink_dim = (86, 84, 108, 255)
+                panel_fill = (255, 255, 255, 175)
+                panel_edge = (255, 255, 255, 90)
+
+            # ① 信息面板层（真 alpha 混合）
+            plate = _PILImage.new("RGBA", size_px, (0, 0, 0, 0))
+            ImageDraw.Draw(plate).rounded_rectangle(
+                [pad * scale, (pad + 52 + 8) * scale,
+                 (W - pad) * scale, (pad + 52 + 8 + body_h + 12) * scale],
+                radius=16 * scale, fill=panel_fill, outline=panel_edge, width=max(1, scale),
+            )
+            base = _PILImage.alpha_composite(base, plate)
+
+            # ② 文字层（真 alpha 混合；文字用不透明色）
+            layer = _PILImage.new("RGBA", size_px, (0, 0, 0, 0))
+            d = ImageDraw.Draw(layer)
+            d.text((pad * scale, pad * scale), str(title or ""), font=f_title, fill=ink)
+            if subtitle:
+                _sw = d.textlength(subtitle, font=f_small)
+                d.text(((W - pad) * scale - _sw, (pad + 12) * scale), subtitle, font=f_small, fill=ink_dim)
+
+            y = (pad + 52 + 8 + 10) * scale
+            label_w = 158 * scale
+            for label, value in rows:
+                d.text((pad * scale + 20 * scale, y), str(label), font=f_medium, fill=ink_dim)
+                d.text((pad * scale + label_w, y), str(value), font=f_regular, fill=ink)
+                y += row_h * scale
+
+            if footer:
+                d.text((pad * scale, (H - pad - 18) * scale), footer, font=f_small, fill=ink_dim)
+            base = _PILImage.alpha_composite(base, layer)
+
+            # ③ 圆角裁切（四角透明）
+            mask = _PILImage.new("L", size_px, 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [0, 0, size_px[0] - 1, size_px[1] - 1], radius=radius * scale, fill=255
+            )
+            out = _PILImage.new("RGBA", size_px, (0, 0, 0, 0))
+            out.paste(base, (0, 0), mask)
+            out = out.resize((W, H), _PILImage.LANCZOS)
+
+            rd = os.path.join(self.data_dir, "card_render")
+            try:
+                os.makedirs(rd, exist_ok=True)
+            except Exception:
+                pass
+            path = os.path.join(rd, f"card_{int(time.time() * 1000)}.png")
+            out.save(path, "PNG")
+            return path
+        except Exception as e:
+            logger.warning(f"【出图卡片】 渲染失败（不影响出图）: {e}")
+            return None
+
+    async def _send_pre_draw_card(self, event, info: dict) -> None:
+        """生图前发送信息卡片（渲染/发送失败一律只记日志，绝不阻断出图）。"""
+        try:
+            cfg = self._card_cfg()
+            if not cfg.get("enabled", True):
+                return
+            # 发送范围：默认仅群聊（用户需求），可选所有会话
+            scope = str(cfg.get("scope") or "group").strip().lower()
+            if scope == "group" and self._is_private_event(event):
+                return
+            rows: list[tuple[str, str]] = []
+            for k, v in (info.get("rows") or []):
+                if v is None or str(v).strip() == "":
+                    continue
+                rows.append((str(k), str(v)))
+            if not rows:
+                return
+            if cfg.get("show_prompt") and (info.get("prompt") or "").strip():
+                _p = re.sub(r"\s+", " ", str(info["prompt"]).strip())
+                rows.append(("提示词", _p[:160] + ("…" if len(_p) > 160 else "")))
+            path = self._render_draw_card(
+                rows,
+                title=str(cfg.get("title") or "出图任务"),
+                subtitle=time.strftime("%m-%d %H:%M:%S"),
+                footer="Anima Console · 参数以提交时刻为准",
+            )
+            if not path:
+                return
+            await event.send(MessageChain([Image.fromFileSystem(path)]))
+            logger.info(f"【出图卡片】 已发送（{len(rows)} 项）")
+        except Exception as e:
+            logger.warning(f"【出图卡片】 发送失败（忽略，不中断出图）: {e}")
 
     async def _send_image_with_recall(self, event, chain) -> None:
         """出图发送统一入口：不需要自动撤回时等价于 event.send；需要时登记定时撤回。"""
@@ -5854,6 +6102,36 @@ class ComfyUIDrawPlugin(Star):
                 f"【耗时】 前序准备合计 {time.time() - _draw_start:.1f}s"
                 f"（其中 LLM 整理 {max(0.0, time.time() - _t_llm0):.1f}s，已与参考图上传重叠）"
             )
+            # v7.2.0：提交前发「出图信息卡片」（默认仅群聊；失败只记日志，不阻断出图）
+            try:
+                _card_sampler = {}
+                try:
+                    _card_sampler = workflow_builder.get_sampler_defaults(prompt) or {}
+                except Exception:
+                    _card_sampler = {}
+                _ahead0 = self._local_queue_ahead(srv_key)
+                _card_rows = [
+                    ("服务器", (str(server.get("name") or "默认服务器").strip()
+                              + (f"｜{server.get('device')}" if str(server.get("device") or "").strip() else ""))),
+                    ("队列", (f"前面还有 {_ahead0} 个任务" if _ahead0 else "空闲（无排队）")),
+                    ("工作流", f"{wf.get('name') or '(未命名)'}（{'图生图' if is_img2img else '文生图'}）"),
+                    ("LoRA", _enabled_lora),
+                    ("尺寸", _size),
+                    ("放大", self._upscale_note(wf, prompt)),
+                    ("步数", _card_sampler.get("steps")),
+                    ("CFG", _card_sampler.get("cfg")),
+                    ("采样器", _card_sampler.get("sampler_name")),
+                    ("调度器", _card_sampler.get("scheduler")),
+                    ("噪点", _card_sampler.get("denoise")),
+                    ("种子", (seeds_used[0] if seeds_used else None)),
+                ]
+                if is_img2img:
+                    _card_rows.insert(4, ("参考图", f"{len(init_images or [])} 张"))
+                await self._send_pre_draw_card(
+                    event, {"rows": _card_rows, "prompt": positive}
+                )
+            except Exception as _ce:
+                logger.warning(f"【出图卡片】 构建失败（忽略）: {_ce}")
             try:
                 result = await client.queue_prompt(prompt)
                 prompt_id = result.get("prompt_id")
