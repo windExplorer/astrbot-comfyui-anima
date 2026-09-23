@@ -4709,7 +4709,9 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 logger.warning(f"【平台】 LLM 整理失败，保留原提示词: {e}")
 
-        # 提交前发平台卡（v7.3.0，默认仅群聊）：底模位显示模型名、工作流位显示平台名、无 LoRA 区
+        # 平台卡（默认仅群聊）：底模位显示模型名、工作流位显示平台名、无 LoRA 区。
+        # 注意：平台链路是「一次阻塞请求拿图」，没有 ComfyUI 那样的入队/排队阶段，
+        # 所以卡片只能发在请求之前（ComfyUI 链路已改为入队成功后发，见 cmd_draw 侧）。
         try:
             _pdef = plat.get("defaults") or {}
             await self._send_draw_card(event, {
@@ -6198,42 +6200,15 @@ class ComfyUIDrawPlugin(Star):
                 f"【耗时】 前序准备合计 {time.time() - _draw_start:.1f}s"
                 f"（其中 LLM 整理 {max(0.0, time.time() - _t_llm0):.1f}s，已与参考图上传重叠）"
             )
-            # v7.3.0：提交前发出图卡片（默认仅群聊；渲染/发送失败只记日志，不阻断出图）
+            # 出图卡片（v7.4.3）：改为**入队成功后**再发——那时队列位置才是真实值
+            # （中转站 X-Queue-Position / 本地队列），不会再出现「卡片写 0、文字提示说 1」的自相矛盾；
+            # 提交失败时也不再先发一张「绘制中」再补失败卡（直接只发失败卡）。
+            # 采样器参数先备好：入队卡 / 失败卡 / 结果卡共用。
+            _card_sampler = {}
             try:
+                _card_sampler = workflow_builder.get_sampler_defaults(prompt) or {}
+            except Exception:
                 _card_sampler = {}
-                try:
-                    _card_sampler = workflow_builder.get_sampler_defaults(prompt) or {}
-                except Exception:
-                    _card_sampler = {}
-                _ahead0 = self._local_queue_ahead(srv_key)
-                # v7.4.1：记住卡片有没有真的发出去——发了就不再补发排队文案（见下方提示块），
-                # 否则用户会连着收到「卡片」+「前面还有 N 个」，且卡片上的排队数还是提交前快照。
-                _card_pending_sent = await self._send_draw_card(event, {
-                    "kicker": self._card_kicker(wf),
-                    "workflow": (f"{wf.get('name') or '(未命名)'} · "
-                                 f"{'图生图' if is_img2img else '文生图'}"),
-                    # v7.4.1：无排队时不写「排队 0」——提交前只能拿到本地队列快照，
-                    # 与中转站的实际队列位置可能不一致，宁可不显示（有排队才写）。
-                    "right_top": f"排队 {_ahead0}" if _ahead0 > 0 else "",
-                    "device": self._card_device(srv_key),
-                    "today": self._card_today(),
-                    "loras": _card_loras,
-                    "params": self._card_chips([
-                        ("尺寸", _size),
-                        ("参考图", f"{len(init_images or [])} 张" if is_img2img else None),
-                        ("步数", _card_sampler.get("steps")),
-                        ("CFG", _card_sampler.get("cfg")),
-                        ("采样器", _card_sampler.get("sampler_name")),
-                        ("调度器", _card_sampler.get("scheduler")),
-                        ("噪点", _card_sampler.get("denoise")),
-                        ("放大", self._upscale_note(wf, prompt)),
-                        ("种子", (seeds_used[0] if seeds_used else None)),
-                    ]),
-                    "prompt": positive,
-                }, "queued" if _ahead0 > 0 else "drawing")
-            except Exception as _ce:
-                _card_pending_sent = False
-                logger.warning(f"【出图卡片】 构建失败（忽略）: {_ce}")
             try:
                 result = await client.queue_prompt(prompt)
                 prompt_id = result.get("prompt_id")
@@ -6284,17 +6259,42 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"【队列】 无中转站 X-Queue-Position 响应头，回退本地队列 ahead={ahead}")
             try:
                 self._local_queue_add(srv_key, prompt_id)
-                # 提交后统一发一条提示：有队列（ahead>0）→「前面排着 N 个」；
-                # 无队列（ahead<=0）默认不发提示；仅当 queue_hint_only_when_queued=False
-                # 时才发「稍等，马上来」。只发这一条，避免与提交前提示重复。
-                # 伴侣 proactive（notify_pending=False）不发。
-                # v7.4.1：提交前发过卡片时不再补发排队文案——卡片右上角已有队列信息，
-                # 再来一条「前面还有 N 个」既重复、又和卡片上的数字打架（卡片是提交前快照）。
+                # ① 入队成功 → 发卡片：此时 ahead 是**真实队列位置**（中转站响应头优先），
+                #   卡片右上角写「排队 N」，页脚时间也正好是提交时刻。
+                try:
+                    _card_pending_sent = await self._send_draw_card(event, {
+                        "kicker": self._card_kicker(wf),
+                        "workflow": (f"{wf.get('name') or '(未命名)'} · "
+                                     f"{'图生图' if is_img2img else '文生图'}"),
+                        # 无排队时不写「排队 0」（没什么信息量）
+                        "right_top": f"排队 {ahead}" if ahead > 0 else "",
+                        "device": self._card_device(srv_key),
+                        "today": self._card_today(),
+                        "loras": _card_loras,
+                        "params": self._card_chips([
+                            ("尺寸", _size),
+                            ("参考图", f"{len(init_images or [])} 张" if is_img2img else None),
+                            ("步数", _card_sampler.get("steps")),
+                            ("CFG", _card_sampler.get("cfg")),
+                            ("采样器", _card_sampler.get("sampler_name")),
+                            ("调度器", _card_sampler.get("scheduler")),
+                            ("噪点", _card_sampler.get("denoise")),
+                            ("放大", self._upscale_note(wf, prompt)),
+                            ("种子", (seeds_used[0] if seeds_used else None)),
+                        ]),
+                        "prompt": positive,
+                    }, "queued" if ahead > 0 else "drawing")
+                except Exception as _ce:
+                    _card_pending_sent = False
+                    logger.warning(f"【出图卡片】 入队卡构建失败（忽略）: {_ce}")
+                # ② 只有**没发卡片**时才退回文字提示：有队列 →「前面排着 N 个」；
+                #   无队列默认不发；queue_hint_only_when_queued=False 时发「稍等，马上来」。
+                #   伴侣 proactive（notify_pending=False）不发。
                 if (self._cfg("return_queue_position", True) and notify_pending
-                        and not locals().get("_card_pending_sent")):
+                        and not _card_pending_sent):
                     if ahead > 0 or not self._cfg("queue_hint_only_when_queued", True):
                         await self._send(event, self._queue_hint(ahead))
-                elif notify_pending and locals().get("_card_pending_sent"):
+                elif notify_pending and _card_pending_sent:
                     logger.info("【队列】 已发卡片，跳过「前面还有 N 个」文字提示（避免重复）")
 
                 # 等待出图：动态超时 = 基础超时 + 前面排队任务累加预估耗时。
