@@ -92,10 +92,13 @@ def build_route_methods(routes) -> "dict[str, list[str]]":
 # 内存日志环形缓冲（main.py 的日志 handler 会写入这里）
 LOG_BUFFER: "deque[str]" = deque(maxlen=2000)
 
-# 允许的底模（归一化白名单，与前端 baseModelOptions 一致）。
-# C 站返回的 baseModel 可能带大小写（如 "Anima"），统一转小写后按此白名单过滤，
-# 不在白名单内的置空（视为通用），避免前端下拉/筛选匹配不上。
-BASE_MODEL_WHITELIST = ("anima", "z-image-turbo", "krea2", "illustrious")
+# 允许的底模（归一化白名单）。C 站返回的 baseModel 可能带大小写（如 "Anima"），
+# 统一转小写后按此归一化；v7.0.5 起扩充为常见模型族（与 basemodel_store 默认项一致）。
+BASE_MODEL_WHITELIST = (
+    "anima", "illustrious", "noobai", "pony",
+    "z-image-turbo", "krea2", "flux", "qwen", "qwen-image",
+    "boogu", "sdxl", "sd15",
+)
 
 
 async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
@@ -1115,6 +1118,14 @@ class WebUIApi:
             return json_response({"id": mid, "msg": "保存成功"})
         except Exception as e:
             return error_response(f"保存失败: {e}")
+
+    async def basemodels_reseed(self):
+        """补齐缺失的默认底模（已存在同名的不动）。返回新增条数。"""
+        try:
+            added = self._basemodel_store().reseed_defaults()
+            return json_response({"added": added, "msg": f"已补齐 {added} 条默认底模"})
+        except Exception as e:
+            return error_response(f"补齐默认底模失败: {e}")
 
     async def basemodels_delete(self):
         try:
@@ -3263,6 +3274,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/basemodels", _h("basemodels_list"), ["GET"], "底模库列表"),
         (f"{prefix}/basemodels/save", _h("basemodels_save"), ["POST"], "底模保存"),
         (f"{prefix}/basemodels/delete", _h("basemodels_delete"), ["POST"], "底模删除"),
+        (f"{prefix}/basemodels/reseed", _h("basemodels_reseed"), ["POST"], "补齐默认底模"),
         (f"{prefix}/basemodels/fetch", _h("basemodels_fetch"), ["POST"], "底模 C站抓取"),
         (f"{prefix}/basemodels/upload_image", _h("basemodels_upload_image"), ["POST"], "底模封面上传"),
         (f"{prefix}/basemodels/image", _h("basemodel_image"), ["GET"], "底模封面读取"),

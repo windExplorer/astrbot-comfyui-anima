@@ -1308,6 +1308,7 @@ class StandaloneWebUI:
             "/basemodels": ("basemodels_list", "GET"),
             "/basemodels/save": ("basemodels_save", "POST"),
             "/basemodels/delete": ("basemodels_delete", "POST"),
+            "/basemodels/reseed": ("basemodels_reseed", "POST"),
             "/basemodels/fetch": ("basemodels_fetch", "POST"),
             "/basemodels/upload_image": ("basemodels_upload_image", "POST"),
             "/basemodels/image": ("basemodel_image", "GET"),

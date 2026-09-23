@@ -12,6 +12,7 @@
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
+          <n-button :loading="reseeding" @click="reseed">↻ 补充默认底模</n-button>
           <n-button type="primary" @click="addModel">＋ 新增底模</n-button>
         </div>
       </Teleport>
@@ -113,8 +114,24 @@ const dialog = useDialog();
 const { isMobile } = useDevice();
 const loading = ref(false);
 const saving = ref(false);
+const reseeding = ref(false);
 const items = ref<any[]>([]);
 const searchText = ref("");
+
+/** 补齐内置默认底模（anima / illustrious / NoobAI / Pony / z-image-turbo / krea2 /
+ *  FLUX / Qwen Image 2.1 / boogu / SDXL / SD 1.5）——已存在同名条目的不动 */
+async function reseed() {
+  reseeding.value = true;
+  try {
+    const d = await apiPost("basemodels/reseed", {});
+    message.success(d?.msg || "已补齐默认底模");
+    await load();
+  } catch (e: any) {
+    message.error(e?.message || "补齐失败");
+  } finally {
+    reseeding.value = false;
+  }
+}
 
 const styleOptions = [
   { label: "自然语言（可掺杂标签）", value: "natural" },

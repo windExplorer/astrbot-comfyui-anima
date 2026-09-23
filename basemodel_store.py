@@ -25,6 +25,78 @@ PROMPT_STYLES = ("natural", "danbooru")
 # 支持语言枚举（v7.0.0 暂只做中英）
 LANGUAGES = ("中文", "英文")
 
+# 默认底模（模型族）——首次初始化/一键补齐时写入。
+# 依据：插件代码里出现过的底模提示词规范（main.py 的 LLM 指引 + 老工作流下拉白名单），
+# 加上近期在用的 Qwen Image 2.1 与 boogu 编辑模型。
+DEFAULT_BASEMODELS = (
+    {
+        "name": "anima", "keywords": "anima",
+        "prompt_style": "danbooru", "languages": ["英文", "中文"], "priority_lang": "英文",
+        "danbooru_ready": True,
+        "description": "动漫标签系：Danbooru 标签 + 质量前缀（masterpiece, best quality, very aesthetic, absurdres）；禁自然语言长句、禁 Pony 质量词。",
+    },
+    {
+        "name": "illustrious", "keywords": "illustrious",
+        "prompt_style": "danbooru", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": True,
+        "description": "动漫 SDXL 系（Illustrious）：Danbooru 标签 + 质量前缀。",
+    },
+    {
+        "name": "NoobAI", "keywords": "noobai、noob",
+        "prompt_style": "danbooru", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": True,
+        "description": "动漫 SDXL 系（NoobAI-XL）：Danbooru 标签风格。",
+    },
+    {
+        "name": "Pony", "keywords": "pony",
+        "prompt_style": "danbooru", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": True,
+        "description": "Pony Diffusion：score_9 / score_8_up / score_7_up 质量体系 + Danbooru 标签（该质量词仅本族可用）。",
+    },
+    {
+        "name": "z-image-turbo", "keywords": "z-image、zimage、z_image",
+        "prompt_style": "natural", "languages": ["中文", "英文"], "priority_lang": "中文",
+        "danbooru_ready": False,
+        "description": "阿里 Z-Image Turbo：中文或英文自然语言整句（中文理解最好），不写标签/质量词；要渲染的文字放引号。",
+    },
+    {
+        "name": "krea2", "keywords": "krea",
+        "prompt_style": "natural", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": False,
+        "description": "自然语言系（Krea）：英文整句描述，不写 Danbooru 标签与质量词。",
+    },
+    {
+        "name": "FLUX", "keywords": "flux",
+        "prompt_style": "natural", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": False,
+        "description": "FLUX.1 系：英文自然语言整句，不写标签/质量词。",
+    },
+    {
+        "name": "Qwen Image 2.1", "keywords": "qwen、qwen_image、qwenimage",
+        "prompt_style": "natural", "languages": ["中文", "英文"], "priority_lang": "中文",
+        "danbooru_ready": False,
+        "description": "Qwen-Image 2.1：自然语言整句（中文/英文皆可，中文更省事），不写标签与质量词。",
+    },
+    {
+        "name": "boogu（编辑/加字）", "keywords": "boogu",
+        "prompt_style": "natural", "languages": ["中文", "英文"], "priority_lang": "中文",
+        "danbooru_ready": False,
+        "description": "boogu-edit-turbo：图生图编辑/加字模型，吃自然语言指令（保持原图不变 + 要加的文字）。",
+    },
+    {
+        "name": "SDXL", "keywords": "sdxl",
+        "prompt_style": "danbooru", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": True,
+        "description": "SDXL 通用：质量词（masterpiece, best quality）+ 标签混合。",
+    },
+    {
+        "name": "SD 1.5", "keywords": "sd15、sd1.5、sd-v1-5、v1-5",
+        "prompt_style": "danbooru", "languages": ["英文"], "priority_lang": "英文",
+        "danbooru_ready": True,
+        "description": "SD 1.5 通用：质量词 + 标签混合。",
+    },
+)
+
 
 class BaseModelStore:
     """底模库存储。单线程事件循环使用。"""
@@ -105,6 +177,8 @@ class BaseModelStore:
             "description": "TEXT DEFAULT ''",
         })
         conn.commit()
+        # 列迁移之后再播种（旧库缺 keywords 列时也能正常写入）
+        self._seed_defaults()
 
     # ------------------------------------------------------------------ #
     # 行序列化
@@ -229,6 +303,42 @@ class BaseModelStore:
             return int(cur.lastrowid), None
         except Exception as e:
             return None, str(e)
+
+    def _seed_defaults(self) -> int:
+        """空库时写入默认底模（模型族）。返回写入条数。
+
+        仅在**完全空库**时播种：避免用户删掉的默认项被反复塞回来。
+        想找回默认项用 reseed_defaults()（只补缺，不覆盖已有同名的自定义内容）。
+        """
+        try:
+            conn = self._conn_get()
+            n = conn.execute("SELECT COUNT(*) AS c FROM basemodels").fetchone()["c"]
+            if n:
+                return 0
+        except Exception:
+            return 0
+        added = 0
+        for item in DEFAULT_BASEMODELS:
+            _, err = self.save(dict(item))
+            if not err:
+                added += 1
+        if added:
+            logger.info(f"【底模库】 已写入 {added} 条默认底模（模型族），可在「配置项」页增删改")
+        return added
+
+    def reseed_defaults(self) -> int:
+        """补齐缺失的默认底模（按名称判断，已存在的不动）。返回新增条数。"""
+        have = {str(r.get("name") or "").strip().lower() for r in self.list_all()}
+        added = 0
+        for item in DEFAULT_BASEMODELS:
+            if str(item["name"]).strip().lower() in have:
+                continue
+            _, err = self.save(dict(item))
+            if not err:
+                added += 1
+        if added:
+            logger.info(f"【底模库】 已补齐 {added} 条默认底模")
+        return added
 
     def delete(self, model_id: int) -> str | None:
         try:

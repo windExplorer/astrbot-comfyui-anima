@@ -209,7 +209,8 @@ def test_basemodel_match():
     hit = bs.match_model("qwen_image_2.1_int8_convrot.safetensors", "UNETLoader")
     assert hit and hit["name"] == "Qwen Image 2.1", hit
     assert bs.match_model("miaomiaoHarem_anima16.safetensors")["name"] == "anima"
-    assert bs.match_model("flux1-dev.safetensors") is None
+    # 未知模型名不关联（种子默认项会命中 flux/qwen 等已知族，改用未收录的名字验证）
+    assert bs.match_model("someUnknownModel_v3.safetensors") is None
     # 最长关键字优先（同时含 qwen 与 qwen_image 时命中更具体的条目）
     bs.save({"name": "Qwen Image 2.1 详细", "keywords": "qwen_image_2.1"})
     hit2 = bs.match_model("qwen_image_2.1_int8_convrot.safetensors")
@@ -219,6 +220,32 @@ def test_basemodel_match():
     bs.save({"name": "anima", "keywords": "anima、anima16"})
     assert len(bs.list_all()) == n_before
     print("== 8. 底模关键字匹配 OK")
+
+
+def test_basemodel_defaults():
+    """默认底模播种 + 一键补齐（v7.0.5）。"""
+    from basemodel_store import BaseModelStore, DEFAULT_BASEMODELS
+
+    tmp = Path(tempfile.mkdtemp())
+    bs = BaseModelStore(tmp)
+    rows = bs.list_all()
+    assert len(rows) == len(DEFAULT_BASEMODELS), (len(rows), len(DEFAULT_BASEMODELS))
+    names = {r["name"] for r in rows}
+    for must in ("anima", "Qwen Image 2.1", "boogu（编辑/加字）", "z-image-turbo", "Pony", "NoobAI"):
+        assert must in names, must
+    # 关键默认项与解析出的模型文件名能自动关联
+    assert bs.match_model("miaomiaoHarem_anima16.safetensors")["name"] == "anima"
+    assert bs.match_model("qwen_image_2.1_int8_convrot.safetensors")["name"] == "Qwen Image 2.1"
+    assert bs.match_model("boogu-edit-turbo-dit-Q4_0.gguf")["name"] == "boogu（编辑/加字）"
+    # 删掉一条后：init 不重复播种（空库才播）；reseed 只补缺
+    target = next(r for r in rows if r["name"] == "anima")
+    assert bs.delete(target["id"]) is None
+    bs2 = BaseModelStore(tmp)
+    assert "anima" not in {r["name"] for r in bs2.list_all()}, "非空库不应重新播种"
+    assert bs2.reseed_defaults() == 1
+    assert "anima" in {r["name"] for r in bs2.list_all()}
+    assert bs2.reseed_defaults() == 0
+    print("== 9. 默认底模播种/补齐 OK")
 
 
 def test_bypass_alpha_chain():
@@ -254,6 +281,7 @@ if __name__ == "__main__":
     test_surgery()
     test_package_import()
     test_basemodel_match()
+    test_basemodel_defaults()
     test_bypass_alpha_chain()
     print("\n基础工作流体系测试全部通过")
 

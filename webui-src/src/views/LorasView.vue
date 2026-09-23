@@ -16,14 +16,13 @@
     <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
       <div class="filter-bar">
         <span class="filter-label">底模：</span>
-        <n-radio-group v-model:value="filterModel" size="small" class="filter-radios">
-          <n-radio-button value="all">全部 ({{ loras.length }})</n-radio-button>
-          <n-radio-button value="anima">anima ({{ countByModel("anima") }})</n-radio-button>
-          <n-radio-button value="z-image-turbo">z-image-turbo ({{ countByModel("z-image-turbo") }})</n-radio-button>
-          <n-radio-button value="krea2">krea2 ({{ countByModel("krea2") }})</n-radio-button>
-          <n-radio-button value="illustrious">illustrious ({{ countByModel("illustrious") }})</n-radio-button>
-          <n-radio-button value="__none__">通用 ({{ countByModel("__none__") }})</n-radio-button>
-        </n-radio-group>
+        <n-select
+          v-model:value="filterModel"
+          size="small"
+          style="width: 260px"
+          filterable
+          :options="baseModelFilterOptions"
+        />
       </div>
       <div class="filter-bar">
         <span class="filter-label">分类：</span>
@@ -199,7 +198,35 @@ const loading = ref(false);
 const saving = ref(false);
 const loras = ref<any[]>([]);
 
-const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
+// 底模选项（v7.0.5）：改为「底模库（配置项页）」动态提供 + 合并已有 LoRA 的历史值
+const basemodelNames = ref<string[]>([]);
+async function loadBasemodelNames() {
+  try {
+    const d = await apiGet("basemodels");
+    basemodelNames.value = (Array.isArray(d?.items) ? d.items : [])
+      .map((b: any) => String(b?.name || "").trim())
+      .filter(Boolean);
+  } catch {
+    basemodelNames.value = [];
+  }
+}
+const allBaseModelNames = computed(() =>
+  Array.from(
+    new Set([
+      ...basemodelNames.value,
+      ...loras.value.map((l: any) => String(l?.base_model || "").trim()).filter(Boolean),
+    ])
+  )
+);
+const baseModelOptions = computed(() => [
+  { label: "（通用）", value: "" },
+  ...allBaseModelNames.value.map((n) => ({ label: n, value: n })),
+]);
+const baseModelFilterOptions = computed(() => [
+  { label: `全部 (${loras.value.length})`, value: "all" },
+  ...allBaseModelNames.value.map((n) => ({ label: `${n} (${countByModel(n)})`, value: n })),
+  { label: `通用 (${countByModel("__none__")})`, value: "__none__" },
+]);
 const categoryOptions = ["", "角色", "风格", "工具"].map((o) => ({ label: o || "（未分类）", value: o }));
 
 // 底模分类筛选：all=全部；__none__=通用（base_model 为空）；其余=对应底模
@@ -246,18 +273,21 @@ const filteredIndexes = computed<number[]>(() => {
     .map(({ i }) => i);
 });
 
-// 底模归一化：转小写并与白名单（baseModelOptions 非空项）匹配，不在白名单返回空（通用）
+// 底模归一化（v7.0.5）：与「底模库」动态名单大小写不敏感匹配，命中则用库里的规范名；
+// 未命中不再清空（保留原值）——底模已动态化，未知值可能是用户自建条目或 C 站新写法。
 function normalizeBaseModel(raw: string): string {
-  const bm = (raw || "").trim().toLowerCase();
-  if (!bm) return "";
-  for (const opt of baseModelOptions) {
-    if (opt.value && bm === opt.value) return opt.value;
+  const v = (raw || "").trim();
+  if (!v) return "";
+  const low = v.toLowerCase();
+  const names = allBaseModelNames.value;
+  for (const n of names) {
+    if (n.toLowerCase() === low) return n;
   }
   // 容错前缀匹配（如 "anima v1" -> anima）
-  for (const opt of baseModelOptions) {
-    if (opt.value && bm.startsWith(opt.value)) return opt.value;
+  for (const n of names) {
+    if (low.startsWith(n.toLowerCase())) return n;
   }
-  return "";
+  return v;
 }
 
 // 各底模分类的数量（用于筛选栏计数）
@@ -276,6 +306,8 @@ function countByCategory(c: string): number {
 
 async function load() {
   loading.value = true;
+  // 先取底模库名单，再做存量归一化（否则首次加载时名单为空会把历史值原样保留）
+  await loadBasemodelNames();
   try {
     const cfg = await apiGet("config");
     loras.value = Array.isArray(cfg.loras) ? cfg.loras : [];

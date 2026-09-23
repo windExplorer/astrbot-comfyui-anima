@@ -392,7 +392,33 @@ const saving = ref(false);
 const workflows = ref<any[]>([]);
 const loras = ref<any[]>([]);
 
-const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
+// 底模下拉：v7.0.5 起改为「底模库（配置项页）」动态提供，
+// 并合并旧工作流里已存在的历史值（保证老条目原值可选、不被清空）。
+const basemodelNames = ref<string[]>([]);
+async function loadBasemodelNames() {
+  try {
+    const d = await apiGet("basemodels");
+    basemodelNames.value = (Array.isArray(d?.items) ? d.items : [])
+      .map((b: any) => String(b?.name || "").trim())
+      .filter(Boolean);
+  } catch {
+    basemodelNames.value = [];
+  }
+}
+const baseModelOptions = computed(() => {
+  const legacyVals = Array.from(
+    new Set(
+      workflows.value
+        .map((w) => String(w?.base_model || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const all = Array.from(new Set([...basemodelNames.value, ...legacyVals]));
+  return [
+    { label: "（通用 / 不限底模）", value: "" },
+    ...all.map((n) => ({ label: n, value: n })),
+  ];
+});
 
 // ---- 基础工作流（v7.0.0） ----
 const baseWfs = ref<any[]>([]);
@@ -469,6 +495,7 @@ async function load() {
     loading.value = false;
   }
   loadBaseWfs();
+  loadBasemodelNames();
 }
 
 function aliasStr(raw: string): string {
