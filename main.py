@@ -4413,6 +4413,83 @@ class ComfyUIDrawPlugin(Star):
             logger.debug(f"【放大】 倍率解析失败（忽略）: {_e}")
             return ""
 
+    @staticmethod
+    def _upscale_measured_note(in_w, in_h, out_w, out_h) -> str:
+        """按「出图尺寸 ÷ 输入尺寸」推算放大倍率（v7.4.4）。
+
+        适用场景：工作流内部自带放大链、但插件解析不到放大模型名——典型就是**旧版工作流**
+        （没有解析注记，`_upscale_note()` 返回空）。这时用实际尺寸推算是唯一可靠来源，
+        文案里如实写「推算」，不谎称知道模型名；尺寸没变大（±2% 内）返回空。
+        """
+        try:
+            _iw, _ih = int(in_w or 0), int(in_h or 0)
+            _ow, _oh = int(out_w or 0), int(out_h or 0)
+            if not (_iw and _ih and _ow and _oh):
+                return ""
+            _rx = _ow / float(_iw)
+            if _rx <= 1.02:
+                return ""
+            return f"约 {_rx:.2f}×（按出图/输入尺寸推算）"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _latent_size_of(prompt: dict | None) -> tuple[int | None, int | None]:
+        """从已加载的工作流 JSON 里读 latent 的宽高（图库「输入尺寸」用，v7.4.4）。
+
+        用途：旧版工作流没有解析注记，若本次**没注入宽高**（resolution_mode=none /
+        找不到 latent 节点 / 图生图），注入值就不等于真实输入尺寸——这时直接读 JSON
+        里 latent 的 width/height 才是真的。读不到返回 (None, None)（UI 不显示假值）。
+        """
+        try:
+            nodes = prompt or {}
+            if not isinstance(nodes, dict):
+                return None, None
+
+            def _wh(nid) -> tuple[int | None, int | None]:
+                _ins = ((nodes.get(nid) or {}).get("inputs") or {})
+                try:
+                    _w = int(_ins.get("width") or 0)
+                    _h = int(_ins.get("height") or 0)
+                except (TypeError, ValueError):
+                    return None, None
+                return (_w or None), (_h or None)
+
+            for _cls in ("EmptyLatentImage", "EmptySD3LatentImage",
+                         "EmptyLatentImageXL", "EmptyLatentImageAdvanced"):
+                for _nid in workflow_builder.find_all_nodes_by_class(nodes, _cls):
+                    _w, _h = _wh(_nid)
+                    if _w and _h:
+                        return _w, _h
+            # 兜底：任何名字带 Latent 且带 width/height 输入的节点（自定义节点常见）
+            for _nid, _node in nodes.items():
+                if not isinstance(_node, dict):
+                    continue
+                if "latent" not in str(_node.get("class_type") or "").lower():
+                    continue
+                _w, _h = _wh(_nid)
+                if _w and _h:
+                    return _w, _h
+        except Exception as _e:
+            logger.debug(f"【宽高】 读取 latent 尺寸失败（忽略）: {_e}")
+        return None, None
+
+    @staticmethod
+    def _images_size_of(paths) -> tuple[int | None, int | None]:
+        """读参考图（第一张）的像素尺寸；Pillow 不可用或读失败返回 (None, None)。"""
+        if _PILImage is None:
+            return None, None
+        try:
+            for _p in (paths or []):
+                try:
+                    with _PILImage.open(str(_p)) as _im:
+                        return int(_im.width), int(_im.height)
+                except Exception:
+                    continue
+        except Exception as _e:
+            logger.debug(f"【宽高】 读取参考图尺寸失败（忽略）: {_e}")
+        return None, None
+
     def _local_queue_ahead(self, key: str) -> int:
         """当前服务器上、本次提交之前已排队的任务数量（即"前面还有几位"）。"""
         return len(self._server_pending.get(key, []))
@@ -5715,6 +5792,23 @@ class ComfyUIDrawPlugin(Star):
             workflow_builder.set_number_node(prompt, _rn, width_field, w)
             workflow_builder.set_number_node(prompt, _rn, height_field, h)
 
+        # v7.4.4：算出本次**实际输入尺寸**，写进图库大图信息的「输入尺寸」栏。
+        # 旧版工作流此前这一栏拿不到值（面板直接不显示），其实是可以适配的：
+        #   ① 注入了宽高（res_nodes 非空）→ 注入值就是输入尺寸（新旧一致）；
+        #   ② 没注入（resolution_mode=none / 找不到 latent 节点）→ 读 JSON 里 latent 的真实宽高；
+        #   ③ 图生图 → 尺寸由参考图决定，用参考图尺寸；读不到就留空（不冒充假值）。
+        _in_w: int | None = w
+        _in_h: int | None = h
+        if init_images:
+            _in_w, _in_h = self._images_size_of(init_images)
+        elif not res_nodes:
+            _in_w, _in_h = self._latent_size_of(prompt)
+        if _in_w and _in_h:
+            logger.info(
+                f"【宽高】 本次输入尺寸（写入图库「输入尺寸」）: {_in_w}x{_in_h}"
+                f"（{'参考图' if init_images else ('注入值' if res_nodes else '工作流 JSON 原值')}）"
+            )
+
         # 注入 LoRA（合并关键词自动匹配）
         loras_cfg = self._loras_of(wf)
         logger.info(
@@ -6438,10 +6532,13 @@ class ComfyUIDrawPlugin(Star):
                                 w=_real_w,
                                 h=_real_h,
                                 # v7.1.0：请求尺寸（注入工作流的 w×h）+ 放大倍率说明
-                                # （解析放大模型名；解析不到/已绕过则为空 → UI 不展示）
-                                in_w=w,
-                                in_h=h,
-                                upscale=self._upscale_note(wf, prompt),
+                                # v7.4.4：改用「实际输入尺寸」_in_w/_in_h —— 没注入宽高时
+                                # 读工作流 JSON 的 latent 值、图生图读参考图尺寸，
+                                # 于是旧版工作流的大图信息里也能看到「输入尺寸」了。
+                                in_w=_in_w,
+                                in_h=_in_h,
+                                upscale=(self._upscale_note(wf, prompt)
+                                         or self._upscale_measured_note(_in_w, _in_h, _real_w, _real_h)),
                                 denoise=(denoise if is_img2img else None),
                                 cfg=_sampler.get("cfg"),
                                 steps=_sampler.get("steps"),
