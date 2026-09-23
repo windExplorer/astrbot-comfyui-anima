@@ -4414,6 +4414,12 @@ class ComfyUIDrawPlugin(Star):
             return ""
 
     @staticmethod
+    def _file_format_note(path) -> str:
+        """落盘文件的格式（结果卡「格式」用，v7.4.9）：取后缀去点小写；读不到返回空串。"""
+        _ext = os.path.splitext(str(path or ""))[1].lstrip(".").lower().strip()
+        return _ext
+
+    @staticmethod
     def _file_size_note(path) -> str:
         """人类可读的文件大小（结果卡「大小」用）；读不到返回空串。"""
         try:
@@ -5024,18 +5030,14 @@ class ComfyUIDrawPlugin(Star):
                     "device": self._card_device(platform_name=pname),
                     "today": self._card_today(),
                     "loras": [],
+                    # v7.4.9：结果卡只报结果（尺寸 / 大小 / 格式 / 耗时），不重复平台卡参数
                     "params": self._card_chips([
                         ("尺寸", f"{_lv.get('_real_w') or _w}×{_lv.get('_real_h') or _h}"),
-                        ("模型", model),
-                        ("步数", _lv.get("_steps_val")),
-                        ("引导", _lv.get("_cfg_val")),
-                        ("采样器", _lv.get("_eff_sampler")),
-                        ("噪声调度", _lv.get("_eff_noise")),
-                        ("画师串", "已启用" if artist else None),
+                        ("大小", self._file_size_note(img_path)),
+                        ("格式", self._file_format_note(img_path)),
                         ("耗时", f"{_plat_cost:.1f} 秒"),
-                        ("种子", seed),
                     ]),
-                    "prompt": positive,
+                    "prompt": "",
                 }, "done")
             except Exception as _ce:
                 logger.warning(f"【出图卡片】 平台结果卡构建失败（忽略）: {_ce}")
@@ -6840,6 +6842,7 @@ class ComfyUIDrawPlugin(Star):
                                 ("尺寸", f"{locals().get('_real_w') or w}×"
                                          f"{locals().get('_real_h') or h}"),
                                 ("大小", locals().get("_fs_fmt")),
+                                ("格式", self._file_format_note(img_path)),
                                 ("耗时", f"{_cost:.1f} 秒"),
                             ]),
                             "prompt": "",

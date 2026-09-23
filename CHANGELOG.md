@@ -2,6 +2,19 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.4.9（结果卡补「格式」+ 平台结果卡瘦身补漏）
+
+- 结果卡新增「**格式**」胶囊：从落盘文件后缀取（SaveImageExtended 的 `output_ext`
+  是什么就显示什么，如 `webp` / `png`）；现在结果卡一排是
+  `尺寸 / 大小 / 格式 / 耗时`（时间在页脚）；
+- **补漏**：v7.4.5 的「平台结果卡瘦身」当时没有保存成功——平台结果卡仍在发
+  模型 / 步数 / 引导 / 采样器 / 噪声调度 / 画师串 / 种子一整套参数。这次一并改为
+  只报结果（尺寸 / 大小 / 格式 / 耗时），并加上提示词置空。
+
+验证：`test_workflow_v7`（13 组）、`test_draw_card`、`test_image_store_today`、
+`test_size_helpers`、`test_nai_params`、`test_llm_tool_docstrings` 全过；
+compileall 与前端构建通过。
+
 ## v7.4.8（修：绘制中卡片的「采样器 / 调度器」一直不显示）
 
 **原因**：`workflow_builder.get_sampler_defaults()` 只提取 steps / cfg / denoise，
