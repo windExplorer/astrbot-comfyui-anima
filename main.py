@@ -4310,6 +4310,26 @@ class ComfyUIDrawPlugin(Star):
         wf["negative_field"] = neg.get("field", "text")
         wf["resolution_node"] = lat.get("node", "")
         wf["output_node"] = save.get("node", "")
+        # v7.0.11：默认宽高跟随基础工作流——配置里没填（0/空）时用解析出的 latent
+        # 默认尺寸，避免落到 512×512 兜底（历史上新版表单曾预填 512，出图尺寸全错）。
+        try:
+            if not int(wf.get("default_width") or 0) and lat.get("default_width"):
+                wf["default_width"] = int(lat["default_width"])
+            if not int(wf.get("default_height") or 0) and lat.get("default_height"):
+                wf["default_height"] = int(lat["default_height"])
+            # 历史脏数据：保存过 512×512 兜底值、而基础图宽高是别的值 → 以基础图为准
+            if (int(wf.get("default_width") or 0) == 512
+                    and int(wf.get("default_height") or 0) == 512
+                    and lat.get("default_width") and lat.get("default_height")
+                    and (int(lat["default_width"]), int(lat["default_height"])) != (512, 512)):
+                wf["default_width"] = int(lat["default_width"])
+                wf["default_height"] = int(lat["default_height"])
+                logger.info(
+                    f"【宽高】 配置里的 512×512 视为历史兜底值，改为基础工作流解析尺寸 "
+                    f"{wf['default_width']}x{wf['default_height']}（工作流「{wf.get('name')}」）"
+                )
+        except (TypeError, ValueError):
+            pass
         wf["lora_anchor"] = roles.get("model_src", "")
         wf["lora_clip"] = roles.get("clip_src") or ""
         wf["image_node"] = roles.get("image_node") or ""

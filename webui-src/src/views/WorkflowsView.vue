@@ -137,7 +137,14 @@
     <CoverEditor v-model:show="coverEditorShow" :title="coverEditorTitle" @confirm="onCoverConfirm" />
 
     <!-- 编辑弹窗 -->
-    <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="wf-modal" :bordered="false">
+    <n-modal
+      v-model:show="editShow"
+      preset="card"
+      :title="editTitle"
+      class="wf-modal"
+      :bordered="false"
+      :style="{ width: '960px', maxWidth: '96vw' }"
+    >
       <n-form label-placement="top" :label-width="0" class="edit-form">
         <n-alert v-if="legacy" type="warning" style="margin-bottom: 10px">
           旧版工作流（未引用基础工作流）：仅可调整基础字段，节点/采样器等实现细节已收敛到新版。
@@ -228,7 +235,8 @@
             <n-input v-model:value="editForm.llm_notes" type="textarea" :rows="2" placeholder="如：本工作流专画头像，用户要头像时优先选用" />
           </n-form-item>
 
-          <n-divider style="margin:4px 0 8px">— 采样器 —</n-divider>
+          <n-tabs v-model:value="semTab" type="line" animated pane-style="padding-top:10px">
+          <n-tab-pane name="sampler" tab="采样器">
           <div class="form-grid">
             <n-form-item label="固定种子（留空 = 每次随机）">
               <n-input v-model:value="editForm.fixed_seed" placeholder="数字；用户显式指定种子时以用户为准" />
@@ -276,8 +284,9 @@
             </n-form-item>
           </div>
           <n-button size="tiny" quaternary @click="resetSampler">↺ 恢复默认（清空采样器覆盖）</n-button>
+          </n-tab-pane>
 
-          <n-divider style="margin:10px 0 8px">— 放大 —</n-divider>
+          <n-tab-pane name="upscale" tab="放大">
           <div class="form-grid">
             <n-form-item label="放大模式">
               <n-select v-model:value="editForm.upscale_mode" :options="upscaleModeOptions" />
@@ -296,8 +305,9 @@
             </n-form-item>
           </div>
           <n-button size="tiny" quaternary @click="resetUpscale">↺ 恢复默认（清空放大覆盖）</n-button>
+          </n-tab-pane>
 
-          <n-divider style="margin:10px 0 8px">— 清理显存 / 保存 —</n-divider>
+          <n-tab-pane name="save" tab="清理显存 / 保存">
           <div class="form-grid">
             <n-form-item label="清理显存">
               <n-select v-model:value="editForm.cleanup_mode" :options="cleanupModeOptions" />
@@ -324,6 +334,8 @@
             <n-button size="tiny" quaternary @click="resetCleanup">↺ 恢复默认（清空清理覆盖）</n-button>
             <n-button size="tiny" quaternary @click="resetSave">↺ 恢复默认（清空保存覆盖）</n-button>
           </n-space>
+          </n-tab-pane>
+          </n-tabs>
           <n-form-item v-if="builtinLoras.length" label="基础工作流内置 LoRA（不可删除，可禁用）">
             <div style="width:100%; display:flex; flex-direction:column; gap:6px">
               <div v-for="b in builtinLoras" :key="b.node" style="display:flex; align-items:center; gap:8px">
@@ -342,12 +354,20 @@
         <n-divider style="margin:8px 0">── 宽高 ──</n-divider>
         <div class="form-grid">
           <n-form-item label="默认宽度">
-            <n-input-number v-model:value="editForm.default_width" style="width:100%" />
-            <span class="form-hint">{{ baseLatentHint }}</span>
+            <n-input-number
+              v-model:value="editForm.default_width"
+              style="width:100%"
+              @update:value="sizeTouched = true"
+            />
+            <span class="form-hint">{{ baseLatentHint }}（选基础工作流时自动带入）</span>
           </n-form-item>
           <n-form-item label="默认高度">
-            <n-input-number v-model:value="editForm.default_height" style="width:100%" />
-            <span class="form-hint">{{ baseLatentHint }}</span>
+            <n-input-number
+              v-model:value="editForm.default_height"
+              style="width:100%"
+              @update:value="sizeTouched = true"
+            />
+            <span class="form-hint">{{ baseLatentHint }}（选基础工作流时自动带入）</span>
           </n-form-item>
         </div>
         <div class="form-grid">
@@ -476,7 +496,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton, NAlert } from "naive-ui";
+import { useMessage, useDialog, NButton, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTag, NSpace, NDivider, NEmpty, NSpin, NCheckbox, NRadioGroup, NRadioButton, NAlert, NTabs, NTabPane } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { parseAliases, truncate } from "@/utils/format";
@@ -538,6 +558,23 @@ const baseModelOptions = computed(() => {
 
 // ---- 基础工作流（v7.0.0） ----
 const baseWfs = ref<any[]>([]);
+// 语义区 tabs（v7.0.11：弹窗加宽 + 采样器/放大/清理保存分页）
+const semTab = ref("sampler");
+/** 用户是否手动改过默认宽高（改过之后不再用基础工作流的值覆盖） */
+const sizeTouched = ref(false);
+
+/** 用基础工作流解析出的宽高回填「默认宽高」（未手动改过时才覆盖，含历史 512 兜底值） */
+function applyBaseSize() {
+  if (sizeTouched.value) return;
+  const lat = selectedBase.value?.roles?.latent || {};
+  if (!lat.default_width || !lat.default_height) return;
+  const curW = Number(editForm.default_width || 0);
+  const curH = Number(editForm.default_height || 0);
+  // 512 是历史兜底值（不是用户意图），一并纠正为基础工作流的真实尺寸
+  if (curW !== lat.default_width) editForm.default_width = lat.default_width;
+  if (curH !== lat.default_height) editForm.default_height = lat.default_height;
+}
+
 // 放大模型下拉数据源：配置项页 kind=upscale_model（v7.0.9）
 const upscaleOptions = ref<any[]>([]);
 async function loadUpscaleOptions() {
@@ -624,6 +661,7 @@ function resetSize() {
   editForm.max_width = "";
   editForm.max_height = "";
   editForm.lock_size = false;
+  sizeTouched.value = false;  // 恢复默认 = 重新允许基础工作流值覆盖
   const lat = baseDefaults.value?.latent || {};
   if (lat.default_width) editForm.default_width = lat.default_width;
   if (lat.default_height) editForm.default_height = lat.default_height;
@@ -731,18 +769,17 @@ watch(
   () => editForm.base_id,
   (nv) => {
     if (!String(nv || "").trim()) return;
-    const lat = selectedBase.value?.roles?.latent || {};
-    if (!lat.default_width || !lat.default_height) return;
-    const curW = Number(editForm.default_width || 0);
-    const curH = Number(editForm.default_height || 0);
-    if (!curW || curW === 512) editForm.default_width = lat.default_width;
-    if (!curH || curH === 512) editForm.default_height = lat.default_height;
+    applyBaseSize();
     // 若基础图保存节点没有 quality/output_ext 能力，清掉不可用的保存覆盖
     const save = selectedBase.value?.roles?.save || {};
     if (!save.has_quality) editForm.save_quality = "";
     if (!save.has_output_ext) editForm.save_format = "";
   }
 );
+
+// 基础工作流列表/详情是异步加载的：选定时可能还没拿到解析结果，
+// 数据到位后再补一次宽高回填（否则会停在 512/空值）。
+watch(selectedBase, () => applyBaseSize());
 
 function aliasStr(raw: string): string {
   const a = parseAliases(raw);
@@ -1019,8 +1056,14 @@ function openForm(idx: number, prefill?: any) {
     resolution_width_field: w.resolution_width_field || "width",
     resolution_height_field: w.resolution_height_field || "height",
     resolution_mode: w.resolution_mode || "single",
-    default_width: w.default_width ?? 512,
-    default_height: w.default_height ?? 512,
+    // v7.0.11：新版工作流默认宽高不再兜底 512（512 会被当成真实默认值注入），
+    // 留空 = 跟随基础工作流解析出的宽高；旧版条目保持 512 兜底行为。
+    default_width: (w.base_id || "").trim()
+      ? (w.default_width || null)
+      : (w.default_width ?? 512),
+    default_height: (w.base_id || "").trim()
+      ? (w.default_height || null)
+      : (w.default_height ?? 512),
     max_width: w.max_width || "",
     max_height: w.max_height || "",
     lock_size: !!w.lock_size,
@@ -1043,7 +1086,12 @@ function openForm(idx: number, prefill?: any) {
     loras_text: w.loras_text || "",
     loraList: parseLorasText(w.loras_text || ""),
   })));
+  // 打开弹窗时重置「宽高手动改过」标记：已有显式宽高的记录视为已定，不覆盖
+  sizeTouched.value = !!(w.default_width && w.default_height);
+  semTab.value = "sampler";
   editShow.value = true;
+  // 基础工作流解析数据可能晚于弹窗打开（列表异步），再补一次回填
+  applyBaseSize();
 }
 
 function addWorkflow() {
