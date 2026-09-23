@@ -1637,6 +1637,159 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"导入失败: {e}")
 
+    # ------------------ 旧版工作流 → 新版工作流（v7.4.0） ------------------
+
+    def _copy_base_cover_to_lora_assets(self, base_image: str) -> str | None:
+        """把基础工作流封面（basemodel_assets/）复制一份到 lora_assets/，返回新文件名。
+
+        为什么不直接让工作流引用「bm:xxx」：工作流封面除了卡片列表，还用于大图查看与
+        详情（`lora/image` 只认 lora_assets），复制一份最省心（同一张图，占用可忽略）。
+        """
+        name = str(base_image or "").strip()
+        if not name or "/" in name or "\\" in name or ".." in name:
+            return None
+        try:
+            src = self._basemodel_assets_dir() / name
+            if not src.is_file():
+                return None
+            stem = os.path.splitext(name)[0]
+            ext = os.path.splitext(name)[1] or ".png"
+            safe = re.sub(r"[^\w\-.]", "_", stem)[:60] or "cover"
+            final = f"{safe}_{uuid.uuid4().hex[:8]}{ext}"
+            (self._lora_assets_dir() / final).write_bytes(src.read_bytes())
+            return final
+        except Exception as e:
+            logger.warning(f"【封面】 复制基础工作流封面失败: {e}")
+            return None
+
+    def _convert_legacy_workflow(self, w: dict, store, dry: bool = False
+                                 ) -> tuple[dict | None, str | None]:
+        """把一条旧版工作流转成新版（写 base_id + 补封面）。返回 (信息, 失败原因)。"""
+        _nm = str(w.get("name") or "").strip() or "(未命名)"
+        _file = str(w.get("workflow_name") or "").strip()
+        if not _file:
+            return None, "该条目没填「工作流文件名」，无法与基础工作流对应（先编辑补上文件名）"
+        rec = store.match_by_filename(_file)
+        if not rec:
+            return None, (f"没找到与文件名「{_file}」对应的基础工作流（同名即可，"
+                          f"不区分大小写与扩展名）——请先到「基础工作流」页导入它")
+        if not rec.get("parse_ok"):
+            _msg = str(rec.get("parse_msg") or "").strip() or "解析未通过"
+            return None, f"基础工作流「{rec.get('name')}」{_msg}，请先重解析或修正后重试"
+        info = {"name": _nm, "base_id": rec.get("id"), "base": rec.get("name"), "image": ""}
+        if dry:
+            return info, None
+        w["base_id"] = str(rec.get("id"))
+        # 封面：旧条目已有封面就沿用；原本没有封面则把基础工作流的封面复制一份过来
+        if not str(w.get("image") or "").strip() and str(rec.get("image") or "").strip():
+            _copied = self._copy_base_cover_to_lora_assets(str(rec.get("image")))
+            if _copied:
+                w["image"] = _copied
+        info["image"] = str(w.get("image") or "")
+        w["updated_at"] = time.time()
+        return info, None
+
+    async def legacyworkflows_convert(self):
+        """旧版工作流 → 新版工作流：按「工作流文件名」匹配基础工作流，匹配到才允许转换。
+
+        转换后该条目 base_id 非空，自然从「旧版工作流」页移到「工作流」页；
+        封面沿用原封面，原本没有封面则复制基础工作流的封面过来。
+
+        body: {"name": "动漫日常"} 单条；{"all": true} 批量；可加 {"dry": true} 只预检。
+        返回 {converted: [{name, base, base_id, image}], failed: [{name, reason}]}
+        """
+        try:
+            body = await request.json(default={}) or {}
+            store = self._workflow_store()
+            cfg = self.plugin.config
+            workflows = list(cfg.get("workflows", []) or [])
+
+            def _legacy_one(x) -> bool:
+                return isinstance(x, dict) and not str(x.get("base_id") or "").strip()
+
+            if body.get("all"):
+                targets = [x for x in workflows if _legacy_one(x)]
+                if not targets:
+                    return json_response({"converted": [], "failed": [],
+                                          "msg": "没有旧版工作流需要转换"})
+            else:
+                _name = str(body.get("name") or "").strip()
+                if not _name:
+                    return error_response("缺少 name（或传 all: true 批量转换）")
+                targets = [
+                    x for x in workflows
+                    if _legacy_one(x) and str(x.get("name") or "").strip() == _name
+                ]
+                if not targets:
+                    return error_response(
+                        f"没找到旧版工作流「{_name}」（可能已转换、已删除或名称不符）"
+                    )
+
+            dry = bool(body.get("dry"))
+            converted: list[dict] = []
+            failed: list[dict] = []
+            for x in targets:
+                info, err = self._convert_legacy_workflow(x, store, dry=dry)
+                if err:
+                    failed.append({
+                        "name": str(x.get("name") or "").strip() or "(未命名)",
+                        "reason": err,
+                    })
+                elif info:
+                    converted.append(info)
+            if converted and not dry:
+                cfg["workflows"] = workflows
+                try:
+                    cfg.save_config()
+                except Exception as e:
+                    return error_response(f"配置保存失败: {e}")
+                logger.info(f"【旧版转换】 成功 {len(converted)} 条、失败 {len(failed)} 条")
+            return json_response({"converted": converted, "failed": failed})
+        except Exception as e:
+            return error_response(f"转换失败: {e}")
+
+    async def workflows_use_base_cover(self):
+        """把工作流关联的基础工作流封面复制过来当封面。
+
+        背景：此前前端直接把基础工作流的封面名写进 wf.image，而工作流封面读的是
+        lora_assets/ ——「默认封面」按钮点了看着没反应。改为后端复制一份再写入。
+        body: {"name": "工作流名"}
+        """
+        try:
+            body = await request.json(default={}) or {}
+            _name = str(body.get("name") or "").strip()
+            if not _name:
+                return error_response("缺少 name")
+            cfg = self.plugin.config
+            workflows = list(cfg.get("workflows", []) or [])
+            target = next(
+                (x for x in workflows
+                 if isinstance(x, dict) and str(x.get("name") or "").strip() == _name),
+                None,
+            )
+            if target is None:
+                return error_response(f"没找到工作流「{_name}」", status_code=404)
+            _bid = str(target.get("base_id") or "").strip()
+            if not _bid.isdigit():
+                return error_response("该工作流未关联基础工作流（旧版条目请先「转新版」或用「抓封面」）")
+            rec = self._workflow_store().get(int(_bid))
+            if not rec:
+                return error_response("关联的基础工作流不存在（可能已被删除）")
+            if not str(rec.get("image") or "").strip():
+                return error_response(
+                    f"基础工作流「{rec.get('name')}」还没有封面，请先到「基础工作流」页设置"
+                )
+            copied = self._copy_base_cover_to_lora_assets(str(rec.get("image")))
+            if not copied:
+                return error_response("封面复制失败（基础工作流封面文件不存在？）")
+            target["image"] = copied
+            target["updated_at"] = time.time()
+            cfg["workflows"] = workflows
+            cfg.save_config()
+            return json_response({"image": copied, "msg": "封面已设置"})
+        except Exception as e:
+            return error_response(f"设置封面失败: {e}")
+
     async def baseworkflows_json(self):
         """读取基础工作流原始 JSON 文本（前端预览/下载）。query: id。"""
         try:
@@ -3493,6 +3646,8 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/baseworkflows/nodes", _h("baseworkflows_nodes"), ["GET"], "基础工作流节点清单/详情"),
         (f"{prefix}/legacyworkflows", _h("legacyworkflows_list"), ["GET"], "旧版工作流目录文件列表"),
         (f"{prefix}/legacyworkflows/import", _h("legacyworkflows_import"), ["POST"], "旧版工作流目录解析入库"),
+        (f"{prefix}/legacyworkflows/convert", _h("legacyworkflows_convert"), ["POST"], "旧版工作流转新版（单条/批量）"),
+        (f"{prefix}/workflows/use_base_cover", _h("workflows_use_base_cover"), ["POST"], "用基础工作流封面当默认封面"),
         (f"{prefix}/baseworkflows/fetch", _h("baseworkflows_fetch"), ["POST"], "基础工作流 C站抓取"),
         (f"{prefix}/baseworkflows/meta", _h("baseworkflows_meta"), ["POST"], "基础工作流元数据更新"),
         (f"{prefix}/translate/test", _h("translate_test"), ["POST"], "翻译调试（测试三种翻译模式）"),

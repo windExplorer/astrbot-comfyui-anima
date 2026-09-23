@@ -4,7 +4,8 @@
       <div>
         <h2>{{ legacy ? "旧版工作流" : "工作流" }}</h2>
         <p v-if="legacy">
-          旧版工作流（未引用基础工作流）：后续不再变动，仅可停用/删除；请逐步迁移到新版工作流。
+          旧版工作流（未引用基础工作流）：点卡片上的「转新版」即可按<b>工作流文件名</b>匹配基础工作流完成迁移
+          （匹配到才允许转换，封面会保留；原本没封面则取基础工作流的封面），也可以用右上「批量转新版」一次处理。
         </p>
         <p v-else>
           新版工作流：选择基础工作流后节点自动定位（无需手填节点 ID），并按需拨动语义开关
@@ -15,7 +16,12 @@
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
           <n-button v-if="!legacy" type="primary" @click="addWorkflow">＋ 新增工作流</n-button>
-          <n-button v-else @click="gotoNew">去新版新建</n-button>
+          <template v-else>
+            <n-button type="primary" :loading="converting" @click="convertAllLegacy">
+              批量转新版
+            </n-button>
+            <n-button @click="gotoNew">去新版新建</n-button>
+          </template>
         </div>
       </Teleport>
     </div>
@@ -123,6 +129,9 @@
             <n-button size="tiny" @click="editWorkflow(i)">编辑</n-button>
             <n-button size="tiny" @click="toggleEnabled(i)">{{ w.enabled === false ? "启用" : "停用" }}</n-button>
             <n-button size="tiny" @click="copyWorkflow(i)">复制</n-button>
+            <n-button v-if="legacy" size="tiny" type="primary" :loading="converting" @click="convertLegacy(i)">
+              转新版
+            </n-button>
             <n-button size="tiny" @click="legacy ? fetchCover(i) : useBaseCover(i)">
               {{ legacy ? "抓封面" : "默认封面" }}
             </n-button>
@@ -1565,14 +1574,88 @@ function useBaseCover(idx: number) {
     message.warning(`基础工作流「${base.name}」还没有封面：请先到「基础工作流」页设置它的封面`);
     return;
   }
-  if (w.image === base.image) { message.info("当前已在使用基础工作流的封面"); return; }
   dialog.info({
     title: "使用默认封面",
-    content: `将使用基础工作流「${base.name}」的封面图作为本工作流的封面。`
-      + "（同一张图复用，不额外占空间；基础工作流以后换封面不会自动同步，可再点一次本按钮同步）",
+    content: `将把基础工作流「${base.name}」的封面复制一份作为本工作流的封面。`
+      + "（基础工作流以后换封面不会自动同步，可再点一次本按钮同步）",
     positiveText: "使用",
     negativeText: "取消",
-    onPositiveClick: () => applyCover(idx, base.image),
+    onPositiveClick: async () => {
+      try {
+        await apiPost("workflows/use_base_cover", { name: w.name });
+        message.success("封面已设置");
+        await load();
+      } catch (e: any) {
+        message.error(e?.message || "设置封面失败");
+      }
+    },
+  });
+}
+
+// ---------------- 旧版工作流 → 新版（v7.4.0） ----------------
+const converting = ref(false);
+
+function fmtConvertResult(d: any): { ok: string[]; bad: string[] } {
+  const ok = (Array.isArray(d?.converted) ? d.converted : [])
+    .map((x: any) => `${x.name} → 基础工作流「${x.base}」${x.image ? "（含封面）" : ""}`);
+  const bad = (Array.isArray(d?.failed) ? d.failed : [])
+    .map((x: any) => `${x.name}：${x.reason}`);
+  return { ok, bad };
+}
+
+async function doConvert(payload: Record<string, any>) {
+  converting.value = true;
+  try {
+    const d = await apiPost("legacyworkflows/convert", payload, { timeout: 120000 });
+    const { ok, bad } = fmtConvertResult(d);
+    if (ok.length && !bad.length) {
+      message.success(`已转换 ${ok.length} 条：${ok.join("；")}`);
+    } else if (ok.length && bad.length) {
+      dialog.warning({
+        title: `部分转换成功（成功 ${ok.length} / 未转换 ${bad.length}）`,
+        content: `已转换：${ok.join("；")}。未转换：${bad.join("；")}`,
+        positiveText: "知道了",
+      });
+    } else {
+      dialog.error({
+        title: "转换失败",
+        content: bad.join("；") || "没有可转换的旧版工作流",
+        positiveText: "知道了",
+      });
+    }
+    await load();
+  } catch (e: any) {
+    dialog.error({ title: "转换失败", content: e?.message || "请求失败", positiveText: "知道了" });
+  } finally {
+    converting.value = false;
+  }
+}
+
+function convertLegacy(idx: number) {
+  const w = workflows.value[idx];
+  if (!w) return;
+  const file = String(w.workflow_name || "").trim();
+  dialog.info({
+    title: "转换为新版工作流",
+    content: `将按「工作流文件名」${file ? `（${file}）` : "（未填写）"}匹配同名基础工作流；`
+      + "匹配到才能转换。转换后该条目从「旧版工作流」页消失、出现在「工作流」页，"
+      + "封面会保留（原本没封面则取基础工作流的封面）。",
+    positiveText: "开始转换",
+    negativeText: "取消",
+    onPositiveClick: () => doConvert({ name: w.name }),
+  });
+}
+
+function convertAllLegacy() {
+  const n = scopedWorkflows.value.length;
+  if (!n) { message.info("没有旧版工作流"); return; }
+  dialog.info({
+    title: "批量转换为新版",
+    content: `将尝试转换本页全部 ${n} 条旧版工作流：能按文件名匹配到基础工作流的会转换，`
+      + "其余保持原样并列出原因。",
+    positiveText: "开始转换",
+    negativeText: "取消",
+    onPositiveClick: () => doConvert({ all: true }),
   });
 }
 

@@ -136,6 +136,37 @@ class WorkflowStore:
         return self._row_to_dict(row, with_json) if row else None
 
     # ------------------------------------------------------------------ #
+    def match_by_filename(self, file_name: str) -> dict | None:
+        """按「原始 JSON 文件名」匹配基础工作流（旧版工作流转新版时用，v7.4.0）。
+
+        归一化：去首尾空白、去 .json 扩展名、大小写不敏感。
+        命中优先级（高分优先，同分先到先得）：
+          3 = file_name 完全一致（导入时存的是上传时的原始文件名）
+          2 = file_name 去扩展名后一致
+          1 = 显示名 name 一致（导入时 name = 文件名 stem）
+        返回命中的记录 dict，未命中返回 None。
+        """
+        target = str(file_name or "").strip()
+        if not target:
+            return None
+        t_full = target.lower()
+        t_stem = (Path(target).stem or target).lower()
+        best, best_score = None, 0
+        for rec in self.list_all():
+            _fn = str(rec.get("file_name") or "").strip().lower()
+            _nm = str(rec.get("name") or "").strip().lower()
+            score = 0
+            if _fn and _fn == t_full:
+                score = 3
+            elif _fn and (Path(_fn).stem or _fn) == t_stem:
+                score = 2
+            elif _nm and _nm in (t_stem, t_full):
+                score = 1
+            if score > best_score:
+                best, best_score = rec, score
+        return best
+
+    # ------------------------------------------------------------------ #
     def import_json(self, name: str, json_text: str, original_filename: str = "",
                     force: bool = False) -> tuple[int | None, dict | None, str | None]:
         """上传/更新基础工作流。

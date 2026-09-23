@@ -318,6 +318,32 @@ def test_bypass_alpha_chain():
     print("== 6. alpha 工作流绕过（整链删除+接回 VAEDecode） OK")
 
 
+def test_match_by_filename():
+    """旧版工作流转新版：按「工作流文件名」匹配基础工作流（v7.4.0）。"""
+    tmp = Path(tempfile.mkdtemp())
+    st = WorkflowStore(tmp)
+    _json = json.dumps(WF_STD)
+    st.import_json("sd", _json, original_filename="sd.json")
+    st.import_json("anima_v5", _json, original_filename="anima_v5.json")
+    # 没有原始文件名（比如手工建的基础工作流）→ 只能靠显示名兜底
+    st.import_json("仅显示名", _json, original_filename="")
+
+    # 1) file_name 精确（大小写不敏感）
+    assert (st.match_by_filename("sd.json") or {}).get("name") == "sd"
+    assert (st.match_by_filename("SD.JSON") or {}).get("name") == "sd"
+    # 2) 去扩展名 / 显示名
+    assert (st.match_by_filename("sd") or {}).get("name") == "sd"
+    assert (st.match_by_filename("anima_v5.json") or {}).get("name") == "anima_v5"
+    assert (st.match_by_filename("anima_v5") or {}).get("name") == "anima_v5"
+    # 3) file_name 缺失时用 name 兜底
+    assert (st.match_by_filename("仅显示名.json") or {}).get("name") == "仅显示名"
+    # 4) 匹配不到 → None（转换会被拒绝并给出原因）
+    assert st.match_by_filename("不存在.json") is None
+    assert st.match_by_filename("") is None
+    assert st.match_by_filename("   ") is None
+    print("== 12. 旧版转新版（文件名匹配基础工作流） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -330,13 +356,5 @@ if __name__ == "__main__":
     test_list_nodes()
     test_option_store()
     test_bypass_alpha_chain()
-    print("\n基础工作流体系测试全部通过")
-
-
-if __name__ == "__main__":
-    test_parse_std()
-    test_parse_reject_multi_sampler()
-    test_parse_qwen_subgraph()
-    test_store()
-    test_surgery()
-    print("\nv7.0.0 基础工作流体系测试全部通过")
+    test_match_by_filename()
+    print("\n基础工作流体系测试全部通过（12 组）")

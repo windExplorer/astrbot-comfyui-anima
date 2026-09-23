@@ -856,9 +856,11 @@ class StandaloneWebUI:
             return await self._api_lora_translate(path, request)
 
         # ---------- 底模库 / 基础工作流库 / 旧版目录 / 配置项（v7.0.0+） ----------
+        # v7.4.0：补上 /workflows/（此前该前缀没有分发，standalone 下 workflows/sampler
+        # 一直是 404），转换与「用基础工作流封面」两个新接口也走这里。
         if (path.startswith("/basemodels") or path.startswith("/baseworkflows")
                 or path.startswith("/legacyworkflows") or path.startswith("/options/")
-                or path.startswith("/size_tiers")):
+                or path.startswith("/size_tiers") or path.startswith("/workflows/")):
             return await self._api_lora_translate(path, request)
 
         # ---------- 统计 ----------
@@ -1327,6 +1329,9 @@ class StandaloneWebUI:
             "/baseworkflows/nodes": ("baseworkflows_nodes", "GET"),
             "/legacyworkflows": ("legacyworkflows_list", "GET"),
             "/legacyworkflows/import": ("legacyworkflows_import", "POST"),
+            "/legacyworkflows/convert": ("legacyworkflows_convert", "POST"),
+            "/workflows/sampler": ("workflow_sampler", "GET"),
+            "/workflows/use_base_cover": ("workflows_use_base_cover", "POST"),
             "/baseworkflows/fetch": ("baseworkflows_fetch", "POST"),
             "/baseworkflows/meta": ("baseworkflows_meta", "POST"),
         }.get(path)
