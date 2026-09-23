@@ -401,6 +401,24 @@
             </n-tab-pane>
 
             <n-tab-pane name="size" tab="尺寸">
+              <!-- v7.0.17：把「配置项 → 尺寸比例预设」接进表单，点一下即填默认宽高 -->
+              <n-form-item label="尺寸预设（来自配置页「尺寸比例预设」）">
+                <n-space :size="6" align="center" style="width:100%">
+                  <n-select
+                    :value="null"
+                    :options="sizePresetOptions"
+                    placeholder="选择后自动填入下方默认宽高（也可手填）"
+                    filterable
+                    style="min-width:260px; flex:1"
+                    @update:value="applySizePreset"
+                  />
+                  <n-button size="tiny" quaternary @click="goConfig">管理预设 ↗</n-button>
+                </n-space>
+                <span class="form-hint">
+                  这些档位仍会按「用户话里的关键词」自动触发（如用户说「竖版」）；
+                  想要永远用工作流自己的尺寸，勾下方「禁止改变默认宽高」。
+                </span>
+              </n-form-item>
               <div class="form-grid">
                 <n-form-item label="默认宽度">
                   <n-input-number
@@ -810,9 +828,32 @@ async function loadServers() {
   try {
     const cfg = await apiGet("config");
     servers.value = Array.isArray(cfg.comfyui_servers) ? cfg.comfyui_servers : [];
+    ratioPresets.value = Array.isArray(cfg.draw_ratio) ? cfg.draw_ratio : [];
   } catch {
     servers.value = [];
+    ratioPresets.value = [];
   }
+}
+// 尺寸比例预设（全局配置 draw_ratio）：v7.0.17 起在「尺寸」页可直接套用
+const ratioPresets = ref<any[]>([]);
+const sizePresetOptions = computed(() =>
+  ratioPresets.value
+    .filter((p: any) => p && p.enabled !== false && p.width && p.height)
+    .map((p: any) => ({
+      label: `${p.name || "未命名"}（${p.width}×${p.height}）`,
+      value: `${p.width}x${p.height}`,
+    }))
+);
+function applySizePreset(v: string | null) {
+  const [w, h] = String(v || "").split("x").map((x) => Number(x));
+  if (!w || !h) return;
+  editForm.default_width = w;
+  editForm.default_height = h;
+  markSizeTouched();
+  message.success(`已套用尺寸预设 ${w}×${h}`);
+}
+function goConfig() {
+  router.push("/config");
 }
 const builtinLoras = computed<any[]>(() => selectedBase.value?.roles?.builtin_loras || []);
 const saveFormatOptions = [

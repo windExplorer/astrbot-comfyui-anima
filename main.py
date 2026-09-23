@@ -1954,6 +1954,26 @@ class ComfyUIDrawPlugin(Star):
                 return parts[1].strip() if len(parts) > 1 else ""
         return text
 
+    # 用户明确要求「按工作流默认尺寸」的表述：命中则完全跳比例预设
+    _RATIO_SKIP_RE = re.compile(
+        r"(默认尺寸|工作流默认|按默认|用默认|保持默认|default\s*size)", re.IGNORECASE
+    )
+
+    def _ratio_source_text(self, event, positive: str) -> str:
+        """比例关键词的匹配文本 = **用户自己说的话**（v7.0.17）。
+
+        此前用的是 LLM 生成的画面描述（positive），而内置 keyword 里含
+        `portrait` / `square` / `wide` / `landscape` / `vertical` 这类英文词——
+        自然语言系底模写一句 "portrait of a girl" 就会命中「竖版 3:4」，
+        把工作流默认尺寸 816×1216 换成 864×1152，用户完全看不出是谁改的。
+        取不到用户原话时（如脚本直调）才退回 positive。
+        """
+        try:
+            _raw = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
+        except Exception:
+            _raw = ""
+        return _raw or (positive or "")
+
     def _resolve_ratio_size(
         self, prompt_text: str, width: int | None, height: int | None
     ) -> tuple[int | None, int | None]:
@@ -1961,18 +1981,25 @@ class ComfyUIDrawPlugin(Star):
 
         规则：
         - 用户已显式给出任意一个宽或高（width 或 height 非空）→ 不触发比例（用户优先）。
+        - 用户说了「默认尺寸 / 按工作流默认」→ 不触发比例（v7.0.17）。
         - 否则在 prompt_text 里找 draw_ratio（template_list 数组）的 keyword 命中项
           （enabled=true），取第一个命中项返回其 width/height。
+          ★ v7.0.17：英文关键词必须**整词**匹配，避免 `portrait` 命中 `portraiture`、
+          `wide` 命中 `widespread` 这类子串误触发。
         - 都没有 → (None, None)，由调用方回退工作流默认尺寸。
         """
         # 用户显式给过宽或高 → 以用户为准，不触发比例
         if width or height:
             return None, None
-        presets = self._cfg("draw_ratio", []) or []
-        if not presets:
-            return None, None
         text = (prompt_text or "").lower()
         if not text:
+            return None, None
+        # 用户明确要「默认尺寸」→ 不套比例预设
+        if self._RATIO_SKIP_RE.search(text):
+            logger.info("【宽高】 用户明确要求默认尺寸，跳过 draw_ratio 比例预设")
+            return None, None
+        presets = self._cfg("draw_ratio", []) or []
+        if not presets:
             return None, None
         for p in presets:
             if not isinstance(p, dict):
@@ -1983,7 +2010,19 @@ class ComfyUIDrawPlugin(Star):
             if not kws:
                 continue
             kw_list = [k.strip().lower() for k in kws.split(",") if k.strip()]
-            if any(k and k in text for k in kw_list):
+            hit = False
+            for k in kw_list:
+                if not k:
+                    continue
+                if k.isascii():
+                    # 整词匹配（英文词不加边界会把 picture 里的 "pic"、portrait 系词吃掉）
+                    if re.search(rf"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])", text):
+                        hit = True
+                        break
+                elif k in text:
+                    hit = True
+                    break
+            if hit:
                 pw = p.get("width")
                 ph = p.get("height")
                 if pw and ph:
@@ -4515,8 +4554,10 @@ class ComfyUIDrawPlugin(Star):
         if stats is not None:
             stats.setdefault("nsfw_blocked", 0)
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
-        # 但「尺寸比例」触发需基于用户原始文本（竖版/横版/9:16 等词）。
-        _ratio_src = positive or ""
+        # 但「尺寸比例」触发需基于**用户原话**（竖版/横版/9:16 等词）——
+        # v7.0.17：此前这里是 LLM 生成的 positive，英文自然语言描述里的
+        # `portrait` / `square` / `wide` 会命中内置 keyword，导致尺寸被悄悄改写。
+        _ratio_src = self._ratio_source_text(event, positive)
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         self._last_event = event
         # 出图计时起点（用于生成完成后的耗时报告）
@@ -4911,8 +4952,9 @@ class ComfyUIDrawPlugin(Star):
 
         # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入
         # 尺寸比例（全局 draw_ratio）：用户未显式指定宽高（width/height 均为空）时，
-        # 若用户原始提示词里命中某个比例关键词（竖版/横版/9:16 等），则用该比例的配置尺寸，
+        # 若**用户自己说的话**里命中某个比例关键词（竖版/横版/9:16 等），则用该比例的配置尺寸，
         # 优先于工作流默认尺寸；用户显式给了宽高则始终以用户为准。
+        # v7.0.17：匹配文本改为用户原话（此前扫 LLM 画面描述，`portrait` 等英文词会误触发）
         _ratio_w, _ratio_h = self._resolve_ratio_size(_ratio_src, width, height)
         w = _ratio_w if _ratio_w is not None else (width or int(wf.get("default_width", 512) or 512))
         h = _ratio_h if _ratio_h is not None else (height or int(wf.get("default_height", 512) or 512))
@@ -4927,7 +4969,9 @@ class ComfyUIDrawPlugin(Star):
         logger.info(
             f"【宽高】 决策：{_wh_src} -> {w}x{h}"
             f"（比例命中={_ratio_w},{_ratio_h}；用户传参={width},{height}；"
-            f"工作流「{wf.get('name')!r}」默认={wf.get('default_width')},{wf.get('default_height')}）"
+            f"工作流「{wf.get('name')!r}」默认={wf.get('default_width')},{wf.get('default_height')}；"
+            f"比例匹配文本来源={'用户原话' if _ratio_src != (positive or '') else '画面描述(退回)'}"
+            f"={(_ratio_src or '')[:60]!r}）"
         )
         # v7.0.2：禁止改变默认宽高（lock_size）——开启后忽略用户传参与比例预设，
         # 恒用工作流默认宽高（图生图尺寸由参考图决定，不适用）。
