@@ -165,22 +165,19 @@
           </n-alert>
         </template>
 
-        <template v-if="legacy || hasBase">
-        <div class="form-grid">
-          <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
-          <n-form-item label="绑定服务器">
-            <n-select
-              v-model:value="editForm.server_name"
-              :options="serverOptions"
-              clearable
-              placeholder="默认服务器"
-            />
-          </n-form-item>
-        </div>
-        <n-form-item v-if="!legacy" label="描述（仅备注展示，不参与名称匹配）">
-          <n-input v-model:value="editForm.desc" type="textarea" :rows="2" placeholder="如：日常出图用；或 头像专用，只出头像构图" />
-        </n-form-item>
+        <!-- ===== 旧版工作流：线性表单（冻结，不再演进） ===== -->
         <template v-if="legacy">
+          <div class="form-grid">
+            <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 sd" /></n-form-item>
+            <n-form-item label="绑定服务器">
+              <n-select
+                v-model:value="editForm.server_name"
+                :options="serverOptions"
+                clearable
+                placeholder="默认服务器"
+              />
+            </n-form-item>
+          </div>
           <n-form-item label="别名（逗号/换行分隔）"><n-input v-model:value="editForm.aliases" type="textarea" :rows="2" /></n-form-item>
           <div class="form-grid">
             <n-form-item label="底模">
@@ -192,51 +189,243 @@
             <n-switch v-model:value="editForm.is_anima" />
             <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
           </n-form-item>
+          <n-form-item label="工作流类型">
+            <span class="form-hint">普通生图 / 图生图（旧版表情包/漫画功能已在 v7.0.0 移除）</span>
+          </n-form-item>
+          <n-form-item label="启用该工作流">
+            <n-switch v-model:value="editForm.enabled" />
+            <span class="form-hint">关闭后不可使用：显式指定会提示「已停用」，自动选择默认工作流也会跳过它</span>
+          </n-form-item>
+          <n-form-item label="锁定提示词（无需用户传词）">
+            <n-switch
+              v-model:value="editForm.require_prompt"
+              :checked-value="false"
+              :unchecked-value="true"
+            />
+            <span class="form-hint">开启后该工作流无需提示词即可出图；用户传了提示词也会被忽略</span>
+          </n-form-item>
+          <div class="form-grid">
+            <n-form-item label="固定正向提示词（可选）"><n-input v-model:value="editForm.default_positive" type="textarea" :rows="2" placeholder="锁定提示词时用此提示词覆盖工作流 JSON；未锁定时用户不传词也会兜底；不走翻译/改写" /></n-form-item>
+            <n-form-item label="固定负向提示词（可选）"><n-input v-model:value="editForm.default_negative" type="textarea" :rows="2" placeholder="用户未传负向提示词时，用此覆盖工作流 JSON 内的负向提示词" /></n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="C 站链接（抓封面）">
+              <n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" />
+            </n-form-item>
+            <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="可上传/抓取" /></n-form-item>
+          </div>
+          <n-divider style="margin:8px 0">── 宽高 ──</n-divider>
+          <div class="form-grid">
+            <n-form-item label="默认宽度"><n-input-number v-model:value="editForm.default_width" style="width:100%" /></n-form-item>
+            <n-form-item label="默认高度"><n-input-number v-model:value="editForm.default_height" style="width:100%" /></n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="允许的最大宽度（留空=不限制）">
+              <n-input v-model:value="editForm.max_width" placeholder="如 1536；超限按比例缩小" />
+            </n-form-item>
+            <n-form-item label="允许的最大高度（留空=不限制）">
+              <n-input v-model:value="editForm.max_height" placeholder="如 2048；超限按比例缩小" />
+            </n-form-item>
+          </div>
+          <n-form-item label="禁止改变默认宽高">
+            <n-switch v-model:value="editForm.lock_size" />
+            <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
+          </n-form-item>
+          <n-divider style="margin:8px 0">── 节点配置（旧版） ──</n-divider>
+          <div class="form-grid">
+            <n-form-item label="正提示词节点"><n-input v-model:value="editForm.positive_node" placeholder="如 6" /></n-form-item>
+            <n-form-item label="负提示词节点"><n-input v-model:value="editForm.negative_node" placeholder="如 7" /></n-form-item>
+            <n-form-item label="正向输入框名"><n-input v-model:value="editForm.positive_field" placeholder="留空默认 text；Qwen 系填 prompt" /></n-form-item>
+            <n-form-item label="负向输入框名"><n-input v-model:value="editForm.negative_field" placeholder="留空默认 text；Qwen 系填 negative_prompt" /></n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="分辨率节点"><n-input v-model:value="editForm.resolution_node" placeholder="EmptyLatentImage，可留空自动探测" /></n-form-item>
+            <n-form-item label="输出节点"><n-input v-model:value="editForm.output_node" placeholder="出图节点（可选）" /></n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="宽度字段"><n-input v-model:value="editForm.resolution_width_field" placeholder="width" /></n-form-item>
+            <n-form-item label="高度字段"><n-input v-model:value="editForm.resolution_height_field" placeholder="height" /></n-form-item>
+          </div>
+          <n-form-item label="宽高注入范围">
+            <n-space vertical :size="4" style="width:100%">
+              <n-select v-model:value="editForm.resolution_mode" :options="resolutionModeOptions" style="width:100%" />
+              <span class="form-hint">single=只改上方「分辨率节点」（留空则自动探测第一个 EmptyLatentImage），与旧行为一致；all=改<b>所有</b> EmptyLatentImage —— 多 latent 串联工作流必须选它，否则前后 latent 尺寸不一致、构图被拉伸；none=完全不改，沿用工作流 JSON 原始尺寸（也可用来避开默认宽高的兜底值）</span>
+            </n-space>
+          </n-form-item>
+          <div class="form-grid">
+            <n-form-item label="参考图节点"><n-input v-model:value="editForm.image_node" placeholder="图生图 LoadImage（可选）" /></n-form-item>
+            <n-form-item label="主模节点（lora_anchor）"><n-input v-model:value="editForm.lora_anchor" placeholder="CheckpointLoader/UNETLoader 键名，留空自动探测" /></n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="放大模型节点"><n-input v-model:value="editForm.upscale_node_id" placeholder="放大模型加载节点键名（如 14）" /></n-form-item>
+            <n-form-item label="放大模型名称"><n-input v-model:value="editForm.upscale_model_name" placeholder="替换成的放大模型文件名（如 4x-UltraSharp.pth）" /></n-form-item>
+          </div>
+          <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
+          <n-divider style="margin:8px 0">── 采样器参数（steps / cfg / denoise）──</n-divider>
+          <n-form-item label="从工作流文件读取">
+            <n-space vertical :size="6" style="width:100%">
+              <n-button size="tiny" :loading="samplerLoading" @click="fetchSamplerParams">↻ 读取文件中的采样器参数</n-button>
+              <span v-if="samplerHint" class="form-hint" style="color:#c2255c">{{ samplerHint }}</span>
+              <span v-else class="form-hint">根据上方「工作流文件名」读取文件采样器节点的默认 steps / cfg / denoise，自动填入下方字段</span>
+            </n-space>
+          </n-form-item>
+          <div class="form-grid">
+            <n-form-item label="默认 steps">
+              <n-space vertical :size="4" style="width:100%">
+                <n-input-number v-model:value="editForm.default_steps" :min="0" :max="200" :step="1" :disabled="editForm.steps_off" style="width:100%" />
+                <n-checkbox v-model:checked="editForm.steps_off">不注入（沿用工作流原值）</n-checkbox>
+              </n-space>
+            </n-form-item>
+            <n-form-item label="默认 CFG">
+              <n-space vertical :size="4" style="width:100%">
+                <n-input-number v-model:value="editForm.default_cfg" :min="0" :max="30" :step="0.5" :precision="2" :disabled="editForm.cfg_off" style="width:100%" />
+                <n-checkbox v-model:checked="editForm.cfg_off">不注入（沿用工作流原值）</n-checkbox>
+              </n-space>
+            </n-form-item>
+          </div>
+          <n-form-item label="默认 denoise">
+            <n-space vertical :size="4" style="width:100%">
+              <n-input-number v-model:value="editForm.default_denoise" :min="-1" :max="1" :step="0.05" :precision="2" :disabled="editForm.denoise_off" style="width:100%" />
+              <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
+            </n-space>
+          </n-form-item>
+          <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
+          <template v-if="builtinLoras.length">
+            <n-form-item label="基础工作流内置 LoRA（不可删除，可禁用）">
+              <div style="width:100%; display:flex; flex-direction:column; gap:6px">
+                <div v-for="b in builtinLoras" :key="b.node" style="display:flex; align-items:center; gap:8px">
+                  <n-tag size="small" :bordered="false">{{ b.name || b.node }}</n-tag>
+                  <n-switch
+                    size="small"
+                    :value="!isBuiltinDisabled(b)"
+                    @update:value="(v: boolean) => toggleBuiltin(b, !v)"
+                  />
+                  <span class="form-hint">{{ isBuiltinDisabled(b) ? "已禁用（强度 0）" : "启用" }}</span>
+                </div>
+              </div>
+            </n-form-item>
+          </template>
+          <n-form-item label="默认 LoRA">
+            <div class="lora-list">
+              <div v-for="(row, ri) in (editForm.loraList || [])" :key="ri" class="lora-row">
+                <n-select
+                  v-model:value="row.name"
+                  :options="loraOptions"
+                  filterable
+                  clearable
+                  placeholder="选择 LoRA（可搜索）"
+                  style="flex: 1; min-width: 120px"
+                />
+                <n-input-number
+                  v-model:value="row.weight"
+                  :min="0"
+                  :max="2"
+                  :step="0.05"
+                  :precision="2"
+                  placeholder="权重"
+                  style="width: 110px"
+                />
+                <n-switch v-model:value="row.enabled" size="small">
+                  <template #checked>启用</template>
+                  <template #unchecked>停用</template>
+                </n-switch>
+                <n-button size="tiny" quaternary type="error" @click="removeLoraRow(ri)">删除</n-button>
+              </div>
+              <n-space style="margin-top: 6px">
+                <n-button size="tiny" @click="addLoraRow">＋ 添加 LoRA</n-button>
+                <n-button size="tiny" @click="refreshLoras">↻ 刷新 LoRA 列表</n-button>
+              </n-space>
+              <div class="form-hint">从全局 LoRA 库下拉选择（可搜索）；保存后写回 loras_text（名称|权重|0/1）</div>
+            </div>
+          </n-form-item>
         </template>
-        <n-form-item v-if="!legacy" label="底模 / 类型（来自基础工作流，只读）">
-          <n-space :size="6" align="center">
-            <n-tag size="small" :bordered="false">{{ selectedBaseKindLabel }}</n-tag>
-            <n-tag size="small" type="info" :bordered="false">底模：{{ selectedBaseBasemodel }}</n-tag>
-            <n-tag v-if="selectedBaseCivitai" size="small" :bordered="false">
-              <a :href="selectedBaseCivitai" target="_blank" rel="noopener noreferrer" class="civ-link">C站链接 ↗</a>
-            </n-tag>
-            <span v-else class="form-hint">C 站链接在「基础工作流」里配置</span>
-          </n-space>
-        </n-form-item>
-        <n-form-item v-else label="工作流类型">
-          <span class="form-hint">普通生图 / 图生图（旧版表情包/漫画功能已在 v7.0.0 移除）</span>
-        </n-form-item>
-        <n-form-item label="启用该工作流">
-          <n-switch v-model:value="editForm.enabled" />
-          <span class="form-hint">关闭后不可使用：显式指定会提示「已停用」，自动选择默认工作流也会跳过它</span>
-        </n-form-item>
-        <n-form-item label="锁定提示词（无需用户传词）">
-          <n-switch
-            v-model:value="editForm.require_prompt"
-            :checked-value="false"
-            :unchecked-value="true"
-          />
-          <span class="form-hint">开启后该工作流无需提示词即可出图（如「动漫转真人」，只需传图/引用图）；用户传了提示词也会被忽略</span>
-        </n-form-item>
-        <div class="form-grid">
-          <n-form-item label="固定正向提示词（可选）"><n-input v-model:value="editForm.default_positive" type="textarea" :rows="2" placeholder="锁定提示词时用此提示词覆盖工作流 JSON；未锁定时用户不传词也会兜底；不走翻译/改写" /></n-form-item>
-          <n-form-item label="固定负向提示词（可选）"><n-input v-model:value="editForm.default_negative" type="textarea" :rows="2" placeholder="用户未传负向提示词时，用此覆盖工作流 JSON 内的负向提示词" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item v-if="legacy" label="C 站链接（抓封面）">
-            <n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" />
-          </n-form-item>
-          <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="可上传/抓取；新版沿用基础工作流封面亦可自行更换" /></n-form-item>
-        </div>
 
-        <n-divider style="margin:8px 0">── 语义覆盖（留空 = 跟随基础工作流） ──</n-divider>
-        <template v-if="hasBase">
-          <n-form-item label="LLM 注入说明（用本工作流出图时告知 LLM 的用法；留空不注入）">
-            <n-input v-model:value="editForm.llm_notes" type="textarea" :rows="2" placeholder="如：本工作流专画头像，用户要头像时优先选用" />
-          </n-form-item>
+        <!-- ===== 新版工作流：按配置类型分页 ===== -->
+        <template v-else-if="hasBase">
+          <n-tabs v-model:value="formTab" type="line" animated pane-style="padding-top:12px">
 
-          <n-tabs v-model:value="semTab" type="line" animated pane-style="padding-top:10px">
-          <n-tab-pane name="sampler" tab="采样器">
+            <n-tab-pane name="basic" tab="基础信息">
+              <div class="form-grid">
+                <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 动漫日常" /></n-form-item>
+                <n-form-item label="绑定服务器">
+                  <n-select v-model:value="editForm.server_name" :options="serverOptions" clearable placeholder="默认服务器" />
+                </n-form-item>
+              </div>
+              <n-form-item label="描述（仅备注展示，不参与名称匹配）">
+                <n-input v-model:value="editForm.desc" type="textarea" :rows="2" placeholder="如：日常出图用；或 头像专用，只出头像构图" />
+              </n-form-item>
+              <n-form-item label="底模 / 类型（来自基础工作流，只读）">
+                <n-space :size="6" align="center">
+                  <n-tag size="small" :bordered="false">{{ selectedBaseKindLabel }}</n-tag>
+                  <n-tag size="small" type="info" :bordered="false">底模：{{ selectedBaseBasemodel }}</n-tag>
+                  <n-tag v-if="selectedBaseCivitai" size="small" :bordered="false">
+                    <a :href="selectedBaseCivitai" target="_blank" rel="noopener noreferrer" class="civ-link">C站链接 ↗</a>
+                  </n-tag>
+                  <span v-else class="form-hint">C 站链接在「基础工作流」里配置</span>
+                </n-space>
+              </n-form-item>
+              <n-form-item label="启用该工作流">
+                <n-switch v-model:value="editForm.enabled" />
+                <span class="form-hint">关闭后不可使用：显式指定会提示「已停用」，自动选择默认工作流也会跳过它</span>
+              </n-form-item>
+              <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="可上传/抓取；沿用基础工作流封面亦可自行更换" /></n-form-item>
+            </n-tab-pane>
+
+            <n-tab-pane name="prompt" tab="提示词">
+              <n-form-item label="锁定提示词（无需用户传词）">
+                <n-switch
+                  v-model:value="editForm.require_prompt"
+                  :checked-value="false"
+                  :unchecked-value="true"
+                />
+                <span class="form-hint">开启后该工作流无需提示词即可出图（如「动漫转真人」，只需传图/引用图）；用户传了提示词也会被忽略</span>
+              </n-form-item>
+              <div class="form-grid">
+                <n-form-item label="固定正向提示词（可选）"><n-input v-model:value="editForm.default_positive" type="textarea" :rows="2" placeholder="锁定提示词时用此提示词覆盖工作流 JSON；未锁定时用户不传词也会兜底；不走翻译/改写" /></n-form-item>
+                <n-form-item label="固定负向提示词（可选）"><n-input v-model:value="editForm.default_negative" type="textarea" :rows="2" placeholder="用户未传负向提示词时，用此覆盖工作流 JSON 内的负向提示词" /></n-form-item>
+              </div>
+              <n-form-item label="LLM 注入说明（用本工作流出图时告知 LLM 的用法；留空不注入）">
+                <n-input v-model:value="editForm.llm_notes" type="textarea" :rows="2" placeholder="如：本工作流专画头像，用户要头像时优先选用" />
+              </n-form-item>
+            </n-tab-pane>
+
+            <n-tab-pane name="size" tab="尺寸">
+              <div class="form-grid">
+                <n-form-item label="默认宽度">
+                  <n-input-number
+                    v-model:value="editForm.default_width"
+                    style="width:100%"
+                    @update:value="markSizeTouched"
+                  />
+                  <span class="form-hint">{{ baseLatentHint }}（选基础工作流时自动带入）</span>
+                </n-form-item>
+                <n-form-item label="默认高度">
+                  <n-input-number
+                    v-model:value="editForm.default_height"
+                    style="width:100%"
+                    @update:value="markSizeTouched"
+                  />
+                  <span class="form-hint">{{ baseLatentHint }}（选基础工作流时自动带入）</span>
+                </n-form-item>
+              </div>
+              <div class="form-grid">
+                <n-form-item label="允许的最大宽度（留空=不限制）">
+                  <n-input v-model:value="editForm.max_width" placeholder="如 1536；超限按比例缩小" />
+                  <span class="form-hint">基础工作流：无此限制（非节点参数，仅插件侧裁剪）</span>
+                </n-form-item>
+                <n-form-item label="允许的最大高度（留空=不限制）">
+                  <n-input v-model:value="editForm.max_height" placeholder="如 2048；超限按比例缩小" />
+                  <span class="form-hint">基础工作流：无此限制（非节点参数，仅插件侧裁剪）</span>
+                </n-form-item>
+              </div>
+              <n-form-item label="禁止改变默认宽高">
+                <n-switch v-model:value="editForm.lock_size" />
+                <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
+              </n-form-item>
+              <n-button size="tiny" quaternary @click="resetSize">↺ 恢复默认（宽高回填基础工作流值并清空限制）</n-button>
+            </n-tab-pane>
+
+            <n-tab-pane name="sampler" tab="采样器">
           <div class="form-grid">
             <n-form-item label="固定种子（留空 = 每次随机）">
               <n-input v-model:value="editForm.fixed_seed" placeholder="数字；用户显式指定种子时以用户为准" />
@@ -286,202 +475,114 @@
           <n-button size="tiny" quaternary @click="resetSampler">↺ 恢复默认（清空采样器覆盖）</n-button>
           </n-tab-pane>
 
-          <n-tab-pane name="upscale" tab="放大">
-          <div class="form-grid">
-            <n-form-item label="放大模式">
-              <n-select v-model:value="editForm.upscale_mode" :options="upscaleModeOptions" />
-              <span class="form-hint">{{ baseUpscaleHint }}</span>
-            </n-form-item>
-            <n-form-item label="放大模型">
-              <n-select
-                v-model:value="editForm.upscale_model_name"
-                :options="upscaleModelOptions"
-                filterable
-                tag
-                clearable
-                placeholder="留空 = 跟随基础工作流"
-              />
-              <span class="form-hint">{{ baseUpscaleModelHint }}</span>
-            </n-form-item>
-          </div>
-          <n-button size="tiny" quaternary @click="resetUpscale">↺ 恢复默认（清空放大覆盖）</n-button>
-          </n-tab-pane>
-
-          <n-tab-pane name="save" tab="清理显存 / 保存">
-          <div class="form-grid">
-            <n-form-item label="清理显存">
-              <n-select v-model:value="editForm.cleanup_mode" :options="cleanupModeOptions" />
-              <span class="form-hint">{{ baseCleanupHint }}</span>
-            </n-form-item>
-            <n-form-item label="保存格式">
-              <n-select
-                v-model:value="editForm.save_format"
-                :options="saveFormatOptions"
-                placeholder="留空 = 跟随基础工作流"
-              />
-              <span class="form-hint">
-                {{ baseDefaults.save?.has_output_ext === false ? "基础工作流：保存节点不支持格式（配置后将替换为 SaveImageExtended）" : (baseDefaults.save?.output_ext ? `基础工作流：${baseDefaults.save.output_ext}` : "基础工作流：未解析到") }}
-              </span>
-            </n-form-item>
-            <n-form-item label="保存质量 %">
-              <n-input v-model:value="editForm.save_quality" placeholder="留空 = 跟随基础工作流" />
-              <span class="form-hint">
-                {{ baseDefaults.save?.has_quality === false ? "基础工作流：保存节点无质量字段（配置后将替换为 SaveImageExtended）" : (baseDefaults.save?.quality != null ? `基础工作流：${baseDefaults.save.quality}` : "基础工作流：未解析到") }}
-              </span>
-            </n-form-item>
-          </div>
-          <n-space :size="8">
-            <n-button size="tiny" quaternary @click="resetCleanup">↺ 恢复默认（清空清理覆盖）</n-button>
-            <n-button size="tiny" quaternary @click="resetSave">↺ 恢复默认（清空保存覆盖）</n-button>
-          </n-space>
-          </n-tab-pane>
-          </n-tabs>
-          <n-form-item v-if="builtinLoras.length" label="基础工作流内置 LoRA（不可删除，可禁用）">
-            <div style="width:100%; display:flex; flex-direction:column; gap:6px">
-              <div v-for="b in builtinLoras" :key="b.node" style="display:flex; align-items:center; gap:8px">
-                <n-tag size="small" :bordered="false">{{ b.name || b.node }}</n-tag>
-                <n-switch
-                  size="small"
-                  :value="!isBuiltinDisabled(b)"
-                  @update:value="(v: boolean) => toggleBuiltin(b, !v)"
-                />
-                <span class="form-hint">{{ isBuiltinDisabled(b) ? "已禁用（强度 0）" : "启用" }}</span>
+            <n-tab-pane name="post" tab="放大与清理">
+              <div class="form-grid">
+                <n-form-item label="放大模式">
+                  <n-select v-model:value="editForm.upscale_mode" :options="upscaleModeOptions" />
+                  <span class="form-hint">{{ baseUpscaleHint }}</span>
+                </n-form-item>
+                <n-form-item label="放大模型">
+                  <n-select
+                    v-model:value="editForm.upscale_model_name"
+                    :options="upscaleModelOptions"
+                    filterable
+                    tag
+                    clearable
+                    placeholder="留空 = 跟随基础工作流"
+                  />
+                  <span class="form-hint">{{ baseUpscaleModelHint }}</span>
+                </n-form-item>
               </div>
-            </div>
-          </n-form-item>
+              <n-form-item label="清理显存">
+                <n-select v-model:value="editForm.cleanup_mode" :options="cleanupModeOptions" />
+                <span class="form-hint">{{ baseCleanupHint }}</span>
+              </n-form-item>
+              <n-form-item label="放大模型可选列表（数据源）">
+                <n-space :size="6" align="center">
+                  <span class="form-hint">在「配置项」页维护（kind=upscale_model），当前可用 {{ upscaleOptions.length }} 个</span>
+                  <n-button size="tiny" quaternary @click="goOptions">前往配置项 ↗</n-button>
+                </n-space>
+              </n-form-item>
+              <n-space :size="8">
+                <n-button size="tiny" quaternary @click="resetUpscale">↺ 恢复默认（清空放大覆盖）</n-button>
+                <n-button size="tiny" quaternary @click="resetCleanup">↺ 恢复默认（清空清理覆盖）</n-button>
+              </n-space>
+            </n-tab-pane>
+
+            <n-tab-pane name="save" tab="保存">
+              <div class="form-grid">
+                <n-form-item label="保存格式">
+                  <n-select
+                    v-model:value="editForm.save_format"
+                    :options="saveFormatOptions"
+                    placeholder="留空 = 跟随基础工作流"
+                  />
+                  <span class="form-hint">
+                    {{ baseDefaults.save?.has_output_ext === false ? "基础工作流：保存节点不支持格式（配置后将替换为 SaveImageExtended）" : (baseDefaults.save?.output_ext ? `基础工作流：${baseDefaults.save.output_ext}` : "基础工作流：未解析到") }}
+                  </span>
+                </n-form-item>
+                <n-form-item label="保存质量 %">
+                  <n-input v-model:value="editForm.save_quality" placeholder="留空 = 跟随基础工作流" />
+                  <span class="form-hint">
+                    {{ baseDefaults.save?.has_quality === false ? "基础工作流：保存节点无质量字段（配置后将替换为 SaveImageExtended）" : (baseDefaults.save?.quality != null ? `基础工作流：${baseDefaults.save.quality}` : "基础工作流：未解析到") }}
+                  </span>
+                </n-form-item>
+              </div>
+              <n-button size="tiny" quaternary @click="resetSave">↺ 恢复默认（清空保存覆盖）</n-button>
+            </n-tab-pane>
+
+            <n-tab-pane name="lora" tab="LoRA">
+              <n-form-item v-if="builtinLoras.length" label="基础工作流内置 LoRA（不可删除，可禁用）">
+                <div style="width:100%; display:flex; flex-direction:column; gap:6px">
+                  <div v-for="b in builtinLoras" :key="b.node" style="display:flex; align-items:center; gap:8px">
+                    <n-tag size="small" :bordered="false">{{ b.name || b.node }}</n-tag>
+                    <n-switch
+                      size="small"
+                      :value="!isBuiltinDisabled(b)"
+                      @update:value="(v: boolean) => toggleBuiltin(b, !v)"
+                    />
+                    <span class="form-hint">{{ isBuiltinDisabled(b) ? "已禁用（强度 0）" : "启用" }}</span>
+                  </div>
+                </div>
+              </n-form-item>
+              <div v-else class="form-hint">基础工作流未内置 LoRA。</div>
+              <n-form-item label="附加 LoRA（追加注入，不影响内置）">
+                <div class="lora-list">
+                  <div v-for="(row, ri) in (editForm.loraList || [])" :key="ri" class="lora-row">
+                    <n-select
+                      v-model:value="row.name"
+                      :options="loraOptions"
+                      filterable
+                      clearable
+                      placeholder="选择 LoRA（可搜索）"
+                      style="flex: 1; min-width: 120px"
+                    />
+                    <n-input-number
+                      v-model:value="row.weight"
+                      :min="0"
+                      :max="2"
+                      :step="0.05"
+                      :precision="2"
+                      placeholder="权重"
+                      style="width: 110px"
+                    />
+                    <n-switch v-model:value="row.enabled" size="small">
+                      <template #checked>启用</template>
+                      <template #unchecked>停用</template>
+                    </n-switch>
+                    <n-button size="tiny" quaternary type="error" @click="removeLoraRow(ri)">删除</n-button>
+                  </div>
+                  <n-space style="margin-top: 6px">
+                    <n-button size="tiny" @click="addLoraRow">＋ 添加 LoRA</n-button>
+                    <n-button size="tiny" @click="refreshLoras">↻ 刷新 LoRA 列表</n-button>
+                  </n-space>
+                  <div class="form-hint">从全局 LoRA 库下拉选择（可搜索）；已添加的会置灰去重；保存后写回 loras_text（名称|权重|0/1）</div>
+                </div>
+              </n-form-item>
+            </n-tab-pane>
+          </n-tabs>
         </template>
 
-        <n-divider style="margin:8px 0">── 宽高 ──</n-divider>
-        <div class="form-grid">
-          <n-form-item label="默认宽度">
-            <n-input-number
-              v-model:value="editForm.default_width"
-              style="width:100%"
-              @update:value="sizeTouched = true"
-            />
-            <span class="form-hint">{{ baseLatentHint }}（选基础工作流时自动带入）</span>
-          </n-form-item>
-          <n-form-item label="默认高度">
-            <n-input-number
-              v-model:value="editForm.default_height"
-              style="width:100%"
-              @update:value="sizeTouched = true"
-            />
-            <span class="form-hint">{{ baseLatentHint }}（选基础工作流时自动带入）</span>
-          </n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="允许的最大宽度（留空=不限制）">
-            <n-input v-model:value="editForm.max_width" placeholder="如 1536；超限按比例缩小" />
-            <span class="form-hint">基础工作流：无此限制（非节点参数，仅插件侧裁剪）</span>
-          </n-form-item>
-          <n-form-item label="允许的最大高度（留空=不限制）">
-            <n-input v-model:value="editForm.max_height" placeholder="如 2048；超限按比例缩小" />
-            <span class="form-hint">基础工作流：无此限制（非节点参数，仅插件侧裁剪）</span>
-          </n-form-item>
-        </div>
-        <n-form-item label="禁止改变默认宽高">
-          <n-switch v-model:value="editForm.lock_size" />
-          <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
-        </n-form-item>
-        <n-button size="tiny" quaternary @click="resetSize">↺ 恢复默认（宽高回填基础工作流值并清空限制）</n-button>
-
-        <template v-if="legacy">
-        <n-divider style="margin:8px 0">── 节点配置（旧版） ──</n-divider>
-        <div class="form-grid">
-          <n-form-item label="正提示词节点"><n-input v-model:value="editForm.positive_node" placeholder="如 6" /></n-form-item>
-          <n-form-item label="负提示词节点"><n-input v-model:value="editForm.negative_node" placeholder="如 7" /></n-form-item>
-          <n-form-item label="正向输入框名"><n-input v-model:value="editForm.positive_field" placeholder="留空默认 text；Qwen 系填 prompt" /></n-form-item>
-          <n-form-item label="负向输入框名"><n-input v-model:value="editForm.negative_field" placeholder="留空默认 text；Qwen 系填 negative_prompt" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="分辨率节点"><n-input v-model:value="editForm.resolution_node" placeholder="EmptyLatentImage，可留空自动探测" /></n-form-item>
-          <n-form-item label="输出节点"><n-input v-model:value="editForm.output_node" placeholder="出图节点（可选）" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="宽度字段"><n-input v-model:value="editForm.resolution_width_field" placeholder="width" /></n-form-item>
-          <n-form-item label="高度字段"><n-input v-model:value="editForm.resolution_height_field" placeholder="height" /></n-form-item>
-        </div>
-        <n-form-item label="宽高注入范围">
-          <n-space vertical :size="4" style="width:100%">
-            <n-select v-model:value="editForm.resolution_mode" :options="resolutionModeOptions" style="width:100%" />
-            <span class="form-hint">single=只改上方「分辨率节点」（留空则自动探测第一个 EmptyLatentImage），与旧行为一致；all=改<b>所有</b> EmptyLatentImage —— 多 latent 串联工作流必须选它，否则前后 latent 尺寸不一致、构图被拉伸；none=完全不改，沿用工作流 JSON 原始尺寸（也可用来避开默认宽高的兜底值）</span>
-          </n-space>
-        </n-form-item>
-        <div class="form-grid">
-          <n-form-item label="参考图节点"><n-input v-model:value="editForm.image_node" placeholder="图生图 LoadImage（可选）" /></n-form-item>
-          <n-form-item label="主模节点（lora_anchor）"><n-input v-model:value="editForm.lora_anchor" placeholder="CheckpointLoader/UNETLoader 键名，留空自动探测" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="放大模型节点"><n-input v-model:value="editForm.upscale_node_id" placeholder="放大模型加载节点键名（如 14）" /></n-form-item>
-          <n-form-item label="放大模型名称"><n-input v-model:value="editForm.upscale_model_name" placeholder="替换成的放大模型文件名（如 4x-UltraSharp.pth）" /></n-form-item>
-        </div>
-        <n-form-item label="CLIP 节点（lora_clip）"><n-input v-model:value="editForm.lora_clip" placeholder="完整模式用，CLIPLoader 键名，留空自动探测" /></n-form-item>
-
-        <n-divider style="margin:8px 0">── 采样器参数（steps / cfg / denoise）──</n-divider>
-        <n-form-item label="从工作流文件读取">
-          <n-space vertical :size="6" style="width:100%">
-            <n-button size="tiny" :loading="samplerLoading" @click="fetchSamplerParams">↻ 读取文件中的采样器参数</n-button>
-            <span v-if="samplerHint" class="form-hint" style="color:#c2255c">{{ samplerHint }}</span>
-            <span v-else class="form-hint">根据上方「工作流文件名」读取文件采样器节点的默认 steps / cfg / denoise，自动填入下方字段</span>
-          </n-space>
-        </n-form-item>
-        <div class="form-grid">
-          <n-form-item label="默认 steps">
-            <n-space vertical :size="4" style="width:100%">
-              <n-input-number v-model:value="editForm.default_steps" :min="0" :max="200" :step="1" :disabled="editForm.steps_off" style="width:100%" />
-              <n-checkbox v-model:checked="editForm.steps_off">不注入（沿用工作流原值）</n-checkbox>
-            </n-space>
-          </n-form-item>
-          <n-form-item label="默认 CFG">
-            <n-space vertical :size="4" style="width:100%">
-              <n-input-number v-model:value="editForm.default_cfg" :min="0" :max="30" :step="0.5" :precision="2" :disabled="editForm.cfg_off" style="width:100%" />
-              <n-checkbox v-model:checked="editForm.cfg_off">不注入（沿用工作流原值）</n-checkbox>
-            </n-space>
-          </n-form-item>
-        </div>
-        <n-form-item label="默认 denoise">
-          <n-space vertical :size="4" style="width:100%">
-            <n-input-number v-model:value="editForm.default_denoise" :min="-1" :max="1" :step="0.05" :precision="2" :disabled="editForm.denoise_off" style="width:100%" />
-            <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
-          </n-space>
-        </n-form-item>
-        <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
-        </template>
-        <n-form-item label="默认 LoRA">
-          <div class="lora-list">
-            <div v-for="(row, ri) in (editForm.loraList || [])" :key="ri" class="lora-row">
-              <n-select
-                v-model:value="row.name"
-                :options="loraOptions"
-                filterable
-                clearable
-                placeholder="选择 LoRA（可搜索）"
-                style="flex: 1; min-width: 120px"
-              />
-              <n-input-number
-                v-model:value="row.weight"
-                :min="0"
-                :max="2"
-                :step="0.05"
-                :precision="2"
-                placeholder="权重"
-                style="width: 110px"
-              />
-              <n-switch v-model:value="row.enabled" size="small">
-                <template #checked>启用</template>
-                <template #unchecked>停用</template>
-              </n-switch>
-              <n-button size="tiny" quaternary type="error" @click="removeLoraRow(ri)">删除</n-button>
-            </div>
-            <n-space style="margin-top: 6px">
-              <n-button size="tiny" @click="addLoraRow">＋ 添加 LoRA</n-button>
-              <n-button size="tiny" @click="refreshLoras">↻ 刷新 LoRA 列表</n-button>
-            </n-space>
-            <div class="form-hint">从全局 LoRA 库下拉选择（可搜索）；保存后写回 loras_text（名称|权重|0/1）</div>
-          </div>
-        </n-form-item>
-        </template>
       </n-form>
       <template #footer>
         <n-space justify="end">
@@ -558,8 +659,16 @@ const baseModelOptions = computed(() => {
 
 // ---- 基础工作流（v7.0.0） ----
 const baseWfs = ref<any[]>([]);
-// 语义区 tabs（v7.0.11：弹窗加宽 + 采样器/放大/清理保存分页）
-const semTab = ref("sampler");
+// 弹窗分页（v7.0.12：整个表单按配置类型分 tab）
+const formTab = ref("basic");
+/** 用户手动改过默认宽高（改过之后不再被基础工作流值覆盖） */
+function markSizeTouched() {
+  sizeTouched.value = true;
+}
+/** 跳到「配置项」页（放大模型数据源） */
+function goOptions() {
+  router.push("/options");
+}
 /** 用户是否手动改过默认宽高（改过之后不再用基础工作流的值覆盖） */
 const sizeTouched = ref(false);
 
@@ -1088,7 +1197,7 @@ function openForm(idx: number, prefill?: any) {
   })));
   // 打开弹窗时重置「宽高手动改过」标记：已有显式宽高的记录视为已定，不覆盖
   sizeTouched.value = !!(w.default_width && w.default_height);
-  semTab.value = "sampler";
+  formTab.value = "basic";
   editShow.value = true;
   // 基础工作流解析数据可能晚于弹窗打开（列表异步），再补一次回填
   applyBaseSize();
