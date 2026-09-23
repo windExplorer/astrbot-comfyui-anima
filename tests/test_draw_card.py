@@ -22,6 +22,12 @@ PARAMS = ["尺寸 1664 × 2432", "采样步数 25", "CFG 1.0", "采样器 euler"
 PROMPT = "1girl, 夜景, 满月, 月光, 星空, 花海, 户外, 繁花绽放, 酒壶, 影子, 长白发, 猫耳, 暖光"
 
 
+def _draw_probe():
+    from PIL import Image as _I, ImageDraw as _D
+
+    return _D.Draw(_I.new("RGBA", (8, 8)))
+
+
 def _info(**kw) -> dict:
     base = dict(kicker="底模 animaPencilXL_v500", workflow="动漫日常 · 文生图",
                 right_top="排队 0", device="RTX 4090D 24G", today=128,
@@ -93,14 +99,35 @@ def test_save_and_stats():
     print("== 4. 落盘 / 今日统计（自增、失败计数、跨天归零） OK")
 
 
-def test_wrap_and_long_text():
-    """超长提示词与超长失败原因都要能渲染（截断带省略号，不炸高度）。"""
+def test_prompt_not_truncated():
+    """提示词完整显示，不省略（v7.4.2）；失败原因板随行数变高。"""
+    short = render(_info(prompt="1girl"), state="drawing")
     long_prompt = ("1girl, extremely detailed face, " * 12).strip()
-    im = render(_info(prompt=long_prompt), state="drawing")
-    assert im is not None and im.size[1] < 700, im.size
-    im2 = render(_info(reason="X" * 400), state="failed")
-    assert im2 is not None and im2.size[1] < 800, im2.size
-    print("== 5. 超长提示词 / 超长失败原因（截断不炸） OK")
+    long_im = render(_info(prompt=long_prompt), state="drawing")
+    assert short is not None and long_im is not None
+    assert long_im.size[1] > short.size[1], (long_im.size, short.size)
+
+    # 折行函数：max_lines=0 = 不限行、且不出现省略号，内容一字不少
+    from PIL import ImageFont as _F
+    from draw_card import _wrap, find_font
+
+    _fp = find_font()
+    assert _fp, "找不到可用字体"
+    _f = _F.truetype(_fp, 34)
+    lines = _wrap(long_prompt, _f, _draw_probe(), 700, max_lines=0)
+    assert len(lines) >= 3, lines
+    assert not any(ln.endswith("…") for ln in lines), lines
+    assert "".join(lines).replace(" ", "") == long_prompt.replace(" ", ""), lines
+    # 指定行数时才会省略（仅失败原因这种兜底用）
+    capped = _wrap(long_prompt, _f, _draw_probe(), 700, max_lines=2)
+    assert len(capped) == 2 and capped[-1].endswith("…"), capped
+
+    # 失败原因：多行 → 卡片更高；单行短原因仍是单行板
+    r1 = render(_info(reason="连接超时"), state="failed")
+    r2 = render(_info(reason="ComfyUI 连接失败：" + "服务器无响应，" * 10), state="failed")
+    assert r1 is not None and r2 is not None
+    assert r2.size[1] > r1.size[1], (r2.size, r1.size)
+    print("== 5. 提示词完整显示（不省略）+ 失败原因多行 OK")
 
 
 if __name__ == "__main__":
@@ -108,5 +135,5 @@ if __name__ == "__main__":
     test_norm_theme()
     test_render_all_themes_and_states()
     test_save_and_stats()
-    test_wrap_and_long_text()
+    test_prompt_not_truncated()
     print("draw_card 全部通过")

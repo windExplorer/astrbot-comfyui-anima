@@ -153,10 +153,11 @@ def find_font(cfg: dict | None = None) -> str | None:
     return None
 
 
-def _wrap(text: str, font, draw, max_w: int, max_lines: int = 2) -> list[str]:
+def _wrap(text: str, font, draw, max_w: int, max_lines: int = 0) -> list[str]:
     """按像素宽度折行：ASCII 词不拆、CJK 逐字断。
 
-    返回至多 max_lines 行，最后一行超出会带省略号（省得卡片高度不可控）。
+    max_lines <= 0 = **不限行数**（提示词走这条：内容一个字都不能少，卡片高度随内容长）；
+    max_lines > 0 才在超出时给末行加省略号（仅用于「失败原因」这类超长兜底）。
     """
     text = re.sub(r"\s+", " ", str(text or "").strip())
     if not text:
@@ -164,6 +165,7 @@ def _wrap(text: str, font, draw, max_w: int, max_lines: int = 2) -> list[str]:
     tokens = re.findall(r"[A-Za-z0-9_\-'’\.]+|\s+|[^\s]", text)
     lines: list[str] = []
     cur = ""
+    truncated = False
     for tk in tokens:
         cand = cur + tk
         if draw.textlength(cand.strip(), font=font) <= max_w or not cur.strip():
@@ -171,18 +173,16 @@ def _wrap(text: str, font, draw, max_w: int, max_lines: int = 2) -> list[str]:
         else:
             lines.append(cur.strip())
             cur = "" if tk.isspace() else tk
-            if len(lines) >= max_lines:
+            if max_lines > 0 and len(lines) >= max_lines:
+                truncated = True
                 break
-    if len(lines) < max_lines and cur.strip():
+    if cur.strip() and not truncated:
         lines.append(cur.strip())
-    if len(lines) == max_lines:
-        # 还有没放下的内容 → 末行加省略号
+    if truncated and lines:
         last = lines[-1]
-        rest_ok = draw.textlength(last, font=font) <= max_w
-        if not rest_ok or (cur.strip() and lines[-1] != cur.strip()):
-            while last and draw.textlength(last + "…", font=font) > max_w:
-                last = last[:-1]
-            lines[-1] = last + "…"
+        while last and draw.textlength(last + "…", font=font) > max_w:
+            last = last[:-1]
+        lines[-1] = last + "…"
     return lines
 
 
@@ -239,8 +239,13 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     head_h = HEAD_H
     y = head_h + 18
     body_top = y
+    reason_lines: list[str] = []
+    reason_h = 0
     if reason:
-        y += 26 + 34 + 18
+        # 失败原因：最多 8 行（够放完整报错，极端超长才省略号）
+        reason_lines = _wrap(reason, f_chip, probe, (W - PAD * 2) - 28, max_lines=8)
+        reason_h = 14 + 20 * max(1, len(reason_lines))
+        y += 26 + reason_h + 18
     chips_max_w = W - PAD * 2
     # 版式（与样张一致）：标签文字画在 label_y+8；胶囊首行顶在 label_y+44，
     # 一块内容占 44 + 胶囊总高，块间再留 24。
@@ -253,7 +258,8 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     y += 44 + _ph + 24
     prompt_label_y, prompt_lines = y, []
     if prompt:
-        prompt_lines = _wrap(prompt, f_body, probe, chips_max_w, max_lines=2)
+        # v7.4.2：提示词**不再省略**——按宽度折满所有行，一个字都不少
+        prompt_lines = _wrap(prompt, f_body, probe, chips_max_w, max_lines=0)
         y += 30 + 28 * len(prompt_lines) + 14
     H = int(y + 6 + FOOT_H)
 
@@ -321,11 +327,11 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     if reason:
         _label("失败原因", body_top)
         _py = (body_top + 26) * S
-        d.rounded_rectangle([PAD * S, _py, (W - PAD) * S, _py + 34 * S], radius=10 * S,
+        d.rounded_rectangle([PAD * S, _py, (W - PAD) * S, _py + reason_h * S], radius=10 * S,
                             fill=c["accent"] + (26,), outline=c["accent"] + (80,), width=S)
-        _rs = _wrap(reason, f_chip, probe, chips_max_w - 28, max_lines=1)
-        d.text(((PAD + 14) * S, _py + 8 * S), (_rs[0] if _rs else reason[:42]),
-               font=f_chip, fill=c["accent"] + (255,))
+        for _i, _ln in enumerate(reason_lines or [reason[:42]]):
+            d.text(((PAD + 14) * S, _py + (7 + _i * 20) * S), _ln,
+                   font=f_chip, fill=c["accent"] + (255,))
     if loras:
         _label("LoRA", lora_label_y)
         _draw_chips(lora_geo, lora_label_y)
