@@ -9385,6 +9385,12 @@ class ComfyUIDrawPlugin(Star):
           插件会自动归一成 NAI 内部名，末尾的 Karras 等调度词会被识别成噪声调度。
 
         ★★★提示词规范（按目标工作流的底模选写法，写错会直接毁图）：
+        ★最高优先级（v7.0.16）：先看 comfyui_workflows 列表里每条工作流标注的
+          「提示词风格 / 优先语种」（底模库配置，用户手动设的，比任何家族推断都权威）：
+          · 风格=自然语言 → 用【优先语种】写自然语言整句，**不写 Danbooru 标签、不写质量词**
+            （优先语种=中文就写中文整句，插件不会替你翻译成标签）；
+          · 风格=Danbooru 标签 → 英文标签写法 + 该底模对应质量前缀；
+          · 列表没标注风格时，才按下方的家族规则兜底。
         - anima / illustrious / noobai（动漫标签系）：英文 Danbooru 标签 + 质量前缀
           （masterpiece, best quality, very aesthetic, absurdres）；禁自然语言长句、禁 Pony 质量词。
           ★只写**真实存在的 danbooru 标签**，绝不写自然语言元描述短语。反面例子（实测被模型写出）：
@@ -12254,6 +12260,33 @@ class ComfyUIDrawPlugin(Star):
 
     # LLM 工具：comfyui_workflows（查询工作流列表）
     # ------------------------------------------------------------------ #
+    def _basemodel_of_workflow(self, w: dict) -> dict | None:
+        """取工作流对应的底模库记录（v7.0.16）。
+
+        新版：base_id → 基础工作流 → basemodel_id → 底模库；
+        旧版：按 base_model 名称/文件名在底模库里匹配。
+        用途：把底模配置的「提示词风格 / 优先语种」告知 LLM（此前只在出图时用来
+        开关翻译，LLM 完全看不到这两个配置，于是自己按家族名硬猜写法）。
+        """
+        try:
+            _bid = str(w.get("base_id") or "").strip()
+            if _bid and self.workflow_store is not None:
+                rec = self.workflow_store.get(int(_bid)) if _bid.isdigit() else None
+                _bmid = int((rec or {}).get("basemodel_id") or 0)
+                if _bmid and self.basemodels is not None:
+                    return self.basemodels.get(_bmid)
+            _name = (w.get("base_model") or "").strip().lower()
+            if _name and self.basemodels is not None:
+                for b in self.basemodels.list_all():
+                    if _name in {
+                        (b.get("name") or "").strip().lower(),
+                        (b.get("file_name") or "").strip().lower(),
+                    }:
+                        return b
+        except Exception as e:
+            logger.debug(f"【底模】 列表解析底模失败: {e}")
+        return None
+
     @filter.llm_tool(name="comfyui_workflows")
     async def llm_workflows(self, event: AstrMessageEvent):
         """查询所有已配置的 ComfyUI 工作流列表，包括名称、是否支持图生图、是否动漫。
@@ -12263,6 +12296,9 @@ class ComfyUIDrawPlugin(Star):
         列表每行标记含义：
         - [支持图生图] / [仅文生图]：能否用于图生图（传 img2img_workflow）。
         - 【Anima】：动漫/二次元底模工作流。
+        - 提示词风格 / 优先语种：该工作流底模要求的 prompt 写法与语言
+          （来自底模库配置，**必须以它为准**：自然语言=写整句、不写标签与质量词；
+          Danbooru 标签=英文标签写法）。
 
         重要：不要凭记忆或猜测工作流名称！每次都先查列表再选。
         ★静默调用：本工具是画图内部步骤，调用前后不要输出过程性文字，结果直接用于选工作流。
@@ -12271,7 +12307,12 @@ class ComfyUIDrawPlugin(Star):
         if not workflows:
             return "暂无已配置的工作流。"
 
-        lines = ["已配置的工作流列表："]
+        lines = [
+            "已配置的工作流列表：",
+            "★写 prompt 前先看每条工作流标注的『提示词风格 / 优先语种』："
+            "风格=自然语言 → 按优先语种写自然语言整句（不写标签、不写质量词）；"
+            "风格=Danbooru 标签 → 英文标签写法。列表未标注时才用通用家族规则兜底。",
+        ]
         for w in workflows:
             name = w.get("name", "(未命名)")
             has_image = bool((w.get("image_node") or "").strip())
@@ -12287,6 +12328,22 @@ class ComfyUIDrawPlugin(Star):
             _notes = (w.get("llm_notes") or "").strip()
             if _notes:
                 lines.append(f"  · 用法说明：{_notes[:300]}")
+            # v7.0.16：底模库配置的「提示词风格 / 优先语种」必须让 LLM 看到，
+            # 否则模型只会按家族名硬猜（实测：配了自然语言+中文，LLM 照旧写英文标签）
+            _bm_rec = self._basemodel_of_workflow(w)
+            if _bm_rec:
+                _style = "Danbooru 标签" if (
+                    (_bm_rec.get("prompt_style") or "") == "danbooru"
+                    or _bm_rec.get("danbooru_ready")
+                ) else "自然语言（可掺杂标签）"
+                _lang = (_bm_rec.get("priority_lang") or "").strip() or "中文"
+                lines.append(
+                    f"  · 提示词风格：{_style}｜优先语种：{_lang}"
+                    f"（底模 {(_bm_rec.get('name') or '').strip()}）"
+                )
+                _bd = (_bm_rec.get("description") or "").strip()
+                if _bd:
+                    lines.append(f"  · 底模提示词规范：{_bd[:300]}")
 
         default = self._cfg("default_workflow", "")
         default_real = self._cfg("default_workflow_real", "")
