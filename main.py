@@ -6268,7 +6268,16 @@ class ComfyUIDrawPlugin(Star):
             ", ".join(f"{nm}:{_lora_weight.get(nm, '?')}" for nm in (enabled or []))
             or "无"
         )
-        _size = f"{w}x{h}" if (w and h) else "(默认)"
+        # v7.4.7：尺寸**永远显示具体数值**，不再出现「(默认)」这种含糊文案——
+        # 上面的四层决策必定把 w/h 解析成数字（未配置时兜底 512，那也是真实会用的值）；
+        # 万一还是拿不到（图生图等极端情况），用实际输入尺寸（参考图 / 工作流 JSON）兜底。
+        _disp_w, _disp_h = w, h
+        if not (_disp_w and _disp_h) and locals().get("_in_w") and locals().get("_in_h"):
+            _disp_w, _disp_h = _in_w, _in_h
+        try:
+            _size = f"{int(_disp_w)}x{int(_disp_h)}"
+        except (TypeError, ValueError):
+            _size = "(默认)"
         # 卡片用：LoRA 胶囊文案（名称 + 生效权重）
         _card_loras = [f"{nm} {_lora_weight.get(nm, '默认')}" for nm in (enabled or [])]
         logger.info(
