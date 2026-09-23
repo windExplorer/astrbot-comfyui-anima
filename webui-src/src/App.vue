@@ -401,13 +401,36 @@ body {
 }
 
 /* 弹窗宽度：n-modal 经 teleport 渲染到 <body>，组件 scoped 样式无法命中，
-   因此统一放在全局样式里控制。桌面固定宽度，移动端限宽 92vw 防占满屏幕。 */
+   因此统一放在全局样式里控制。桌面固定宽度，移动端限宽 92vw 防占满屏幕。
+   v7.0.7：补上「配置项（bm-modal）」「基础工作流（bw-modal）」——此前漏配类名，
+   这两个弹窗没有限宽，在宽屏上表现为贴边、铺满整屏。 */
 .lora-modal { width: 680px; max-width: 92vw; }
 .lora-modal.narrow { width: 520px; }
-.wf-modal { width: 720px; max-width: 92vw; }
+.wf-modal { width: 760px; max-width: 92vw; }
+.bm-modal { width: 640px; max-width: 92vw; }
+.bw-modal { width: 680px; max-width: 92vw; }
+
+/* 弹窗内表单过高时内部滚动（同样因为 teleport，scoped 样式不生效，统一在此兜底） */
+.lora-modal .edit-form,
+.wf-modal .edit-form,
+.bm-modal .edit-form,
+.bw-modal .n-form {
+  max-height: 62vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 @media (max-width: 768px) {
   .lora-modal,
   .lora-modal.narrow,
-  .wf-modal { width: 92vw; }
+  .wf-modal,
+  .bm-modal,
+  .bw-modal { width: 92vw; }
+  .lora-modal .edit-form,
+  .wf-modal .edit-form,
+  .bm-modal .edit-form,
+  .bw-modal .n-form {
+    max-height: 56vh;
+  }
 }
 </style>
