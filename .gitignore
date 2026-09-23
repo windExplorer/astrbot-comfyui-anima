@@ -247,5 +247,8 @@ _bak_help_assets/
 _References/_diff_zips.ps1
 _References/
 
+# 本地日志与分析用的工作流/日志 json（用户提供的一次性输入，不入库）
+logs/
+
 # 含密钥的本地配置（含真实 API key，绝不入库）
 docs/astrbot_plugin_private_companion_config.json
