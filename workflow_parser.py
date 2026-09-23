@@ -278,11 +278,16 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     roles["kind"] = "img2img" if image_loaders else "t2i"
 
     # ---- 放大链：从保存节点 images 向上溯源（穿过清理透传节点）----
+    # v7.0.1：同时记录整条链路（chain_nodes，含 Split/Join alpha 处理节点）与
+    # 图像源（image_source，如 VAEDecode），供「绕过放大」安全改接——
+    # alpha 工作流里放大节点被 Join 消费，只删放大两节点会让 Join 输入悬空。
     roles["upscale"] = None
     if save_nodes:
         cur = _link((nodes[roles.get("save", {}).get("node", "")].get("inputs") or {}).get("images"))
         seen = set()
         loader_id = apply_id = None
+        chain_nodes: list = []
+        image_source = None
         while cur and cur[0] in nodes and cur[0] not in seen:
             seen.add(cur[0])
             n = nodes[cur[0]]
@@ -295,17 +300,22 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
                 um_link = _link((n.get("inputs") or {}).get("upscale_model"))
                 if um_link and um_link[0] in nodes and "upscalemodelloader" in _ct(nodes[um_link[0]]):
                     loader_id = um_link[0]
+            chain_nodes.append(cur[0])
             # 继续向上：放大节点走 image；清理透传走 anything/image；其它停止
             nxt = _link((n.get("inputs") or {}).get("image")) or _link((n.get("inputs") or {}).get("anything"))
             if not nxt:
                 break
             cur = nxt
+        if cur and cur[0] in nodes:
+            image_source = cur[0]
         if loader_id or apply_id:
             um = nodes.get(loader_id or "", {})
             roles["upscale"] = {
                 "loader": loader_id,
                 "apply": apply_id,
                 "model_name": (um.get("inputs") or {}).get("model_name") if isinstance(um, dict) else None,
+                "chain_nodes": chain_nodes,
+                "image_source": image_source,
             }
     # 清理显存节点清单
     roles["cleanup_nodes"] = [nid for nid, n in nodes.items() if _is_cleanup(n)]

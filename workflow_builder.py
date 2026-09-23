@@ -399,29 +399,40 @@ def _link(v):
     return None
 
 
-def bypass_upscale(prompt: dict, save_node, upscale_apply) -> bool:
-    """绕过放大链：保存节点直连放大节点上游的图像源，并删除放大两节点。
+def bypass_upscale(
+    prompt: dict, save_node, chain_nodes=None, image_source=None, upscale_loader=None,
+) -> bool:
+    """绕过放大链（v7.0.1）：保存节点改接图像源，并删除整条放大/alpha 处理链。
 
-    返回是否发生改写。放大模型节点一并删除（API 格式下全图节点都会执行，
-    留着只会白加载一次模型）。
+    chain_nodes / image_source 来自解析注记（upscale.chain_nodes / image_source）。
+    alpha 工作流（Split→放大→Join）里放大节点被 Join 消费，只删放大两节点会让
+    Join 输入悬空导致 ComfyUI 校验失败——所以必须整链删除并改接回图像源
+    （如 VAEDecode 输出，带 alpha）。
+
+    安全阀：若链上有节点被链外其它节点消费（删除会悬空），则放弃删除、返回 False。
     """
-    node = _get_node(prompt, upscale_apply)
     save = _get_node(prompt, save_node)
-    if not node or not save:
+    if not save or not image_source:
         return False
-    src = _link((node.get("inputs") or {}).get("image"))
-    if not src:
+    src_id = str(image_source)
+    if src_id not in prompt:
         return False
-    save.setdefault("inputs", {})["images"] = [src[0], src[1]]
-    # 删除放大节点与其 loader（loader 经 apply 的 upscale_model 输入定位）
-    to_del = [str(upscale_apply)]
-    um = _link((node.get("inputs") or {}).get("upscale_model"))
-    if um and isinstance(prompt.get(um[0]), dict) and "upscalemodelloader" in (
-        prompt[um[0]].get("class_type") or ""
-    ).lower():
-        to_del.append(um[0])
-    for nid in to_del:
-        prompt.pop(nid, None)
+    chain = {str(c) for c in (chain_nodes or [])} - {src_id}
+    if upscale_loader:
+        chain.add(str(upscale_loader))
+    # 外部消费者检查：链外节点（除保存节点）不得引用链上/被删节点
+    for nid, node in prompt.items():
+        if str(nid) == str(save_node) or str(nid) in chain or str(nid) == src_id:
+            continue
+        if not isinstance(node, dict):
+            continue
+        for val in (node.get("inputs") or {}).values():
+            l = _link(val)
+            if l and l[0] in chain:
+                return False
+    save.setdefault("inputs", {})["images"] = [src_id, 0]
+    for c in chain:
+        prompt.pop(str(c), None)
     return True
 
 

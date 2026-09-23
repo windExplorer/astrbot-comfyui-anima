@@ -2,6 +2,28 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.0.1（修复：带 alpha 通道的放大工作流解析与绕过）
+
+现象（qwen2.1-int8-ragb-scale 工作流实测）：放大模型前加了
+`SplitImageWithAlpha → ImageUpscaleWithModel → JoinImageWithAlpha`
+（图带 alpha 通道时，放大前分离 alpha、放大后合并回来，避免 RealESRGAN 吃掉透明度）。
+
+- **解析**：原本就能通过（放大 loader/apply、清理节点、保存节点均正确识别）；
+- **绕过放大**：原实现把保存节点改接到放大节点的 image 上游——在这个链里那是
+  Split 的 RGB 输出（**丢 alpha**），且删除放大两节点后 Join 的 image 输入悬空，
+  ComfyUI 校验直接报错。
+
+修复：
+
+- 解析器溯源时记录**整条链路**（`upscale.chain_nodes`，含 Split/Join/清理等途经节点）
+  与**图像源**（`upscale.image_source`，如 VAEDecode）；
+- `bypass_upscale` 改为整链安全删除：保存节点改接回图像源（**保留 alpha**），
+  链上节点（Split/Join/放大/loader/清理）全部删除；删除前校验链上节点没有被
+  链外其它节点消费，有则保守放弃（仅告警不改写），杜绝悬空输入。
+
+验证（tests/test_workflow_v7.py 新增第 6 组）：alpha 工作流绕过后保存节点接回
+VAEDecode（`["7", 0]`）、`10/486/11/485/12` 整链删除无悬空；原有 5 组回归全过。
+
 ## v7.0.0（重大架构变更：基础工作流体系 / 底模库 / 漫画表情包功能线移除）
 
 主版本号 6 → 7：移除整条漫画/表情包功能线 + 出图工作流体系重构（基础工作流库 + 节点自动定位），

@@ -137,12 +137,16 @@ def test_store():
 
 
 def test_surgery():
-    # 绕过内置放大链
+    # 绕过内置放大链（标准链：保存←清理←放大←解码）
     p = json.loads(json.dumps(WF_STD))
     roles, _ = parse_workflow(p)
-    assert wb.bypass_upscale(p, roles["save"]["node"], roles["upscale"]["apply"])
+    up = roles["upscale"]
+    assert wb.bypass_upscale(
+        p, roles["save"]["node"], chain_nodes=up["chain_nodes"],
+        image_source=up["image_source"], upscale_loader=up["loader"],
+    )
     assert p["8"]["inputs"]["images"] == ["7", 0]
-    assert "11" not in p and "12" not in p
+    assert "11" not in p and "12" not in p and "10" not in p
     # 注入放大链（无放大链工作流）
     p = json.loads(json.dumps(WF_NO_UPSCALE))
     roles, _ = parse_workflow(p)
@@ -168,6 +172,41 @@ def test_surgery():
     assert wb.set_sampler_node(p, roles["sampler"], "dpmpp_2m", "karras")
     assert p[roles["sampler"]]["inputs"]["sampler_name"] == "dpmpp_2m"
     print("== 5. 运行时手术（绕过/注入放大、清理、保存替换、采样器覆盖） OK")
+
+
+def test_bypass_alpha_chain():
+    """alpha 工作流（Split→放大→Join→清理→保存）：绕过须整链删除并接回 VAEDecode。"""
+    p = json.loads(json.dumps(WF_STD))
+    # 改造成 alpha 链：7(VAEDecode) → 485 Split → 484 放大 → 486 Join → 10 清理 → 8 保存
+    p["485"] = {"class_type": "SplitImageWithAlpha", "inputs": {"image": ["7", 0]}}
+    p["11"]["inputs"]["image"] = ["485", 0]
+    p["486"] = {"class_type": "JoinImageWithAlpha",
+                "inputs": {"image": ["11", 0], "alpha": ["485", 1]}}
+    p["10"]["inputs"]["anything"] = ["486", 0]
+    roles, errs = parse_workflow(p)
+    assert not errs, errs
+    up = roles["upscale"]
+    assert up["apply"] == "11" and up["loader"] == "12"
+    assert up["image_source"] == "7"
+    assert set(up["chain_nodes"]) == {"10", "486", "11", "485", "7"}
+    assert wb.bypass_upscale(
+        p, roles["save"]["node"], chain_nodes=up["chain_nodes"],
+        image_source=up["image_source"], upscale_loader=up["loader"],
+    )
+    assert p["8"]["inputs"]["images"] == ["7", 0], "须改接回 VAEDecode（保留 alpha）"
+    for gone in ("10", "486", "11", "485", "12"):
+        assert gone not in p, f"{gone} 应被整链删除"
+    print("== 6. alpha 工作流绕过（整链删除+接回 VAEDecode） OK")
+
+
+if __name__ == "__main__":
+    test_parse_std()
+    test_parse_reject_multi_sampler()
+    test_parse_qwen_subgraph()
+    test_store()
+    test_surgery()
+    test_bypass_alpha_chain()
+    print("\nv7.0.0 基础工作流体系测试全部通过")
 
 
 if __name__ == "__main__":

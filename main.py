@@ -4310,6 +4310,8 @@ class ComfyUIDrawPlugin(Star):
         wf["_save_node"] = save.get("node", "")
         wf["_upscale_apply"] = up.get("apply", "")
         wf["_upscale_loader"] = up.get("loader", "")
+        wf["_upscale_chain_nodes"] = up.get("chain_nodes") or []
+        wf["_upscale_image_source"] = up.get("image_source") or ""
         wf["_cleanup_nodes"] = roles.get("cleanup_nodes") or []
         sd = roles.get("sampler_defaults") or {}
         wf["_base_sampler_defaults"] = sd
@@ -4368,8 +4370,15 @@ class ComfyUIDrawPlugin(Star):
         # 放大三态：bypass / inject / 默认（内置则由 upscale_model_name 替换，已有逻辑处理）
         umode = (wf.get("upscale_mode") or "").strip().lower()
         if umode == "bypass" and wf.get("_upscale_apply"):
-            if workflow_builder.bypass_upscale(prompt, save_node, wf["_upscale_apply"]):
-                logger.info("【放大】 已按配置绕过内置放大链（保存节点直连图像源）")
+            if workflow_builder.bypass_upscale(
+                prompt, save_node,
+                chain_nodes=wf.get("_upscale_chain_nodes") or [],
+                image_source=wf.get("_upscale_image_source") or None,
+                upscale_loader=wf.get("_upscale_loader") or None,
+            ):
+                logger.info("【放大】 已按配置绕过放大链（保存节点改接图像源，整链已删）")
+            else:
+                logger.warning("【放大】 绕过失败（放大链存在外部消费者，保守不改写）")
         elif umode == "inject" and not wf.get("_upscale_apply"):
             _um = (wf.get("upscale_model_name") or "").strip()
             if _um:
