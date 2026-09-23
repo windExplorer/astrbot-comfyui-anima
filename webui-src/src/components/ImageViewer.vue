@@ -104,12 +104,8 @@
                 <div class="gt">负面提示词</div>
                 <div class="gv">{{ item.negative }}</div>
               </section>
-              <section v-if="booguText" class="iv-gen-sec">
-                <div class="gt">boogu 加字指令（第二段提示词）</div>
-                <div class="gv">{{ booguText }}</div>
-              </section>
             </div>
-            <button class="iv-detail-btn" @click="showDetail = true">📋 弹窗查看完整生成详情（触发词 / 提示词 / boogu 指令 / 负面词 / 工作流）</button>
+            <button class="iv-detail-btn" @click="showDetail = true">📋 弹窗查看完整生成详情（触发词 / 提示词 / 负面词 / 工作流）</button>
           </template>
           <div v-else class="iv-loading">加载信息…</div>
         </aside>
@@ -141,10 +137,6 @@
           <section v-if="item && item.negative" class="iv-detail-sec">
             <div class="dt">负面提示词</div>
             <div class="dv">{{ item.negative }}</div>
-          </section>
-          <section v-if="booguText" class="iv-detail-sec">
-            <div class="dt">boogu 加字指令（第二段提示词{{ booguNode ? " · 节点 " + booguNode : "" }}）</div>
-            <div class="dv">{{ booguText }}</div>
           </section>
         </div>
       </div>
@@ -306,22 +298,6 @@ const lorasText = computed(() =>
     .map((l: any) => (typeof l === "object" && l ? `${l.name}${l.weight != null ? ":" + l.weight : ""}` : String(l)))
     .join("、 ") || "无"
 );
-
-// 表情包/漫画的「第二段提示词」——boogu 加字指令（v5.15.0 起随图归档在 extra.boogu）
-const booguMeta = computed<{ node: string; text: string }>(() => {
-  const raw = item.value?.extra;
-  if (!raw) return { node: "", text: "" };
-  let obj: any = raw;
-  if (typeof raw === "string") {
-    try { obj = JSON.parse(raw); } catch { return { node: "", text: "" }; }
-  }
-  const b = obj && typeof obj === "object" ? obj.boogu : null;
-  if (!b) return { node: "", text: "" };
-  if (typeof b === "string") return { node: "", text: b };
-  return { node: String(b.node || ""), text: String(b.text || "") };
-});
-const booguText = computed(() => booguMeta.value.text);
-const booguNode = computed(() => booguMeta.value.node);
 
 // 平台专有参数（采样器/噪声调度/CFG重缩放等）：存于 item.extra JSON 字符串，无则空
 const extraParams = computed<Array<{ k: string; label: string; v: any }>>(() => {

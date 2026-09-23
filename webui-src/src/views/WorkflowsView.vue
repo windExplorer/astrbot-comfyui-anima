@@ -13,16 +13,6 @@
       </Teleport>
     </div>
 
-    <!-- 工作流类型筛选：文生图 / 表情包·漫画（按 kind 字段，兼容旧工作流按 prompt_slots 推断） -->
-    <div class="filter-bar">
-      <n-radio-group v-model:value="filterType" size="small" class="filter-radios">
-        <n-radio-button value="all">全部</n-radio-button>
-        <n-radio-button value="draw">文生图</n-radio-button>
-        <n-radio-button value="comic">表情包·漫画</n-radio-button>
-      </n-radio-group>
-      <span class="filter-hint">类型按「是否配置 boogu 指令节点(boogu_node) 或多槽位提示词(prompt_slots)」自动判定</span>
-    </div>
-
     <!-- 星标筛选 + 排序（v6.2.0）：工作流多了以后按需挑常用的 -->
     <div class="filter-bar">
       <n-checkbox v-model:checked="starOnly" size="small">★ 仅看星标</n-checkbox>
@@ -93,9 +83,10 @@
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
             <n-tag v-if="w.enabled === false" size="small" type="error" :bordered="false">已停用</n-tag>
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
-            <n-tag v-if="isComicW(w)" size="small" type="error" :bordered="false">表情包·漫画</n-tag>
-            <n-tag v-else-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
+            <n-tag v-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
+            <n-tag v-if="(w.base_id || '').trim()" size="small" type="warning" :bordered="false">v7</n-tag>
+            <n-tag v-else size="small" type="default" :bordered="false">旧版</n-tag>
           </div>
           <div class="card-alias">别名：{{ aliasStr(w.aliases) }}</div>
           <div class="card-meta">
@@ -144,11 +135,7 @@
           <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
         </n-form-item>
         <n-form-item label="工作流类型">
-          <n-radio-group v-model:value="editForm.kind" size="small">
-            <n-radio-button value="draw">文生图 / 图生图</n-radio-button>
-            <n-radio-button value="comic">表情包 / 漫画</n-radio-button>
-          </n-radio-group>
-          <span class="form-hint">选「表情包/漫画」需在下方配置「boogu 指令节点(boogu_node)」或「多槽位提示词注入(prompt_slots)」。配了这两者之一会自动判为该类。</span>
+          <span class="form-hint">普通生图 / 图生图（旧版表情包/漫画功能已在 v7.0.0 移除）</span>
         </n-form-item>
         <n-form-item label="启用该工作流">
           <n-switch v-model:value="editForm.enabled" />
@@ -170,6 +157,75 @@
           <n-form-item label="C 站链接（抓封面）"><n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/xxx" /></n-form-item>
           <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="存于 lora_assets/，可抓取或上传" /></n-form-item>
         </div>
+
+        <n-divider style="margin:8px 0">── 基础工作流 (v7.0.0) ──</n-divider>
+        <n-form-item label="基础工作流">
+          <n-select
+            v-model:value="editForm.base_id"
+            :options="baseWfOptions"
+            filterable
+            clearable
+            placeholder="不使用（旧版：按下方节点配置 + 工作流文件运行）"
+          />
+        </n-form-item>
+        <template v-if="(editForm.base_id || '').trim()">
+          <div class="form-hint" style="margin: 0 0 8px; margin-left: 0">
+            本模式下节点全部按解析自动定位，下方「节点配置」自动忽略（保留仅作参考）。
+          </div>
+          <n-form-item label="LLM 注入说明（用本工作流出图时告知 LLM 的用法；留空不注入）">
+            <n-input v-model:value="editForm.llm_notes" type="textarea" :rows="2" placeholder="如：本工作流专画头像，用户要头像时优先选用" />
+          </n-form-item>
+          <div class="form-grid">
+            <n-form-item label="固定种子（留空=随机）">
+              <n-input v-model:value="editForm.fixed_seed" placeholder="数字；用户显式指定种子时以用户为准" />
+            </n-form-item>
+            <n-form-item label="保存格式（留空=跟随基础工作流）">
+              <n-select v-model:value="editForm.save_format" :options="saveFormatOptions" />
+            </n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="保存质量 %（留空=跟随）">
+              <n-input v-model:value="editForm.save_quality" placeholder="1-100，仅 webp/jpg 有意义" />
+            </n-form-item>
+            <n-form-item label="放大模式">
+              <n-select v-model:value="editForm.upscale_mode" :options="upscaleModeOptions" />
+            </n-form-item>
+          </div>
+          <div class="form-grid" v-if="editForm.upscale_mode === 'inject'">
+            <n-form-item label="注入放大模型名">
+              <n-input v-model:value="editForm.upscale_model_name" placeholder="如 4x-UltraSharp.pth" />
+            </n-form-item>
+            <n-form-item label="清理显存">
+              <n-select v-model:value="editForm.cleanup_mode" :options="cleanupModeOptions" />
+            </n-form-item>
+          </div>
+          <div class="form-grid">
+            <n-form-item label="步数（留空=跟随）"><n-input v-model:value="editForm.ov_steps" /></n-form-item>
+            <n-form-item label="CFG（留空=跟随）"><n-input v-model:value="editForm.ov_cfg" /></n-form-item>
+            <n-form-item label="采样器（可搜索/可手输）">
+              <n-select v-model:value="editForm.ov_sampler" :options="samplerOptions" filterable tag clearable placeholder="留空=跟随基础工作流" />
+            </n-form-item>
+            <n-form-item label="调度器（可搜索/可手输）">
+              <n-select v-model:value="editForm.ov_scheduler" :options="schedulerOptions" filterable tag clearable placeholder="留空=跟随基础工作流" />
+            </n-form-item>
+            <n-form-item v-if="selectedBaseKind === 'img2img'" label="噪点 denoise（留空=跟随）">
+              <n-input v-model:value="editForm.ov_denoise" />
+            </n-form-item>
+          </div>
+          <n-form-item v-if="builtinLoras.length" label="基础工作流内置 LoRA（不可删除，可禁用）">
+            <div style="width:100%; display:flex; flex-direction:column; gap:6px">
+              <div v-for="b in builtinLoras" :key="b.node" style="display:flex; align-items:center; gap:8px">
+                <n-tag size="small" :bordered="false">{{ b.name || b.node }}</n-tag>
+                <n-switch
+                  size="small"
+                  :value="!isBuiltinDisabled(b)"
+                  @update:value="(v: boolean) => toggleBuiltin(b, !v)"
+                />
+                <span class="form-hint">{{ isBuiltinDisabled(b) ? "已禁用（强度 0）" : "启用" }}</span>
+              </div>
+            </div>
+          </n-form-item>
+        </template>
 
         <n-divider style="margin:8px 0">── 节点配置 ──</n-divider>
         <div class="form-grid">
@@ -193,7 +249,7 @@
         <n-form-item label="宽高注入范围">
           <n-space vertical :size="4" style="width:100%">
             <n-select v-model:value="editForm.resolution_mode" :options="resolutionModeOptions" style="width:100%" />
-            <span class="form-hint">single=只改上方「分辨率节点」（留空则自动探测第一个 EmptyLatentImage），与旧行为一致；all=改<b>所有</b> EmptyLatentImage —— anima 生图 → boogu 加字这类两阶段串联工作流必须选它，否则前后 latent 尺寸不一致、构图被拉伸；none=完全不改，沿用工作流 JSON 原始尺寸（也可用来避开默认宽高的兜底值）</span>
+            <span class="form-hint">single=只改上方「分辨率节点」（留空则自动探测第一个 EmptyLatentImage），与旧行为一致；all=改<b>所有</b> EmptyLatentImage —— 多 latent 串联工作流必须选它，否则前后 latent 尺寸不一致、构图被拉伸；none=完全不改，沿用工作流 JSON 原始尺寸（也可用来避开默认宽高的兜底值）</span>
           </n-space>
         </n-form-item>
         <div class="form-grid">
@@ -234,50 +290,6 @@
             <n-checkbox v-model:checked="editForm.denoise_off">不注入（-1，沿用工作流原始值）</n-checkbox>
           </n-space>
         </n-form-item>
-        <n-divider v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim() || (editForm.boogu_node||'').trim()" style="margin:8px 0">── 表情包 / 漫画：加字配置 ──</n-divider>
-        <n-form-item v-if="editForm.kind === 'comic' || (editForm.prompt_slots||'').trim() || (editForm.boogu_node||'').trim()" label="多槽位提示词注入（prompt_slots，旧方式，可选）">
-          <n-space vertical :size="4" style="width:100%">
-            <n-input
-              v-model:value="editForm.prompt_slots"
-              type="textarea"
-              :rows="6"
-              placeholder='[{"key":"caption","node":"11","field":"prompt","vars":["bubble_text","bottom_text"],"template":{"prefix":"...","blocks":[{"var":"bubble_text","max_chars":20,"tiers":[{"max_chars":8,"text":"...气泡内写着「{bubble_text}」..."}]}],"suffix":"..."}}]'
-            />
-            <span class="form-hint">
-              给「一条工作流需要多处、语义不同的文本」的场景用 —— 如表情包（anima 生图提示词走<b>正提示词节点</b> + boogu 加字指令走<b>这里</b>）、漫画（角色提示词 + 整段分镜描述）。
-              <b>留空 = 不启用，普通工作流无需填写，行为完全不变。</b>
-              每组字段：key（槽位名）/ node（目标节点 ID）/ field（输入框名，默认 text）/ vars（变量名数组）/ template（模板）。
-              template 可为字符串，或对象 {prefix, blocks:[{var, max_chars, tiers:[{max_chars, text}]}], suffix} ——
-              <b>变量为空则该段不渲染</b>（防止生成空气泡），<b>tiers 按字数自动选档</b>，实现气泡宽度 / 字号 / 行数随字数自适应。
-              主正向提示词仍走「正提示词节点」，不受此影响。
-            </span>
-          </n-space>
-        </n-form-item>
-        <n-form-item label="boogu 指令节点（节点 B，推荐）">
-          <n-space vertical :size="4" style="width:100%">
-            <n-input v-model:value="editForm.boogu_node" placeholder="如 11（TextEncodeBooguEdit 节点键名）" />
-            <span class="form-hint">
-              表情包「加字 / 加气泡」编辑节点的 ID。配置后插件<b>一次性让 LLM 生成两段提示词</b>：
-              节点 A（正提示词节点）填绘图提示词，本节点填一整段<b>自然语言</b>加字指令（如「右上角加云朵气泡，写『我不干了』；不要底部字幕」），不再需要气泡/底部清单。
-              留空则不会自动生成 boogu 指令（可只用 prompt_slots 旧方式，或不启用加字）。
-            </span>
-          </n-space>
-        </n-form-item>
-        <div class="form-grid">
-          <n-form-item label="指令入口字段"><n-input v-model:value="editForm.boogu_field" placeholder="prompt（默认）" /></n-form-item>
-          <n-form-item label="后半段宽高节点（宽）"><n-input v-model:value="editForm.boogu_width_node" placeholder="可选，如 30" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="后半段宽字段名"><n-input v-model:value="editForm.boogu_width_field" placeholder="width（默认）" /></n-form-item>
-          <n-form-item label="后半段固定宽度"><n-input-number v-model:value="editForm.boogu_width" :min="0" :max="4096" :step="64" placeholder="不填=沿用工作流自带" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="后半段高节点"><n-input v-model:value="editForm.boogu_height_node" placeholder="可选，如 31" /></n-form-item>
-          <n-form-item label="后半段高字段名"><n-input v-model:value="editForm.boogu_height_field" placeholder="height（默认）" /></n-form-item>
-        </div>
-        <div class="form-grid">
-          <n-form-item label="后半段固定高度"><n-input-number v-model:value="editForm.boogu_height" :min="0" :max="4096" :step="64" placeholder="不填=沿用工作流自带" /></n-form-item>
-        </div>
         <n-form-item label="工作流 JSON（可直接粘贴）"><n-input v-model:value="editForm.workflow_json" type="textarea" :rows="3" /></n-form-item>
         <n-form-item label="默认 LoRA">
           <div class="lora-list">
@@ -346,6 +358,69 @@ const loras = ref<any[]>([]);
 
 const baseModelOptions = ["", "anima", "z-image-turbo", "krea2", "illustrious"].map((o) => ({ label: o || "（通用）", value: o }));
 
+// ---- 基础工作流（v7.0.0） ----
+const baseWfs = ref<any[]>([]);
+const baseWfOptions = computed(() => [
+  { label: "不使用（旧版模式）", value: "" },
+  ...baseWfs.value.map((b) => ({ label: b.name || b.file_name || `#${b.id}`, value: String(b.id) })),
+]);
+const selectedBase = computed(() =>
+  baseWfs.value.find((b) => String(b.id) === String(editForm.base_id || "")) || null
+);
+const selectedBaseKind = computed(() => selectedBase.value?.roles?.kind || "");
+const builtinLoras = computed<any[]>(() => selectedBase.value?.roles?.builtin_loras || []);
+const saveFormatOptions = [
+  { label: "跟随基础工作流", value: "" },
+  { label: ".webp", value: ".webp" },
+  { label: ".png", value: ".png" },
+  { label: ".jpg", value: ".jpg" },
+];
+const upscaleModeOptions = [
+  { label: "跟随基础工作流（有内置=沿用，可换模型）", value: "" },
+  { label: "绕过内置放大链", value: "bypass" },
+  { label: "注入放大链（基础图无放大链时）", value: "inject" },
+];
+const cleanupModeOptions = [
+  { label: "跟随基础工作流", value: "" },
+  { label: "注入清理显存节点", value: "inject" },
+];
+// ComfyUI 最新版采样器/调度器清单（下拉可搜索、可手输自定义值）
+const SAMPLER_OPTIONS = [
+  "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2",
+  "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive",
+  "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_sde",
+  "dpmpp_2m_sde_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "lcm",
+  "ipndm", "ipndm_v", "deis", "ddim", "uni_pc", "uni_pc_bh2",
+];
+const SCHEDULER_OPTIONS = [
+  "normal", "karras", "exponential", "sgm_uniform", "simple",
+  "ddim_uniform", "beta", "linear_quadratic", "kl_optimal",
+];
+const samplerOptions = SAMPLER_OPTIONS.map((s) => ({ label: s, value: s }));
+const schedulerOptions = SCHEDULER_OPTIONS.map((s) => ({ label: s, value: s }));
+
+function isBuiltinDisabled(b: any): boolean {
+  const list: string[] = Array.isArray(editForm.disable_builtin_loras) ? editForm.disable_builtin_loras : [];
+  return list.includes(String(b.node));
+}
+function toggleBuiltin(b: any, disabled: boolean) {
+  const list: string[] = Array.isArray(editForm.disable_builtin_loras) ? [...editForm.disable_builtin_loras] : [];
+  const key = String(b.node);
+  const idx = list.indexOf(key);
+  if (disabled && idx < 0) list.push(key);
+  if (!disabled && idx >= 0) list.splice(idx, 1);
+  editForm.disable_builtin_loras = list;
+}
+
+async function loadBaseWfs() {
+  try {
+    const d = await apiGet("baseworkflows");
+    baseWfs.value = Array.isArray(d?.items) ? d.items : [];
+  } catch {
+    baseWfs.value = [];
+  }
+}
+
 async function load() {
   loading.value = true;
   try {
@@ -357,6 +432,7 @@ async function load() {
   } finally {
     loading.value = false;
   }
+  loadBaseWfs();
 }
 
 function aliasStr(raw: string): string {
@@ -393,14 +469,9 @@ function serializeLorasText(list: LoraRow[] | undefined | null): string {
     .join("\n");
 }
 
-// 工作流类型筛选：文生图 / 表情包·漫画（按 kind 字段；旧工作流有 prompt_slots 也判为 comic）
-const filterType = ref<"all" | "draw" | "comic">("all");
 // 关键词搜索（工作流越来越多，靠翻页找太慢）：匹配名称、别名、底模、绑定服务器、
 // 工作流文件名、默认 LoRA 文本。前端即时过滤，与类型筛选叠加生效。
 const searchText = ref("");
-function isComicW(w: any): boolean {
-  return (w.kind || "").trim().toLowerCase() === "comic" || !!(w.prompt_slots && String(w.prompt_slots).trim()) || !!(w.boogu_node && String(w.boogu_node).trim());
-}
 // 单条工作流是否命中搜索词（空词视为全命中）
 function wfMatches(w: any, kw: string): boolean {
   if (!kw) return true;
@@ -463,11 +534,6 @@ const filteredWorkflows = computed(() => {
   const rows = workflows.value
     .map((w, i) => ({ w, i }))
     .filter(({ w }) => {
-      // 类型筛选
-      if (filterType.value !== "all") {
-        const comic = isComicW(w);
-        if (filterType.value === "comic" ? !comic : comic) return false;
-      }
       // 星标筛选
       if (starOnly.value && w.starred !== true) return false;
       // 关键词搜索
@@ -609,27 +675,31 @@ function openForm(idx: number, prefill?: any) {
     server_name: w.server_name || "",
     workflow_name: w.workflow_name || "",
     is_anima: !!w.is_anima,
-    kind: ((w.kind || "").trim().toLowerCase() === "comic" || (w.prompt_slots || "").trim() || (w.boogu_node || "").trim()) ? "comic" : "draw",
+    kind: "draw",
     civitai_url: w.civitai_url || "",
     image: w.image || "",
     positive_node: w.positive_node || "",
     negative_node: w.negative_node || "",
     positive_field: w.positive_field || "",
     negative_field: w.negative_field || "",
+    base_id: w.base_id || "",
+    llm_notes: w.llm_notes || "",
+    fixed_seed: w.fixed_seed || "",
+    ov_steps: w.ov_steps || "",
+    ov_cfg: w.ov_cfg || "",
+    ov_sampler: w.ov_sampler || "",
+    ov_scheduler: w.ov_scheduler || "",
+    ov_denoise: w.ov_denoise || "",
+    upscale_mode: w.upscale_mode || "",
+    cleanup_mode: w.cleanup_mode || "",
+    save_format: w.save_format || "",
+    save_quality: w.save_quality || "",
+    disable_builtin_loras: Array.isArray(w.disable_builtin_loras) ? [...w.disable_builtin_loras] : [],
     resolution_node: w.resolution_node || "",
     output_node: w.output_node || "",
     resolution_width_field: w.resolution_width_field || "width",
     resolution_height_field: w.resolution_height_field || "height",
     resolution_mode: w.resolution_mode || "single",
-    prompt_slots: w.prompt_slots || "",
-    boogu_node: w.boogu_node || "",
-    boogu_field: w.boogu_field || "",
-    boogu_width_node: w.boogu_width_node || "",
-    boogu_height_node: w.boogu_height_node || "",
-    boogu_width: w.boogu_width ?? null,
-    boogu_height: w.boogu_height ?? null,
-    boogu_width_field: w.boogu_width_field || "",
-    boogu_height_field: w.boogu_height_field || "",
     default_width: w.default_width ?? 512,
     default_height: w.default_height ?? 512,
     image_node: w.image_node || "",
@@ -674,26 +744,8 @@ async function saveEdit() {
     // denoise 开关：勾选不注入时强制 -1（低于 min 的语义值，后端识别为「不注入」）
     if (v.denoise_off) v.default_denoise = -1;
     delete v.denoise_off;
-    v.kind = (v.kind === "comic") ? "comic" : "draw";
     // v6.2.0：打「更新时间」戳（供列表按更新时间排序；创建时间用数组顺序表示）
     v.updated_at = Date.now();
-    // prompt_slots 必须是合法 JSON（数组或对象）：后端解析失败只会记日志并跳过，
-    // 用户侧表现为「填了却没生效」，因此在保存前拦截，避免静默失效。
-    const psRaw = String(v.prompt_slots || "").trim();
-    if (psRaw) {
-      try {
-        const ps = JSON.parse(psRaw);
-        if (!Array.isArray(ps) && (typeof ps !== "object" || ps === null)) {
-          message.warning("多槽位提示词注入：必须是 JSON 数组或对象");
-          saving.value = false;
-          return;
-        }
-      } catch (err: any) {
-        message.warning("多槽位提示词注入：JSON 格式错误 —— " + (err.message || ""));
-        saving.value = false;
-        return;
-      }
-    }
     // LoRA 图形化列表 → 序列化为后端兼容的 loras_text（每行 名称|权重|0/1）
     v.loras_text = serializeLorasText(v.loraList);
     delete v.loraList;

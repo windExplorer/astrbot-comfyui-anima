@@ -56,10 +56,12 @@ function compressImage(file: File, maxDim: number, quality: number): Promise<{ b
   });
 }
 
-export function useCover() {
+export function useCover(scope: "lora" | "bm" = "lora") {
   const message = useMessage();
+  const uploadEndpoint = scope === "bm" ? "basemodels/upload_image" : "lora/upload_image";
+  const fetchEndpoint = scope === "bm" ? "basemodels/fetch" : "lora/fetch";
 
-  // 本地图片文件 → base64 上传，返回 lora_assets 文件名；失败已弹提示并返回 null
+  // 本地图片文件 → base64 上传，返回封面文件名；失败已弹提示并返回 null
   async function uploadFile(file: File): Promise<string | null> {
     const mh = message.loading("上传中…", { duration: 0 });
     try {
@@ -74,7 +76,7 @@ export function useCover() {
         // 压缩失败（如非位图 / GIF 动图）：退回原图直传
       }
       const b64 = await readAsDataURL(payload);
-      const d: any = await apiPost("lora/upload_image", { filename: payloadName, data: b64 });
+      const d: any = await apiPost(uploadEndpoint, { filename: payloadName, data: b64 });
       return d.name;
     } catch (e: any) {
       message.error(e?.message || "上传失败");
@@ -84,11 +86,11 @@ export function useCover() {
     }
   }
 
-  // 图片直链 → 下载到 lora_assets，返回文件名
+  // 图片直链 → 下载到封面目录，返回文件名
   async function fetchUrl(url: string): Promise<string | null> {
     const mh = message.loading("下载中…", { duration: 0 });
     try {
-      const d: any = await apiPost("lora/fetch", { url, direct_image: true }, { timeout: 60000 });
+      const d: any = await apiPost(fetchEndpoint, { url, direct_image: true }, { timeout: 60000 });
       return d.name;
     } catch (e: any) {
       message.error(e?.message || "下载失败");

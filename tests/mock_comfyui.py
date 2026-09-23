@@ -55,10 +55,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 body = {}
             text = body.get("query", "")
+            # 真实标签服务器返回逗号连接的字符串（danbooru_client 对其 .strip()）
             self._send_json(
                 {
-                    "tags_all": ["1girl", "cat_ears", "sailor_collar", "smile"],
-                    "tags_sfw": ["1girl", "cat_ears", "sailor_collar", "smile"],
+                    "tags_all": "1girl, cat_ears, sailor_collar, smile",
+                    "tags_sfw": "1girl, cat_ears, sailor_collar, smile",
                     "query": text,
                 }
             )
@@ -101,7 +102,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/history/"):
             pid = path.split("/history/", 1)[1]
             with self.server.lock:
-                self._send_json(self.server.history.get(pid, {}))
+                entry = self.server.history.get(pid)
+                # 真实 ComfyUI 的 /history/<pid> 返回 {pid: entry} 映射；
+                # 此前直接返回 entry 本身，导致 wait_for_result 的
+                # `prompt_id in history` 永远为假（集成测试挂在这里）。
+                self._send_json({pid: entry} if entry is not None else {})
         elif path == "/view":
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
@@ -113,8 +118,8 @@ class Handler(BaseHTTPRequestHandler):
             text = qs.get("text", [""])[0]
             self._send_json(
                 {
-                    "tags_all": ["1girl", "cat_ears", "sailor_collar", "smile"],
-                    "tags_sfw": ["1girl", "cat_ears", "sailor_collar", "smile"],
+                    "tags_all": "1girl, cat_ears, sailor_collar, smile",
+                    "tags_sfw": "1girl, cat_ears, sailor_collar, smile",
                     "query": text,
                 }
             )

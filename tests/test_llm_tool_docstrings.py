@@ -11,7 +11,6 @@ AstrBot 的 `@filter.llm_tool` **只靠 docstring** 生成工具参数 schema
 最终返回 0 个参数 —— 工具照常注册、照样能被模型看到，但**一个参数都没有**，
 不报错、不打日志。历史事故：
   - `comfyui_draw` 自 v5.10.12 起 0 参数（裸行「★以上四个参数只作用于第三方平台生图…」）
-  - `comfyui_comic` 自 v5.11.11 起 0 参数（裸行「image、denoise：…」，中文冒号）
 
 Google 风格的硬性要求（Args 段内每一行）
 ----------------------------------------
@@ -43,8 +42,6 @@ MAIN_PY = Path(__file__).resolve().parent.parent / "main.py"
 REQUIRED = {
     "comfyui_draw": ["prompt", "prompts", "loras", "platform", "artist"],
     "comfyui_img2img": ["prompt", "prompts", "loras", "image"],
-    "comfyui_comic": ["prompt"],
-    "comfyui_meme_img": ["prompt", "image"],
     "comfyui_gallery": ["mode", "keyword", "tag", "limit"],
     "comfyui_loras": ["base_model", "keyword", "category"],
     "comfyui_character": ["action", "name", "positive", "anchor_name", "persona_name"],

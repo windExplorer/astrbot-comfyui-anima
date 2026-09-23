@@ -228,6 +228,7 @@ class StandaloneWebUI:
         # 必须注册在静态路由之前。带 token 鉴权 + 防目录穿越。
         app.router.add_get("/lora/file", self._handle_lora_file)
         app.router.add_get("/workflow/file", self._handle_lora_file)
+        app.router.add_get("/basemodel/file", self._handle_lora_file)
         # 角色卡参考图直链（原图不缩放、可缓存），必须排在下面的通配静态路由之前
         app.router.add_get("/char/ref", self._handle_char_ref)
         # 静态资源：index.html 之外的 js/css/图等
@@ -352,7 +353,7 @@ class StandaloneWebUI:
                             headers={"Cache-Control": "public, max-age=31536000"})
 
     async def _handle_lora_file(self, request: web.Request) -> web.Response:
-        """LoRA/工作流封面文件直链：/lora/file?name=xxx 或 /workflow/file?name=xxx。
+        """LoRA/工作流/底模封面文件直链：/lora/file、/workflow/file、/basemodel/file。
 
         独立模式下 <img> 直接加载，避免 base64 内联。带 token 鉴权 + 防目录穿越。
         """
@@ -365,7 +366,11 @@ class StandaloneWebUI:
         # 仅允许纯文件名，防目录穿越
         if "/" in name or "\\" in name or ".." in name:
             return _err("非法文件名", status=400)
-        assets_dir = getattr(self.plugin, "lora_assets_dir", None)
+        if request.path.rstrip("/") == "/basemodel/file":
+            # v7.0.0：底模封面存独立目录 basemodel_assets/
+            assets_dir = (getattr(self.plugin, "data_dir", None) or Path.cwd()) / "basemodel_assets"
+        else:
+            assets_dir = getattr(self.plugin, "lora_assets_dir", None)
         if assets_dir is None:
             # v6.0.0：本文件没导入 os，原写法进这个兜底分支会 NameError（用 Path.cwd() 代替）
             assets_dir = (getattr(self.plugin, "data_dir", None) or Path.cwd()) / "lora_assets"
@@ -850,6 +855,10 @@ class StandaloneWebUI:
         if path.startswith("/lora/") or path == "/translate/test":
             return await self._api_lora_translate(path, request)
 
+        # ---------- 底模库 / 基础工作流库（v7.0.0） ----------
+        if path.startswith("/basemodels") or path.startswith("/baseworkflows"):
+            return await self._api_lora_translate(path, request)
+
         # ---------- 统计 ----------
         if path.startswith("/stats/"):
             return await self._api_stats(path, request)
@@ -1071,20 +1080,6 @@ class StandaloneWebUI:
             return _ok(res)
         if path == "/gallery/scan_nsfw_progress":
             return _ok(g.scan_nsfw_progress())
-        if path == "/gallery/retag":
-            # v6.0.0：补齐分派（内嵌通道有该端点，独立通道此前 404 →
-            # 前端「补标表情包/漫画」按钮在独立模式下报「补标失败」）。
-            p = self.plugin
-            if p is None:
-                return _err("插件未就绪")
-            try:
-                # 同步跑重活，放线程池避免阻塞事件循环
-                msg = await asyncio.to_thread(
-                    p._gallery_retag, owner="", all_view=True, session_scope=""
-                )
-                return _ok({"msg": msg})
-            except Exception as e:
-                return _err(f"补标失败: {e}")
         if path == "/gallery/backup":
             dbp = getattr(g, "db_path", None)
             if not dbp or not Path(dbp).exists():
@@ -1310,6 +1305,19 @@ class StandaloneWebUI:
             "/lora/image": ("lora_image", "GET"),
             "/lora/upload_image": ("lora_upload_image", "POST"),
             "/translate/test": ("translate_test", "POST"),
+            "/basemodels": ("basemodels_list", "GET"),
+            "/basemodels/save": ("basemodels_save", "POST"),
+            "/basemodels/delete": ("basemodels_delete", "POST"),
+            "/basemodels/fetch": ("basemodels_fetch", "POST"),
+            "/basemodels/upload_image": ("basemodels_upload_image", "POST"),
+            "/basemodels/image": ("basemodel_image", "GET"),
+            "/baseworkflows": ("baseworkflows_list", "GET"),
+            "/baseworkflows/upload": ("baseworkflows_upload", "POST"),
+            "/baseworkflows/delete": ("baseworkflows_delete", "POST"),
+            "/baseworkflows/reparse": ("baseworkflows_reparse", "POST"),
+            "/baseworkflows/json": ("baseworkflows_json", "GET"),
+            "/baseworkflows/fetch": ("baseworkflows_fetch", "POST"),
+            "/baseworkflows/meta": ("baseworkflows_meta", "POST"),
         }.get(path)
         if handler is None:
             return _err("Not Found: " + path, status=404)

@@ -67,11 +67,6 @@
           :options="typeOptions"
           @update:value="doSearch(1)"
         />
-        <n-radio-group v-model:value="catFilter" size="small" @update:value="onCatChange">
-          <n-radio-button value="all">全部</n-radio-button>
-          <n-radio-button value="表情包">表情包</n-radio-button>
-          <n-radio-button value="漫画">漫画</n-radio-button>
-        </n-radio-group>
         <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
         <n-select
           v-model:value="platform"
@@ -89,12 +84,6 @@
           @update:value="doSearch(1)"
         />
         <n-button size="small" type="primary" @click="doSearch(1)">搜索</n-button>
-        <n-tooltip trigger="hover">
-          <template #trigger>
-            <n-button size="small" :loading="retagging" @click="retag">补标表情包/漫画</n-button>
-          </template>
-          给「自动打标功能上线前」生成的存量图，按工作流类型批量补打「表情包/漫画」标签，之后分类按钮与按标签搜索即可命中
-        </n-tooltip>
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-switch v-model:value="nsfwBlurGlobal" size="small" @update:value="onBlurGlobalChange">
@@ -248,12 +237,6 @@ const activeTab = ref("normal");
 const search = ref("");
 const userSearch = ref("");
 const tagFilter = ref("");
-// 顶部「全部/表情包/漫画」分类筛选：映射到 tag 精确匹配（表情包/漫画 由出图自动打标）
-const catFilter = computed<string>({
-  get: () => (tagFilter.value === "表情包" || tagFilter.value === "漫画") ? tagFilter.value : "all",
-  set: (v: string) => { tagFilter.value = (v === "all" ? "" : v); },
-});
-function onCatChange() { doSearch(1); }
 const type = ref("");
 const starred = ref(false);
 // 平台筛选：选项由后端 stats.platforms 动态生成（仅列出图库里真实存在且有图的平台 + 计数）
@@ -444,20 +427,6 @@ async function reloadThumb(img: any) {
 function onThumbError(img: any) {
   const sha = img.sha || img.sha256;
   if (sha) thumbFailed[sha] = true;
-}
-
-const retagging = ref(false);
-async function retag() {
-  retagging.value = true;
-  try {
-    const d = await apiPost("gallery/retag");
-    message.success(d?.msg || "补标完成");
-    doSearch(1);
-  } catch (e: any) {
-    message.error(e?.message || "补标失败");
-  } finally {
-    retagging.value = false;
-  }
 }
 
 async function doSearch(p: number) {

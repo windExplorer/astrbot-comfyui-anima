@@ -42,32 +42,35 @@ function pump() {
   }
 }
 
-async function fetchCover(name: string): Promise<string> {
-  if (cache.has(name)) return cache.get(name)!;
-  let p = inflight.get(name);
+async function fetchCover(fullName: string): Promise<string> {
+  if (cache.has(fullName)) return cache.get(fullName)!;
+  let p = inflight.get(fullName);
   if (!p) {
-    // 独立 WebUI：直接用 /lora/file 文件直链（<img> 加载，带 token，不 base64）
+    // v7.0.0：支持前缀区分封面来源（"bm:文件名"=底模封面；无前缀=LoRA/工作流封面）
+    const isBm = fullName.startsWith("bm:");
+    const name = isBm ? fullName.slice(3) : fullName;
     if (isStandaloneMode()) {
       const token = standaloneToken();
-      const url = "/lora/file?name=" + encodeURIComponent(name) + (token ? "&token=" + encodeURIComponent(token) : "");
-      cache.set(name, url);
+      const route = isBm ? "/basemodel/file" : "/lora/file";
+      const url = route + "?name=" + encodeURIComponent(name) + (token ? "&token=" + encodeURIComponent(token) : "");
+      cache.set(fullName, url);
       p = Promise.resolve(url);
     } else {
       // 内嵌页：受 AstrBot 鉴权保护，<img> 直链会 401，只能走 bridge 取 base64
-      p = apiGet("lora/image", { name })
+      p = apiGet(isBm ? "basemodels/image" : "lora/image", { name })
         .then((d) => {
           const url = (d && (d.url || "")) || "";
-          if (url) cache.set(name, url);
+          if (url) cache.set(fullName, url);
           return url;
         })
         .catch(() => "");
     }
-    inflight.set(name, p);
+    inflight.set(fullName, p);
   }
   const url = await p;
-  inflight.delete(name);
+  inflight.delete(fullName);
   // 通知所有引用该封面的元素更新
-  const els = elements.get(name);
+  const els = elements.get(fullName);
   if (els) {
     els.forEach((el) => applySrc(el, url));
   }

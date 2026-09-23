@@ -110,9 +110,8 @@ def find_node_by_class(prompt: dict, class_type: str):
 def find_all_nodes_by_class(prompt: dict, class_type: str) -> list:
     """返回工作流中**所有**匹配 class_type 的节点 ID（按字典顺序，找不到返回空列表）。
 
-    用于多同类节点需要统一改写的场景：例如「两阶段串联工作流」（anima 生图 →
-    boogu 编辑）里存在两个 EmptyLatentImage，宽高必须同步设置，否则前后阶段
-    尺寸不一致会导致构图被拉伸。
+    用于多同类节点需要统一改写的场景：例如多 latent 串联工作流里存在两个
+    EmptyLatentImage，宽高必须同步设置，否则前后阶段尺寸不一致会导致构图被拉伸。
     """
     return [
         nid
@@ -272,12 +271,19 @@ def _prefer_model_anchor(prompt: dict, model_srcs: set) -> str | None:
     """
     if not model_srcs:
         return None
+    # 排序后筛选，保证同候选集时结果确定（set 迭代序受哈希随机化影响）
+    ordered = sorted(model_srcs)
     non_gguf = [
-        s for s in model_srcs
+        s for s in ordered
         if "gguf" not in ((prompt.get(s) or {}).get("class_type") or "").lower()
     ]
-    candidates = non_gguf or list(model_srcs)
-    return next(iter(candidates))
+    # 优先 class_type 含 loader 的节点（CheckpointLoader/UNETLoader 等真正的模型加载器）
+    loaders = [
+        s for s in non_gguf
+        if "loader" in ((prompt.get(s) or {}).get("class_type") or "").lower()
+    ]
+    candidates = loaders or non_gguf or ordered
+    return candidates[0]
 
 
 def _clip_for_model_anchor(prompt: dict, model_anchor: str | None) -> str | None:
@@ -345,9 +351,13 @@ def _find_injection_anchors(prompt: dict):
         for field, val in (ynode.get("inputs") or {}).items():
             if isinstance(val, list) and len(val) == 2:
                 src = str(val[0])
-                if is_sampler and val[1] == 0:
+                # ★只认语义匹配的输入框：采样器的 model 输入才可能是 model 源，
+                # 否则 positive/latent_image（同为 slot0）会被误收进候选，
+                # _prefer_model_anchor 再从 set 里随机取一个 → 锚点选择变成
+                # 随机的（字符串哈希随机化），LoRA 偶尔被注到正向编码节点上。
+                if is_sampler and val[1] == 0 and "model" in field.lower():
                     model_srcs.add(src)
-                if is_clipenc:
+                if is_clipenc and "clip" in field.lower():
                     # 不限制 slot：CLIP 编码节点的 clip 输入可能接在 slot0
                     # （如 CLIPLoader）或 slot1（如 CheckpointLoader），以实际为准
                     clip_srcs.add(src)
@@ -366,6 +376,153 @@ def _find_injection_anchors(prompt: dict):
         c = next(iter(clip_srcs)) if clip_srcs else None
     return (m, c)
 
+
+
+# --------------------------------------------------------------------------- #
+# 基础工作流运行时手术（v7.0.0）：放大绕过/注入、清理注入、保存节点替换、采样器覆盖
+# --------------------------------------------------------------------------- #
+def _save_images_link(prompt: dict, save_node) -> tuple[str, int] | None:
+    """输出节点 images 输入当前接的 (上游节点ID, slot)。"""
+    node = _get_node(prompt, save_node)
+    if not node:
+        return None
+    return _link((node.get("inputs") or {}).get("images"))
+
+
+def _link(v):
+    """输入值是否为节点连线 [id, slot]（本模块此前没有这个助手，v7.0.0 补上）。"""
+    if isinstance(v, list) and len(v) == 2 and not isinstance(v[0], (dict, list)):
+        try:
+            return str(v[0]), int(v[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def bypass_upscale(prompt: dict, save_node, upscale_apply) -> bool:
+    """绕过放大链：保存节点直连放大节点上游的图像源，并删除放大两节点。
+
+    返回是否发生改写。放大模型节点一并删除（API 格式下全图节点都会执行，
+    留着只会白加载一次模型）。
+    """
+    node = _get_node(prompt, upscale_apply)
+    save = _get_node(prompt, save_node)
+    if not node or not save:
+        return False
+    src = _link((node.get("inputs") or {}).get("image"))
+    if not src:
+        return False
+    save.setdefault("inputs", {})["images"] = [src[0], src[1]]
+    # 删除放大节点与其 loader（loader 经 apply 的 upscale_model 输入定位）
+    to_del = [str(upscale_apply)]
+    um = _link((node.get("inputs") or {}).get("upscale_model"))
+    if um and isinstance(prompt.get(um[0]), dict) and "upscalemodelloader" in (
+        prompt[um[0]].get("class_type") or ""
+    ).lower():
+        to_del.append(um[0])
+    for nid in to_del:
+        prompt.pop(nid, None)
+    return True
+
+
+def inject_upscale(prompt: dict, save_node, model_name: str) -> str | None:
+    """注入放大链：UpscaleModelLoader + ImageUpscaleWithModel 插在保存节点上游。
+
+    返回新保存节点 images 所指的放大节点 ID（失败返回 None）。
+    """
+    save = _get_node(prompt, save_node)
+    if not save or not (model_name or "").strip():
+        return None
+    src = _link((save.get("inputs") or {}).get("images"))
+    if not src:
+        return None
+    loader_id = _next_free_id(prompt)
+    prompt[loader_id] = {
+        "class_type": "UpscaleModelLoader",
+        "inputs": {"model_name": model_name.strip()},
+        "_meta": {"title": "注入放大模型 (anima)"},
+    }
+    # ★先插入 loader 再取下一个空闲 ID（两 ID 一起先取会撞号）
+    apply_id = _next_free_id(prompt)
+    prompt[apply_id] = {
+        "class_type": "ImageUpscaleWithModel",
+        "inputs": {"upscale_model": [loader_id, 0], "image": [src[0], src[1]]},
+        "_meta": {"title": "注入放大 (anima)"},
+    }
+    save["inputs"]["images"] = [apply_id, 0]
+    return apply_id
+
+
+def inject_cleanup(prompt: dict, save_node) -> str | None:
+    """注入清理显存节点（easy cleanGpuUsed，透传）插在保存节点上游。"""
+    save = _get_node(prompt, save_node)
+    if not save:
+        return None
+    src = _link((save.get("inputs") or {}).get("images"))
+    if not src:
+        return None
+    new_id = _next_free_id(prompt)
+    prompt[new_id] = {
+        "class_type": "easy cleanGpuUsed",
+        "inputs": {"anything": [src[0], src[1]]},
+        "_meta": {"title": "注入清理显存 (anima)"},
+    }
+    save["inputs"]["images"] = [new_id, 0]
+    return new_id
+
+
+def replace_save_node(
+    prompt: dict, save_node, output_ext: str = "", quality=None,
+) -> str | None:
+    """把保存节点替换成标准 SaveImageExtended（保存格式/质量可配）。
+
+    原保存节点从图中删除（避免双份落盘），其 images 上游改接新节点。
+    返回新节点 ID（失败 None）。
+    """
+    old = _get_node(prompt, save_node)
+    if not old:
+        return None
+    src = _link((old.get("inputs") or {}).get("images"))
+    if not src:
+        return None
+    old_inputs = old.get("inputs") or {}
+    new_id = _next_free_id(prompt)
+    inputs = {
+        "filename_prefix": old_inputs.get("filename_prefix") or "anima",
+        "images": [src[0], src[1]],
+        "output_ext": (output_ext or "").strip() or ".png",
+    }
+    try:
+        q = int(quality)
+        if q > 0:
+            inputs["quality"] = q
+    except (TypeError, ValueError):
+        pass
+    prompt[new_id] = {
+        "class_type": "SaveImageExtended",
+        "inputs": inputs,
+        "_meta": {"title": "💾 Save Image Extended (anima)"},
+    }
+    prompt.pop(str(save_node), None)
+    return new_id
+
+
+def set_sampler_node(
+    prompt: dict, sampler_node, sampler_name: str = "", scheduler: str = "",
+) -> bool:
+    """给采样器节点写 sampler_name / scheduler（字段存在才写）。"""
+    node = _get_node(prompt, sampler_node)
+    if not node:
+        return False
+    inputs = node.setdefault("inputs", {})
+    changed = False
+    if (sampler_name or "").strip() and "sampler_name" in inputs:
+        inputs["sampler_name"] = sampler_name.strip()
+        changed = True
+    if (scheduler or "").strip() and "scheduler" in inputs:
+        inputs["scheduler"] = scheduler.strip()
+        changed = True
+    return changed
 
 
 def _lora_chain_tail(prompt: dict, loaders: list):
@@ -588,6 +745,7 @@ def apply_loras(
     on_warning=None,
     on_info=None,
     model_only: bool = True,
+    protected_nodes=None,
 ) -> list[str]:
     """注入 / 启用 / 禁用 LoRA。
 
@@ -630,10 +788,15 @@ def apply_loras(
 
     enabled_names: list[str] = []
     # 预收集工作流中的 LoraLoader 节点（按字典顺序），load_node 为空时按顺序自动分配
+    # protected_nodes：基础工作流的内置 LoRA 节点（v7.0.0）——不参与自动分配，
+    # 避免用户配置的 LoRA 覆写内置模型名（如 mmh1.6 的 Turbo-ANIMA）。
+    _protected = {str(x) for x in (protected_nodes or [])}
     loader_nodes = [
         nid
         for nid, node in prompt.items()
-        if isinstance(node, dict) and (node.get("class_type") or "").endswith("LoraLoader")
+        if isinstance(node, dict)
+        and (node.get("class_type") or "").endswith("LoraLoader")
+        and str(nid) not in _protected
     ]
     _report(
         f"[LoRA] 工作流现有 LoraLoader 节点: {loader_nodes or '无'}；"
@@ -775,7 +938,7 @@ def apply_loras(
                 for nid, node in prompt.items()
                 if isinstance(node, dict)
             ]
-            names = ", ".join(n for n, _, _ in to_inject)
+            names = ", ".join(e[0] for e in to_inject)
             msg = (
                 "【LoRA 未生效】已配置启用的 LoRA，但工作流中没有 LoraLoader 节点、"
                 "且无法自动探测到注入锚点（底模加载节点）。本次这些 LoRA 被跳过："

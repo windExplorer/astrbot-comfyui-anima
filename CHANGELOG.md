@@ -2,6 +2,87 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.0.0（重大架构变更：基础工作流体系 / 底模库 / 漫画表情包功能线移除）
+
+主版本号 6 → 7：移除整条漫画/表情包功能线 + 出图工作流体系重构（基础工作流库 + 节点自动定位），
+均为破坏性/架构级变更。旧数据不迁移、可继续使用（列表打「旧版」标记）。
+
+### 一、移除（breaking）
+
+- 漫画/表情包功能**全线移除**：`comic.py` 删除；`/表情包`、`/漫画`、`/meme`、`/comic` 等指令、
+  `comfyui_comic` / `comfyui_meme_img` LLM 工具、表情包意图强路由、boogu 造词、
+  会话记忆 comic 剔除、图库补标、`kind:comic` / `prompt_slots` / `boogu_*` /
+  `special_features` / `enable_comic_llm` / `default_comic_workflow` 配置全部退出；
+- WebUI「功能配置」页保留壳子但清空漫画/表情包相关项（该功能线后续整体重写）；
+- 全仓 grep 校验无残留引用；`test_logic` 相应断言同步更新。
+
+### 二、底模库（新增）
+
+- 底模从自由文本升级为实体库（`basemodel_store.py`，data_dir/basemodel.db）：
+  名称、模型文件名（与工作流按文件名自动关联，同名保存即去重覆盖）、
+  **提示词风格**（自然语言可掺杂标签 / danbooru 标签，独立于 danbooru 适配开关）、
+  **支持语言**（多选，暂中/英）+ **优先语种**、danbooru 适配、描述、封面；
+- C站采集（`basemodels/fetch`）：civitai 链接抓标题/描述/封面，或图片直链直下；
+- WebUI 新增「底模库」页（卡片列表 + 编辑 + 封面上传/直链）；
+- 封面基建：`basemodel_assets/` 目录、`/basemodel/file` 独立直链、
+  `v-cover-lazy` 指令支持 `bm:` 前缀、`useCover`/`CoverEditor` 支持 scope。
+
+### 三、基础工作流库（新增，替代手动拷 JSON 文件）
+
+- `workflow_parser.py`：解析即校验——必须是 ComfyUI API 格式、**单采样器**、**单主模**、
+  正/负向/宽高/保存节点可唯一定位，任何一条不满足**拒绝入库**并给出全部原因；
+- 解析产物（角色注记）：类型（文生图/图生图，按有无 LoadImage）、正/负向节点+**输入框名**
+  （沿连线上溯定位文本源节点；Qwen 一体编码器自动区分 `prompt`/`negative_prompt`）、
+  宽高节点、底模源、内置 LoRA 链（含模型名）、放大链（loader/apply/当前模型，溯源可穿过
+  `easy cleanGpuUsed` 透传节点）、清理显存节点、保存节点（类型/格式/质量能力）、采样器默认值、
+  子图冒号 ID 标记；
+- `workflow_store.py`：SQLite（data_dir/workflow.db）+ **原始文件落盘关联**
+  （`workflow_uploads/<名>_<sha16>.json`，永不修改，可追溯）+ 同名覆盖更新 +
+  **删除保护**（被出图工作流引用时拒绝并列出引用清单）+ 重解析；
+- WebUI 新增「基础工作流」页：拖拽/粘贴上传 → 解析报告 → 卡片管理
+  （编辑/C站采集/封面/重解析/删除），独立 WebUI 同步支持全部路由。
+
+### 四、创建的工作流配置重做
+
+- 新增「基础工作流」引用（`base_id`）：选中后节点全部按解析注记自动定位，
+  **节点 ID 手填全部隐身**（旧的手动配置收归旧版模式，列表打「旧版」标记）；
+- 语义化覆盖开关（全部「留空/默认=跟随基础工作流」）：
+  - 采样器：固定种子（留空随机）、步数、CFG、采样器/调度器（标题中文、选项英文、
+    可搜索可手输，内置 ComfyUI 最新版全量清单）、噪点（图生图才可覆盖）；
+  - 放大：绕过内置放大链 / 注入放大链（基础图无放大链时，填模型名）；
+  - 清理显存：基础图没有时注入 `easy cleanGpuUsed`；
+  - 保存：格式/质量——基础图保存节点不支持时**运行时替换为 SaveImageExtended**
+    （原节点删除避免双份落盘；服务器缺节点包需自行安装）；
+  - **LLM 注入说明**（llm_notes）：使用该工作流出图时通过 `comfyui_workflows`
+    工具注入给 LLM 的用法说明，默认空不注入；
+- LoRA：基础图内置 LoRA 在编辑弹窗明示（**不可删除、可禁用=强度置 0**）；
+  运行时 `apply_loras` 新增 `protected_nodes` 保护机制——用户配置的 LoRA 只注入新节点，
+  **绝不覆写内置 LoRA 的模型名**（mmh1.6 的 Turbo-ANIMA 这类内置必需 LoRA 从此安全）。
+
+### 五、运行时
+
+- 出图加载分支：`base_id` 工作流 → 从库取底图（`json.loads` 全新副本即克隆）→
+  解析注记注水进 wf 副本 → 后续出图管线零改动复用 → 覆盖应用
+  （采样器覆盖 / 放大三态 / 清理注入 / 保存替换）；
+- 旧版（无 base_id）工作流走原文件路径，行为完全不变。
+
+### 六、顺手修复的既有 bug
+
+- **LoRA 锚点随机误选**（严重）：锚点收集把采样器的 `positive`/`latent_image`
+  （同为 slot0）误收进 model 源候选，再用 `next(iter(set))` 随机取——字符串哈希随机化
+  导致每次进程随机，LoRA 偶尔被注到正向编码节点上且不可复现。现按输入框名 `model`
+  过滤 + loader 节点优先 + 排序确定化；
+- `_inject_loras` 告警分支把 4 元组按 3 元组解包，触发即 TypeError；
+- 测试 mock 的 `/history/<pid>` 返回 entry 本身（真实 ComfyUI 返回 `{pid: entry}` 映射），
+  集成测试从此永久失败；danbooru mock 的 tags 返回 list 而客户端期望字符串。
+
+### 七、验证
+
+- 新增 `tests/test_workflow_v7.py`（5 组：标准解析/双采样器拒绝/子图+一体编码器/
+  存储全套含文件关联与删除保护/运行时手术）全过；
+- `tests/test_logic.py` 1–4 稳定全绿（修复锚点 bug 后确定性通过）；
+- `main.py` / `workflow_builder.py` / 新模块 compileall 通过；前端 vite 构建通过。
+
 ## v6.3.5（新功能：工作流支持自定义正向/负向输入框名，接入 Qwen 系自然语言工作流）
 
 现象：接入 `qwen_image_2.1` 工作流时，正向提示词怎么配都「注入成功」却不出效果，

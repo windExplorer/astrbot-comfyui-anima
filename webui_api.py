@@ -1078,6 +1078,503 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"上传失败: {e}")
 
+    # ------------------ 底模库（v7.0.0：底模实体化管理） ------------------
+
+    def _basemodel_store(self):
+        """懒加载底模库存储（挂 plugin.data_dir，热更新 reload 后重建）。"""
+        store = getattr(self, "_basemodel_store_inst", None)
+        if store is None:
+            try:
+                from .basemodel_store import BaseModelStore
+            except ImportError:
+                from basemodel_store import BaseModelStore
+            store = BaseModelStore(getattr(self.plugin, "data_dir", None) or Path("data"))
+            self._basemodel_store_inst = store
+        return store
+
+    def _basemodel_assets_dir(self) -> Path:
+        d = (getattr(self.plugin, "data_dir", None) or Path(os.getcwd())) / "basemodel_assets"
+        d = Path(d)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def basemodels_list(self):
+        try:
+            return json_response({"items": self._basemodel_store().list_all()})
+        except Exception as e:
+            return error_response(f"读取底模库失败: {e}")
+
+    async def basemodels_save(self):
+        try:
+            body = await request.json(default={}) or {}
+            if not isinstance(body, dict):
+                return error_response("请求体必须是对象")
+            mid, err = self._basemodel_store().save(body)
+            if err:
+                return error_response(f"保存失败: {err}")
+            return json_response({"id": mid, "msg": "保存成功"})
+        except Exception as e:
+            return error_response(f"保存失败: {e}")
+
+    async def basemodels_delete(self):
+        try:
+            body = await request.json(default={}) or {}
+            mid = body.get("id")
+            if not mid:
+                return error_response("缺少 id")
+            err = self._basemodel_store().delete(int(mid))
+            if err:
+                return error_response(f"删除失败: {err}")
+            return json_response({"msg": "删除成功"})
+        except Exception as e:
+            return error_response(f"删除失败: {e}")
+
+    async def basemodel_image(self):
+        """返回底模封面图（basemodel_assets/ 下）。query: name=文件名，size=orig 可选。"""
+        fname = (request.query.get("name", "") or "").strip()
+        if not fname:
+            return error_response("缺少 name 参数")
+        if "/" in fname or "\\" in fname or ".." in fname:
+            return error_response("非法文件名", status_code=400)
+        path = self._basemodel_assets_dir() / fname
+        if not path.exists() or not path.is_file():
+            return error_response("图片不存在", status_code=404)
+        try:
+            _size = (request.query.get("size", "") or "").strip().lower()
+            if _size in ("orig", "original", "full", "0"):
+                _res = await asyncio.to_thread(self._orig_data_url_sync, path)
+                if not _res:
+                    return error_response("原图过大或读取失败", status_code=413)
+                return json_response({"name": fname, "url": _res[0]})
+            _res = await asyncio.to_thread(self._thumb_data_url_sync, path, 640)
+            if not _res:
+                return error_response("生成缩略图失败")
+            return json_response({"name": fname, "url": _res[0]})
+        except Exception as e:
+            return error_response(f"读取图片失败: {e}")
+
+    async def basemodels_upload_image(self):
+        """上传底模封面（multipart 或 base64 JSON），保存到 basemodel_assets/。"""
+        try:
+            raw = await request.body()
+            data_bytes = None
+            filename = f"bm_{uuid.uuid4().hex}.png"
+            ctype = (request.headers.get("content-type") or "").lower()
+            if "json" in ctype:
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                fname_in = (payload.get("filename") or "").strip()
+                if fname_in:
+                    filename = os.path.basename(fname_in)
+                b64 = payload.get("data") or payload.get("base64") or ""
+                if "," in b64:
+                    b64 = b64.split(",", 1)[1]
+                try:
+                    data_bytes = base64.b64decode(b64)
+                except Exception:
+                    return error_response("base64 数据无效")
+            else:
+                data_bytes = raw
+                fname_in = (request.headers.get("x-filename") or "").strip()
+                if fname_in:
+                    filename = os.path.basename(fname_in)
+                if not (filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))):
+                    filename = filename.rsplit(".", 1)[0] + ".png"
+            if not data_bytes or len(data_bytes) < 16:
+                return error_response("图片数据为空或过小")
+            stem = os.path.splitext(filename)[0]
+            ext = os.path.splitext(filename)[1] or ".png"
+            safe_name = re.sub(r"[^\w\-.]", "_", stem)[:60]
+            final_name = f"{safe_name}_{uuid.uuid4().hex[:8]}{ext}"
+            out_path = self._basemodel_assets_dir() / final_name
+            await asyncio.to_thread(out_path.write_bytes, data_bytes)
+            return json_response({"name": final_name, "msg": "上传成功"})
+        except Exception as e:
+            return error_response(f"上传失败: {e}")
+
+    async def basemodels_fetch(self):
+        """C 站链接抓取底模：标题 / 描述 / 封面（下载到 basemodel_assets/）。
+
+        body: {"url": "https://civitai.com/models/12345" 或 /model-versions/xxx}
+        返回 {"title", "description", "image"(本地封面文件名), "civitai_url"}
+        """
+        try:
+            body = await request.json(default={}) or {}
+            url = (body.get("url") or "").strip()
+            if not url:
+                return error_response("缺少 url 参数")
+            import aiohttp
+
+            mvid_path = re.search(r"/model-versions/(\d+)", url)
+            m = re.search(r"/models/(\d+)", url)
+            if mvid_path:
+                api_url = f"https://civitai.com/api/v1/model-versions/{mvid_path.group(1)}"
+            elif m:
+                api_url = f"https://civitai.com/api/v1/models/{m.group(1)}"
+            else:
+                return error_response("无法从链接中识别 C 站模型 ID（需包含 /models/数字 或 /model-versions/数字）")
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                )
+            }
+            try:
+                _ck = ((self.plugin._cfg("civitai_api_key", "")) or "").strip()
+            except Exception:
+                _ck = ""
+            if _ck:
+                headers["Authorization"] = f"Bearer {_ck}"
+            proxy = None
+            try:
+                plugin_proxy = ((self.plugin._cfg("http_proxy", "")) or "").strip()
+            except Exception:
+                plugin_proxy = ""
+            if plugin_proxy:
+                proxy = plugin_proxy
+            else:
+                try:
+                    from astrbot.api import GLOBAL_CONFIG
+                    proxy = (GLOBAL_CONFIG.get("http_proxy") or "").strip() or None
+                except Exception:
+                    proxy = None
+            timeout = aiohttp.ClientTimeout(total=15)
+            try:
+                async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                    async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
+                        if resp.status in (401, 403):
+                            return error_response(
+                                "C 站 API 拒绝请求（%d）。请在插件配置里填写 civitai_api_key 后重试。" % resp.status
+                            )
+                        if resp.status == 429:
+                            return error_response("C 站 API 限流（HTTP 429），请稍后重试。")
+                        if resp.status != 200:
+                            return error_response(f"C 站 API 请求失败: HTTP {resp.status}")
+                        data = await resp.json()
+            except asyncio.TimeoutError:
+                return error_response("C 站 API 请求超时，请检查网络/代理。")
+            except aiohttp.ClientError as e:
+                return error_response(f"C 站连接失败: {e}")
+            # 统一取版本对象
+            version = None
+            if isinstance(data, dict) and data.get("modelVersions"):
+                versions = data.get("modelVersions") or []
+                version = versions[0] if versions else None
+                if not (data.get("name") or "").strip():
+                    data["name"] = ""  # models 接口有 name；versions 接口没有
+            elif isinstance(data, dict):
+                version = data
+            version = version or {}
+            title = (data.get("name") if isinstance(data, dict) else "") or version.get("model", {}).get("name", "") or ""
+            description = (version.get("description") or data.get("description") or "")[:2000]
+            # 收集封面候选（跳过视频），下载第一张
+            import html as _html
+            import re as _re
+
+            def _clean(s: str) -> str:
+                s = _re.sub(r"<[^>]+>", " ", s or "")
+                return _html.unescape(s).strip()
+
+            candidates = []
+            for img in (version.get("images") or []):
+                u = img.get("url") or ""
+                if not u or (img.get("type") or "").lower() == "video":
+                    continue
+                u = u.replace("/width=450/", "/width=original/")
+                candidates.append(u)
+            image_name = ""
+            if candidates:
+                dl_err = ""
+                for cu in candidates[:3]:
+                    try:
+                        async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                            async with sess.get(cu, timeout=aiohttp.ClientTimeout(total=30), proxy=proxy) as resp:
+                                if resp.status != 200:
+                                    continue
+                                ctype = (resp.headers.get("Content-Type") or "").lower()
+                                if not ctype.startswith("image/"):
+                                    continue
+                                img_data = await resp.read()
+                        if not img_data or len(img_data) > 20 * 1024 * 1024:
+                            continue
+                        ext = ".png"
+                        for _e in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                            if _e in (cu or "").lower():
+                                ext = _e
+                                break
+                        image_name = f"bm_{uuid.uuid4().hex[:10]}{ext}"
+                        out = self._basemodel_assets_dir() / image_name
+                        await asyncio.to_thread(out.write_bytes, img_data)
+                        break
+                    except Exception as _de:
+                        dl_err = str(_de)
+                        continue
+                if not image_name and dl_err:
+                    logger.info(f"[底模抓取] 封面下载失败（忽略，可手动上传）: {dl_err}")
+            return json_response({
+                "title": _clean(str(title))[:120],
+                "description": _clean(description),
+                "image": image_name,
+                "civitai_url": url,
+                "fetched": True,
+            })
+        except Exception as e:
+            return error_response(f"抓取失败: {e}")
+
+
+    # ------------------ 基础工作流库（v7.0.0：上传解析入库，替代手动拷文件） ------------------
+
+    def _workflow_store(self):
+        """懒加载基础工作流库（挂 plugin.data_dir，热更新 reload 后重建）。"""
+        store = getattr(self, "_workflow_store_inst", None)
+        if store is None:
+            try:
+                from .workflow_store import WorkflowStore
+            except ImportError:
+                from workflow_store import WorkflowStore
+            store = WorkflowStore(getattr(self.plugin, "data_dir", None) or Path("data"))
+            self._workflow_store_inst = store
+        return store
+
+    def _baseworkflow_refs(self, wf_id: int) -> list[str]:
+        """统计出图工作流配置里 base_id 指向该基础工作流的实例名（删除保护用）。"""
+        try:
+            wfs = self.plugin._cfg("workflows", []) or []
+            return [
+                (w.get("name") or "(未命名)")
+                for w in wfs
+                if isinstance(w, dict) and str(w.get("base_id") or "") == str(wf_id)
+            ]
+        except Exception:
+            return []
+
+    async def baseworkflows_list(self):
+        try:
+            store = self._workflow_store()
+            items = store.list_all()
+            for it in items:
+                it["ref_count"] = len(self._baseworkflow_refs(it["id"]))
+            return json_response({"items": items})
+        except Exception as e:
+            return error_response(f"读取基础工作流库失败: {e}")
+
+    async def baseworkflows_upload(self):
+        """上传基础工作流。body: {name, content(JSON 文本), filename(原始文件名，可选)}。
+
+        解析失败 → 拒绝入库并在 message 里给出全部原因。
+        """
+        try:
+            body = await request.json(default={}) or {}
+            name = (body.get("name") or "").strip()
+            content = body.get("content") or ""
+            filename = (body.get("filename") or "").strip()
+            if not content:
+                return error_response("缺少工作流 JSON 内容")
+            wf_id, roles, err = self._workflow_store().import_json(name, content, filename)
+            if err:
+                return error_response(err)
+            return json_response({"id": wf_id, "roles": roles, "msg": "入库成功"})
+        except Exception as e:
+            return error_response(f"上传失败: {e}")
+
+    async def baseworkflows_delete(self):
+        try:
+            body = await request.json(default={}) or {}
+            wf_id = body.get("id")
+            if not wf_id:
+                return error_response("缺少 id")
+            refs = self._baseworkflow_refs(int(wf_id))
+            err = self._workflow_store().delete(int(wf_id), referenced_names=refs)
+            if err:
+                return error_response(err)
+            return json_response({"msg": "删除成功"})
+        except Exception as e:
+            return error_response(f"删除失败: {e}")
+
+    async def baseworkflows_reparse(self):
+        try:
+            body = await request.json(default={}) or {}
+            wf_id = body.get("id")
+            if not wf_id:
+                return error_response("缺少 id")
+            roles, err = self._workflow_store().reparse(int(wf_id))
+            if err and roles is None:
+                return error_response(err)
+            return json_response({"roles": roles, "msg": err or "重解析完成"})
+        except Exception as e:
+            return error_response(f"重解析失败: {e}")
+
+    async def baseworkflows_json(self):
+        """读取基础工作流原始 JSON 文本（前端预览/下载）。query: id。"""
+        try:
+            wf_id = (request.query.get("id", "") or "").strip()
+            rec = self._workflow_store().get(int(wf_id), with_json=True) if wf_id else None
+            if not rec:
+                return error_response("记录不存在", status_code=404)
+            return json_response({"name": rec.get("name"), "filename": rec.get("file_name"), "content": rec.get("wf_json")})
+        except Exception as e:
+            return error_response(f"读取失败: {e}")
+
+    async def baseworkflows_fetch(self):
+        """基础工作流 C 站抓取：标题/描述/封面（封面下载到 basemodel_assets/）。
+
+        body: {"url": civitai 链接或图片直链, "direct_image": bool}
+        返回 {"title", "description", "image"(本地封面文件名), "civitai_url", "fetched"}
+        """
+        try:
+            body = await request.json(default={}) or {}
+            url = (body.get("url") or "").strip()
+            if not url:
+                return error_response("缺少 url 参数")
+            import aiohttp
+
+            # 通用代理/请求头取法（与 LoRA 抓取一致）
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                )
+            }
+            try:
+                _ck = ((self.plugin._cfg("civitai_api_key", "")) or "").strip()
+            except Exception:
+                _ck = ""
+            if _ck:
+                headers["Authorization"] = f"Bearer {_ck}"
+            proxy = None
+            try:
+                plugin_proxy = ((self.plugin._cfg("http_proxy", "")) or "").strip()
+            except Exception:
+                plugin_proxy = ""
+            if plugin_proxy:
+                proxy = plugin_proxy
+            else:
+                try:
+                    from astrbot.api import GLOBAL_CONFIG
+                    proxy = (GLOBAL_CONFIG.get("http_proxy") or "").strip() or None
+                except Exception:
+                    proxy = None
+
+            # direct_image：任意图片直链当封面下载
+            if body.get("direct_image"):
+                from urllib.parse import urlparse
+                p = urlparse(url)
+                if p.scheme not in ("http", "https") or not p.netloc:
+                    return error_response("仅支持 http/https 图片直链")
+                async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                    async with sess.get(url, timeout=aiohttp.ClientTimeout(total=30), proxy=proxy) as resp:
+                        if resp.status != 200:
+                            return error_response(f"下载失败: HTTP {resp.status}")
+                        ctype = (resp.headers.get("Content-Type") or "").lower()
+                        if not ctype.startswith("image/"):
+                            return error_response(f"链接返回的不是图片（{ctype}）")
+                        data = await resp.read()
+                if len(data) > 20 * 1024 * 1024:
+                    return error_response("图片过大（超过 20MB）")
+                ext = os.path.splitext(p.path)[1].lower() or ".png"
+                if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                    ext = ".png"
+                fname = f"bw_{uuid.uuid4().hex}{ext}"
+                out = self._basemodel_assets_dir() / fname
+                await asyncio.to_thread(out.write_bytes, data)
+                return json_response({"image": fname, "fetched": True})
+
+            mvid_path = re.search(r"/model-versions/(\d+)", url)
+            m = re.search(r"/models/(\d+)", url)
+            if mvid_path:
+                api_url = f"https://civitai.com/api/v1/model-versions/{mvid_path.group(1)}"
+            elif m:
+                api_url = f"https://civitai.com/api/v1/models/{m.group(1)}"
+            else:
+                return error_response("无法从链接中识别 C 站模型 ID（需包含 /models/数字 或 /model-versions/数字）")
+            timeout = aiohttp.ClientTimeout(total=15)
+            try:
+                async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                    async with sess.get(api_url, timeout=timeout, proxy=proxy) as resp:
+                        if resp.status in (401, 403):
+                            return error_response("C 站 API 拒绝请求（%d）。请配置 civitai_api_key 后重试。" % resp.status)
+                        if resp.status == 429:
+                            return error_response("C 站 API 限流（HTTP 429），请稍后重试。")
+                        if resp.status != 200:
+                            return error_response(f"C 站 API 请求失败: HTTP {resp.status}")
+                        data = await resp.json()
+            except asyncio.TimeoutError:
+                return error_response("C 站 API 请求超时，请检查网络/代理。")
+            except aiohttp.ClientError as e:
+                return error_response(f"C 站连接失败: {e}")
+            version = None
+            if isinstance(data, dict) and data.get("modelVersions"):
+                versions = data.get("modelVersions") or []
+                version = versions[0] if versions else None
+            elif isinstance(data, dict):
+                version = data
+            version = version or {}
+            title = (data.get("name") if isinstance(data, dict) else "") or (version.get("model") or {}).get("name", "") or ""
+            description = (version.get("description") or data.get("description") or "")[:2000]
+            import html as _html
+
+            def _clean(s: str) -> str:
+                s = re.sub(r"<[^>]+>", " ", s or "")
+                return _html.unescape(s).strip()
+
+            image_name = ""
+            for img in (version.get("images") or []):
+                u = img.get("url") or ""
+                if not u or (img.get("type") or "").lower() == "video":
+                    continue
+                u = u.replace("/width=450/", "/width=original/")
+                try:
+                    async with aiohttp.ClientSession(headers=headers, trust_env=True) as sess:
+                        async with sess.get(u, timeout=aiohttp.ClientTimeout(total=30), proxy=proxy) as resp:
+                            if resp.status != 200:
+                                continue
+                            ctype = (resp.headers.get("Content-Type") or "").lower()
+                            if not ctype.startswith("image/"):
+                                continue
+                            img_data = await resp.read()
+                    if not img_data or len(img_data) > 20 * 1024 * 1024:
+                        continue
+                    ext = ".png"
+                    for _e in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                        if _e in u.lower():
+                            ext = _e
+                            break
+                    image_name = f"bw_{uuid.uuid4().hex[:10]}{ext}"
+                    out = self._basemodel_assets_dir() / image_name
+                    await asyncio.to_thread(out.write_bytes, img_data)
+                    break
+                except Exception:
+                    continue
+            return json_response({
+                "title": _clean(str(title))[:120],
+                "description": _clean(description),
+                "image": image_name,
+                "civitai_url": url,
+                "fetched": True,
+            })
+        except Exception as e:
+            return error_response(f"抓取失败: {e}")
+
+    async def baseworkflows_meta(self):
+        """更新基础工作流元数据（名称/C站链接/描述/封面）。body: {id, ...fields}。"""
+        try:
+            body = await request.json(default={}) or {}
+            wf_id = body.get("id")
+            if not wf_id:
+                return error_response("缺少 id")
+            err = self._workflow_store().update_meta(
+                int(wf_id),
+                {k: body.get(k) for k in ("name", "civitai_url", "image", "description")
+                 if k in body},
+            )
+            if err:
+                return error_response(err)
+            return json_response({"msg": "已保存"})
+        except Exception as e:
+            return error_response(f"保存失败: {e}")
+
     async def lora_fetch_image(self, url: str = ""):
         """从任意图片直链下载封面图到 lora_assets/（支持 C站 / 魔搭 / HuggingFace 等任意图片 URL）。
 
@@ -1771,18 +2268,6 @@ class WebUIApi:
             return json_response({"msg": msg})
         except Exception as e:
             return error_response(f"打标签失败: {e}")
-
-    async def gallery_retag(self):
-        """存量图补打「表情包 / 漫画」标签（按工作流类型批量），供 WebUI 一键补标按钮调用。
-        复用插件 _gallery_retag（与 /图库 补标 命令同源逻辑）。"""
-        p = self.plugin
-        if p is None or getattr(p, "gallery", None) is None:
-            return error_response("图库未启用或初始化失败")
-        try:
-            msg = p._gallery_retag(owner="", all_view=True, session_scope="")
-            return json_response({"msg": msg})
-        except Exception as e:
-            return error_response(f"补标失败: {e}")
 
     async def backup_db(self):
         """备份图库数据库（gallery.db），返回 base64 便于前端触发下载。
@@ -2745,7 +3230,6 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/restore", _h("gallery_restore"), ["POST"], "图库恢复"),
         (f"{prefix}/gallery/purge", _h("gallery_purge"), ["POST"], "图库彻底删除"),
         (f"{prefix}/gallery/tags", _h("gallery_tags"), ["POST"], "图库打标签"),
-        (f"{prefix}/gallery/retag", _h("gallery_retag"), ["POST"], "图库存量补标"),
         (f"{prefix}/gallery/backup", _h("backup_db"), ["GET"], "备份图库数据库"),
         (f"{prefix}/stats/ranking", _h("stats_ranking"), ["GET"], "用户生图排行"),
         (f"{prefix}/stats/trend", _h("stats_trend"), ["GET"], "生图小时趋势"),
@@ -2758,6 +3242,19 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/lora/fetch", _h("lora_fetch"), ["POST"], "C站 LoRA 抓取 / 任意图片直链下载封面"),
         (f"{prefix}/lora/upload_image", _h("lora_upload_image"), ["POST"], "LoRA 封面图上传"),
         (f"{prefix}/lora/image", _h("lora_image"), ["GET"], "LoRA 封面图读取"),
+        (f"{prefix}/basemodels", _h("basemodels_list"), ["GET"], "底模库列表"),
+        (f"{prefix}/basemodels/save", _h("basemodels_save"), ["POST"], "底模保存"),
+        (f"{prefix}/basemodels/delete", _h("basemodels_delete"), ["POST"], "底模删除"),
+        (f"{prefix}/basemodels/fetch", _h("basemodels_fetch"), ["POST"], "底模 C站抓取"),
+        (f"{prefix}/basemodels/upload_image", _h("basemodels_upload_image"), ["POST"], "底模封面上传"),
+        (f"{prefix}/basemodels/image", _h("basemodel_image"), ["GET"], "底模封面读取"),
+        (f"{prefix}/baseworkflows", _h("baseworkflows_list"), ["GET"], "基础工作流列表"),
+        (f"{prefix}/baseworkflows/upload", _h("baseworkflows_upload"), ["POST"], "基础工作流上传入库"),
+        (f"{prefix}/baseworkflows/delete", _h("baseworkflows_delete"), ["POST"], "基础工作流删除"),
+        (f"{prefix}/baseworkflows/reparse", _h("baseworkflows_reparse"), ["POST"], "基础工作流重解析"),
+        (f"{prefix}/baseworkflows/json", _h("baseworkflows_json"), ["GET"], "基础工作流原始 JSON"),
+        (f"{prefix}/baseworkflows/fetch", _h("baseworkflows_fetch"), ["POST"], "基础工作流 C站抓取"),
+        (f"{prefix}/baseworkflows/meta", _h("baseworkflows_meta"), ["POST"], "基础工作流元数据更新"),
         (f"{prefix}/translate/test", _h("translate_test"), ["POST"], "翻译调试（测试三种翻译模式）"),
         (f"{prefix}/workflows/sampler", _h("workflow_sampler"), ["GET"], "读取工作流采样器参数"),
         (f"{prefix}/platforms", _h("platforms_get"), ["GET"], "读取生图平台配置"),

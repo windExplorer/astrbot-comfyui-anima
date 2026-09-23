@@ -44,13 +44,13 @@ import { ref } from "vue";
 import { NModal, NInput, NInputGroup, NButton, NDivider } from "naive-ui";
 import { useCover } from "@/composables/useCover";
 
-const props = defineProps<{ show: boolean; title?: string }>();
+const props = defineProps<{ show: boolean; title?: string; scope?: "lora" | "bm" }>();
 const emit = defineEmits<{
   (e: "update:show", v: boolean): void;
   (e: "confirm", name: string): void;
 }>();
 
-const { uploadFile, fetchUrl } = useCover();
+const { uploadFile, fetchUrl } = useCover(props.scope === "bm" ? "bm" : "lora");
 const fileInput = ref<HTMLInputElement | null>(null);
 const dragging = ref(false);
 const url = ref("");
