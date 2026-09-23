@@ -20,9 +20,13 @@ COMIC_FEATURE_KEYS = ("meme_text", "meme_img", "comic")
 
 # 表情包意图关键词：仅当用户**明确**想要表情包时才触发表情包工作流，
 # 不再因「气泡/带字/底部文字/漫画/comic」等常见描述词误触发（这些词在正常画图描述里很常见）。
+# 中文词做子串匹配；英文词必须整词匹配（v6.3.2）：
+# 子串匹配曾把画面描述 "snack bags and stickers beside her"（贴纸）误判成
+# meme 意图，强路由到表情包工作流（实测翻车：用户让画自拍、出的是表情包）。
 _COMIC_INTENT_KEYWORDS = (
-    "表情包", "表情图", "梗图", "meme", "sticker",
+    "表情包", "表情图", "梗图",
 )
+_COMIC_INTENT_EN_RE = re.compile(r"\b(?:memes?|stickers?)\b", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -212,18 +216,38 @@ def _keyword_negated(text: str, index: int) -> bool:
 def is_comic_intent(user_text: str, prompt: str = "") -> bool:
     """判断用户是否想要「带文字的表情包/漫画」。
 
-    关键词命中即判为 meme 意图，**但被否定词修饰的关键词不算命中**。
+    中文关键词命中即判为 meme 意图，**但被否定词修饰的关键词不算命中**。
     否则「画个猫，不要发表情包」会因为含「表情包」三个字被误判成想要表情包，
     既走错漫画工作流，又把「不要发表情包」当成画面描述语。
+
+    v6.3.2 修正两点：
+    - 英文关键词（meme / sticker）改为**整词匹配**且**只扫用户原话**——
+      画面提示词是 LLM 撰写的场景描述，"snack bags and stickers beside her"
+      （贴纸）这类正常描述不该被当成表情包意图；
+    - 中文关键词维持「用户原话 + 画面提示词」都扫（子串匹配中文歧义小），
+      否定词排除逻辑不变。
     """
-    _t = f"{user_text or ''} {prompt or ''}".lower()
+    _u = (user_text or "").lower()
     for _k in _COMIC_INTENT_KEYWORDS:
         _start = 0
         while True:
-            _i = _t.find(_k, _start)
+            _i = _u.find(_k, _start)
             if _i < 0:
                 break
-            if not _keyword_negated(_t, _i):
+            if not _keyword_negated(_u, _i):
+                return True
+            _start = _i + len(_k)
+    for _m in _COMIC_INTENT_EN_RE.finditer(_u):
+        if not _keyword_negated(_u, _m.start()):
+            return True
+    _p = (prompt or "").lower()
+    for _k in _COMIC_INTENT_KEYWORDS:
+        _start = 0
+        while True:
+            _i = _p.find(_k, _start)
+            if _i < 0:
+                break
+            if not _keyword_negated(_p, _i):
                 return True
             _start = _i + len(_k)
     return False
