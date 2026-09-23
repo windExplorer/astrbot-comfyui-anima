@@ -2,6 +2,35 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.0.3（修复基础工作流页 500 + 底模语义修正为「模型族」+ 页面更名为「配置项」）
+
+现象（用户实测两条）：
+
+1. 打开基础工作流页面报 500：`读取基础工作流库失败: No module named 'workflow_store'`；
+2. 底模语义搞错了——底模指的是**开源绘图模型族**（anima / krea2 / z-image-turbo /
+   qwen image 2.1 / boogu 等，此前写死在代码里），不是具体某个 .safetensors 文件。
+
+根因与修复：
+
+- **500 根因**：`workflow_store.py` 里用了**绝对导入** `from workflow_parser import ...`。
+  AstrBot 以 `astrbot_plugin_comfyui_anima.workflow_store` 形式加载插件，顶层名
+  `workflow_parser` 不在 sys.path 上 → 内层 ImportError 被 webui_api 的兜底导入
+  再包一层，最终报成「No module named 'workflow_store'」，把真正的错误盖住了。
+  现改为相对导入优先、绝对导入兜底（`workflow_store` 同款写法）。
+  新增回归测试第 7 组：以包形式导入三个新模块，重现并防住该问题。
+- **底模语义修正**：底模条目字段 `file_name`（模型文件名）改为 **`keywords` 匹配关键字**
+  （如 qwen → `qwen、qwen_image`；anima → `anima`），用于与基础工作流解析出的
+  **模型文件名 / 类名**自动关联（大小写不敏感、子串匹配，多命中取关键字最长者）；
+  解析器新增输出 `roles.model_file`（unet_name/ckpt_name 等）；上传基础工作流时
+  按关键字自动关联底模并写 `basemodel_id`，编辑弹窗可手动改（下拉来自配置项页）。
+- **页面更名**：「底模库」→ **「配置项」**（路由 `/basemodels` → `/options`，
+  文件 `BaseModelsView.vue` → `OptionsView.vue`，菜单/标题同步）。该页作为动态配置
+  集合，当前含「底模」分区；后续动态项（采样器、调度器等）同样放这里（暂未加）。
+  接口路径保持 `basemodels/*` 不变（前端封面/上传链路复用）。
+
+验证：新增测试第 8 组（底模关键字匹配：最长优先、未命中返回 None、同名去重）；
+共 8 组全过，compileall 通过，前端构建通过。
+
 ## v7.0.2（新功能：工作流级最大宽高限制与「禁止改变默认宽高」开关）
 
 需求：出图尺寸要有上限兜底（防止用户/比例预设算出超大图浪费显存），以及

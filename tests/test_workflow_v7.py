@@ -174,6 +174,53 @@ def test_surgery():
     print("== 5. 运行时手术（绕过/注入放大、清理、保存替换、采样器覆盖） OK")
 
 
+def test_package_import():
+    """包内加载（AstrBot 以 astrbot_plugin_comfyui_anima.xxx 加载）不得因绝对导入失败。
+
+    v7.0.3 修复：workflow_store 里 `from workflow_parser import ...` 绝对导入在包内
+    加载时报「No module named 'workflow_store'」（webui_api 兜底导入把内层错误盖住），
+    基础工作流页面直接 500。
+    """
+    import importlib
+    import types
+
+    pkg_name = "astrbot_plugin_comfyui_anima"
+    if pkg_name not in sys.modules:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = [REPO]
+        sys.modules[pkg_name] = pkg
+    m = importlib.import_module(f"{pkg_name}.workflow_store")
+    assert m.WorkflowStore is not None
+    assert importlib.import_module(f"{pkg_name}.workflow_parser").parse_workflow is not None
+    assert importlib.import_module(f"{pkg_name}.basemodel_store").BaseModelStore is not None
+    print("== 7. 包内加载（相对导入） OK")
+
+
+def test_basemodel_match():
+    """底模（模型族）按匹配关键字关联。"""
+    from basemodel_store import BaseModelStore
+
+    tmp = Path(tempfile.mkdtemp())
+    bs = BaseModelStore(tmp)
+    _, err = bs.save({"name": "Qwen Image 2.1", "keywords": "qwen、qwen_image", "prompt_style": "natural"})
+    assert err is None, err
+    _, err = bs.save({"name": "anima", "keywords": "anima"})
+    assert err is None, err
+    hit = bs.match_model("qwen_image_2.1_int8_convrot.safetensors", "UNETLoader")
+    assert hit and hit["name"] == "Qwen Image 2.1", hit
+    assert bs.match_model("miaomiaoHarem_anima16.safetensors")["name"] == "anima"
+    assert bs.match_model("flux1-dev.safetensors") is None
+    # 最长关键字优先（同时含 qwen 与 qwen_image 时命中更具体的条目）
+    bs.save({"name": "Qwen Image 2.1 详细", "keywords": "qwen_image_2.1"})
+    hit2 = bs.match_model("qwen_image_2.1_int8_convrot.safetensors")
+    assert hit2["name"] == "Qwen Image 2.1 详细", hit2
+    # 同名保存去重
+    n_before = len(bs.list_all())
+    bs.save({"name": "anima", "keywords": "anima、anima16"})
+    assert len(bs.list_all()) == n_before
+    print("== 8. 底模关键字匹配 OK")
+
+
 def test_bypass_alpha_chain():
     """alpha 工作流（Split→放大→Join→清理→保存）：绕过须整链删除并接回 VAEDecode。"""
     p = json.loads(json.dumps(WF_STD))
@@ -205,8 +252,10 @@ if __name__ == "__main__":
     test_parse_qwen_subgraph()
     test_store()
     test_surgery()
+    test_package_import()
+    test_basemodel_match()
     test_bypass_alpha_chain()
-    print("\nv7.0.0 基础工作流体系测试全部通过")
+    print("\n基础工作流体系测试全部通过")
 
 
 if __name__ == "__main__":

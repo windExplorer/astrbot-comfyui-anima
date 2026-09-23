@@ -1354,8 +1354,14 @@ class WebUIApi:
         try:
             store = self._workflow_store()
             items = store.list_all()
+            try:
+                _bms = {b["id"]: b for b in self._basemodel_store().list_all()}
+            except Exception:
+                _bms = {}
             for it in items:
                 it["ref_count"] = len(self._baseworkflow_refs(it["id"]))
+                _bm = _bms.get(int(it.get("basemodel_id") or 0))
+                it["basemodel_name"] = (_bm or {}).get("name") or ""
             return json_response({"items": items})
         except Exception as e:
             return error_response(f"读取基础工作流库失败: {e}")
@@ -1375,7 +1381,19 @@ class WebUIApi:
             wf_id, roles, err = self._workflow_store().import_json(name, content, filename)
             if err:
                 return error_response(err)
-            return json_response({"id": wf_id, "roles": roles, "msg": "入库成功"})
+            # v7.0.3：按「底模匹配关键字」自动关联底模（模型族），可在编辑弹窗手动改
+            _bm_matched = None
+            try:
+                _bm = self._basemodel_store().match_model(
+                    (roles or {}).get("model_file") or "",
+                    (roles or {}).get("model_class") or "",
+                )
+                if _bm:
+                    self._workflow_store().update_meta(wf_id, {"basemodel_id": _bm["id"]})
+                    _bm_matched = _bm.get("name")
+            except Exception as _e:
+                logger.warning(f"【基础工作流】 底模自动关联失败（忽略）: {_e}")
+            return json_response({"id": wf_id, "roles": roles, "basemodel": _bm_matched, "msg": "入库成功"})
         except Exception as e:
             return error_response(f"上传失败: {e}")
 

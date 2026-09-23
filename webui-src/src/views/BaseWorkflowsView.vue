@@ -30,7 +30,8 @@
             </div>
             <div class="card-meta">
               <n-tag size="tiny" :bordered="false">{{ typeLabel(w.roles?.kind) }}</n-tag>
-              <n-tag size="tiny" type="info" :bordered="false">{{ w.roles?.model_class || "底模未识别" }}</n-tag>
+              <n-tag size="tiny" type="info" :bordered="false">底模：{{ w.basemodel_name || "未关联" }}</n-tag>
+              <n-tag size="tiny" :bordered="false">{{ w.roles?.model_file || w.roles?.model_class || "模型未识别" }}</n-tag>
               <n-tag v-if="(w.roles?.upscale)" size="tiny" type="warning" :bordered="false">内置放大链</n-tag>
               <n-tag v-if="(w.roles?.cleanup_nodes || []).length" size="tiny" :bordered="false">清理显存</n-tag>
               <n-tag v-if="w.ref_count" size="tiny" type="success" :bordered="false">被引用 {{ w.ref_count }}</n-tag>
@@ -93,6 +94,15 @@
     <n-modal v-model:show="editShow" preset="card" title="编辑基础工作流" class="bw-modal" :bordered="false">
       <n-form label-placement="top">
         <n-form-item label="名称"><n-input v-model:value="editForm.name" /></n-form-item>
+        <n-form-item label="底模（模型族，来自「配置项」页）">
+          <n-select
+            v-model:value="editForm.basemodel_id"
+            :options="basemodelOptions"
+            filterable
+            clearable
+            placeholder="未关联（可手动选择；上传时按匹配关键字自动关联）"
+          />
+        </n-form-item>
         <n-form-item label="C 站链接">
           <n-input-group>
             <n-input v-model:value="editForm.civitai_url" placeholder="https://civitai.com/models/12345" />
@@ -119,7 +129,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   useMessage, useDialog, NButton, NSpin, NForm, NFormItem, NInput, NInputGroup,
   NModal, NTag, NEmpty, NAlert,
@@ -233,14 +243,30 @@ async function doUpload() {
 
 // ---- 编辑 / 删除 / 重解析 ----
 const editShow = ref(false);
-const editForm = ref<Record<string, any>>({ name: "", civitai_url: "", description: "" });
+const editForm = ref<Record<string, any>>({ name: "", civitai_url: "", description: "", basemodel_id: 0 });
 let editTarget: any = null;
+// 底模（模型族）下拉：来自「配置项」页
+const basemodels = ref<any[]>([]);
+const basemodelOptions = computed(() => [
+  { label: "未关联", value: 0 },
+  ...basemodels.value.map((b) => ({ label: b.name || `#${b.id}`, value: b.id })),
+]);
+
+async function loadBasemodels() {
+  try {
+    const d = await apiGet("basemodels");
+    basemodels.value = Array.isArray(d?.items) ? d.items : [];
+  } catch {
+    basemodels.value = [];
+  }
+}
 
 function openEdit(w: any) {
   editTarget = w;
   editForm.name = w.name || "";
   editForm.civitai_url = w.civitai_url || "";
   editForm.description = w.description || "";
+  editForm.basemodel_id = Number(w.basemodel_id || 0);
   editShow.value = true;
 }
 
@@ -254,6 +280,7 @@ async function saveEdit() {
       name: String(editForm.name).trim(),
       civitai_url: editForm.civitai_url,
       description: editForm.description,
+      basemodel_id: Number(editForm.basemodel_id || 0),
     });
     message.success("已保存");
     editShow.value = false;
@@ -334,7 +361,10 @@ async function onCoverConfirm(name: string) {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadBasemodels();
+});
 </script>
 
 <style scoped>

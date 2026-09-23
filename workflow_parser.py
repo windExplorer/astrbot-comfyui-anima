@@ -249,6 +249,17 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     else:
         roles["model_src"] = base_id
         roles["model_class"] = nodes[base_id].get("class_type")
+        # 模型文件名（UNETLoader.unet_name / CheckpointLoader.ckpt_name / GGUF 的 unet_name 等）：
+        # 供「底模（模型族）」自动关联用（v7.0.3）
+        _min = nodes[base_id].get("inputs") or {}
+        roles["model_file"] = next(
+            (
+                str(_min[k]).strip()
+                for k in ("unet_name", "ckpt_name", "model_name", "gguf_name", "model")
+                if isinstance(_min.get(k), str) and str(_min[k]).strip()
+            ),
+            "",
+        )
     base_loaders = [nid for nid, n in nodes.items() if _is_base_model_loader(n)]
     if len(base_loaders) > 1:
         errors.append(f"检测到 {len(base_loaders)} 个主模加载节点（{base_loaders}）。要求单主模，多阶段/多管线工作流暂不支持。")

@@ -19,7 +19,10 @@ import sqlite3
 import time
 from pathlib import Path
 
-from workflow_parser import parse_workflow
+try:  # 包内加载（AstrBot 以 astrbot_plugin_comfyui_anima.workflow_store 加载）
+    from .workflow_parser import parse_workflow
+except ImportError:  # 脚本/单文件加载兜底
+    from workflow_parser import parse_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,7 @@ class WorkflowStore:
                 civitai_url  TEXT DEFAULT '',
                 image        TEXT DEFAULT '',
                 description  TEXT DEFAULT '',
+                basemodel_id INTEGER NOT NULL DEFAULT 0,
                 created_at   REAL NOT NULL DEFAULT 0,
                 updated_at   REAL NOT NULL DEFAULT 0
             )"""
@@ -99,6 +103,7 @@ class WorkflowStore:
             "civitai_url": "TEXT DEFAULT ''",
             "image": "TEXT DEFAULT ''",
             "description": "TEXT DEFAULT ''",
+            "basemodel_id": "INTEGER NOT NULL DEFAULT 0",
         })
         conn.commit()
 
@@ -191,16 +196,23 @@ class WorkflowStore:
         return wf_id, roles, None
 
     def update_meta(self, wf_id: int, fields: dict) -> str | None:
-        """更新元数据字段（白名单：name / civitai_url / image / description）。"""
+        """更新元数据字段（白名单：name / civitai_url / image / description / basemodel_id）。"""
         allow = {
             "name": "name",
             "civitai_url": "civitai_url",
             "image": "image",
             "description": "description",
+            "basemodel_id": "basemodel_id",
         }
         sets, vals = [], []
         for k, v in (fields or {}).items():
-            if k in allow:
+            if k == "basemodel_id":
+                try:
+                    sets.append("basemodel_id=?")
+                    vals.append(int(v or 0))
+                except (TypeError, ValueError):
+                    pass
+            elif k in allow:
                 sets.append(f"{allow[k]}=?")
                 vals.append(str(v or "").strip())
         if not sets:

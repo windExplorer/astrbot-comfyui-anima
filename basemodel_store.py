@@ -1,12 +1,13 @@
-"""底模（Base Model）库存储。
+"""底模（模型族）存储 —— v7.0.3 起语义修正。
 
-v7.0.0 新增：把「底模」从自由文本升级为可管理的实体库——
-支持语言 / 优先语种 / 提示词风格 / danbooru 适配 / C站链接 / 封面。
-工作流配置侧只读引用（按 file_name 关联），本模块负责增删查改。
+这里的「底模」指市面上的开源绘图模型**族**（anima / krea2 / z-image-turbo /
+qwen image 2.1 / boogu 等，此前写死在代码里），现在是可增删改查的动态配置：
+名称、匹配关键字（用于与基础工作流解析出的模型文件名自动关联）、
+支持语言 + 优先语种、提示词风格、danbooru 适配、描述、封面。
 
-沿用本插件惯例：每个业务域一个独立 SQLite（data_dir/basemodel.db），
-WAL + CREATE TABLE IF NOT EXISTS + _ensure_columns 缺列迁移（CharacterStore 范式）。
-单线程事件循环使用，线程不安全但足够。
+（C站链接与采集在「基础工作流」侧，不在本库。）
+
+沿用本插件惯例：独立 SQLite（data_dir/basemodel.db），WAL + 缺列迁移。
 """
 
 from __future__ import annotations
@@ -79,6 +80,7 @@ class BaseModelStore:
             """CREATE TABLE IF NOT EXISTS basemodels (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 name           TEXT NOT NULL,
+                keywords       TEXT DEFAULT '',
                 file_name      TEXT DEFAULT '',
                 civitai_url    TEXT DEFAULT '',
                 image          TEXT DEFAULT '',
@@ -92,6 +94,7 @@ class BaseModelStore:
             )"""
         )
         self._ensure_columns("basemodels", {
+            "keywords": "TEXT DEFAULT ''",
             "file_name": "TEXT DEFAULT ''",
             "civitai_url": "TEXT DEFAULT ''",
             "image": "TEXT DEFAULT ''",
@@ -134,26 +137,52 @@ class BaseModelStore:
         ).fetchone()
         return self._row_to_dict(row) if row else None
 
-    def find_by_file_name(self, file_name: str) -> dict | None:
-        """按模型文件名（unet_name/ckpt_name）精确关联（大小写不敏感）。"""
-        fn = (file_name or "").strip().lower()
-        if not fn:
+    @staticmethod
+    def _split_keywords(raw) -> list[str]:
+        """关键字拆分：逗号/顿号/换行/分号/空格分隔，去空去重（保序，小写比较用）。"""
+        if isinstance(raw, list):
+            parts = [str(x) for x in raw]
+        else:
+            import re as _re
+            parts = _re.split(r"[,，、;；\n\r\t ]+", str(raw or ""))
+        out: list[str] = []
+        for p in parts:
+            p = p.strip()
+            if p and p not in out:
+                out.append(p)
+        return out
+
+    def find_by_id(self, model_id) -> dict | None:
+        return self.get(model_id)
+
+    def match_model(self, model_file: str = "", class_type: str = "") -> dict | None:
+        """按「匹配关键字」在模型文件名 / 底模类名里找所属底模（模型族）。
+
+        关键字大小写不敏感、子串匹配；多个命中时取关键字最长（最具体）的那个，
+        例如 qwen_image_2.1_int8_convrot.safetensors 同时含 "qwen" 与
+        "qwen_image"，应命中关键字更长的那个条目。
+        """
+        hay = f"{model_file or ''} {class_type or ''}".lower()
+        if not hay.strip():
             return None
-        conn = self._conn_get()
-        row = conn.execute(
-            "SELECT * FROM basemodels WHERE lower(file_name)=?", (fn,)
-        ).fetchone()
-        return self._row_to_dict(row) if row else None
+        best = None
+        best_len = 0
+        for row in self.list_all():
+            for kw in self._split_keywords(row.get("keywords") or ""):
+                k = kw.lower()
+                if k and k in hay and len(k) > best_len:
+                    best, best_len = row, len(k)
+        return best
 
     def save(self, data: dict) -> tuple[int | None, str | None]:
         """新增/更新。返回 (id, error)。error 非空即失败。
 
-        data 必带 name；带 id=更新，否则新增（file_name 冲突时更新同文件名条目）。
+        data 必带 name；带 id=更新，否则新增（同名条目更新）。
         """
         name = (data.get("name") or "").strip()
         if not name:
             return None, "底模名称不能为空"
-        file_name = (data.get("file_name") or "").strip()
+        keywords = "、".join(self._split_keywords(data.get("keywords") or ""))
         style = (data.get("prompt_style") or "natural").strip().lower()
         if style not in PROMPT_STYLES:
             style = "natural"
@@ -170,28 +199,29 @@ class BaseModelStore:
         try:
             if mid:
                 conn.execute(
-                    """UPDATE basemodels SET name=?, file_name=?, civitai_url=?, image=?,
+                    """UPDATE basemodels SET name=?, keywords=?, image=?,
                        prompt_style=?, languages=?, priority_lang=?, danbooru_ready=?,
                        description=?, updated_at=? WHERE id=?""",
-                    (name, file_name, (data.get("civitai_url") or "").strip(),
-                     (data.get("image") or "").strip(), style, json.dumps(langs, ensure_ascii=False),
+                    (name, keywords, (data.get("image") or "").strip(), style,
+                     json.dumps(langs, ensure_ascii=False),
                      prio, 1 if data.get("danbooru_ready") else 0,
                      (data.get("description") or "").strip(), now, int(mid)),
                 )
                 conn.commit()
                 return int(mid), None
-            # 新增：file_name 已登记则覆盖更新那条（实现「同名文件名去重」）
-            if file_name:
-                exist = self.find_by_file_name(file_name)
-                if exist:
-                    data = {**exist, **data, "id": exist["id"]}
-                    return self.save(data)
+            # 新增：同名条目则覆盖更新
+            row = conn.execute(
+                "SELECT id FROM basemodels WHERE name=? COLLATE NOCASE", (name,)
+            ).fetchone()
+            if row:
+                data = {**data, "id": row["id"]}
+                return self.save(data)
             cur = conn.execute(
-                """INSERT INTO basemodels (name, file_name, civitai_url, image, prompt_style,
+                """INSERT INTO basemodels (name, keywords, image, prompt_style,
                    languages, priority_lang, danbooru_ready, description, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (name, file_name, (data.get("civitai_url") or "").strip(),
-                 (data.get("image") or "").strip(), style, json.dumps(langs, ensure_ascii=False),
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (name, keywords, (data.get("image") or "").strip(), style,
+                 json.dumps(langs, ensure_ascii=False),
                  prio, 1 if data.get("danbooru_ready") else 0,
                  (data.get("description") or "").strip(), now, now),
             )

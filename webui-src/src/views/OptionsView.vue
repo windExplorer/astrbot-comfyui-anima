@@ -1,9 +1,13 @@
 <template>
-  <div class="bm-view">
+  <div class="opt-view">
     <div class="view-head">
       <div>
-        <h2>底模库</h2>
-        <p>底模实体化管理：模型文件名关联、支持语言与优先语种、提示词风格、C 站链接与封面。出图工作流按文件名自动关联，只读引用。</p>
+        <h2>配置项</h2>
+        <p>
+          动态配置集合。当前包含「底模」——即开源绘图模型族（anima / krea2 / z-image-turbo /
+          qwen image 2.1 / boogu 等，此前写死在代码里），可增删改查并配置语种与提示词风格；
+          基础工作流按匹配关键字自动关联底模。后续新增的动态项（采样器、调度器等）也会放在本页。
+        </p>
       </div>
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
@@ -13,19 +17,21 @@
       </Teleport>
     </div>
 
+    <n-divider style="margin: 4px 0 10px">── 底模（模型族） ──</n-divider>
+
     <div class="filter-bar">
       <n-input
         v-model:value="searchText"
         size="small"
         clearable
-        style="width: 240px"
-        placeholder="搜索名称 / 模型文件名 / 描述…"
+        style="width: 260px"
+        placeholder="搜索名称 / 匹配关键字 / 描述…"
       />
       <span v-if="searchText.trim()" class="filter-hint">匹配 {{ filtered.length }} / {{ items.length }} 条</span>
     </div>
 
     <n-spin :show="loading">
-      <n-empty v-if="!loading && !filtered.length" description="底模库为空，点「新增底模」添加。" style="padding:60px" />
+      <n-empty v-if="!loading && !filtered.length" description="底模库为空，点「新增底模」添加（如 anima / krea2 / qwen image 2.1）。" style="padding:60px" />
       <div v-else class="card-grid">
         <div v-for="m in filtered" :key="m.id" class="bm-card">
           <div class="card-cover">
@@ -35,12 +41,12 @@
           <div class="card-body">
             <div class="card-title">{{ m.name || "(未命名)" }}</div>
             <div class="card-meta">
-              <n-tag size="tiny" :bordered="false">{{ m.file_name || "未关联文件" }}</n-tag>
               <n-tag size="tiny" :type="m.prompt_style === 'danbooru' ? 'warning' : 'info'" :bordered="false">
                 {{ m.prompt_style === "danbooru" ? "danbooru 标签" : "自然语言" }}
               </n-tag>
               <n-tag v-if="m.danbooru_ready" size="tiny" type="success" :bordered="false">danbooru 适配</n-tag>
             </div>
+            <div class="card-sub">匹配关键字：{{ m.keywords || "—" }}</div>
             <div class="card-sub">语言：{{ (m.languages || []).join(" / ") }}｜优先：{{ m.priority_lang || "—" }}</div>
             <div class="card-actions">
               <n-button size="tiny" @click="editModel(m)">编辑</n-button>
@@ -58,8 +64,10 @@
     <n-modal v-model:show="editShow" preset="card" :title="editTitle" class="bm-modal" :bordered="false">
       <n-form label-placement="top" class="edit-form">
         <div class="form-grid">
-          <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 喵喵harem anima1.6" /></n-form-item>
-          <n-form-item label="模型文件名（与工作流关联的键）"><n-input v-model:value="editForm.file_name" placeholder="如 miaomiaoHarem_anima16.safetensors" /></n-form-item>
+          <n-form-item label="名称"><n-input v-model:value="editForm.name" placeholder="如 Qwen Image 2.1 / anima / boogu" /></n-form-item>
+          <n-form-item label="匹配关键字（用于自动关联基础工作流）">
+            <n-input v-model:value="editForm.keywords" placeholder="如 qwen、qwen_image；逗号/顿号分隔" />
+          </n-form-item>
         </div>
         <div class="form-grid">
           <n-form-item label="提示词风格">
@@ -93,14 +101,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import {
-  useMessage, useDialog, NButton, NSpin, NForm, NFormItem, NInput, NInputGroup,
-  NModal, NSelect, NSwitch, NTag, NEmpty,
+  useMessage, useDialog, NButton, NSpin, NForm, NFormItem, NInput,
+  NModal, NSelect, NSwitch, NTag, NEmpty, NDivider,
 } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
+import { useDevice } from "@/composables/useDevice";
 import CoverEditor from "@/components/CoverEditor.vue";
 
 const message = useMessage();
 const dialog = useDialog();
+const { isMobile } = useDevice();
 const loading = ref(false);
 const saving = ref(false);
 const items = ref<any[]>([]);
@@ -119,7 +129,7 @@ const filtered = computed(() => {
   const kw = searchText.value.trim().toLowerCase();
   if (!kw) return items.value;
   return items.value.filter((m) =>
-    [m.name, m.file_name, m.description].some((s: string) => String(s || "").toLowerCase().includes(kw))
+    [m.name, m.keywords, m.description].some((s: string) => String(s || "").toLowerCase().includes(kw))
   );
 });
 
@@ -135,21 +145,17 @@ async function load() {
   }
 }
 
-// ---- 编辑 ----
 const editShow = ref(false);
 const editTitle = ref("新增底模");
-const editIndex = ref(-1);
 const editForm = reactive<Record<string, any>>({});
 
 function openForm(m: any | null) {
   editTitle.value = m ? "编辑底模" : "新增底模";
-  editIndex.value = m ? items.value.indexOf(m) : -1;
   Object.keys(editForm).forEach((k) => delete editForm[k]);
   Object.assign(editForm, {
     id: m?.id ?? null,
     name: m?.name || "",
-    file_name: m?.file_name || "",
-    civitai_url: m?.civitai_url || "",
+    keywords: m?.keywords || "",
     image: m?.image || "",
     prompt_style: m?.prompt_style || "natural",
     languages: Array.isArray(m?.languages) ? [...m.languages] : ["中文", "英文"],
@@ -166,8 +172,7 @@ async function saveEdit() {
   if (!String(editForm.name || "").trim()) { message.warning("名称必填"); return; }
   saving.value = true;
   try {
-    const payload = { ...editForm, name: String(editForm.name).trim() };
-    await apiPost("basemodels/save", payload);
+    await apiPost("basemodels/save", { ...editForm, name: String(editForm.name).trim() });
     message.success("已保存");
     editShow.value = false;
     await load();
@@ -192,13 +197,9 @@ function removeModel(m: any) {
   });
 }
 
-// ---- 封面 ----
 const coverShow = ref(false);
 let coverTarget: any = null;
-function openCoverEditor(m: any) {
-  coverTarget = m;
-  coverShow.value = true;
-}
+function openCoverEditor(m: any) { coverTarget = m; coverShow.value = true; }
 async function onCoverConfirm(name: string) {
   if (!coverTarget || !name) return;
   try {
@@ -214,10 +215,10 @@ onMounted(load);
 </script>
 
 <style scoped>
-.bm-view { height: 100%; overflow: auto; padding: 0 4px; }
-.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.opt-view { height: 100%; overflow: auto; padding: 0 4px; }
+.view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
 .view-head h2 { margin: 0 0 4px; }
-.view-head p { margin: 0; color: var(--text-sub); font-size: 13px; max-width: 70%; }
+.view-head p { margin: 0; color: var(--text-sub); font-size: 13px; max-width: 72%; }
 .view-actions { display: flex; gap: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .filter-hint { color: var(--text-sub); font-size: 12px; }
@@ -229,9 +230,8 @@ onMounted(load);
 .card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
 .card-title { font-weight: 600; }
 .card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.card-sub { color: var(--text-sub); font-size: 12px; }
+.card-sub { color: var(--text-sub); font-size: 12px; word-break: break-all; }
 .card-actions { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; }
-.civ-link { font-size: 12px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; }
 .form-hint { color: var(--text-sub); font-size: 12px; margin-left: 8px; }
 .edit-form { max-height: 62vh; overflow: auto; padding-right: 4px; }
