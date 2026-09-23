@@ -4765,12 +4765,14 @@ class ComfyUIDrawPlugin(Star):
         if positive:
             logger.info(f"正向提示词: {positive}")
             workflow_builder.set_text_node(
-                prompt, wf.get("positive_node"), "text", positive
+                prompt, wf.get("positive_node"),
+                (wf.get("positive_field") or "").strip() or "text", positive
             )
         if negative:
             logger.info(f"负向提示词: {negative}")
             workflow_builder.set_text_node(
-                prompt, wf.get("negative_node"), "text", negative
+                prompt, wf.get("negative_node"),
+                (wf.get("negative_field") or "").strip() or "text", negative
             )
 
         # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入
@@ -5001,7 +5003,8 @@ class ComfyUIDrawPlugin(Star):
                         positive = positive.strip() + ", " + ", ".join(_add_words)
                 if _default_pre or _legacy_always_words:
                     workflow_builder.set_text_node(
-                        prompt, wf.get("positive_node"), "text", positive
+                        prompt, wf.get("positive_node"),
+                        (wf.get("positive_field") or "").strip() or "text", positive
                     )
                     logger.info(f"正向提示词（含预设）: {positive}")
 
@@ -5172,7 +5175,8 @@ class ComfyUIDrawPlugin(Star):
                 if _add:
                     positive = (positive.strip() + ", " if positive and positive.strip() else "") + ", ".join(_add)
                     workflow_builder.set_text_node(
-                        prompt, wf.get("positive_node"), "text", positive
+                        prompt, wf.get("positive_node"),
+                        (wf.get("positive_field") or "").strip() or "text", positive
                     )
                     logger.info(f"【LoRA 触发词】 已追加到正向提示词: {_add}")
                 else:

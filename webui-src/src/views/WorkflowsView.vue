@@ -175,6 +175,8 @@
         <div class="form-grid">
           <n-form-item label="正提示词节点"><n-input v-model:value="editForm.positive_node" placeholder="如 6" /></n-form-item>
           <n-form-item label="负提示词节点"><n-input v-model:value="editForm.negative_node" placeholder="如 7" /></n-form-item>
+          <n-form-item label="正向输入框名"><n-input v-model:value="editForm.positive_field" placeholder="留空默认 text；Qwen 系填 prompt" /></n-form-item>
+          <n-form-item label="负向输入框名"><n-input v-model:value="editForm.negative_field" placeholder="留空默认 text；Qwen 系填 negative_prompt" /></n-form-item>
         </div>
         <div class="form-grid">
           <n-form-item label="分辨率节点"><n-input v-model:value="editForm.resolution_node" placeholder="EmptyLatentImage，可留空自动探测" /></n-form-item>
@@ -612,6 +614,8 @@ function openForm(idx: number, prefill?: any) {
     image: w.image || "",
     positive_node: w.positive_node || "",
     negative_node: w.negative_node || "",
+    positive_field: w.positive_field || "",
+    negative_field: w.negative_field || "",
     resolution_node: w.resolution_node || "",
     output_node: w.output_node || "",
     resolution_width_field: w.resolution_width_field || "width",

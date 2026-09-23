@@ -2,6 +2,39 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v6.3.5（新功能：工作流支持自定义正向/负向输入框名，接入 Qwen 系自然语言工作流）
+
+现象：接入 `qwen_image_2.1` 工作流时，正向提示词怎么配都「注入成功」却不出效果，
+图永远用 JSON 里写死的提示词——日志无任何报错，非常隐蔽。
+
+根因：主正向/负向注入写死往节点的 **`text`** 输入框写字
+（`set_text_node(prompt, positive_node, "text", ...)`）。SDXL 系工作流的
+`CLIPTextEncode` 输入框确实叫 `text`，但新一代自然语言系工作流的输入框名不同：
+
+- Qwen 的 `TextEncodeQwenImage21`：正向叫 `prompt`、负向叫 `negative_prompt`；
+- `easy positive`（ComfyUI-Easy-Use）：叫 `positive`。
+
+往这些节点写 `text` 只是塞了一个没人读的多余字段——`set_text_node` 照样返回
+True，注入静默失效。用 `workflow_builder` 真实函数对 qwen2.1 工作流逐项实测：
+宽高注入、种子随机化、LoRA 锚点探测（`UNETLoader` 自动识别）、
+`SaveImageExtended` 取图兜底全部通过，**唯一断点就是输入框名**。
+
+修复（`main.py` / `_conf_schema.json` / WebUI）：
+
+- 工作流配置新增 **`positive_field`** / **`negative_field`** 两个可选键，
+  留空默认 `text`，完全向后兼容（SDXL 系工作流一行都不用改）；
+- 主正向注入、负向注入、LoRA 预设追加、LoRA 触发词追加四处注入点全部改读该配置；
+- WebUI 工作流编辑弹窗「节点配置」区新增「正向输入框名 / 负向输入框名」两个输入框。
+
+Qwen 2.1 工作流接入示例：`positive_node` 与 `negative_node` 都填编码节点 ID
+（如 `471:452`，子图导出格式带冒号的 ID 也支持），`positive_field=prompt`、
+`negative_field=negative_prompt`；宽高节点留空自动探测。注意 cfg=1 时负向词
+本就不参与采样，负向配置主要为了占位与未来切换 cfg。
+
+验证（uv + Python 3.12 跑真实函数）：配置 `positive_field=prompt` 后正向
+提示词成功覆盖 `471:452.prompt`；未配置 field 时仍写 `text`（向后兼容用例）；
+`main.py` compileall 通过、schema JSON 合法。
+
 ## v6.3.4（修复：提示词里的 stickers 被误判成表情包意图，强行改走表情包工作流）
 
 现象（log1.log 实录，2026-09-23 12:12）：用户没提任何表情包诉求，LLM 调 `comfyui_draw`

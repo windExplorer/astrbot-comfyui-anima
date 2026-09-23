@@ -301,6 +301,18 @@
             "obvious_hint": true,
             "default": ""
           },
+          "positive_field": {
+            "type": "string",
+            "description": "正向输入框名（可选）",
+            "hint": "正向提示词写进「正提示词节点」的哪个输入框，留空默认 text。非 SDXL 系工作流输入框名不同：Qwen 的 TextEncodeQwenImage21 叫 prompt、easy positive 叫 positive——这类工作流必须填，否则注入静默失效（图永远用 JSON 里写死的提示词）。",
+            "default": ""
+          },
+          "negative_field": {
+            "type": "string",
+            "description": "负向输入框名（可选）",
+            "hint": "负向提示词写进「负提示词节点」的哪个输入框，留空默认 text。如 TextEncodeQwenImage21 的负向输入框叫 negative_prompt（负向/正向同节点时，负提示词节点与正提示词节点填同一个 ID）。",
+            "default": ""
+          },
           "resolution_node": {
             "type": "string",
             "description": "宽高节点 ID",
