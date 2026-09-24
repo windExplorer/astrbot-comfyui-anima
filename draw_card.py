@@ -93,15 +93,28 @@ STATES: dict[str, tuple[str, str | None]] = {
 W, PAD, RADIUS = 840, 34, 18
 HEAD_H, FOOT_H = 128, 54
 
-# 字体查找顺序：配置指定 → 随包 woff2 → 插件 fonts/ → 系统字体
+# 字体查找顺序（v7.4.12，参考 astrbot_plugin_model_panel 的投放目录策略）：
+#   配置指定 → 用户投放目录（data_dir/fonts/ → AstrBot 共享 data/fonts/）→
+#   插件自带 fonts/ → 随包 woff2 → 系统字体
 BUNDLED_FONT = Path(__file__).resolve().parent / "assets" / "fonts" / "ResourceHanRoundedCN-Medium.woff2"
 _SYSTEM_FONTS = (
     "C:/Windows/Fonts/msyh.ttc",
     "C:/Windows/Fonts/simhei.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/System/Library/Fonts/PingFang.ttc",
 )
+# Pillow/FreeType 认的字体容器（woff2 需要 brotli 支持，坏文件靠「实际加载验证」跳过）
+_FONT_EXTS = (".ttc", ".otf", ".ttf", ".woff2", ".woff")
+# 一个目录里多个字体时的挑选提示：圆体/文楷配这套浅色卡片最协调，
+# 不认识的名字排最后，不会挡路
+_FONT_NAME_HINTS = ("lxgw", "wenkai", "霞鹜", "hanrounded", "rounded", "圆",
+                    "noto", "sourcehan", "source-han", "pingfang", "msyh")
+# 探测结果缓存：key = (配置的字体名, 数据目录)；None = 探测过且不可用
+_FONT_RESOLVED: dict[tuple, "str | None"] = {}
 
 
 def _mix(c1, c2, t: float):
@@ -117,40 +130,107 @@ def norm_theme(name: str, state: str = "") -> str:
     return n if n in THEMES else DEFAULT_THEME
 
 
-def find_font(cfg: dict | None = None) -> str | None:
-    """找一个可用的中文字体：配置指定 → 随包 → 插件 fonts/ → 系统字体。"""
+def _font_dirs(data_dir=None) -> list[str]:
+    """用户可自己投放字体的目录（优先级从高到低）。
+
+    - ``data_dir/fonts/``：插件数据目录下的 fonts（Docker 里挂载卷持久化，重装插件不丢）；
+    - AstrBot 共享 ``data/fonts/``：所有插件共用的投放位（同 model_panel 的做法）；
+    - 插件包内 ``fonts/``：老文档位置（霞鹜文楷 ttf，gitignore 不入库）。
+    """
+    dirs: list[str] = []
+    if data_dir:
+        dirs.append(str(Path(str(data_dir)) / "fonts"))
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+        _root = str(get_astrbot_data_path() or "")
+    except Exception:  # 老版本没有该助手或核心结构变化：只少一个候选目录，不影响功能
+        _root = ""
+    if _root:
+        dirs.append(os.path.join(_root, "fonts"))
+    dirs.append(str(Path(__file__).resolve().parent / "fonts"))
+    return dirs
+
+
+def _fonts_in(dir_path: str) -> list[str]:
+    """列出一个字体目录里的候选文件，按名字提示排序（lxgw/文楷/圆体优先）。
+
+    目录不存在返回空列表。
+    """
+    try:
+        names = [n for n in os.listdir(dir_path) if n.lower().endswith(_FONT_EXTS)]
+    except Exception:
+        return []
+
+    def _rank(name: str) -> tuple:
+        low = name.lower()
+        for i, hint in enumerate(_FONT_NAME_HINTS):
+            if hint in low:
+                return (0, i, low)
+        return (1, 0, low)
+
+    return [os.path.join(dir_path, n) for n in sorted(names, key=_rank)]
+
+
+def find_font(cfg: dict | None = None, data_dir=None, force: bool = False) -> "str | None":
+    """探测一个**实际可加载**的中文字体路径，结果按 (配置, 数据目录) 缓存。
+
+    查找顺序：
+      ① 配置指定 font_file（绝对路径，或插件目录/数据目录下的相对路径）；
+      ② 用户投放目录：data_dir/fonts/ → AstrBot 共享 data/fonts/（Docker 往挂载卷
+         丢一个字体文件即可换字体，不用重装插件；目录里多个字体按名字提示排序）；
+      ③ 插件自带 fonts/（老文档位置）；
+      ④ 随包 assets/fonts/ResourceHanRoundedCN-Medium.woff2（开箱默认）；
+      ⑤ 系统字体。
+    每个候选都用 PIL 实际加载验证——坏文件 / 缺 brotli 导致读不了的 woff2 直接跳过；
+    全部失败返回 None（调用方降级，绝不影响出图）。
+    """
+    if ImageFont is None:
+        return None
     cfg = cfg or {}
-    base = Path(__file__).resolve().parent
-    want = [
-        str(cfg.get("font_file") or "").strip(),
-        str(cfg.get("font_medium_file") or "").strip(),
-    ]
-    for name in want:
-        if not name:
-            continue
-        p = Path(name)
-        for cand in ((p,) if p.is_absolute() else (base / name, base / "fonts" / name)):
-            try:
-                if cand.is_file():
-                    return str(cand)
-            except Exception:
-                continue
+    configured = str(cfg.get("font_file") or "").strip()
+    key = (configured, str(data_dir or ""))
+    if not force and key in _FONT_RESOLVED:
+        return _FONT_RESOLVED[key]
+
+    candidates: list[str] = []
+    if configured:
+        _p = Path(configured)
+        if _p.is_absolute():
+            candidates.append(configured)
+        else:
+            # 相对名：依次在插件目录、数据目录、各投放目录里找同名文件
+            candidates.append(str(Path(__file__).resolve().parent / configured))
+            if data_dir:
+                candidates.append(str(Path(str(data_dir)) / configured))
+    for _d in _font_dirs(data_dir):
+        candidates += _fonts_in(_d)
     try:
         if BUNDLED_FONT.is_file():
-            return str(BUNDLED_FONT)
+            candidates.append(str(BUNDLED_FONT))
     except Exception:
         pass
-    for name in ("LXGWWenKai-Regular.ttf", "LXGWWenKai-Medium.ttf"):
+    candidates += [c for c in _SYSTEM_FONTS]
+
+    picked: "str | None" = None
+    for path in candidates:
+        if not path or not os.path.isfile(path):
+            continue
         try:
-            cand = base / "fonts" / name
-            if cand.is_file():
-                return str(cand)
+            ImageFont.truetype(path, 20)  # 实际加载验证（woff2 缺 brotli / 文件损坏 → 跳过）
         except Exception:
             continue
-    for cand in _SYSTEM_FONTS:
-        if os.path.exists(cand):
-            return cand
-    return None
+        picked = path
+        break
+    _FONT_RESOLVED[key] = picked
+    if picked:
+        logger.info(f"【出图卡片】 字体: {picked}")
+    else:
+        logger.warning(
+            "【出图卡片】 未找到可用中文字体（候选：配置 font_file、data/fonts/、"
+            "插件 fonts/、随包 woff2、系统字体均不可加载）——卡片将渲染失败并降级"
+        )
+    return picked
 
 
 def _wrap(text: str, font, draw, max_w: int, max_lines: int = 0) -> list[str]:
@@ -206,7 +286,8 @@ def _chips(draw, items: list[str], font, max_w: int, h: int = 32, gap: int = 10,
     return out, y + row_h
 
 
-def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | None = None):
+def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | None = None,
+           data_dir=None):
     """渲染卡片，返回 PIL.Image（RGBA）；依赖缺失/失败返回 None。"""
     if Image is None:
         return None
@@ -220,7 +301,7 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     chip_bg = (38, 41, 50, 255) if dark else (255, 255, 255, 255)
     chip_border = c["border"] + (255,) if not dark else (66, 76, 82, 255)
 
-    fpath = find_font(cfg)
+    fpath = find_font(cfg, data_dir=data_dir)
     if not fpath:
         return None
     try:
@@ -417,7 +498,7 @@ def save(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | Non
          data_dir="data") -> str | None:
     """渲染并落盘，返回 PNG 路径；任何失败都返回 None（调用方据此降级）。"""
     try:
-        im = render(info, state=state, theme=theme, cfg=cfg)
+        im = render(info, state=state, theme=theme, cfg=cfg, data_dir=data_dir)
         if im is None:
             return None
         rd = os.path.join(str(data_dir), "card_render")

@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.5.0（字体查找策略重做：支持 Docker 投放目录 data/fonts/）
+
+Docker 环境下用户把字体放进了 `data/fonts/`（挂载卷、重装不丢），但卡片渲染只找插件
+目录和随包字体，用不上。参考 `astrbot_plugin_model_panel` 的投放目录策略重做查找链：
+
+- 新查找顺序：**配置指定 → 用户投放目录（`data_dir/fonts/` → AstrBot 共享
+  `data/fonts/`，目录内多个字体按名字提示排序：lxgw / wenkai / 霞鹜 / 圆体 …优先）→
+  插件自带 fonts/（老文档位置）→ 随包 woff2 → 系统字体**；
+- 每个候选都用 PIL **实际加载验证**——woff2 缺 brotli、文件损坏等情况自动跳过下一个
+  （Docker 镜像里很常见），不再"路径存在就当作能用"；
+- 探测结果按（配置，数据目录）缓存并打日志：`【出图卡片】 字体: <路径>`，
+  找不到时告警并列出全部候选来源；
+- 渲染链路把 `data_dir` 一路传到字体探测（`save → render → find_font`）；
+- 配置项「字体文件」的说明同步改写。
+
+验证：`tests/test_draw_card.py` 新增第 6 组（data/fonts 优先 / lxgw 名字提示排序 /
+配置指定裸文件名 / 空目录回退链 / 带 data_dir 端到端渲染）6 组全过；
+compileall 与前端构建通过。
+
 ## v7.4.11（「单张等待硬上限」归位到「出图行为」分组）
 
 v7.4.10 新增的 `draw_wait_hard_cap` 忘了登记进 WebUI 配置页的分组表（`GROUP_META`），

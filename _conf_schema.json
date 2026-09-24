@@ -1310,7 +1310,7 @@
       "font_file": {
         "type": "string",
         "description": "字体文件（可选）",
-        "hint": "留空即用随包字体 assets/fonts/ResourceHanRoundedCN-Medium.woff2；也可填绝对路径或插件目录内的相对路径（如 fonts/LXGWWenKai-Regular.ttf），缺失则回退系统字体。",
+        "hint": "留空按顺序自动找：**data/fonts/**（Docker 挂载卷，丢一个 ttf/otf/woff2 进去即可换字体，多个文件时 lxgw/文楷/圆体命名优先）→ 插件 fonts/ → 随包字体 → 系统字体。也可填绝对路径或文件名精确指定；每个候选都会实际加载验证，坏文件自动跳过。",
         "default": ""
       }
     }

@@ -135,10 +135,46 @@ def test_prompt_not_truncated():
     print("== 5. 提示词完整显示（不省略）+ 失败原因多行 OK")
 
 
+def test_font_lookup():
+    """字体查找策略（v7.4.12）：data/fonts 投放目录优先、名字提示排序、坏文件跳过。"""
+    import shutil
+
+    from draw_card import BUNDLED_FONT, find_font
+
+    assert BUNDLED_FONT.is_file(), "随包字体丢失"
+    tmp = Path(tempfile.mkdtemp())
+    fdir = tmp / "fonts"
+    fdir.mkdir()
+    # ① data/fonts 里放了字体（内容用随包字体复制，保证可加载）→ 优先用它（Docker 场景）
+    _ok_font = fdir / "zz_lxgw_wenkai.ttf"      # 名字带提示词
+    _other = fdir / "aaa_random.ttf"           # 名字无提示词
+    shutil.copy(str(BUNDLED_FONT), str(_ok_font))
+    picked = find_font({}, data_dir=tmp, force=True)
+    assert picked == str(_ok_font), picked
+    # ② 名字提示排序：lxgw 命名的优先于普通命名的
+    shutil.copy(str(BUNDLED_FONT), str(_other))
+    picked = find_font({}, data_dir=tmp, force=True)
+    assert picked == str(_ok_font), picked
+    # ③ 配置指定（裸文件名，在数据目录里）→ 精确命中
+    _my = tmp / "my.ttf"
+    shutil.copy(str(BUNDLED_FONT), str(_my))
+    picked = find_font({"font_file": "my.ttf"}, data_dir=tmp, force=True)
+    assert picked == str(_my), picked
+    # ④ 数据目录没有字体 → 回退随包 / 系统（返回某个可加载路径即可）
+    empty = tmp / "empty"
+    empty.mkdir()
+    picked = find_font({}, data_dir=empty, force=True)
+    assert picked and Path(picked).is_file(), picked
+    # ⑤ 渲染端到端：带 data_dir 渲染不炸
+    assert render(_info(), state="drawing", data_dir=tmp) is not None
+    print("== 6. 字体查找（data/fonts 优先 / 提示排序 / 配置指定 / 回退链） OK")
+
+
 if __name__ == "__main__":
     test_theme_table()
     test_norm_theme()
     test_render_all_themes_and_states()
     test_save_and_stats()
     test_prompt_not_truncated()
+    test_font_lookup()
     print("draw_card 全部通过")
