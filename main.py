@@ -763,6 +763,13 @@ _QUEUE_HINTS_QUEUED = [
     "前面 {n} 个在等，一会儿就到。⏳",
 ]
 
+# 「单张等待硬上限」的两个余量（v7.5.4）：
+# _WAIT_SEND_RESERVE —— 从预算里预留给「发超时提示」的时间（渲染卡片 + 上传图片要几秒）；
+# _WAIT_FLOOR        —— 即便预算已被前置耗时吃光，也至少等这么久再判超时，
+#                      保证「有结果/没结果」都能给出明确反馈，而不是被框架静默取消。
+_WAIT_SEND_RESERVE = 8
+_WAIT_FLOOR = 5
+
 # 面向用户的可爱错误话术：真实报错只写进日志，用户只看到经过包装的萌系提示。
 # 按错误类别分池，每类多条随机取一，避免每次都一样。
 _ERR_HINTS = {
@@ -1907,6 +1914,28 @@ class ComfyUIDrawPlugin(Star):
         if not a or not b:
             return False
         return a == b or a.startswith(b) or b.startswith(a) or a in b or b in a
+
+    @staticmethod
+    def _wait_timeout_with_budget(calc: int, hard_cap: int, elapsed_pre: float,
+                                  reserve: int = _WAIT_SEND_RESERVE,
+                                  floor: int = _WAIT_FLOOR) -> tuple[int, bool]:
+        """把「单张等待超时」收进整次请求的时间预算，返回 (等待秒数, 是否被预算收紧)。
+
+        `hard_cap`（配置 `draw_wait_hard_cap`）是**整次请求**的预算：LLM 改写 / 翻译、
+        参考图上传、提交这些前置耗时都算在里面（`elapsed_pre`）。等待结束时还要发一条
+        超时提示（渲染卡片 + 传图，几秒），所以要预留 `reserve` 秒——否则等待刚好用满
+        预算，总耗时顶过 AstrBot 的「工具调用超时」，协程被硬取消，提示根本发不出去
+        （用户看到的就是「再也不提示超时」，v7.5.4 修复）。
+
+        hard_cap <= 0 表示不限制（纯指令 / 伴侣插件场景），此时原样返回动态值。
+        预算已被前置耗时吃光时也至少等 `floor` 秒，保证「有结果 / 没结果」都有反馈。
+        """
+        if hard_cap <= 0:
+            return int(calc), False
+        left = int(hard_cap - elapsed_pre - reserve)
+        if left >= calc:
+            return int(calc), False
+        return max(int(floor), left), True
 
     def _lora_matches_wf(self, lora: dict, wf: dict) -> bool:
         """判断 LoRA 是否适用于某工作流（按底模匹配）。
@@ -6477,11 +6506,24 @@ class ComfyUIDrawPlugin(Star):
                 _hard_cap = int(self._cfg("draw_wait_hard_cap", 100) or 0)
                 _calc = min(max_timeout, base_timeout + ahead * per_extra)
                 timeout = min(_calc, _hard_cap) if _hard_cap > 0 else _calc
+                # ★v7.5.4：硬上限是**整次请求**的预算，不是「只算等待」——LLM 改写/翻译、
+                # 参考图上传、提交这些前置耗时也在这个预算里。此前只掐等待时长，前面一慢
+                # （如 LLM 翻译 30s + 等待 100s = 130s > 框架 120s），等待用满后还没发出
+                # 超时提示，协程就被框架硬取消 → 用户看到的是「再也不提示超时」。
+                # 这里按「已耗时 + 预留发消息时间」收紧等待，保证提示一定发得出去。
+                _elapsed_pre = time.time() - _draw_start
+                timeout, _squeezed = self._wait_timeout_with_budget(_calc, _hard_cap, _elapsed_pre)
+                if _squeezed:
+                    logger.info(
+                        f"【队列】 本次已耗时 {_elapsed_pre:.0f}s，等待超时按预算收紧为 {timeout}s"
+                        f"（硬上限 {_hard_cap}s，预留 {_WAIT_SEND_RESERVE}s 发超时提示）"
+                    )
                 interval = max(1, int(self._cfg("queue_poll_interval", 2)))
                 logger.info(
                     f"【队列】 本次等待超时 {timeout}s"
                     f"（基础 {base_timeout}s + 排队 {ahead}×{per_extra}s，动态上限 {max_timeout}s，"
-                    f"硬上限 {'不限' if _hard_cap <= 0 else str(_hard_cap) + 's'}）"
+                    f"硬上限 {'不限' if _hard_cap <= 0 else str(_hard_cap) + 's'}，"
+                    f"已耗时 {_elapsed_pre:.0f}s）"
                 )
                 history = await client.wait_for_result(prompt_id, timeout, interval)
                 if not history:

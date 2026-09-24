@@ -1,11 +1,14 @@
 """ComfyUI HTTP 客户端：提交工作流、查询队列与历史、下载图片。"""
 
 import asyncio
+import logging
 import os
 import time
 import uuid
 
 import aiohttp
+
+logger = logging.getLogger("astrbot")
 
 
 class ComfyUIClient:
@@ -38,9 +41,10 @@ class ComfyUIClient:
             resp.raise_for_status()
             return await resp.json()
 
-    async def _get(self, path: str) -> dict:
+    async     def _get(self, path: str, *, timeout: float | None = None) -> dict:
         session = await self._session_get()
-        async with session.get(self.base_url + path) as resp:
+        _to = aiohttp.ClientTimeout(total=timeout) if timeout else None
+        async with session.get(self.base_url + path, timeout=_to) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -130,10 +134,16 @@ class ComfyUIClient:
         except aiohttp.ClientResponseError as e:
             raise RuntimeError(f"上传图片到 ComfyUI 失败（HTTP {e.status}）") from e
 
-    async def get_history(self, prompt_id: str | None = None) -> dict:
+    async def get_history(self, prompt_id: str | None = None, *,
+                          timeout: float | None = None) -> dict:
+        """查询历史。prompt_id 优先走 /history/{id}（体积小、快）。
+
+        timeout：单次请求超时（秒）。轮询等图时会传一个较短的值，避免个别慢/挂死的
+        响应把「等待超时」整体拖长（v7.5.4）。
+        """
         if prompt_id:
-            return await self._get(f"/history/{prompt_id}")
-        return await self._get("/history")
+            return await self._get(f"/history/{prompt_id}", timeout=timeout)
+        return await self._get("/history", timeout=timeout)
 
     async def get_image(self, filename: str, subfolder: str, img_type: str) -> bytes:
         url = (
@@ -151,27 +161,47 @@ class ComfyUIClient:
         """轮询历史记录，直到该任务完成或超时。返回该 prompt_id 对应的历史条目。
 
         ComfyUI 的 /history 会持久保留已完成任务，因此即便任务在超时临界点附近
-        才写入历史，这里在退出前也会再做最后一次查询，避免“刚好错过”导致收不到图。
+        才写入历史，这里在退出前也会再做最后一次查询，避免"刚好错过"导致收不到图。
+
+        v7.5.4 修两个会让「等待超时」几乎不触发的坑：
+        ① 原实现用 `elapsed += interval` 估算已等时长 —— 只数 sleep，**请求本身的
+           耗时/卡顿完全不计**。后端一忙（每次 /history 要几百毫秒至数秒）或连中转站
+           时排队，真实等待能远超设定值，看起来就是「再也不提示超时」。
+        ② 单次请求用的是 client 全局超时（draw_timeout + 30 ≈ 150s），一个挂死的响应
+           就能把整轮等待拖过 AstrBot 的工具调用超时 → 协程被硬取消，超时提示根本没
+           机会发出。现在每轮给一个较短上限，并一律按真实时间判超时。
         """
-        elapsed = 0
+        period = max(1, int(interval or 1))
+        # 单次轮询请求上限：interval 的 3 倍，最少 5s / 最多 30s（正常 /history 是毫秒级）
+        poll_to = float(min(30, max(5, period * 3)))
+        start = time.monotonic()
+        deadline = start + max(1, int(timeout))
+        fails = 0
         while True:
             try:
-                history = await self.get_history(prompt_id)
-            except Exception:
+                history = await self.get_history(prompt_id, timeout=poll_to)
+                fails = 0
+            except Exception as e:
+                fails += 1
+                if fails in (1, 5, 20, 50) or fails % 100 == 0:
+                    logger.warning(
+                        f"【等待】 轮询历史失败第 {fails} 次"
+                        f"（已等 {time.monotonic() - start:.0f}s）: {type(e).__name__}: {e}"
+                    )
                 history = {}
             if prompt_id in history:
                 return history[prompt_id]
-            if elapsed >= timeout:
+            if time.monotonic() >= deadline:
                 # 超时后兜底再查一次：历史已持久化，可能刚刚才写入
                 try:
-                    final = await self.get_history(prompt_id)
+                    final = await self.get_history(prompt_id, timeout=poll_to)
                 except Exception:
                     final = {}
                 if prompt_id in final:
                     return final[prompt_id]
                 return None
-            await asyncio.sleep(interval)
-            elapsed += interval
+            # 睡眠不超过剩余时间，保证真实等待≈timeout（而不是 timeout × 轮询次数误差）
+            await asyncio.sleep(min(period, max(0.2, deadline - time.monotonic())))
 
 
 def extract_images(history_entry: dict, output_node: str | None = None) -> list[dict]:
