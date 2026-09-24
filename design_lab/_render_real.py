@@ -62,6 +62,16 @@ shots = [
                  ("今日全群已生图", "128 次", "")]},
          ],
      }, "theme": "night", "foot_left": "服务器与限额为实时数据"}),
+    ("real_report_rank.png",
+     None,
+     {"report": {
+         "kicker": "ComfyUI萌绘 · 绘图排行", "title": "绘图排行", "right_top": "今天",
+         "tiles": [("上榜", 5, "人"), ("合计出图", 173, "张")],
+         "sections": [{"label": "前 5 名", "rows": [
+             ("1. 星野", "96 张", "ok"), ("2. 白露", "34 张", ""),
+             ("3. 阿茶", "21 张", ""), ("4. 柚子", "13 张", ""),
+             ("5. Momo", "9 张", "")]}],
+     }, "theme": "amber", "foot_left": "口径：真人出图（已排除插件自动生图）"}),
     ("real_platform_night.png",
      info(kicker="nai-diffusion-4-5-full", workflow="NovelAI · 文生图",
           device="云端 NovelAI", loras=[],

@@ -198,6 +198,14 @@ def test_report_card():
 
     # 全缺省也能渲染（不出事）
     assert render_report({}, theme="graphite") is not None
+    # 排行卡（tiles + 名次行，榜首 ok 态）
+    im4 = render_report({
+        "title": "绘图排行", "right_top": "今天",
+        "tiles": [("上榜", 5, "人"), ("合计出图", 173, "张")],
+        "sections": [{"label": "前 5 名", "rows": [
+            ("1. 星野", "96 张", "ok"), ("2. 白露", "34 张", "")]}],
+    }, theme="amber")
+    assert im4 is not None
     # 9 套主题全过
     for k in THEMES:
         assert render_report({"title": "绘图统计"}, theme=k) is not None, k

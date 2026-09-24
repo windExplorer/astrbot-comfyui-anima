@@ -8199,6 +8199,28 @@ class ComfyUIDrawPlugin(Star):
                     medal = medals[i] if i < len(medals) else f"{i + 1}."
                     name = r.get("user_name") or r.get("user_id") or "未知用户"
                     lines.append(f"{medal} {name}：{r.get('count', 0)} 张")
+            # v7.5.2：优先发报表卡（同款主题引擎），渲染失败退回上面的文字
+            _top_tiles = []
+            if top:
+                _sum = sum(int(r.get("count", 0) or 0) for r in top)
+                _top_tiles = [("上榜", len(top), "人"), ("合计出图", _sum, "张")]
+            _top_rows = []
+            for i, r in enumerate(top):
+                _name = r.get("user_name") or r.get("user_id") or "未知用户"
+                _top_rows.append((f"{i + 1}. {_name}", f"{r.get('count', 0)} 张",
+                                  "ok" if i == 0 else ""))
+            _rep = {
+                "kicker": "ComfyUI萌绘 · 绘图排行",
+                "title": "绘图排行",
+                "right_top": scope_label,
+                "tiles": _top_tiles,
+                "sections": [{"label": "前 5 名" if top else "排行",
+                              "rows": _top_rows or [(scope_label, "还没有人生图～", "")]}],
+            }
+            if await self._send_report_card(event, _rep,
+                                            foot_left="口径：真人出图（已排除插件自动生图）"):
+                event.stop_event()
+                return
             await self._send(event, "\n".join(lines))
         except Exception as e:
             await self._send(event, f"读取排行失败：{_sanitize_exc_text(str(e), 160)}")
