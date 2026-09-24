@@ -624,11 +624,16 @@
                     </n-switch>
                     <n-button size="tiny" quaternary type="error" @click="removeLoraRow(ri)">删除</n-button>
                   </div>
-                  <n-space style="margin-top: 6px">
+                  <n-space style="margin-top: 6px" align="center">
                     <n-button size="tiny" @click="addLoraRow">＋ 添加 LoRA</n-button>
                     <n-button size="tiny" @click="refreshLoras">↻ 刷新 LoRA 列表</n-button>
+                    <n-checkbox v-model:checked="loraFilterByBase" size="small">
+                      只显示匹配底模的 LoRA
+                    </n-checkbox>
                   </n-space>
-                  <div class="form-hint">从全局 LoRA 库下拉选择（可搜索）；已添加的会置灰去重；保存后写回 loras_text（名称|权重|0/1）</div>
+                  <div class="form-hint">
+                    {{ loraFilterHint }}；从全局 LoRA 库下拉选择（可搜索），保存后写回 loras_text（名称|权重|0/1）
+                  </div>
                 </div>
               </n-form-item>
             </n-tab-pane>
@@ -1196,23 +1201,61 @@ const filteredWorkflows = computed(() => {
   return rows;
 });
 
-// LoRA 下拉选项：按工作流底模筛选（与 availLoras 逻辑一致：底模为空则全部，LoRA 底模为空则通用）
-// + 已选但库中不存在/底模不匹配的名称（保留老配置可编辑，标记未知）
+// LoRA 下拉选项：按工作流**底模**筛选（v7.5.3 修复）。
+// 此前筛的是 editForm.base_model，而新版工作流不再用这个字段（走 base_id 关联基础工作流），
+// 它恒为空 → 过滤条件恒真 → 下拉把全部 LoRA 都列了出来。
+const curBaseModel = computed(() => {
+  const viaBase = String(selectedBase.value?.basemodel_name || "").trim();
+  if (viaBase) return viaBase;                       // 新版：基础工作流的底模
+  return String((editForm as any).base_model || "").trim();  // 旧版：工作流自己的 base_model
+});
+/** 当前底模是否来自基础工作流（决定提示文案） */
+const curBaseFromBase = computed(() => !!String(selectedBase.value?.basemodel_name || "").trim());
+
+/** LoRA 底模是否匹配工作流底模：任一侧为空（通用 / 不限）→ 匹配；
+ *  否则先比小写原文，再比「去标点」形式（空格/连字符/下划线/点都不算），
+ *  最后容错前缀 / 包含：底模库名「Anima Pencil XL」↔ LoRA 里记的「anima」、
+ *  「Z-Image Turbo」↔「z-image-turbo」、「Krea 2」↔「krea2」都能对上。 */
+function baseModelFits(loraBm: any, wfBm: any): boolean {
+  const low = (v: any) => String(v || "").trim().toLowerCase();
+  const a0 = low(loraBm);
+  const b0 = low(wfBm);
+  if (!a0 || !b0) return true;          // 通用 / 不限底模 → 互相都算可用
+  if (a0 === b0) return true;
+  const flat = (v: any) => low(v).replace(/[^0-9a-z\u4e00-\u9fa5]/g, "");
+  const a = flat(loraBm);
+  const b = flat(wfBm);
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a) || a.includes(b) || b.includes(a);
+}
+
+/** 底模筛选开关（新版 LoRA 页）；关掉可看全库，便于临时混搭 */
+const loraFilterByBase = ref(true);
+
 const loraOptions = computed(() => {
   const known = new Set<string>();
-  const wbm = ((editForm.base_model || "") as string).trim().toLowerCase();
-  const opts = loras.value
-    .filter((l) => {
-      const n = (l.name || "").trim();
-      if (!n) return false;
-      const lbm = (l.base_model || "").trim().toLowerCase();
-      return !wbm || !lbm || wbm === lbm;
-    })
+  const wbm = curBaseModel.value;
+  const byBase = loras.value
+    .filter((l) => String(l.name || "").trim() && baseModelFits(l.base_model, wbm))
     .map((l) => {
-      const n = (l.name || "").trim();
+      const n = String(l.name || "").trim();
       known.add(n);
       return { label: n, value: n };
     });
+  // 兜底：该底模下确实没有匹配的 LoRA（或用户关掉筛选）→ 退回全量，别让下拉是空的；
+  // 全量时把每个 LoRA 的底模标在名字后面，方便一眼看出为什么它不在「匹配」里。
+  const useAll = !loraFilterByBase.value || byBase.length === 0;
+  const opts = useAll
+    ? loras.value
+        .filter((l) => String(l.name || "").trim())
+        .map((l) => {
+          const n = String(l.name || "").trim();
+          const lbm = String(l.base_model || "").trim();
+          known.add(n);
+          return { label: lbm ? `${n}（${lbm}）` : n, value: n };
+        })
+    : byBase;
+  // 已选但库中不存在 / 底模不匹配的名称（保留老配置可编辑，标记未知）
   for (const row of editForm.loraList || []) {
     const n = (row.name || "").trim();
     if (n && !known.has(n)) {
@@ -1221,6 +1264,19 @@ const loraOptions = computed(() => {
     }
   }
   return opts;
+});
+
+/** LoRA 下拉下方的筛选状态提示（让「少了一些 LoRA」是可见、可解释的） */
+const loraFilterHint = computed(() => {
+  const total = loras.value.filter((l) => String(l.name || "").trim()).length;
+  if (!loraFilterByBase.value) return `已关闭底模筛选：显示全部 ${total} 个 LoRA`;
+  if (!curBaseModel.value) return "当前工作流未关联底模：显示全部 LoRA（关联底模后会自动筛选）";
+  const hit = loras.value.filter(
+    (l) => String(l.name || "").trim() && baseModelFits(l.base_model, curBaseModel.value)
+  ).length;
+  if (!hit) return `底模「${curBaseModel.value}」下没有匹配的 LoRA：已显示全部 ${total} 个`;
+  const from = curBaseFromBase.value ? "（来自基础工作流）" : "";
+  return `已按底模「${curBaseModel.value}」${from}筛选：${hit} / ${total} 个可用`;
 });
 
 function addLoraRow() {
@@ -1236,12 +1292,11 @@ function refreshLoras() {
 }
 
 function availLoras(w: any): string[] {
-  const wbm = (w.base_model || "").trim().toLowerCase();
+  // v7.5.3：新版工作流底模看基础工作流（base_id → basemodel_name），旧版才看 w.base_model
+  const viaBase = String(baseOf(w)?.basemodel_name || "").trim();
+  const wbm = viaBase || String(w.base_model || "").trim();
   return loras.value
-    .filter((l) => {
-      const lbm = (l.base_model || "").trim().toLowerCase();
-      return !wbm || !lbm || wbm === lbm;
-    })
+    .filter((l) => baseModelFits(l.base_model, wbm))
     .map((l) => l.name || "")
     .filter(Boolean);
 }

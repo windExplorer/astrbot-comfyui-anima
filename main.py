@@ -1874,18 +1874,47 @@ class ComfyUIDrawPlugin(Star):
                 )
         return merged
 
+    @staticmethod
+    def _bm_key(v) -> str:
+        """底模名归一化：小写 + 去空格/连字符/下划线/点（「Z-Image Turbo」↔「z-image-turbo」）。"""
+        return re.sub(r"[^0-9a-z\u4e00-\u9fa5]+", "", str(v or "").strip().lower())
+
+    def _wf_base_model(self, wf: dict) -> str:
+        """工作流当前生效的底模名：新版取基础工作流的底模，旧版取自己的 base_model。
+
+        v7.5.3：新版工作流不再使用 base_model 字段（走 base_id 关联基础工作流），
+        它恒为空 → 原先按它筛 LoRA 等于没筛。
+        """
+        try:
+            b = self._basemodel_of_workflow(wf or {}) or {}
+            _n = str(b.get("name") or "").strip()
+            if _n:
+                return _n
+        except Exception:
+            pass
+        return str((wf or {}).get("base_model") or "").strip()
+
+    def _bm_fits(self, lora_bm, wf_bm) -> bool:
+        """底模是否匹配（与 WebUI 下拉同一套规则）：任一侧为空（通用 / 不限）→ 可用；
+        否则小写原文相等，或去标点后相等 / 前缀 / 包含。"""
+        a0 = str(lora_bm or "").strip().lower()
+        b0 = str(wf_bm or "").strip().lower()
+        if not a0 or not b0:
+            return True
+        if a0 == b0:
+            return True
+        a, b = self._bm_key(a0), self._bm_key(b0)
+        if not a or not b:
+            return False
+        return a == b or a.startswith(b) or b.startswith(a) or a in b or b in a
+
     def _lora_matches_wf(self, lora: dict, wf: dict) -> bool:
         """判断 LoRA 是否适用于某工作流（按底模匹配）。
 
         规则：工作流底模为空（不限）→ 任何 LoRA 都可用；
-        LoRA 底模为空（通用）→ 任何工作流都可用；
-        否则两者 base_model 必须相等。
+        LoRA 底模为空（通用）→ 任何工作流都可用；否则两者底模需匹配。
         """
-        wf_bm = (wf.get("base_model") or "").strip().lower()
-        lora_bm = (lora.get("base_model") or "").strip().lower()
-        if not wf_bm or not lora_bm:
-            return True
-        return wf_bm == lora_bm
+        return self._bm_fits((lora or {}).get("base_model"), self._wf_base_model(wf or {}))
 
     def _apply_lora_presets(
         self, presets: dict[str, str], positive: str, negative: str
@@ -7901,7 +7930,7 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, f"工作流「{wf.get('name')}」当前没有可用的 LoRA（可先去 WebUI 配置添加）。")
             event.stop_event()
             return
-        wf_bm = (wf.get("base_model") or "").strip()
+        wf_bm = self._wf_base_model(wf)
         title = f"工作流「{wf.get('name')}」可用的 LoRA（共 {len(hits)} 个）"
         if wf_bm:
             title += f"，底模 {wf_bm}"
