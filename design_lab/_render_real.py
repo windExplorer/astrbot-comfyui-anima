@@ -7,7 +7,7 @@ sys.path.insert(0, str(ROOT))
 OUT = Path(__file__).resolve().parent / "out"
 OUT.mkdir(exist_ok=True)
 
-from draw_card import render  # noqa: E402
+from draw_card import render, save_report  # noqa: E402
 
 LORA = ["薄荷发型 0.8", "婚纱服饰 默认", "柔光氛围 0.6"]
 PARAMS = ["尺寸 1664 × 2432", "采样步数 25", "CFG 1.0", "采样器 euler",
@@ -38,6 +38,30 @@ shots = [
                  "电影级光影, 逆光轮廓, master piece, best quality, ultra detailed, 8k, "
                  "wide shot, depth of field, bokeh, cinematic lighting"),
      {"state": "drawing", "theme": "teal"}),
+    ("real_report_stats.png",
+     None,
+     {"report": {
+         "kicker": "ComfyUI萌绘 · 绘图统计", "title": "绘图统计", "right_top": "今天",
+         "tiles": [("累计出图", "1,234", "张"), ("今天出图", "56", "张"),
+                   ("Token 用量", "12.3万", "")],
+         "sections": [{"label": "热门工作流", "rows": [
+             ("动漫日常", "56 张 · 8.4s/张", ""), ("写实人像", "23 张 · 12.0s/张", ""),
+             ("表情包小图", "12 张 · 2.1s/张", "")]}],
+     }, "theme": "teal", "foot_left": "口径：成功生成的成品图"}),
+    ("real_report_status.png",
+     None,
+     {"report": {
+         "kicker": "ComfyUI萌绘 · 绘图状态", "title": "绘图状态", "right_top": "2 台",
+         "sections": [
+             {"label": "服务器", "rows": [
+                 ("服务器 1", "正常 · 80ms · 正在出图（1 个，队列 2 个）", "ok"),
+                 ("服务器 2", "不可达（连接超时）", "bad")]},
+             {"label": "生图限额", "rows": [
+                 ("限额开关", "已开启", ""),
+                 ("总次数 / 每小时 / 每天", "不限 / 60 / 300", ""),
+                 ("今日全群已生图", "128 次", "")]},
+         ],
+     }, "theme": "night", "foot_left": "服务器与限额为实时数据"}),
     ("real_platform_night.png",
      info(kicker="nai-diffusion-4-5-full", workflow="NovelAI · 文生图",
           device="云端 NovelAI", loras=[],
@@ -47,6 +71,13 @@ shots = [
 ]
 
 for name, inf, kw in shots:
+    if kw.get("report"):
+        # 报表卡（统计/状态）：走 save_report 落盘
+        p = save_report(kw["report"], theme=kw.get("theme", ""), data_dir=str(OUT),
+                        foot_left=kw.get("foot_left", ""))
+        assert p, name
+        print(f"  {name} <- {p}")
+        continue
     im = render(inf, **kw)
     assert im is not None, name
     im.save(OUT / name, "PNG")

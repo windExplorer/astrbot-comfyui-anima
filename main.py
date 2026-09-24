@@ -3753,6 +3753,24 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【出图卡片】 发送失败（忽略，不中断出图）: {e}")
             return False
 
+    async def _send_report_card(self, event, info: dict, foot_left: str = "") -> bool:
+        """发送统计/状态类报表卡（v7.5.1）。渲染失败返回 False，调用方退回文字。"""
+        try:
+            cfg = self._card_cfg()
+            mod = self._card_module()
+            path = mod.save_report(info, theme=str(cfg.get("theme") or ""), cfg=cfg,
+                                   data_dir=self.data_dir, foot_left=foot_left)
+            if not path:
+                return False
+            await self._send_image_with_recall(
+                event, MessageChain([Image.fromFileSystem(path)])
+            )
+            logger.info(f"【报表卡片】 已发送 title={info.get('title')}")
+            return True
+        except Exception as e:
+            logger.warning(f"【报表卡片】 发送失败（降级为文字）: {e}")
+            return False
+
     async def _card_or_text(self, event, text: str, *, info: dict | None = None,
                             state: str = "failed") -> None:
         """失败统一出口：优先发失败卡，画不出来就退回原来的文字（保证一定有反馈）。
@@ -8038,12 +8056,16 @@ class ComfyUIDrawPlugin(Star):
             start_ts = day_start - 29 * 86400
 
         lines = [f"📊 绘图统计（{scope_label}）"]
+        # v7.5.1：同步收集结构化数据（发报表卡用；卡片失败退回 lines 文字）
+        _tiles: list[tuple] = []
+        _wf_rows: list[tuple] = []
         # 出图数量
         if self.gallery is not None:
             try:
                 st = self.gallery.stats()
                 total = st.get("total", 0) if isinstance(st, dict) else 0
                 lines.append(f"· 累计出图：{total} 张")
+                _tiles.append(("累计出图", f"{total:,}", "张"))
             except Exception as e:
                 lines.append(f"· 累计出图：读取失败（{e}）")
             try:
@@ -8055,6 +8077,7 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     scope_total = self.gallery.user_ranking(days=None).get("total", 0)
                 lines.append(f"· {scope_label}出图：{scope_total} 张")
+                _tiles.append((f"{scope_label}出图", f"{scope_total:,}", "张"))
             except Exception as e:
                 lines.append(f"· {scope_label}出图：读取失败（{e}）")
         else:
@@ -8072,6 +8095,7 @@ class ComfyUIDrawPlugin(Star):
                     d = self.token_store.list_daily(days=0)  # 全部历史
                     tok = sum(int(x["total"] or 0) for x in d)
                 lines.append(f"· {scope_label} Token 用量：{self._fmt_token(tok)}")
+                _tiles.append(("Token 用量", self._fmt_token(tok), ""))
             except Exception as e:
                 lines.append(f"· {scope_label} Token 用量：读取失败（{e}）")
         else:
@@ -8088,10 +8112,22 @@ class ComfyUIDrawPlugin(Star):
                     for w in wfs:
                         speed = "—" if not w["avg_sec"] else f"{w['avg_sec']}s/张"
                         lines.append(f"    · {w['workflow']}：{w['count']} 张（平均 {speed}）")
+                        _wf_rows.append((str(w["workflow"]), f"{w['count']} 张 · {speed}", ""))
                 else:
                     lines.append("· 热门工作流：暂无数据")
             except Exception as e:
                 lines.append(f"· 热门工作流：读取失败（{e}）")
+        # v7.5.1：优先发报表卡（同款主题引擎），渲染失败退回上面的文字
+        _rep = {
+            "kicker": "ComfyUI萌绘 · 绘图统计",
+            "title": "绘图统计",
+            "right_top": scope_label,
+            "tiles": _tiles,
+            "sections": ([{"label": "热门工作流", "rows": _wf_rows}] if _wf_rows else []),
+        }
+        if await self._send_report_card(event, _rep, foot_left="口径：成功生成的成品图"):
+            event.stop_event()
+            return
         await self._send(event, "\n".join(lines))
         event.stop_event()
 
@@ -8188,6 +8224,9 @@ class ComfyUIDrawPlugin(Star):
             event.stop_event()
             return
         lines = ["🖥️ 绘图服务器状态"]
+        # v7.5.1：结构化数据（发报表卡用；卡片失败退回 lines 文字）
+        _srv_rows: list[tuple] = []
+        _quota_rows: list[tuple] = []
         for idx, s in enumerate(active, 1):
             url = s["url"].strip()
             # 探测用较短的超时（不可达时更快返回），整体 60s 上限（连接/握手慢的服务器也给足等待）
@@ -8196,6 +8235,7 @@ class ComfyUIDrawPlugin(Star):
             p = await client.probe()
             if not p.get("ok"):
                 lines.append(f"· 服务器{idx}：🔴 不可达（{p.get('error', '')}）")
+                _srv_rows.append((f"服务器 {idx}", f"不可达（{p.get('error', '')}）", "bad"))
                 await self._safe_close(client)
                 continue
             latency = int(p.get("elapsed_ms", 0))
@@ -8216,6 +8256,7 @@ class ComfyUIDrawPlugin(Star):
                 local = len(self._server_pending.get(srv_key, []))
                 state = "正在出图" if local > 0 else "空闲"
             lines.append(f"· 服务器{idx}：🟢 正常（HTTP 往返 {latency}ms）· {state}")
+            _srv_rows.append((f"服务器 {idx}", f"正常 · {latency}ms · {state}", "ok"))
             await self._safe_close(client)
         # 生图限额配置
         lines.append("")
@@ -8225,14 +8266,32 @@ class ComfyUIDrawPlugin(Star):
             enabled = bool(qc.get("enabled", False))
             lines.append(f"· 开关：{'已开启' if enabled else '未开启'}")
             fmt_n = lambda n: "不限" if int(n) < 0 else str(n)
-            lines.append(f"· 总次数 / 每小时 / 每天：{fmt_n(qc.get('max_total', -1))} / {fmt_n(qc.get('max_hour', -1))} / {fmt_n(qc.get('max_day', -1))}")
+            _q3 = f"{fmt_n(qc.get('max_total', -1))} / {fmt_n(qc.get('max_hour', -1))} / {fmt_n(qc.get('max_day', -1))}"
+            lines.append(f"· 总次数 / 每小时 / 每天：{_q3}")
             lines.append(f"· 管理员豁免：{'是' if qc.get('admin_exempt', False) else '否'}")
+            _quota_rows.append(("限额开关", "已开启" if enabled else "未开启", ""))
+            _quota_rows.append(("总次数 / 每小时 / 每天", _q3, ""))
+            _quota_rows.append(("管理员豁免", "是" if qc.get("admin_exempt", False) else "否", ""))
             if self.quota is not None:
                 users = self.quota.list_users()
                 day_total = sum(int(u.get("day_used") or 0) for u in users)
                 lines.append(f"· 今日全群已生图：{day_total} 次")
+                _quota_rows.append(("今日全群已生图", f"{day_total} 次", ""))
         except Exception as e:
             lines.append(f"· 限额配置读取失败（{e}）")
+        # v7.5.1：优先发报表卡，渲染失败退回文字
+        _rep = {
+            "kicker": "ComfyUI萌绘 · 绘图状态",
+            "title": "绘图状态",
+            "right_top": f"{len(active)} 台",
+            "sections": (
+                [{"label": "服务器", "rows": _srv_rows}]
+                + ([{"label": "生图限额", "rows": _quota_rows}] if _quota_rows else [])
+            ),
+        }
+        if await self._send_report_card(event, _rep, foot_left="服务器与限额为实时数据"):
+            event.stop_event()
+            return
         await self._send(event, "\n".join(lines))
         event.stop_event()
 

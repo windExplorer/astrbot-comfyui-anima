@@ -170,6 +170,44 @@ def test_font_lookup():
     print("== 6. 字体查找（data/fonts 优先 / 提示排序 / 配置指定 / 回退链） OK")
 
 
+def test_report_card():
+    """/绘图统计、/绘图状态 报表卡（v7.5.1）：tiles + 分区行 + ok/bad 两态 + 落盘。"""
+    from draw_card import THEMES, render_report, save_report
+
+    # 统计卡（tiles + 工作流表）
+    im = render_report({
+        "kicker": "ComfyUI萌绘 · 绘图统计", "title": "绘图统计", "right_top": "今天",
+        "tiles": [("累计出图", "1,234", "张"), ("今天出图", "56", "张"),
+                  ("Token 用量", "12.3万", "")],
+        "sections": [{"label": "热门工作流", "rows": [
+            ("动漫日常", "56 张 · 8.4s/张", ""), ("写实人像", "23 张 · 12.0s/张", "")]}],
+    }, theme="teal")
+    assert im is not None and im.size[0] == 840, im.size if im else None
+
+    # 状态卡（ok / bad 两态 + 限额分区）
+    im2 = render_report({
+        "kicker": "ComfyUI萌绘 · 绘图状态", "title": "绘图状态", "right_top": "2 台",
+        "sections": [
+            {"label": "服务器", "rows": [("服务器 1", "正常 · 80ms · 空闲", "ok"),
+                                          ("服务器 2", "不可达（连接超时）", "bad")]},
+            {"label": "生图限额", "rows": [("限额开关", "已开启", ""),
+                                            ("今日全群已生图", "12 次", "")]},
+        ],
+    }, theme="night")
+    assert im2 is not None
+
+    # 全缺省也能渲染（不出事）
+    assert render_report({}, theme="graphite") is not None
+    # 9 套主题全过
+    for k in THEMES:
+        assert render_report({"title": "绘图统计"}, theme=k) is not None, k
+    # 落盘（文件名带 report_ 前缀）
+    tmp = Path(tempfile.mkdtemp())
+    p = save_report({"title": "绘图统计", "right_top": "今天"}, theme="teal", data_dir=tmp)
+    assert p and Path(p).is_file() and "report_" in Path(p).name, p
+    print("== 7. 报表卡（统计/状态/空数据/9 主题/落盘） OK")
+
+
 if __name__ == "__main__":
     test_theme_table()
     test_norm_theme()
@@ -177,4 +215,5 @@ if __name__ == "__main__":
     test_save_and_stats()
     test_prompt_not_truncated()
     test_font_lookup()
+    test_report_card()
     print("draw_card 全部通过")

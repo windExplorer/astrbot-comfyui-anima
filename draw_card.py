@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger("astrbot")
@@ -492,6 +493,201 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     out = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
     out.paste(img, (0, 0), mask)
     return out.resize((W, H), Image.LANCZOS)
+
+
+def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
+                  data_dir=None, foot_left: str = "") -> Image.Image | None:
+    """统计 / 状态类报表卡（/绘图统计、/绘图状态 用，v7.5.1）。
+
+    info 字段（全部可缺省，缺啥跳啥）：
+      kicker    左上小字（如「ComfyUI萌绘 · 绘图统计」）
+      title     大标题（「绘图统计」/「绘图状态」）
+      right_top 右上胶囊文字（统计范围，如「今天」）
+      tiles     [(label, value, unit)] 大数字块，最多 4 个等宽一排
+      sections  [{"label": "热门工作流", "rows": [(左文, 右值, 状态?)]}, ...]
+                状态: "ok"=强调色圆点、""=无点、其他=红点（不可达等）
+    版式与出图卡同源：同一套主题/字体/footer（左说明+时间、右品牌）。
+    """
+    if Image is None:
+        return None
+    cfg = cfg or {}
+    c = THEMES[norm_theme(theme or cfg.get("theme") or DEFAULT_THEME, "")]
+    dark = bool(c.get("dark"))
+    body_bg = (26, 28, 34, 255) if dark else (255, 255, 255, 255)
+    text_main = (238, 240, 248, 255) if dark else (30, 33, 44, 255)
+    text_muted = (152, 158, 180, 255) if dark else (126, 133, 152, 255)
+    tile_bg = (38, 41, 50, 255) if dark else c["soft"] + (255,)
+    tile_border = (66, 76, 82, 255) if dark else c["border"] + (255,)
+    _bad = (224, 82, 82)
+
+    fpath = find_font(cfg, data_dir=data_dir)
+    if not fpath:
+        return None
+    try:
+        f = lambda size: ImageFont.truetype(fpath, int(size * S))  # noqa: E731
+    except Exception as e:
+        logger.warning(f"【出图卡片】 字体加载失败 {fpath}: {e}")
+        return None
+    f_kicker, f_title = f(14), f(30)
+    f_pill = f(15)
+    f_tlabel, f_tval, f_tunit = f(14), f(30), f(13)
+    f_row_l, f_row_v = f(16), f(15)
+    f_label = f(15)
+    f_foot, f_brand, f_mark = f(14), f(14), f(12)
+
+    def _ink(text: str, font):
+        p = Image.new("L", (900 * S, 90 * S), 0)
+        ImageDraw.Draw(p).text((0, 0), text, font=font, fill=255)
+        return p.getbbox() or (0, 0, 0, 0)
+
+    tiles = [t for t in (info.get("tiles") or []) if isinstance(t, (tuple, list)) and len(t) >= 2][:4]
+    sections = [s for s in (info.get("sections") or [])
+                if isinstance(s, dict) and (s.get("rows") or [])]
+
+    # ---- 版式预算 ----
+    HEAD_H, FOOT_H = 108, 54
+    y = HEAD_H + 20
+    tile_geo = []
+    if tiles:
+        n = len(tiles)
+        _gap = 14
+        _tw = (W - PAD * 2 - _gap * (n - 1)) // n
+        tile_geo = [(PAD + i * (_tw + _gap), _tw) for i in range(n)]
+        y += 96 + 18
+    sec_geo = []
+    for sec in sections:
+        sec_geo.append((y, sec))
+        y += 30 + len(sec["rows"]) * 40 + 16
+    H = int(y + 4 + FOOT_H)
+
+    img = Image.new("RGBA", (W * S, H * S), body_bg)
+
+    # ---- header 渐变 ----
+    gs = 64
+    small = Image.new("RGB", (gs, gs))
+    px = small.load()
+    for yy in range(gs):
+        for xx in range(gs):
+            t = (xx * 0.30 + yy * 0.70) / (gs - 1)
+            px[xx, yy] = _mix(c["top"], c["bottom"], t)
+    img.alpha_composite(small.resize((W * S, HEAD_H * S), Image.BICUBIC).convert("RGBA"), (0, 0))
+    d = ImageDraw.Draw(img)
+    d.text((PAD * S, 24 * S), str(info.get("kicker") or ""), font=f_kicker, fill=c["sub"] + (255,))
+    d.text((PAD * S, 44 * S), str(info.get("title") or "统计"), font=f_title, fill=c["ink"] + (255,))
+
+    def _ink(text: str, font):
+        p = Image.new("L", (900 * S, 90 * S), 0)
+        ImageDraw.Draw(p).text((0, 0), text, font=font, fill=255)
+        return p.getbbox() or (0, 0, 0, 0)
+
+    # 右上胶囊（范围）：淡强调底 + 描边，文字居中（与出图卡同语言）
+    _rt = str(info.get("right_top") or "")
+    if _rt:
+        _rb = _ink(_rt, f_pill)
+        _pw = (_rb[2] - _rb[0]) + 28 * S
+        _ph = 30 * S
+        _px = (W - PAD) * S - _pw
+        _py = 24 * S
+        _hl = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(_hl).rounded_rectangle(
+            [_px, _py, _px + _pw, _py + _ph], radius=15 * S,
+            fill=c["accent"] + (30,), outline=c["accent"] + (100,), width=S)
+        img.alpha_composite(_hl)
+        d.text((_px + _pw / 2 - (_rb[0] + _rb[2]) / 2, _py + _ph / 2 - (_rb[1] + _rb[3]) / 2),
+               _rt, font=f_pill, fill=c["accent"] + (255,))
+
+    # ---- tiles ----
+    _tiles_y = HEAD_H + 20
+    for (tx, tw), (label, value, unit) in zip(tile_geo, tiles):
+        _x0, _y0 = tx * S, _tiles_y * S
+        _x1, _y1 = (tx + tw) * S, (_tiles_y + 96) * S
+        d.rounded_rectangle([_x0, _y0, _x1, _y1], radius=14 * S,
+                            fill=tile_bg, outline=tile_border, width=S)
+        # label 居中
+        _lb = _ink(str(label), f_tlabel)
+        d.text(((_x0 + _x1) / 2 - (_lb[0] + _lb[2]) / 2, _y0 + 14 * S), str(label),
+               font=f_tlabel, fill=text_muted)
+        # value + unit 居中一行
+        _val = str(value)
+        _un = str(unit or "")
+        _vb = _ink(_val, f_tval)
+        _uw = d.textlength(_un, font=f_tunit) if _un else 0
+        _total_w = (_vb[2] - _vb[0]) + (6 * S + _uw if _un else 0)
+        _vx = (_x0 + _x1) / 2 - _total_w / 2
+        d.text((_vx - _vb[0], _y0 + 42 * S), _val, font=f_tval, fill=c["accent"] + (255,))
+        if _un:
+            d.text((_vx + (_vb[2] - _vb[0]) + 6 * S, _y0 + 56 * S), _un,
+                   font=f_tunit, fill=text_muted)
+
+    # ---- sections ----
+    for _sy, sec in sec_geo:
+        d.text((PAD * S, (_sy + 8) * S), str(sec.get("label") or ""), font=f_label, fill=text_muted)
+        for _i, row in enumerate(sec["rows"]):
+            _left = str(row[0]) if len(row) > 0 else ""
+            _val = str(row[1]) if len(row) > 1 else ""
+            _state = str(row[2]) if len(row) > 2 else ""
+            _ry = (_sy + 30 + _i * 40) * S
+            _cy = _ry + 20 * S
+            if _state == "ok":
+                d.ellipse([PAD * S, _cy - 4.5 * S, (PAD + 9) * S, _cy + 4.5 * S],
+                          fill=c["accent"] + (255,))
+            elif _state and _state != "":
+                d.ellipse([PAD * S, _cy - 4.5 * S, (PAD + 9) * S, _cy + 4.5 * S], fill=_bad + (255,))
+            d.text(((PAD + 16) * S, _ry + 4 * S), _left, font=f_row_l, fill=text_main)
+            if _val:
+                _vb = _ink(_val, f_row_v)
+                d.text(((W - PAD) * S - _vb[2], _ry + 7 * S), _val, font=f_row_v,
+                       fill=(_bad if (_state and _state != "" and _state != "ok") else text_muted))
+
+    # ---- footer（与出图卡同款：左说明+时间，右品牌） ----
+    _fy = (H - FOOT_H) * S
+    d.rectangle([0, _fy, W * S, H * S], fill=c["footer"] + (255,))
+    d.line([(0, _fy), (W * S, _fy)],
+           fill=((56, 66, 72) if dark else c["border"]) + (255,), width=S)
+    _cyr = _fy + 27 * S
+    _left = f"{foot_left or '实时数据'} · {info.get('time_text') or time.strftime('%Y-%m-%d %H:%M:%S')}"
+    _lb = _ink(_left, f_foot)
+    d.ellipse([PAD * S, _cyr - 4.5 * S, (PAD + 9) * S, _cyr + 4.5 * S], fill=c["accent"] + (255,))
+    d.text(((PAD + 16) * S - _lb[0], _cyr - (_lb[1] + _lb[3]) / 2), _left, font=f_foot, fill=text_muted)
+    _brand = str(info.get("brand") or cfg.get("brand") or BRAND)
+    _bb = _ink(_brand, f_brand)
+    _box, _gap = 22 * S, 8 * S
+    _tx = (W - PAD) * S - _bb[2]
+    _x = _tx + _bb[0] - _gap - _box
+    d.rounded_rectangle([_x, _cyr - _box / 2, _x + _box, _cyr + _box / 2], radius=6 * S,
+                        fill=c["accent"] + (255,))
+    _mb = _ink("萌", f_mark)
+    d.text((_x + _box / 2 - (_mb[0] + _mb[2]) / 2, _cyr - (_mb[1] + _mb[3]) / 2), "萌",
+           font=f_mark, fill=(255, 255, 255, 255))
+    d.text((_tx, _cyr - (_bb[1] + _bb[3]) / 2), _brand, font=f_brand, fill=c["ink"] + (255,))
+
+    # ---- 圆角裁切 ----
+    mask = Image.new("L", (W * S, H * S), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, W * S - 1, H * S - 1], radius=RADIUS * S, fill=255)
+    out = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+    out.paste(img, (0, 0), mask)
+    return out.resize((W, H), Image.LANCZOS)
+
+
+def save_report(info: dict, *, theme: str = "", cfg: dict | None = None,
+                data_dir="data", foot_left: str = "") -> str | None:
+    """渲染报表卡并落盘，返回 PNG 路径；任何失败都返回 None（调用方降级成文字）。"""
+    try:
+        im = render_report(info, theme=theme, cfg=cfg, data_dir=data_dir, foot_left=foot_left)
+    except Exception as e:
+        logger.warning(f"【报表卡片】 渲染失败: {e}")
+        return None
+    if im is None:
+        return None
+    try:
+        rd = Path(str(data_dir)) / "card_render"
+        rd.mkdir(parents=True, exist_ok=True)
+        p = rd / f"report_{uuid.uuid4().hex}.png"
+        im.save(p, "PNG")
+        return str(p)
+    except Exception as e:
+        logger.warning(f"【报表卡片】 落盘失败: {e}")
+        return None
 
 
 def save(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | None = None,
