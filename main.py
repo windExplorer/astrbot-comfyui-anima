@@ -6422,11 +6422,20 @@ class ComfyUIDrawPlugin(Star):
                 # 每个前面排队任务额外累加的秒数；默认按"每个任务都要完整基础超时"保守估算
                 per_extra = int(self._cfg("queue_extra_timeout", 0)) or base_timeout
                 max_timeout = int(self._cfg("max_draw_timeout", 0)) or (base_timeout + 30 * base_timeout)
-                # 单张等待硬上限：必须 < AstrBot 框架工具超时（默认 120 秒），
-                # 确保 ComfyUI 层先超时报错返回、工具正常 return，框架永不 wait_for
-                # 取消我们（否则会打断正在 await 的 event.send、破坏 bot WS 连接致卡死）。
-                timeout = min(max_timeout, base_timeout + ahead * per_extra, 100)
+                # 单张等待硬上限（v7.4.10 起可配置，默认 100）：必须 < AstrBot 框架「工具调用超时」
+                # （默认 120 秒），确保 ComfyUI 层先超时报错返回、工具正常 return，框架永不
+                # wait_for 取消我们（否则会打断正在 await 的 event.send、破坏 bot WS 连接致卡死）。
+                # 若已把 AstrBot 的「工具调用超时」调大（插件建议 300 秒），请把本值同步调大
+                # （略小于框架值）；设 0 = 不限制（仅建议纯指令 / 伴侣插件场景）。
+                _hard_cap = int(self._cfg("draw_wait_hard_cap", 100) or 0)
+                _calc = min(max_timeout, base_timeout + ahead * per_extra)
+                timeout = min(_calc, _hard_cap) if _hard_cap > 0 else _calc
                 interval = max(1, int(self._cfg("queue_poll_interval", 2)))
+                logger.info(
+                    f"【队列】 本次等待超时 {timeout}s"
+                    f"（基础 {base_timeout}s + 排队 {ahead}×{per_extra}s，动态上限 {max_timeout}s，"
+                    f"硬上限 {'不限' if _hard_cap <= 0 else str(_hard_cap) + 's'}）"
+                )
                 history = await client.wait_for_result(prompt_id, timeout, interval)
                 if not history:
                     # 再做一次兜底（极少数情况下历史在超时边界才写入）
@@ -10247,7 +10256,9 @@ class ComfyUIDrawPlugin(Star):
            「你没用 lora / 你没找 lora」才去查——那已经废掉一轮了。
         4. 【出 N 张总耗时 ≈ N × 单张耗时（实测约 20~25 秒/张）】：一次调用是串行出图的，
            6 张约需 2~3 分钟。请确保 AstrBot 的「工具调用超时」足够大（建议直接设 300 秒，
-           可覆盖约 9 张）；否则时间到会被框架硬取消、最后几张丢失。若被中途取消也无需重试——
+           可覆盖约 9 张），并同步调大插件配置「单张等待硬上限」(draw_wait_hard_cap，默认
+           100 秒，需略小于框架值，如 290)——否则等待会在 100 秒被插件自己掐断、误报超时；
+           否则时间到会被框架硬取消、最后几张丢失。若被中途取消也无需重试——
            本轮已出的图已发给用户，重复调用只会被拦回。若插件提示「还差几张、请发消息续画」，
            照做即可（用户发新消息会开新一轮继续画）。
 
