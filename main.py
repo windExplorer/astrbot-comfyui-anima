@@ -3771,6 +3771,8 @@ class ComfyUIDrawPlugin(Star):
 
         candidates: list = []  # (组件/引用, 来源描述)
         has_reply = False  # 消息里是否出现引用(Reply)组件
+        _own_cands: list = []    # 本条消息自带的图（v7.7.35：排在引用图之后）
+        _ref_cands: list = []    # 引用消息里的图（v7.7.35：引用优先，排最前）
         for comp in comps:
             # 用 type 属性判断组件类型，不依赖 isinstance（Reply/CardImage
             # 可能因不同 AstrBot 版本导入失败为 None，但 comp.type 始终可用）。
@@ -3779,12 +3781,12 @@ class ComfyUIDrawPlugin(Star):
             t_raw = getattr(comp, "type", "")
             ct = getattr(t_raw, "value", None) or getattr(t_raw, "name", None) or str(t_raw)
             if isinstance(comp, Image) or ct in ("Image", "ComponentType.Image"):
-                candidates.append((comp, "消息内图片"))
+                _own_cands.append((comp, "消息内图片"))
             elif (CardImage is not None and isinstance(comp, CardImage)) or ct in (
                 "CardImage",
                 "ComponentType.CardImage",
             ):
-                candidates.append((comp, "卡片图片"))
+                _own_cands.append((comp, "卡片图片"))
             elif (Reply is not None and isinstance(comp, Reply)) or ct in (
                 "Reply",
                 "ComponentType.Reply",
@@ -3798,11 +3800,14 @@ class ComfyUIDrawPlugin(Star):
                 for sub in chain:
                     st = str(getattr(sub, "type", ""))
                     if isinstance(sub, Image) or st == "Image":
-                        candidates.append((sub, "引用消息内嵌图片"))
+                        _ref_cands.append((sub, "引用消息内嵌图片"))
                 # 平台 API 回退：引用只含占位符时，用 reply.id 去拉原消息图片。
                 # 显式传入找到的 Reply 组件，避免 AstrBot 再自行查找失败。
                 for ref in await _extract_quoted_images(event, reply_component=comp):
-                    candidates.append((ref, "引用消息API回退"))
+                    _ref_cands.append((ref, "引用消息API回退"))
+        # v7.7.35：引用图优先——「引用是主体、新发的是辅助」的语义（多参考图时
+        # 图1=引用图、图2=新发图）；单图工作流也因此取引用图作参考。
+        candidates = _ref_cands + _own_cands
 
         paths: list[str] = []
         seen: set = set()
@@ -6248,11 +6253,26 @@ class ComfyUIDrawPlugin(Star):
                     _init_images.append(_raw)
                 init_images = _init_images
 
+                # 参考图数量上限（img2img_max_refs，默认 3）：超出取前 N 并提示
+                _max_refs = self._img2img_max_refs()
+                if len(init_images) > _max_refs:
+                    logger.info(
+                        f"【图生图】 参考图 {len(init_images)} 张超过上限 {_max_refs}，取前 {_max_refs} 张"
+                    )
+                    try:
+                        await self._send(
+                            event, f"参考图最多 {_max_refs} 张哦～ 已取前 {_max_refs} 张。"
+                        )
+                    except Exception:
+                        pass
+                    init_images = init_images[:_max_refs]
+
                 # 多张参考图**并行**上传（原先逐张串行，网络往返叠加；并发后≈最慢一张的耗时）
                 _uploads = await asyncio.gather(
                     *(client.upload_image(_p) for _p in init_images),
                     return_exceptions=True,
                 )
+                _image_names: list[str] = []
                 for img_path, info in zip(init_images, _uploads):
                     if isinstance(info, Exception):
                         raise info  # 交给外层 except 统一给友好提示
@@ -6261,14 +6281,33 @@ class ComfyUIDrawPlugin(Star):
                     # （不是 [name, subfolder, type] 三元组——三元组是节点间连线的引用格式，
                     # 当作单个 image 输入框的值会直接导致 400 Bad Request）。
                     # 上传接口已把图片写到 type=input 目录，这里只传文件名即可。
-                    image_name = (
+                    _image_names.append(
                         info.get("name")
                         or info.get("filename")
                         or os.path.basename(img_path)
                     )
-                    workflow_builder.set_image_node(prompt, load_node, image_name)
+                # 多参考图（v7.7.35）：条件节点有 images.image_N 动态输入（如
+                # TextEncodeQwenImage21）且图数 > 1 → 按需复制 LoadImage+缩放节点
+                # 逐路注入；顺序=用户图顺序（提示词「图N」= 第 N 张）。
+                _mi = workflow_builder.find_multi_image_node(prompt)
+                if _mi and len(init_images) > 1:
+                    _ref_load_ids = workflow_builder.prepare_multi_image_refs(
+                        prompt, {"multi_image": _mi}, _image_names
+                    )
+                    if _ref_load_ids:
+                        for img_path, nid in zip(init_images, _ref_load_ids):
+                            logger.info(
+                                f"已注入参考图到节点 {nid}: {img_path}"
+                            )
+                    else:
+                        logger.warning("【图生图】 多参考图节点扩展失败，退回单图注入")
+                if not (_mi and len(init_images) > 1 and _ref_load_ids):
+                    # 单图路径（或扩节点失败）：只写第一张进 LoadImage
+                    workflow_builder.set_image_node(prompt, load_node, _image_names[0])
                     logger.info(
-                        f"已注入参考图到节点 {load_node}: {img_path} -> {image_name}"
+                        f"已注入参考图到节点 {load_node}: {init_images[0]} -> {_image_names[0]}"
+                        + (f"（共 {len(init_images)} 张，工作流仅支持单图，已取第 1 张）"
+                           if len(init_images) > 1 else "")
                     )
             except Exception as e:
                 if _llm_task is not None and not _llm_task.done():
@@ -7645,7 +7684,8 @@ class ComfyUIDrawPlugin(Star):
             (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
             "draw",
         )
-        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
+        _ref_sel, args = self._extract_ref_selector(args or "")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args)
         if not prompt.strip():
             await self._send(event,
                 "用法：/draw 一只白色水手服少女 --wf sd --lora catgirl:0.8 --w 768 --h 768 [--seed 12345]"
@@ -7654,6 +7694,11 @@ class ComfyUIDrawPlugin(Star):
         # 已读回执由 _ack_command_received 统一处理（覆盖本插件所有指令，含 /draw）
         # 若消息或引用(回复)里带了图片，则按图生图处理
         images = await self._extract_images(event)
+        # v7.7.35：--图 选择器（引用一条多图消息时只取其中某张/某几张）
+        if _ref_sel:
+            _n0 = len(images)
+            images = self._apply_ref_selector(images, _ref_sel)
+            logger.info(f"【取图】 --图 {_ref_sel}：{_n0} 张 → {len(images)} 张")
         # 记录「本会话显式指定的文生图工作流」（v5.13.6，图生图不入记忆）
         if wf_name and not images:
             self._remember_session_workflow(getattr(event, "session_id", "") or "", wf_name)
@@ -8218,8 +8263,14 @@ class ComfyUIDrawPlugin(Star):
             "img2img",
             ("图生图", "图转图"),
         )
-        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args or "")
+        _ref_sel, args = self._extract_ref_selector(args or "")
+        prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = self._parse_draw_args(args)
         images = await self._extract_images(event)
+        # v7.7.35：--图 选择器（引用一条多图消息时只取其中某张/某几张）
+        if _ref_sel:
+            _n0 = len(images)
+            images = self._apply_ref_selector(images, _ref_sel)
+            logger.info(f"【取图】 --图 {_ref_sel}：{_n0} 张 → {len(images)} 张")
         # 图生图专用兜底：引用消息的图片因平台未回填 Reply.chain、且引用解析 API
         # 不可用时，退回「用户最近发的图」优先，再退「本插件最近生成的图」。注意：此兜底
         # 仅限图生图入口，绝不进入通用 _extract_images，以免污染纯文生图指令。
@@ -10735,6 +10786,80 @@ class ComfyUIDrawPlugin(Star):
         # 兜底：取最后一个含数字的 token（型号几乎总带数字）
         toks = [t for t in s.split() if re.search(r"\d", t)]
         return (toks[-1] if toks else s)[:40]
+
+    # ---- 多参考图：图片选择器（v7.7.35）----
+    # `--图 2` / `--图 2,4` / `--图 2-4` / `--图 -1`（倒数）；别名 --图片 / --refs / --参考图
+    _REF_SELECTOR_FLAGS = ("--图", "--图片", "--refs", "--参考图")
+
+    def _extract_ref_selector(self, text: str) -> "tuple[str | None, str]":
+        """从指令文本里摘出图片选择器参数，返回 (选择器, 剩余文本)。
+
+        摘除要发生在 _parse_draw_args 之前，否则 `--图 2` 的 token 会被当成
+        工作流名/倍率。
+        """
+        toks = str(text or "").replace("\r", " ").replace("\n", " ").split()
+        sel: str | None = None
+        out: list[str] = []
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            if t.lower() in self._REF_SELECTOR_FLAGS:
+                if i + 1 < len(toks) and not toks[i + 1].startswith("--"):
+                    sel = toks[i + 1]
+                    i += 2
+                    continue
+                i += 1
+                continue
+            out.append(t)
+            i += 1
+        return sel, " ".join(out)
+
+    def _apply_ref_selector(self, images: list, selector: str | None) -> list:
+        """按选择器挑参考图：`2` 第2张 / `2,4` 第2和4张 / `2-4` 范围 / `-1` 倒数第1。
+
+        序号 1-based，对应提取顺序（引用图在前）。越界的序号忽略；全部无效或
+        未传选择器 → 原样返回。
+        """
+        if not selector or not images:
+            return images
+        n = len(images)
+        picked: list = []
+        for tok in re.split(r"[,，、\s]+", str(selector)):
+            tok = tok.strip()
+            if not tok:
+                continue
+            m = re.fullmatch(r"(-?\d+)\s*[-~]\s*(-?\d+)", tok)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                a = a if a > 0 else n + a + 1
+                b = b if b > 0 else n + b + 1
+                for k in range(min(a, b), max(a, b) + 1):
+                    if 1 <= k <= n:
+                        picked.append(images[k - 1])
+                continue
+            try:
+                k = int(tok)
+            except ValueError:
+                continue
+            if k < 0:
+                k = n + k + 1
+            if 1 <= k <= n:
+                picked.append(images[k - 1])
+        seen: set = set()
+        out = []
+        for p_ in picked:
+            if p_ not in seen:
+                seen.add(p_)
+                out.append(p_)
+        return out or images
+
+    def _img2img_max_refs(self) -> int:
+        """单次图生图参考图上限（img2img_max_refs，默认 3，夹紧 1~8）。"""
+        try:
+            v = int(self._cfg("img2img_max_refs", 3))
+        except (TypeError, ValueError):
+            v = 3
+        return max(1, min(8, v))
 
     @filter.command("绘图状态", alias={"drawstatus", "画图状态"})
     async def cmd_draw_status(self, event: AstrMessageEvent):

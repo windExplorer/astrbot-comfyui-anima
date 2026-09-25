@@ -989,3 +989,127 @@ def apply_loras(
 
     _report(f"[LoRA] 本次最终启用: {enabled_names or '无'}")
     return enabled_names
+
+
+# --------------------------------------------------------------------------- #
+# 多参考图图生图（v7.7.35，如 TextEncodeQwenImage21 的 images.image_N 动态输入）
+# --------------------------------------------------------------------------- #
+def _is_load_image_node(node: dict) -> bool:
+    ct = str((node or {}).get("class_type") or "")
+    return any(ct == h or ct.startswith(h) for h in IMAGE_LOADER_HINTS)
+
+
+def _ref_chain_to_loader(prompt: dict, link) -> list[str]:
+    """从一条连线引用回溯到 LoadImage 的节点链（返回顺序：源在前、LoadImage 在后）。"""
+    chain: list[str] = []
+    cur = link
+    seen: set = set()
+    while isinstance(cur, list) and len(cur) >= 2 and str(cur[0]) in prompt:
+        nid = str(cur[0])
+        if nid in seen:
+            break
+        seen.add(nid)
+        chain.append(nid)
+        node = prompt[nid]
+        if _is_load_image_node(node):
+            return chain
+        nxt = None
+        for v in (node.get("inputs") or {}).values():
+            if isinstance(v, list) and len(v) >= 2 and str(v[0]) in prompt:
+                nxt = v
+                break
+        if nxt is None:
+            break
+        cur = nxt
+    return chain
+
+
+def find_multi_image_node(prompt: dict) -> "dict | None":
+    """找条件节点上的 `images.image_N` 动态输入（多参考图，如 TextEncodeQwenImage21）。
+
+    返回 {"node": 节点ID, "count": 现有路数, "inputs": [按N排序的输入名]}；没有返回 None。
+    """
+    best: dict | None = None
+    for nid, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        ks = [k for k in (node.get("inputs") or {}) if str(k).startswith("images.image")]
+        if not ks:
+            continue
+        ks.sort(key=lambda k: int(str(k).rsplit("_", 1)[-1])
+                if str(k).rsplit("_", 1)[-1].isdigit() else 0)
+        if best is None or len(ks) > best["count"]:
+            best = {"node": str(nid), "count": len(ks), "inputs": ks}
+    return best
+
+
+def prepare_multi_image_refs(
+    prompt: dict, roles: dict, image_names: list[str]
+) -> "list[str | None] | None":
+    """多参考图图生图（v7.7.35）：把 M 张参考图接进条件节点的 `images.image_N` 动态输入。
+
+    工作流里已有 N 路输入（`images.image_1..N`，roles["multi_image"] 记录了节点与数量）：
+      · 前 min(M, N) 路：回溯各路到自己的 LoadImage，写入上传后的文件名；
+      · M > N：**复制第一路的节点链**（LoadImage → 缩放/预处理 …，缩放参数原样拷贝）
+        作为新路，依次接线 `images.image_(N+1)`…；
+      · image_names 与路一一对应（调用方保证顺序=用户图顺序，提示词「图N」即第 N 路）。
+
+    返回与 image_names 对齐的 LoadImage 节点 ID 列表（调用方已无需再写文件名——
+    本函数内已写好）；工作流没有多图节点时返回 None（调用方走单图旧路径）。
+    """
+    if not isinstance(prompt, dict) or not prompt or not image_names:
+        return None
+    multi = (roles or {}).get("multi_image") or {}
+    tgt = str(multi.get("node") or "")
+    if not tgt or tgt not in prompt:
+        return None
+    tgt_node = prompt[tgt]
+    tgt_inputs = tgt_node.setdefault("inputs", {})
+
+    def _img_keys() -> list[str]:
+        ks = [k for k in tgt_inputs if str(k).startswith("images.image")]
+        ks.sort(key=lambda k: int(str(k).rsplit("_", 1)[-1])
+                if str(k).rsplit("_", 1)[-1].isdigit() else 0)
+        return ks
+
+    keys = _img_keys()
+    if not keys:
+        return None
+
+    first_link = tgt_inputs.get(keys[0])
+    chain = _ref_chain_to_loader(prompt, first_link)
+    if not chain or not _is_load_image_node(prompt[chain[-1]]):
+        return None
+    load1 = chain[-1]
+
+    load_ids: "list[str | None]" = []
+    for i, name in enumerate(image_names):
+        if i < len(keys):
+            # 已有的一路：回溯到该路自己的 LoadImage 写文件名
+            ch = _ref_chain_to_loader(prompt, tgt_inputs.get(keys[i]))
+            if ch and _is_load_image_node(prompt[ch[-1]]):
+                lid = ch[-1]
+            else:
+                lid = load1  # 兜底（该路回溯失败时沿用第一路的 LoadImage）
+            set_image_node(prompt, lid, name)
+            load_ids.append(lid)
+        else:
+            # 扩展新路：复制第一路链（LoadImage → 处理节点 …）
+            copies: dict[str, str] = {}
+            new_load: str | None = None
+            for nid in reversed(chain):        # LoadImage 在前 → 源在后
+                src = prompt[nid]
+                new_id = _next_free_id(prompt)
+                new_node = json.loads(json.dumps(src))
+                for k, v in (new_node.get("inputs") or {}).items():
+                    if isinstance(v, list) and len(v) >= 2 and str(v[0]) in chain:
+                        v[0] = copies[str(v[0])]
+                prompt[new_id] = new_node
+                copies[str(nid)] = new_id
+                if _is_load_image_node(src):
+                    set_image_node(prompt, new_id, name)
+                    new_load = new_id
+            # 新路接到条件节点（chain[0] 是 image_1 的直接源，其副本同构）
+            tgt_inputs[f"images.image_{i + 1}"] = [copies[chain[0]], 0]
+            load_ids.append(new_load)
+    return load_ids

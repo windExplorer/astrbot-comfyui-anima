@@ -757,6 +757,25 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     # 清理显存节点清单
     roles["cleanup_nodes"] = [nid for nid, n in nodes.items() if _is_cleanup(n)]
 
+    # ---- 多参考图图生图标识（v7.7.35）----
+    # 如 TextEncodeQwenImage21 的 `images.image_N` 动态输入：一个输入=一路参考图，
+    # 提示词里的「图N」即对应第 N 路。kind 不变（仍 img2img），仅加标识供
+    # 多图注入（workflow_builder.prepare_multi_image_refs）与 WebUI「多参图生图」标签用。
+    for nid, n in nodes.items():
+        _ins = n.get("inputs") or {}
+        _img_keys = sorted(
+            (k for k in _ins if str(k).startswith("images.image")),
+            key=lambda k: int(str(k).rsplit("_", 1)[-1]) if str(k).rsplit("_", 1)[-1].isdigit() else 0,
+        )
+        if _img_keys:
+            roles["multi_image"] = {
+                "node": nid,
+                "class_type": n.get("class_type") or "",
+                "count": len(_img_keys),
+                "inputs": _img_keys,
+            }
+            break
+
     # ---- 采样器默认参数 ----
     steps = cfg = denoise = None
     s_in = s_inputs

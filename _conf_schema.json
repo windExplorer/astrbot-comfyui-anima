@@ -1211,6 +1211,13 @@
     "hint": "开启后：只有前面有生图任务（排队中）才发送「前面还有 N 个」提示；前面没有排队时不发提示（静默等待出图）。关闭后则保持原行为：无排队时也发「稍等，马上来」。需 return_queue_position 开启才生效。",
     "default": true
   },
+  "img2img_max_refs": {
+    "type": "int",
+    "description": "图生图参考图上限",
+    "hint": "单次图生图最多取几张参考图（多参图生图工作流如 Qwen Image 2.1 Edit 按顺序对应 image_1~N，提示词里的「图N」即第 N 张）。超出上限取前 N 张并提示。1~8。",
+    "default": 3,
+    "slider": {"min": 1, "max": 8, "step": 1}
+  },
   "draw_ack_enabled": {
     "type": "bool",
     "description": "指令已读回执",

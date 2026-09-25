@@ -39,6 +39,9 @@
             </div>
             <div class="card-meta">
               <n-tag size="tiny" :bordered="false">{{ typeLabel(w.roles?.kind) }}</n-tag>
+              <n-tag v-if="w.roles?.multi_image" size="tiny" type="success" :bordered="false">
+                多参图生图（{{ w.roles.multi_image.count }} 路）
+              </n-tag>
               <n-tag size="tiny" type="info" :bordered="false">底模：{{ w.basemodel_name || "未关联" }}</n-tag>
               <n-tag size="tiny" :bordered="false">{{ w.roles?.model_file || w.roles?.model_class || "模型未识别" }}</n-tag>
               <n-tag v-if="(w.roles?.upscale)" size="tiny" type="warning" :bordered="false">内置放大链</n-tag>

@@ -1320,7 +1320,11 @@ function buildCover(w: any): { fname: string; title: string; fields: ItemViewerF
   const size = (w.default_width && w.default_height)
     ? `${w.default_width} × ${w.default_height}` : "—";
   const fields: ItemViewerField[] = isNew ? [
-    { key: "类型", value: wfIsImg2Img(w) ? "图生图" : "文生图" },
+    {
+      key: "类型",
+      value: (wfIsImg2Img(w) ? "图生图" : "文生图")
+        + (baseOf(w)?.roles?.multi_image ? "（多参）" : ""),
+    },
     { key: "基础工作流", value: base?.name || `#${w.base_id}` },
     { key: "底模", value: base?.basemodel_name || "未关联底模" },
     { key: "服务器", value: serverLabel(w) },
