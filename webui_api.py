@@ -1500,10 +1500,32 @@ class WebUIApi:
             wf_id = body.get("id")
             if not wf_id:
                 return error_response("缺少 id")
-            roles, err = self._workflow_store().reparse(int(wf_id))
+            store = self._workflow_store()
+            roles, err = store.reparse(int(wf_id))
             if err and roles is None:
                 return error_response(err)
-            return json_response({"roles": roles, "msg": err or "重解析完成"})
+            # v7.7.3：重解析成功后，若这条记录还没关联底模，顺手按「底模匹配关键字」补一次
+            # 自动关联——存量记录是在修复主模回溯（ModelSamplingAuraFlow 被当成主模）之前
+            # 入库的，model_file 为空、basemodel_id 也基本是空的，重解析正好一次补齐。
+            _bm_matched = None
+            try:
+                _rec = store.get(int(wf_id)) or {}
+                if not int(_rec.get("basemodel_id") or 0):
+                    _bm = self._basemodel_store().match_model(
+                        (roles or {}).get("model_file") or "",
+                        (roles or {}).get("model_class") or "",
+                    )
+                    if _bm:
+                        store.update_meta(int(wf_id), {"basemodel_id": _bm["id"]})
+                        _bm_matched = _bm.get("name")
+            except Exception as _e:
+                logger.warning(f"【基础工作流】 重解析后底模自动关联失败（忽略）: {_e}")
+            return json_response({
+                "roles": roles,
+                "basemodel": _bm_matched,
+                "msg": (err or "重解析完成")
+                       + (f"（已自动关联底模 {_bm_matched}）" if _bm_matched else ""),
+            })
         except Exception as e:
             return error_response(f"重解析失败: {e}")
 
@@ -1942,7 +1964,14 @@ class WebUIApi:
             return error_response(f"抓取失败: {e}")
 
     async def baseworkflows_meta(self):
-        """更新基础工作流元数据（名称/C站链接/描述/封面）。body: {id, ...fields}。"""
+        """更新基础工作流元数据（名称/C站链接/描述/封面/底模关联）。
+
+        body: {id, ...fields}。
+        v7.7.2 修复：这里原先只转发 name/civitai_url/image/description，
+        前端传上来的 `basemodel_id`（编辑弹窗里选的「底模」）**在中转层就被丢掉了**，
+        存储层根本没收到 → 保存后列表仍显示「未关联」。白名单必须与
+        `WorkflowStore.update_meta` 的可更新字段保持一致（含 basemodel_id）。
+        """
         try:
             body = await request.json(default={}) or {}
             wf_id = body.get("id")
@@ -1950,8 +1979,9 @@ class WebUIApi:
                 return error_response("缺少 id")
             err = self._workflow_store().update_meta(
                 int(wf_id),
-                {k: body.get(k) for k in ("name", "civitai_url", "image", "description")
-                 if k in body},
+                {k: body.get(k) for k in (
+                    "name", "civitai_url", "image", "description", "basemodel_id",
+                ) if k in body},
             )
             if err:
                 return error_response(err)

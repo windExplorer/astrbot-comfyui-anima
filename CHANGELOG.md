@@ -2,6 +2,31 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.2（修复：基础工作流「底模」选了保存却仍显示未关联）
+
+**现象**：在「基础工作流」页的编辑弹窗里选好底模 → 保存（提示「已保存」）→ 列表卡片仍然
+显示「底模：未关联」，重进弹窗也是未选中的状态。
+
+**根因**：问题不在存储层，而在**中转层的字段白名单**：
+
+- `WorkflowStore.update_meta()` 一直支持 `basemodel_id`（白名单里有）；
+- 前端 `saveEdit()` 也确实把 `basemodel_id` 发了上来；
+- 但 `webui_api.baseworkflows_meta` 这个 handler 只转发了
+  `name / civitai_url / image / description` 四个字段 —— `basemodel_id` 在 handler 里就被
+  过滤掉了，存储层根本没收到。于是「保存成功」但底模没写进库；
+- 列表卡片上的「底模：xxx」是后端按 `basemodel_id` join 底模库得到的，id 没写进去，
+  自然永远显示「未关联」（上传时的自动关联之所以有效，是因为它直接调存储层，
+  绕开了这个 handler）。
+
+**修法**：handler 白名单补上 `basemodel_id`，并在 docstring 里写明「必须与存储层可更新
+字段保持一致」，避免下次加字段又在中转层被吃掉。
+
+验证：新增 `tests/test_baseworkflow_meta.py` 2 组 ——
+① 存储层：五个元数据字段都能写/读，底模能再改回「未关联」，只传未知字段会明确报错
+（不是静默成功）；② 契约：用 AST 读出 handler 的白名单元组，与前端 `BaseWorkflowsView.vue`
+实际发送的 payload 比对，漏字段即失败（正是本次事故的形态），并校验列表接口回填
+`basemodel_name`。全套回归通过。
+
 ## v7.7.1（新功能：图片放大——独立纯放大工作流 + 「更多功能」页）
 
 **需求**：把「纯放大 / 超分工作流」（如 TE-Speed VOSR2）做成独立功能——用户带图 + `/图片放大`
