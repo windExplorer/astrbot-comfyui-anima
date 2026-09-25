@@ -2,6 +2,31 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.4（修复：负向共用正向编码的工作流会覆盖正向提示词）
+
+**现象**（在那份 z-image-turbo 工作流上连带发现）：它的负向是
+`ConditioningZeroOut(正向 CLIPTextEncode)` —— 这种工作流**没有独立的负向输入**。
+解析器会把负向沿链路上溯到**正向那个同一个文本节点与字段**（该图是节点 8 / `text`）。
+于是一旦有负向提示词（用户写的 / 工作流里配的固定负向 / LLM 给的），出图时按
+「先写正向、再写负向」的顺序注入 → **负向把刚写好的正向覆盖掉**，画面完全不理会用户描述，
+而且日志里看不出任何异常（两个写入都成功）。
+
+**修法**：
+
+- 解析器：负向与正向落在**同一写入点**（节点 + 字段都相同）时，给
+  `roles["negative"]["shared_with_positive"] = True` 打标（留档、便于前端解释）；
+- 出图链路：新增 `_neg_injection_conflicts(wf)` 判定，命中即**跳过负向注入**并打日志
+  `【提示词】 该工作流没有独立的负向输入（负向与正向共用同一文本输入）→ 已跳过负向注入，避免覆盖正向提示词`；
+  节点或字段不同时（如 Qwen 一体编码器的 `prompt` / `negative_prompt`）照旧注入，行为不变。
+
+验证：`test_workflow_v7` 扩到 **14 组**（新增：ConditioningZeroOut 写法必须打标 / 独立负向不
+打标 / 出图侧判定函数的 5 种输入组合）；在真实工作流 `logs/zit-int8-ori (1).json` 上核对
+`negative = {node: 8, field: text, shared_with_positive: True}`。全套回归通过。
+
+顺带记录（v7.7.3 已在同一份文件上验证）：它的模型识别已修正为
+`UNETLoader(z_image_turbo_int8_convrot.safetensors)`，并**成功关联到底模 z-image-turbo**
+（关键字 `z-image / zimage / z_image` 命中文件名里的 `z_image`）。
+
 ## v7.7.3（修复：模型被识别成 ModelSamplingAuraFlow / 底模关联不上）
 
 **现象**：基础工作流解析出来的「模型」是 `ModelSamplingAuraFlow`（采样偏移节点），不是真正的

@@ -5551,6 +5551,22 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 基础工作流（v7.0.0）：克隆底图 + 解析注记注水 + 覆盖应用
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _neg_injection_conflicts(wf: dict) -> bool:
+        """负向写点与正向**完全相同**？是则本次必须跳过负向注入（v7.7.4）。
+
+        典型来源：工作流拿 `ConditioningZeroOut(正向编码)` 当负向（Z-Image / Qwen 系常见写法）
+        —— 这种工作流**没有独立的负向输入**，解析器会沿链路把负向上溯到同一个文本节点与字段。
+        此时若真把负向写进去，就会把刚写好的**正向提示词覆盖掉**（出图完全不理会用户描述）。
+        """
+        _pn = str((wf or {}).get("positive_node") or "").strip()
+        _nn = str((wf or {}).get("negative_node") or "").strip()
+        if not _pn or not _nn or _pn != _nn:
+            return False
+        _pf = (str((wf or {}).get("positive_field") or "").strip() or "text").lower()
+        _nf = (str((wf or {}).get("negative_field") or "").strip() or "text").lower()
+        return _pf == _nf
+
     def _load_from_base(self, wf: dict) -> tuple[dict, dict]:
         """按 base_id 从基础工作流库取底图（json.loads 即全新副本）。
 
@@ -6240,11 +6256,19 @@ class ComfyUIDrawPlugin(Star):
                 (wf.get("positive_field") or "").strip() or "text", positive
             )
         if negative:
-            logger.info(f"负向提示词: {negative}")
-            workflow_builder.set_text_node(
-                prompt, wf.get("negative_node"),
-                (wf.get("negative_field") or "").strip() or "text", negative
-            )
+            # v7.7.4：负向与正向落在同一写入点时**不能写**——工作流拿 ConditioningZeroOut(正向)
+            # 当负向（Z-Image / Qwen 常见写法），写进去就是把正向提示词覆盖掉。
+            if self._neg_injection_conflicts(wf):
+                logger.info(
+                    "【提示词】 该工作流没有独立的负向输入（负向与正向共用同一文本输入）"
+                    "→ 已跳过负向注入，避免覆盖正向提示词"
+                )
+            else:
+                logger.info(f"负向提示词: {negative}")
+                workflow_builder.set_text_node(
+                    prompt, wf.get("negative_node"),
+                    (wf.get("negative_field") or "").strip() or "text", negative
+                )
 
         # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入
         # 尺寸决策（v7.0.18 四层顺序，见 CHANGELOG）：

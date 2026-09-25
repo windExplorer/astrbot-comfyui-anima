@@ -361,6 +361,56 @@ def test_sampler_defaults_extract():
     print("== 13. 采样器默认参数提取（含 sampler_name/scheduler） OK")
 
 
+def _load_main_static(name: str):
+    """从 main.py 里摘一个（静态）方法出来单独执行——main.py 依赖 astrbot，本地装不了。"""
+    import ast
+    import textwrap
+
+    src = Path(REPO, "main.py").read_text(encoding="utf-8-sig")   # main.py 带 BOM
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    seg = ast.get_source_segment(src, fn) or ""
+    body = "\n".join(ln for ln in seg.splitlines() if not ln.strip().startswith("@"))
+    ns: dict = {}
+    exec(textwrap.dedent(body), ns)  # noqa: S102
+    return ns[name]
+
+
+def test_negative_shared_with_positive():
+    """负向与正向共用写点（ConditioningZeroOut 写法）：解析要标记，出图要跳过负向（v7.7.4）。
+
+    Z-Image / Qwen 系工作流常用 `ConditioningZeroOut(正向编码)` 当负向 —— 这种工作流
+    **没有独立的负向输入**。解析器会把负向上溯到同一个文本节点与字段；出图时若真把负向
+    写进去，就会把刚写好的正向提示词覆盖掉（画面完全不理会用户描述，很难排查）。
+    """
+    wf = json.loads(json.dumps(WF_STD))
+    wf["14"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["3", 0]}}
+    wf["6"]["inputs"]["negative"] = ["14", 0]
+    roles, errs = parse_workflow(wf)
+    assert not errs, errs
+    assert roles["positive"]["node"] == "3" and roles["negative"]["node"] == "3"
+    assert roles["negative"]["field"] == roles["positive"]["field"] == "text"
+    assert roles["negative"].get("shared_with_positive") is True, roles["negative"]
+
+    # 正常的独立负向编码（WF_STD 原样）不该被标记
+    roles2, _ = parse_workflow(WF_STD)
+    assert not roles2["negative"].get("shared_with_positive"), roles2["negative"]
+
+    # 出图侧判定（main.py 的静态方法）：与解析结果一致，且只认「节点+字段都相同」
+    fn = _load_main_static("_neg_injection_conflicts")
+    shared = {
+        "positive_node": roles["positive"]["node"], "positive_field": roles["positive"]["field"],
+        "negative_node": roles["negative"]["node"], "negative_field": roles["negative"]["field"],
+    }
+    assert fn(shared) is True, "同一写入点必须判为冲突（否则会覆盖正向）"
+    assert fn({**shared, "negative_field": "negative_prompt"}) is False   # 字段不同 → 可注入
+    assert fn({**shared, "negative_node": "4"}) is False                  # 节点不同 → 可注入
+    assert fn({"positive_node": "3", "positive_field": "text"}) is False  # 没配负向 → 不管
+    assert fn({}) is False
+    print("== 14. 负向/正向共用写点（ConditioningZeroOut）标记 + 出图跳过 OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -375,4 +425,5 @@ if __name__ == "__main__":
     test_bypass_alpha_chain()
     test_match_by_filename()
     test_sampler_defaults_extract()
-    print("\n基础工作流体系测试全部通过（13 组）")
+    test_negative_shared_with_positive()
+    print("\n基础工作流体系测试全部通过（14 组）")

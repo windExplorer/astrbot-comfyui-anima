@@ -448,6 +448,14 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
         else:
             nnode = nodes[found[0]]
             roles["negative"] = {"node": found[0], "field": found[1], "class_type": nnode.get("class_type")}
+            # v7.7.4：负向与正向落在**同一个写入点**时标记出来。典型来源是工作流拿
+            # `ConditioningZeroOut(正向编码)` 当负向（Z-Image / Qwen 系常见写法）——
+            # 这种工作流**没有独立的负向输入**，出图时必须跳过负向注入，
+            # 否则会把刚写好的正向提示词覆盖掉（画面完全不理会用户描述）。
+            if (roles.get("positive")
+                    and roles["positive"].get("node") == found[0]
+                    and str(roles["positive"].get("field") or "") == str(found[1])):
+                roles["negative"]["shared_with_positive"] = True
 
     # ---- 宽高节点（latent_image 上游，最好为 EmptyLatentImage）----
     lat_link = _link(s_inputs.get("latent_image"))
