@@ -395,6 +395,11 @@
                 <n-switch v-model:value="editForm.enabled" />
                 <span class="form-hint">关闭后不可使用：显式指定会提示「已停用」，自动选择默认工作流也会跳过它</span>
               </n-form-item>
+              <n-form-item label="参考图上限（多参图生图）">
+                <n-input-number v-model:value="editForm.max_refs" :min="0" :max="8" style="width:100%"
+                                placeholder="0 = 沿用全局（默认 3）" />
+                <span class="form-hint">多参图生图工作流单次最多取几张参考图（按顺序对应 image_1~N，提示词「图N」即第 N 张）。0 或留空 = 沿用全局「出图行为 → 图生图参考图上限」。单图工作流恒为 1。</span>
+              </n-form-item>
               <n-form-item label="封面图文件名"><n-input v-model:value="editForm.image" placeholder="可上传/抓取；沿用基础工作流封面亦可自行更换" /></n-form-item>
             </n-tab-pane>
 
