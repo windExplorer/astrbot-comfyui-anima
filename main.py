@@ -9168,6 +9168,51 @@ class ComfyUIDrawPlugin(Star):
         return None
 
     @staticmethod
+    def _apply_matting_pixel_target(prompt: dict, roles: dict, w: int, h: int,
+                                    no_upscale: bool = True) -> tuple[float | None, str]:
+        """改写工作流「预处理缩放」的目标像素，支持「只缩不放」（v7.7.14）。
+
+        `LoadImage → ImageScaleToTotalPixels(megapixels=1.25) → 编码` 这类节点按**总像素**
+        归一化，不分大小一律缩放——小图会被插值放大到目标像素（输出比输入大、细节并不会
+        变多）。这里按输入图尺寸动态改写它的目标：
+
+          · `no_upscale=True`（默认）：目标 = min(输入像素, 工作流原目标)
+            —— 小图保持原尺寸（只按 32 对齐微调），大图仍按原目标缩小（显存保护不变）；
+          · `no_upscale=False`：完全不碰，照工作流原值跑。
+
+        返回 (实际写入的目标 MP, 说明文案)；没有该节点 / 无需改写（或没写成）返回 (None, "")。
+
+        注意：**只在确实需要「防止放大」时才写**——输入本来就比工作流目标大时，工作流自己
+        会缩小，改写没有意义（也就不碰节点，避免把 INT 字段写成浮点这类无谓改动）。
+        """
+        ps = (roles or {}).get("pre_scale") or {}
+        node, field = str(ps.get("node") or ""), str(ps.get("field") or "")
+        if not node or not field:
+            return None, ""
+        if not no_upscale or not (w and h):
+            return None, ""            # 关掉 / 拿不到尺寸 → 完全照工作流原值跑
+        try:
+            base_mp = float(ps.get("default_mp") or 0)
+        except (TypeError, ValueError):
+            base_mp = 0.0
+        in_mp = (int(w) * int(h)) / 1_000_000
+        target = min(in_mp, base_mp) if base_mp > 0 else in_mp
+        if target <= 0:
+            return None, ""
+        if base_mp > 0 and target >= base_mp - 1e-9:
+            return None, ""            # 输入 ≥ 工作流目标：工作流自己会缩，无需改写
+        # 字段单位回归：megapixels 就是 MP，其余（max_total_pixels 等）是绝对像素（整数）
+        _unit = str(ps.get("unit") or "mp")
+        val = int(round(target * 1_000_000)) if _unit == "px" else round(float(target), 4)
+        try:
+            if not workflow_builder.set_number_node(prompt, node, field, val):
+                return None, ""
+        except Exception as e:
+            logger.warning(f"【抠图】 写入预处理目标像素失败（沿用工作流原值）: {e}")
+            return None, ""
+        return target, f"不放大：输入 {in_mp:.2f}MP → 目标 {target:.2f}MP（工作流原目标 {base_mp:.2f}MP）"
+
+    @staticmethod
     def _apply_matting_prompt(prompt: dict, roles: dict, text: str) -> bool:
         """把提示词写进工作流的正向文本节点；写不到返回 False（沿用工作流原值）。"""
         pos = (roles or {}).get("positive") or {}
@@ -9310,6 +9355,12 @@ class ComfyUIDrawPlugin(Star):
                         in_w, in_h = _im.width, _im.height
                 except Exception:
                     pass
+            # 预处理缩放（v7.7.14）：默认「只缩不放」——小图保持原尺寸，别被插值放大
+            _target_mp, _px_note = self._apply_matting_pixel_target(
+                prompt, roles, in_w, in_h, bool(mcfg.get("no_upscale", True))
+            )
+            if _px_note:
+                logger.info(f"【抠图】 预处理缩放：{_px_note}")
             # 7) 提交 + 等待（本功能自带超时，不套出图那套「单张等待硬上限」）
             try:
                 _to_cfg = int(mcfg.get("timeout") or 300)
@@ -9350,6 +9401,7 @@ class ComfyUIDrawPlugin(Star):
                     "params": self._card_chips([
                         ("输入", f"{in_w}×{in_h}" if (in_w and in_h) else None),
                         ("步数", _steps_now),
+                        ("预处理", (f"{_target_mp:.2f}MP（未放大）" if _px_note else None)),
                         ("工作流", _wfname),
                         ("提示词", (_text_now[:28] + "…") if len(_text_now) > 28 else _text_now),
                     ]),
@@ -9476,7 +9528,8 @@ class ComfyUIDrawPlugin(Star):
                     "tiles": _tiles[:4],
                     "sections": [{
                         "label": "抠图",
-                        "rows": [(_wfname, (f"{_steps_now}步 · " if _steps_now else "") + f"{_cost:.1f}s", "ok")],
+                        "rows": [(_wfname, (f"{_steps_now}步 · " if _steps_now else "") + f"{_cost:.1f}s", "ok")]
+                                + ([("预处理缩放", f"{_target_mp:.2f}MP（未放大）", "")] if _px_note else []),
                     }] + ([{
                         "label": "提示词",
                         "rows": [(_text_now[:60], "")],

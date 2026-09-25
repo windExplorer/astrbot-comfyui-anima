@@ -857,6 +857,12 @@
         "hint": "告诉模型要做什么，例如 Remove the background, and output a PNG image（去背景）。默认填工作流里的原提示词；**留空 = 沿用工作流原值**。",
         "default": ""
       },
+      "no_upscale": {
+        "type": "bool",
+        "description": "不放大（小图保持原尺寸）",
+        "hint": "工作流里那步「缩放图像（像素）」（如 `ImageScaleToTotalPixels`，`megapixels=1.25`）是按**总像素**归一化的——**小图也会被插值放大**到目标像素（输出比输入大，细节并不会变多）。开启后：目标像素 = min(输入图的像素, 工作流原目标)，即**小图保持原尺寸**（只按边长对齐微调，最多差几十像素）、大图仍按原目标缩小（显存保护不变）。关掉 = 完全照工作流原值跑。工作流里没有这类节点时本项自动无效。",
+        "default": true
+      },
       "timeout": {
         "type": "int",
         "description": "等待超时（秒）",

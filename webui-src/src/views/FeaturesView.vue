@@ -127,6 +127,19 @@
             </div>
           </n-form-item>
 
+          <n-form-item :label="mMeta('no_upscale', '不放大（小图保持原尺寸）').label">
+            <n-space align="center" :size="10">
+              <n-switch v-model:value="matting.no_upscale" :disabled="!mattingPreScale" />
+              <span v-if="mattingPreScale" class="hint" style="margin: 0">
+                工作流的预处理缩放：{{ mattingPreScaleText }}
+              </span>
+              <span v-else class="hint" style="margin: 0">
+                工作流里没有「按总像素缩放」的节点，本项无效（照工作流原值跑）
+              </span>
+            </n-space>
+            <div class="hint">{{ mMeta("no_upscale", "").hint }}</div>
+          </n-form-item>
+
           <n-grid cols="1 640:2" :x-gap="16">
             <n-form-item-gi :label="mMeta('steps', '采样步数').label">
               <n-input-number
@@ -411,6 +424,7 @@ const MATTING_DEFAULTS: Record<string, any> = {
   base_id: "",
   steps: 0,
   prompt: "",
+  no_upscale: true,
   timeout: 300,
 };
 const matting = reactive({ ...MATTING_DEFAULTS });
@@ -444,6 +458,15 @@ const mattingBaseSteps = computed<number | null>(() => {
 const mattingBasePrompt = computed<string>(() =>
   String(mattingBase.value?.roles?.positive?.default_text || "")
 );
+// 工作流里的「预处理缩放」节点（如 ImageScaleToTotalPixels，按总像素归一化）
+const mattingPreScale = computed<any>(() => mattingBase.value?.roles?.pre_scale || null);
+const mattingPreScaleText = computed<string>(() => {
+  const ps = mattingPreScale.value;
+  if (!ps) return "";
+  const mp = Number(ps.default_mp || 0);
+  const steps = ps.steps_default ? `，边长对齐 ${ps.steps_default}` : "";
+  return `${ps.class_type || "缩放节点"} · ${mp > 0 ? `${mp.toFixed(2)}MP` : "—"}${steps}`;
+});
 function fillFromMattingBase() {
   if (!mattingBase.value) return;
   if (mattingBaseSteps.value != null) matting.steps = mattingBaseSteps.value;
@@ -466,6 +489,7 @@ async function saveMatting() {
     payload.steps = Number(payload.steps) > 0 ? Number(payload.steps) : 0;
     payload.timeout = Number(payload.timeout) > 0 ? Number(payload.timeout) : 300;
     payload.prompt = String(payload.prompt || "");
+    payload.no_upscale = !!payload.no_upscale;
     await apiPost("config", { config: { matting: payload } });
     mattingDirty.value = false;
     msgType.value = "success";

@@ -8,7 +8,10 @@
    （库里没有 / 绑到放大类 / 绑到没有图输入的工作流）；
 3) 注入：步数写进采样器、提示词写进正向节点；**留空就不写**（= 沿用工作流原值）；
 4) 真实入库链路：上传 → parse_ok → default_text 可用于预填 → 挑中 → 注入，
-   并确认模型 / CLIP / VAE 等资源节点没被动过。
+   并确认模型 / CLIP / VAE 等资源节点没被动过；
+5) 预处理缩放 + 「不放大」（v7.7.14）：识别 `ImageScaleToTotalPixels`（按总像素归一化，
+   小图会被插值放大），并验证「只缩不放」的改写规则（小图保持原尺寸、输入≥目标时不碰节点、
+   关掉不碰、px 单位换算回写为整数）。
 
 main.py 里的方法依赖 astrbot 运行时（本地装不了），沿用 tests/test_size_helpers.py 的
 做法：用 ast 把源码摘出来单独执行。
@@ -59,13 +62,14 @@ def _load_helpers(want: set[str]) -> dict:
 NAMES = {
     "_matting_cfg", "_matting_base_rows", "_resolve_matting_base",
     "_load_matting_base", "_apply_matting_steps", "_apply_matting_prompt",
-    "_strip_command",
+    "_apply_matting_pixel_target", "_strip_command",
 }
 NS = _load_helpers(NAMES)
 _strip_command = NS["_strip_command"]
 _load_matting_base = NS["_load_matting_base"]
 _apply_matting_steps = NS["_apply_matting_steps"]
 _apply_matting_prompt = NS["_apply_matting_prompt"]
+_apply_matting_pixel_target = NS["_apply_matting_pixel_target"]
 _resolve_matting_base = NS["_resolve_matting_base"]
 
 
@@ -138,6 +142,14 @@ MATTING = {
                            "vae": ["478:454", 0]}},
 }
 PROMPT_TEXT = "Remove the background, and output a PNG image"
+
+# ── 与 logs/qwen2.1抠图-预处理.json 等价（多了一步「缩放图像（像素）」）──────────
+# ImageScaleToTotalPixels 按**总像素**归一化：megapixels=1.25 → 小图会被插值放大。
+MATTING_SCALE = json.loads(json.dumps(MATTING))
+MATTING_SCALE["484"] = {"class_type": "ImageScaleToTotalPixels",
+                        "inputs": {"upscale_method": "lanczos", "megapixels": 1.25,
+                                   "resolution_steps": 32, "image": ["477", 0]}}
+MATTING_SCALE["478:474"]["inputs"]["images.image_1"] = ["484", 0]
 
 
 def test_parse_matting_workflow():
@@ -305,6 +317,64 @@ def test_store_and_pick():
     print("== 4. 真实入库 + 挑选 + 注入（step/prompt/图；资源节点未被动过） OK")
 
 
+def test_pre_scale_no_upscale():
+    """预处理缩放 + 「不放大」（v7.7.14）：小图保持原尺寸，大图照原目标缩小。"""
+    roles, errors = wp.parse_workflow(MATTING_SCALE)
+    assert not errors, errors
+    # 注记：顺流找到的预处理缩放节点（带单位与换算后的 MP）
+    ps = roles["pre_scale"]
+    assert ps["node"] == "484" and ps["field"] == "megapixels", ps
+    assert ps["class_type"] == "ImageScaleToTotalPixels"
+    assert ps["unit"] == "mp" and ps["default_mp"] == 1.25
+    assert ps["steps_field"] == "resolution_steps" and ps["steps_default"] == 32
+    # 没有这类节点的工作流不该有这个注记
+    r2, _ = wp.parse_workflow(MATTING)
+    assert "pre_scale" not in r2, r2
+
+    # ① 小图 + 不放大 → 目标 ≈ 输入像素（不再拉到 1.25MP）
+    p = json.loads(json.dumps(MATTING_SCALE))
+    mp, note = _apply_matting_pixel_target(p, roles, 512, 512, True)
+    assert abs(mp - 0.262144) < 1e-6, (mp, note)
+    assert "不放大" in note and "0.26MP" in note, note
+    assert p["484"]["inputs"]["megapixels"] == round(0.262144, 4), p["484"]["inputs"]
+    # ② 小图但略小于目标（800×1200 = 0.96MP）→ 写 input（不放大）
+    p = json.loads(json.dumps(MATTING_SCALE))
+    assert abs(_apply_matting_pixel_target(p, roles, 800, 1200, True)[0] - 0.96) < 1e-6
+    assert p["484"]["inputs"]["megapixels"] == 0.96
+    # ③ 大图 / 中等图（≥ 工作流原目标）→ 无需改写：工作流自己会缩（显存保护不变）
+    for w, h in ((3000, 2000), (1024, 1536)):
+        p = json.loads(json.dumps(MATTING_SCALE))
+        assert _apply_matting_pixel_target(p, roles, w, h, True) == (None, ""), (w, h)
+        assert p["484"]["inputs"]["megapixels"] == 1.25, p["484"]["inputs"]
+    # ④ 关掉「不放大」→ 完全不碰（沿用工作流原值）
+    p = json.loads(json.dumps(MATTING_SCALE))
+    assert _apply_matting_pixel_target(p, roles, 512, 512, False) == (None, "")
+    assert p["484"]["inputs"]["megapixels"] == 1.25
+    # ⑤ 尺寸读不出来（无 Pillow / 读失败）→ 不写、不报错（照工作流原值跑）
+    p = json.loads(json.dumps(MATTING_SCALE))
+    assert _apply_matting_pixel_target(p, roles, 0, 0, True) == (None, "")
+    # ⑥ 工作流没有该注记 → 不写、不报错
+    r3, _ = wp.parse_workflow(MATTING)
+    p = json.loads(json.dumps(MATTING))
+    assert _apply_matting_pixel_target(p, r3, 512, 512, True) == (None, "")
+    # ⑦ 像素单位字段（max_total_pixels=1048576 → 1.05MP）：换算与回写都要对（且写整数）
+    px_roles = {"pre_scale": {"node": "9", "field": "max_total_pixels", "default": 1048576,
+                              "unit": "px", "default_mp": 1.048576,
+                              "class_type": "ImageScaleToTotalPixels"}}
+    p = {"9": {"class_type": "ImageScaleToTotalPixels",
+               "inputs": {"max_total_pixels": 1048576}}}
+    mp, _ = _apply_matting_pixel_target(p, px_roles, 512, 512, True)
+    assert abs(mp - 0.262144) < 1e-6, mp
+    assert p["9"]["inputs"]["max_total_pixels"] == 262144, p["9"]["inputs"]
+    assert isinstance(p["9"]["inputs"]["max_total_pixels"], int), p["9"]["inputs"]
+    # 真实导出（logs/ 下有就跑）
+    real = ROOT / "logs" / "qwen2.1抠图-预处理.json"
+    if real.is_file():
+        r4, e4 = wp.parse_workflow(json.loads(real.read_text(encoding="utf-8")))
+        assert not e4 and r4["pre_scale"]["node"] == "484", (e4, r4.get("pre_scale"))
+    print("== 5. 预处理缩放 + 不放大（小图保持 / 大图缩小 / 关掉不碰 / px 单位 / 无节点） OK")
+
+
 def test_cmd_alias_and_strip():
     """指令别名（/抠图 及其别名）与参数剥离。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
@@ -335,7 +405,7 @@ def test_cmd_alias_and_strip():
     for raw, exp in cases:
         got = _strip_command(raw, "抠图", ALIASES)
         assert got == exp, f"{raw!r}: 期望 {exp!r}，实际 {got!r}"
-    print(f"== 5. 指令别名（抠图/抠像/去背景/去背）+ 参数剥离（{len(cases)} 组） OK")
+    print(f"== 6. 指令别名（抠图/抠像/去背景/去背）+ 参数剥离（{len(cases)} 组） OK")
 
 
 if __name__ == "__main__":
@@ -343,5 +413,6 @@ if __name__ == "__main__":
     test_resolve_matting_base()
     test_matting_injection()
     test_store_and_pick()
+    test_pre_scale_no_upscale()
     test_cmd_alias_and_strip()
-    print("抠图（解析 / 挑工作流 / 注入 / 入库 / 指令）全部通过")
+    print("抠图（解析 / 挑工作流 / 注入 / 不放大 / 入库 / 指令）全部通过")

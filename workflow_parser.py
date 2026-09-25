@@ -50,6 +50,9 @@ _IMAGE_IN_FIELDS = (
     "image", "images", "image1", "input_image", "img", "pixels", "anything",
     "samples", "latent_image", "latent", "resized_images", "input",
 )
+# 「预处理缩放」节点的目标像素字段（v7.7.14）：这类节点按**总像素**归一化，
+# 不分大小一律缩放（小图会被插值放大）。`megapixels` 的单位是 MP，其余是绝对像素。
+_PIXEL_FIELD_PREFS = ("megapixels", "max_total_pixels", "total_pixels", "target_pixels")
 
 # --------------------------------------------------------------------------- #
 # 文本写入点合理性（v7.7.12 安全网）
@@ -191,6 +194,56 @@ def _is_image_loader(node: dict) -> bool:
 
 def _is_cleanup(node: dict) -> bool:
     return _CLEANUP_HINT in _ct(node)
+
+
+def _find_pre_scale(nodes: dict, image_node: str | None) -> dict | None:
+    """从图输入节点**顺流**找出第一个「预处理缩放」节点（v7.7.14）。
+
+    典型：`LoadImage → ImageScaleToTotalPixels(megapixels=1.25) → 文本/VAE 编码`。
+    这类节点按**总像素**归一化，不分大小一律缩放——小图会被插值放大到目标像素
+    （输出比输入大、细节并不会变多）。把它的可写目标记下来，出图时可改写成
+    「只缩不放」（小图给它的实际像素，大图仍按原目标缩小）。
+
+    判定：类名像缩放（含 scale / resize）+ 确实带目标像素字段；顺流 BFS（离图输入
+    最近的优先，那才是「预处理」那一步）。找不到返回 None。
+    """
+    if not image_node or image_node not in nodes:
+        return None
+    down: dict[str, list[str]] = {}
+    for nid, n in nodes.items():
+        for v in (n.get("inputs") or {}).values():
+            lk = _link(v)
+            if lk and lk[0] in nodes and lk[0] != nid:
+                down.setdefault(lk[0], []).append(nid)
+    seen = {str(image_node)}
+    queue = list(down.get(str(image_node), []))
+    while queue:
+        nid = queue.pop(0)                       # BFS：按离图输入的远近逐层看
+        if nid in seen:
+            continue
+        seen.add(nid)
+        node = nodes.get(nid)
+        if not isinstance(node, dict):
+            continue
+        ct = _ct(node)
+        if "scale" in ct or "resize" in ct:
+            _in = node.get("inputs") or {}
+            for f in _PIXEL_FIELD_PREFS:
+                v = _in.get(f)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                    _unit = "mp" if f == "megapixels" else "px"
+                    out = {
+                        "node": nid, "field": f, "default": float(v),
+                        "class_type": node.get("class_type"), "unit": _unit,
+                        # 统一换算成 MP，调用方只跟 MP 打交道
+                        "default_mp": float(v) if _unit == "mp" else float(v) / 1_000_000,
+                    }
+                    if isinstance(_in.get("resolution_steps"), (int, float)):
+                        out["steps_field"] = "resolution_steps"
+                        out["steps_default"] = int(_in["resolution_steps"])
+                    return out
+        queue.extend(down.get(nid, []))
+    return None
 
 
 def _walk_up_model(prompt: dict, start: str) -> tuple[str | None, list[str], list[str]]:
@@ -655,6 +708,11 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     image_loaders = [nid for nid, n in nodes.items() if _is_image_loader(n)]
     roles["image_node"] = image_loaders[0] if image_loaders else None
     roles["kind"] = "img2img" if image_loaders else "t2i"
+    # v7.7.14：预处理缩放节点（如 ImageScaleToTotalPixels）——按总像素归一化，
+    # 小图也会被插值放大；抠图等场景据此改成「只缩不放」（见 main.py _apply_matting_pixel_target）
+    _pre_scale = _find_pre_scale(nodes, roles["image_node"])
+    if _pre_scale:
+        roles["pre_scale"] = _pre_scale
 
     # ---- 放大链：从保存节点 images 向上溯源（穿过清理透传节点）----
     # v7.0.1：同时记录整条链路（chain_nodes，含 Split/Join alpha 处理节点）与
