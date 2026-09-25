@@ -2903,6 +2903,66 @@ class ComfyUIDrawPlugin(Star):
             pass
         return out
 
+    def _remember_last_event(self, event) -> None:
+        """记住「最近一次绘图事件」：全局槽 + **按会话**各存一份。
+
+        v7.6.2：全局单槽会被别的会话覆盖——私聊刚画完，群聊再画时，llm_draw 的
+        参考图兜底会从全局槽里捞到**私聊那张图**，于是群里出图变成私聊刚画的那个角色。
+        按会话存一份，并在跨会话兜底处校验 session_id，彻底断掉这条串味路径。
+        """
+        self._last_event = event
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            if not sid:
+                return
+            bucket = getattr(self, "_last_events", None)
+            if bucket is None:
+                bucket = {}
+                self._last_events = bucket
+            bucket[sid] = event
+            # 只留最近 40 个会话，长跑下不做无界增长
+            if len(bucket) > 40:
+                for _k in list(bucket)[:-40]:
+                    bucket.pop(_k, None)
+        except Exception:
+            pass
+
+    def _last_event_for(self, event, *, allow_cross_session: bool = False):
+        """取与当前 event **同一会话**的最近事件；跨会话一律返回 None。
+
+        这是「私聊画完 → 群聊串味」的根治点：以前直接读全局 `_last_event`，
+        别的会话的事件也会被当成兜底来源。
+        """
+        le = getattr(self, "_last_event", None)
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+        except Exception:
+            sid = ""
+        try:
+            _b = getattr(self, "_last_events", None) or {}
+            if sid and sid in _b:
+                return _b[sid]
+        except Exception:
+            pass
+        if le is None:
+            return None
+        try:
+            _lsid = str(getattr(le, "session_id", "") or "").strip()
+        except Exception:
+            _lsid = ""
+        if not sid:
+            # 当前事件拿不到会话标识（或它压根不是 AstrMessageEvent）：只能谨慎兜底
+            return le
+        if _lsid == sid:
+            return le
+        if allow_cross_session:
+            return le
+        logger.info(
+            f"【取图·隔离】 全局最近事件属于别的会话（sid={_lsid or '空'} ≠ {sid}），"
+            f"已拒绝把它当作兜底来源"
+        )
+        return None
+
     def _prompt_style(self, wf: dict | None) -> str:
         """推断本工作流底模的提示词风格：tags / pony / natural / unknown。"""
         wf = wf or {}
@@ -3564,10 +3624,13 @@ class ComfyUIDrawPlugin(Star):
         # 回退到「本会话用户最近发过的图」。用户引用的通常正是他自己刚发的图，
         # 用历史缓存兜底是合理且安全的（仅当确实出现 Reply 才启用，纯文生图不受影响）。
         if not paths and has_reply:
-            sid = getattr(event, "session_id", "") or ""
+            # v7.6.2：没有会话标识时不猜（空键桶是所有会话共用的，捞了就串味）
+            sid = str(getattr(event, "session_id", "") or "").strip()
             for store in (
-                list(reversed(g_last_received.get(sid) or [])),
-                list(reversed(g_recent_user_images.get(sid) or [])),
+                (list(reversed(g_last_received.get(sid) or []))
+                 if sid else []),
+                (list(reversed(g_recent_user_images.get(sid) or []))
+                 if sid else []),
             ):
                 for p in store:
                     if p and os.path.exists(p) and p not in paths:
@@ -5677,7 +5740,8 @@ class ComfyUIDrawPlugin(Star):
         # `portrait` / `square` / `wide` 会命中内置 keyword，导致尺寸被悄悄改写。
         _ratio_src = self._ratio_source_text(event, positive)
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
-        self._last_event = event
+        # （v7.6.2：同时按会话存一份，跨会话兜底会被 _last_event_for 拒绝）
+        self._remember_last_event(event)
         # 出图计时起点（用于生成完成后的耗时报告）
         _draw_start = time.time()
         # [TRACE] 绘图 LLM 调用链路追踪：为本会话本次绘图生成唯一 trace_id，
@@ -6290,6 +6354,19 @@ class ComfyUIDrawPlugin(Star):
                 merged[nm] = w
         active_map = merged or None
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
+        # v7.6.2 可观测性：本次**没人点名**任何 LoRA，却因为「工作流默认启用项」带上了
+        # （`/loraon` 或 WebUI 把某个角色 LoRA 设成了默认启用 → 之后**所有会话**用这个
+        #  工作流出图都会带上它、连触发词一起追加）。这类「莫名出现某个角色」的高频原因
+        # 以前只能靠翻配置发现，现在直接打日志点名。
+        if active_map and not _raw_hits and not lora_map:
+            _default_on = [n for n in active_map if any(
+                (l.get("name") or "").strip() == n and l.get("enabled")
+                for l in (loras_cfg or []))]
+            if _default_on:
+                logger.info(
+                    f"【LoRA】 本次未点名任何 LoRA，沿用「工作流默认启用」的：{_default_on}"
+                    f"（若这是角色 LoRA 而你没打算画它，用 /loraoff {_default_on[0]} 关掉）"
+                )
 
         # 补全：--名称 临时请求的 LoRA，若工作流未预引用（loras_config 里没有该项），
         # 则从全局 LoRA 库里取完整配置（含真实 model_name）补进 loras_cfg。否则
@@ -7054,20 +7131,16 @@ class ComfyUIDrawPlugin(Star):
 
                     # 产出 (图片节点, 本地路径) 元组：指令只取节点 yield 给用户，
                     # 记下本插件最近生成的图片本地路径（按会话），供图生图兜底使用
-                    sid = getattr(event, "session_id", "") or ""
-                    bucket = g_last_generated.setdefault(sid, [])
+                    # v7.6.2：有会话标识就只进本会话桶；只有拿不到会话标识时才进全局桶
+                    # （否则「空键桶」会被所有会话共用 → 私聊的图变成群聊的参考图）。
+                    sid = str(getattr(event, "session_id", "") or "").strip()
+                    _gkey = sid or "__global__"
+                    bucket = g_last_generated.setdefault(_gkey, [])
                     if img_path not in bucket:
                         bucket.append(img_path)
                     # 仅保留最近 5 张，避免无限增长
                     if len(bucket) > 5:
-                        g_last_generated[sid] = bucket[-5:]
-                    # 全局兜底（session 为空时也存一份，便于跨会话引用场景）
-                    if not sid:
-                        gbucket = g_last_generated.setdefault("__global__", [])
-                        if img_path not in gbucket:
-                            gbucket.append(img_path)
-                        if len(gbucket) > 5:
-                            g_last_generated["__global__"] = gbucket[-5:]
+                        g_last_generated[_gkey] = bucket[-5:]
                     # webp 兼容：ComfyUI 输出常为 webp，而部分适配器（onebot/QQ 等）
                     # 在 Agent 工具场景下对 webp 内联推送失败，会被 AstrBot 转成
                     # `<pc_history_media ...>` 占位、图片丢失。可配置 convert_webp_to_png
@@ -7894,13 +7967,18 @@ class ComfyUIDrawPlugin(Star):
         # 不可用时，退回「用户最近发的图」优先，再退「本插件最近生成的图」。注意：此兜底
         # 仅限图生图入口，绝不进入通用 _extract_images，以免污染纯文生图指令。
         if not images:
-            sid = getattr(event, "session_id", "") or ""
-            for store in (
-                list(reversed(g_last_received.get(sid) or [])),
-                list(reversed(g_recent_user_images.get(sid) or [])),
-                list(reversed(g_last_generated.get(sid) or [])),
-                list(reversed(g_last_generated.get("__global__") or [])),
-            ):
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            # v7.6.2：有会话标识就**只认本会话**的缓存；只有拿不到会话标识时，
+            # 才退到全局桶（否则会捞到别的会话——私聊的图被当成群聊的参考图）。
+            if sid:
+                _stores = (
+                    list(reversed(g_last_received.get(sid) or [])),
+                    list(reversed(g_recent_user_images.get(sid) or [])),
+                    list(reversed(g_last_generated.get(sid) or [])),
+                )
+            else:
+                _stores = (list(reversed(g_last_generated.get("__global__") or [])),)
+            for store in _stores:
                 for p in store:
                     if p and os.path.exists(p) and p not in images:
                         images.append(p)
@@ -9070,10 +9148,12 @@ class ComfyUIDrawPlugin(Star):
                 if m:
                     user_id = m.group(1)
         # 工具路径兜底：若主事件群号/用户号仍为空，退而用最近记录的真实会话事件
-        # （on_using_llm_tool / _do_draw 都会写入 self._last_event）。
-        if (not group_id or not user_id) and getattr(self, "_last_event", None) is not None and self._last_event is not event:
+        # （on_using_llm_tool / _do_draw 都会写入；v7.6.2 起只认**同一会话**的，
+        #  否则会把私聊的 user_id/群号 当成当前会话的，造成归属错乱）。
+        _le_fallback = self._last_event_for(event)
+        if (not group_id or not user_id) and _le_fallback is not None and _le_fallback is not event:
             try:
-                _luid, _lgid = self._event_ids(self._last_event)
+                _luid, _lgid = self._event_ids(_le_fallback)
                 if not user_id and _luid:
                     user_id = _luid
                 if not group_id and _lgid:
@@ -11020,8 +11100,13 @@ class ComfyUIDrawPlugin(Star):
 
         # 部分 AstrBot 版本下 self/event 绑定可能异常（self 为 None 或 event 为 None），
         # 这里用全局实例与最近事件兜底，避免 'NoneType' object has no attribute '_do_draw'。
+        # v7.6.2：这种情况拿不到会话标识，只能取全局槽——打条日志方便排查「图发错会话」。
         if not isinstance(event, AstrMessageEvent):
             event = getattr(plugin, "_last_event", None)
+            logger.warning(
+                "【绘图·入口】 工具收到的 event 无效，已退回「最近一次事件」"
+                f"（sid={getattr(event, 'session_id', '') or '空'}）——若发错会话请反馈此日志"
+            )
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
@@ -11339,11 +11424,13 @@ class ComfyUIDrawPlugin(Star):
 
         # ② 从事件中自动提取图片（本次消息/引用里的图，是"用户确实发了图"的最可靠信号）
         event_images: list[str] = []
-        last_ev = getattr(plugin, "_last_event", None)
+        # v7.6.2：只接受**同一会话**的最近事件（跨会话兜底会把私聊的图捞到群聊里，
+        # 导致群里没点名却画出私聊刚画的那个角色）。
+        last_ev = plugin._last_event_for(event)
         if not got_explicit_image:
             event_images = await plugin._extract_images(event)
             if not event_images and last_ev is not None and last_ev is not event:
-                logger.info("【取图】 llm_draw 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+                logger.info("【取图】 llm_draw 工具 event 未取到图，回退到本会话 LLM 调用前捕获的原始事件再取一次")
                 event_images = await plugin._extract_images(last_ev)
         # 去重合并（避免 image 参数 URL 和事件里是同一张图）
         seen = set(init_images)
@@ -11371,13 +11458,14 @@ class ComfyUIDrawPlugin(Star):
         #    （仅传 img2img_workflow 无参考图，常见于伴侣文生图顺带带默认图生图工作流）
         #    绝不进入这里——弱信号应直接回退对应风格文生图，避免误中断调用方（如伴侣）。
         if strong_img2img and not init_images:
-            sid = getattr(event, "session_id", "") or ""
+            # v7.6.2：没有会话标识就不去历史里捞图（空键桶是所有会话共用，会串味）
+            sid = str(getattr(event, "session_id", "") or "").strip()
             # ① 优先用「本会话最近一次图生图实际使用的用户原图」（多轮改图时回到最初原图，
             #    而不是误用 AI 上次生成的结果图）。仅当这些缓存路径仍可读时才采纳。
             for store in (
-                list(reversed(g_session_i2i_ref.get(sid) or [])),
-                list(reversed(g_last_received.get(sid) or [])),
-                list(reversed(g_recent_user_images.get(sid) or [])),
+                (list(reversed(g_session_i2i_ref.get(sid) or [])) if sid else []),
+                (list(reversed(g_last_received.get(sid) or [])) if sid else []),
+                (list(reversed(g_recent_user_images.get(sid) or [])) if sid else []),
             ):
                 for p in store:
                     if p and os.path.exists(p) and p not in init_images:
@@ -11387,12 +11475,14 @@ class ComfyUIDrawPlugin(Star):
             # ② 以上「用户原图」类缓存均不可读时，最后才兜底用最近生成的图
             #    （仅当用户明确引用刚生成的图做二次加工，且临时路径仍有效时）。
             if not init_images:
-                for p in (list(reversed(g_last_generated.get(sid) or []))[:1]):
+                for p in ((list(reversed(g_last_generated.get(sid) or []))[:1]) if sid else []):
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
                         break
             if init_images:
-                logger.info(f"【取图】 llm_draw 图生图补图兜底（历史/会话/生成图）: {init_images}")
+                logger.info(
+                    f"【取图】 llm_draw 图生图补图兜底（本会话 sid={sid or '空'}）: {init_images}"
+                )
             else:
                 logger.info("【取图】 llm_draw 已判定图生图但兜底仍未取到参考图，将提示用户重发图")
 
@@ -11401,13 +11491,15 @@ class ComfyUIDrawPlugin(Star):
             # 记录「本会话最近一次图生图的用户原图」记忆，供多轮改图兜底回到最初原图
             # （而非误用 AI 上次生成的结果图）。仅图生图且取到参考图时记录。
             if is_img2img:
-                sid = getattr(event, "session_id", "") or ""
-                bucket = g_session_i2i_ref.setdefault(sid, [])
-                for p in init_images:
-                    if p and p not in bucket:
-                        bucket.append(p)
-                if len(bucket) > 3:
-                    g_session_i2i_ref[sid] = bucket[-3:]
+                # v7.6.2：无会话标识时**不写**（否则写进空键桶 → 全体会话共用）
+                sid = str(getattr(event, "session_id", "") or "").strip()
+                if sid:
+                    bucket = g_session_i2i_ref.setdefault(sid, [])
+                    for p in init_images:
+                        if p and p not in bucket:
+                            bucket.append(p)
+                    if len(bucket) > 3:
+                        g_session_i2i_ref[sid] = bucket[-3:]
         elif is_img2img:
             logger.info(
                 f"【取图】 llm_draw 意图为图生图但无参考图可用"
@@ -12172,7 +12264,7 @@ class ComfyUIDrawPlugin(Star):
     async def _capture_llm_event(
         self, event: AstrMessageEvent, tool=None, tool_args: dict | None = None
     ):
-        self._last_event = event
+        self._remember_last_event(event)
         # 若本次调用的是画图/图库类工具，标记该会话处于「画图 agent run」，
         # 供 on_llm_response 把画图收尾总结那次的主对话 LLM 消耗一并计入 token 统计。
         # 同时记录画图那一刻 AstrBot 正在使用的 provider id，作为该主对话的模型名。
@@ -14068,6 +14160,10 @@ class ComfyUIDrawPlugin(Star):
         # 与 llm_draw 同样的兜底处理
         if not isinstance(event, AstrMessageEvent):
             event = getattr(plugin, "_last_event", None)
+            logger.warning(
+                "【图生图·入口】 工具收到的 event 无效，已退回「最近一次事件」"
+                f"（sid={getattr(event, 'session_id', '') or '空'}）——若发错会话请反馈此日志"
+            )
         if event is None:
             return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
@@ -14196,7 +14292,7 @@ class ComfyUIDrawPlugin(Star):
             #    因此若 image 参数已成功取到图，就绝不再去 event / last_event 里做无谓的
             #    兜底探测（避免把上几次生成的旧图也混进来、也少打噪音日志）。
             event_images = await plugin._extract_images(event)
-            last_ev = getattr(plugin, "_last_event", None)
+            last_ev = plugin._last_event_for(event)   # v7.6.2：仅同一会话
             if not event_images and last_ev is not None and last_ev is not event:
                 logger.info("【取图】 llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
                 event_images = await plugin._extract_images(last_ev)
@@ -14215,14 +14311,15 @@ class ComfyUIDrawPlugin(Star):
             # 但用户确实刚发过图——这种"用户当前意图的参考图"兜底合理。
             # 注意：特意不回退「本插件自己生成的图」(g_last_generated)，避免把续画/上次出图
             # 误当成图生图参考图导致结果污染。
-            sid = getattr(event, "session_id", "") or ""
-            for p in (g_last_received.get(sid) or []):
+            # v7.6.2：没有会话标识就不去历史里捞图（空键桶是所有会话共用，会串味）
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            for p in ((g_last_received.get(sid) or []) if sid else []):
                 if p and os.path.exists(p) and p not in init_images:
                     init_images.append(p)
             # 二级兜底：本会话用户「历史消息里发过的图」（覆盖前一条消息发的图、
             # 引用图未回填等场景）。仅当上面仍为空时启用，且只取最近 1 张。
             if not init_images:
-                hist = list(reversed(g_recent_user_images.get(sid) or []))
+                hist = list(reversed(g_recent_user_images.get(sid) or [])) if sid else []
                 for p in hist[:1]:
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
@@ -14233,12 +14330,14 @@ class ComfyUIDrawPlugin(Star):
             # 引用图解析失败；此时服务器上明明有这张图，直接用它做参考图即可，无需再走平台。
             # 限定「本会话 + 最近 1 张」避免误用旧图。
             if not init_images:
-                for p in (list(reversed(g_last_generated.get(sid) or []))[:1]):
+                for p in ((list(reversed(g_last_generated.get(sid) or []))[:1]) if sid else []):
                     if p and os.path.exists(p) and p not in init_images:
                         init_images.append(p)
                         break
             if init_images:
-                logger.info(f"【取图】 启用兜底图片（本会话用户最近收到/历史/生成图）: {init_images}")
+                logger.info(
+                    f"【取图】 启用兜底图片（本会话 sid={sid or '空'}，用户最近收到/历史/生成图）: {init_images}"
+                )
             else:
                 return "请先发送一张参考图，再用文字告诉我要怎么变换它哦～ 例如「把这张图变成夜晚」。"
 

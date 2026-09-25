@@ -2,6 +2,40 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.6.2（修复「私聊画过的角色串到群聊」——会话隔离）
+
+**报障**：私聊里画了某个角色 → 到群聊里只说「画张图」（没点名谁）→ 群里出的却是私聊刚画的那个角色。
+
+**根因**：`self._last_event` 是一个**全局单槽**（没有会话维度），后一次绘图事件会把前一次覆盖掉。
+而 `llm_draw` 的「参考图兜底」直接读它：`if not event_images and last_ev is not None and last_ev is not event`
+——**只看「不是同一个事件对象」，从不比较会话**。于是私聊刚画完那次的图被当成群聊的参考图，
+群聊那次被判定成**图生图** → 出的图当然就是私聊那个角色。
+
+**修复**：
+
+- 最近事件改为**按会话存**（`_last_event` + `_last_events[session_id]`），新增
+  `_remember_last_event()` / `_last_event_for()`：跨会话一律拒绝，并打日志说明
+  （`【取图·隔离】 全局最近事件属于别的会话…已拒绝把它当作兜底来源`）；
+- 所有「参考图兜底」路径改用会话安全取法：`llm_draw`（事件回退取图、图生图历史补图）、
+  `llm_img2img` 三级兜底、`_extract_images` 的引用兜底、工具路径的 user/群号反推；
+- **空会话标识不再塌缩成同一个桶**：拿不到 `session_id` 时不去历史里捞图、不写
+  `g_session_i2i_ref`；`g_last_generated` 改为一键到底（有 sid 进 sid 桶，没有才进 `__global__`）；
+  `/img2img` 的兜底链**只在没有会话标识时**才读全局桶（原来无论有没有都读，等于给跨会话开洞）；
+- **可观测性**：兜底取图日志带上 `sid=`；工具入口 event 无效而退回最近事件时打警告；
+  另加一条——本次**没人点名 LoRA**、却因为「工作流默认启用项」带上时，日志点名并给出
+  `/loraoff <名字>` 的关掉提示（`/loraon` 是持久的、跨会话生效，"莫名出现某个角色"的另一大来源）。
+
+验证：新增 `tests/test_session_isolation.py` 5 组（同会话可取 / **跨会话必须被拒绝** /
+全局槽被覆盖不影响会话桶 / 无 sid 时保守兜底 + 显式放行口 / 会话桶上限）全过；
+`test_prompt_guard`、`test_prompt_boost`、`test_character`(99 项)、`test_workflow_v7`(13 组)、
+`test_draw_card`、`test_lora_base_filter`、`test_wait_for_result`、`test_size_helpers`、
+`test_nai_params`、`test_image_store_today` 全量回归通过；compileall 与打包校验通过。
+
+**如果你再遇到类似「不该出现的角色出现了」**，按这三条日志定位：
+①搜 `【取图】`（如出现 `图生图补图兜底（本会话 sid=…）` 说明用了兜底参考图）；
+②搜 `【角色卡·注入】`（看命中的卡是不是你要的）；
+③搜 `【LoRA】 本次未点名任何 LoRA，沿用「工作流默认启用」的`（多半是 `/loraon` 残留）。
+
 ## v7.6.1（修打包漏文件：v7.6.0 的 zip 缺 prompt_guard.py）
 
 **问题**：`build_zip.ps1` 用的是**显式文件清单**，v7.6.0 新增的 `prompt_guard.py` 忘了加进去，
