@@ -10793,18 +10793,21 @@ class ComfyUIDrawPlugin(Star):
             host = dev.get("host") or {}
             if isinstance(host, dict):
                 logger.debug(f"【绘图状态】 /device host 顶层键: {list(host.keys())}")
-            # -- 系统（首位）：主机名 / 系统 / 开机时长 --
+            # -- 系统（首位）：系统版本 / 已运行时长（v7.7.31：不显示主机名） --
             if host:
-                hn = str(host.get("hostname") or host.get("host_name") or "").strip()
-                osn = str(host.get("os") or host.get("system") or host.get("platform") or "").strip()
+                _os = host.get("os") or {}
+                if isinstance(_os, dict):
+                    osn = " ".join(str(x) for x in (
+                        _os.get("caption") or "", _os.get("display_version") or ""
+                    ) if str(x).strip()).strip()
+                else:
+                    osn = str(_os or host.get("system") or host.get("platform") or "").strip()
                 up = host.get("uptime_s") or host.get("uptime") or host.get("boot_elapsed_s")
                 if isinstance(up, (int, float)) and up > 0:
                     _d, _h = int(up // 86400), int(up % 86400 // 3600)
                     _up_txt = (f"{_d} 天 {_h} 小时" if _d else f"{_h} 小时")
                 else:
                     _up_txt = ""
-                if hn:
-                    _sys_rows.append(("主机", hn[:28], ""))
                 if osn:
                     _sys_rows.append(("系统", osn[:28], ""))
                 if _up_txt:
@@ -10824,6 +10827,11 @@ class ComfyUIDrawPlugin(Star):
                 _ct = (cpu.get("temp") or cpu.get("temperature") or cpu.get("temp_c")
                        or host.get("cpu_temp") or host.get("cpu_temperature")
                        or host.get("cpu_temp_c"))
+                # v7.7.31：文档确认的真实字段——host.thermal.cpu_package_c（CPU 封装温度，
+                # 装 LibreHardwareMonitor 才有；读不到为 null）
+                _th = host.get("thermal") or {}
+                if isinstance(_th, dict) and isinstance(_th.get("cpu_package_c"), (int, float)):
+                    _ct = _th["cpu_package_c"]
                 if isinstance(_ct, (int, float)) and _ct > 0:
                     _dev_map["cpu"].append(("温度", f"{_ct}°C", ""))
                 _cores = cpu.get("cores") or cpu.get("count") or host.get("cpu_cores")
@@ -10855,13 +10863,22 @@ class ComfyUIDrawPlugin(Star):
                         _dev_map["ram"].append(("已用", f"{host.get('ram_used_gb')} GB", ""))
             except Exception:
                 pass
-            # -- 硬盘（服务所在磁盘） --
+            # -- 硬盘（服务所在磁盘）：剩余 / 总量 + 已用（v7.7.31：补剩余空间） --
             try:
                 disk = host.get("disk") or host.get("disk_usage") or {}
                 if isinstance(disk, dict) and (disk.get("total_gb") or disk.get("total")):
-                    _dev_map["disk"].append(
-                        ("容量", f"{disk.get('used_gb') or disk.get('used') or '?'}/"
-                                f"{disk.get('total_gb') or disk.get('total')} GB", ""))
+                    _tot = disk.get("total_gb") or disk.get("total")
+                    _used = disk.get("used_gb") or disk.get("used")
+                    _free = (disk.get("free_gb") or disk.get("free")
+                             or disk.get("available_gb") or disk.get("available"))
+                    if _free is None and isinstance(_tot, (int, float)) and isinstance(_used, (int, float)):
+                        _free = round(_tot - _used, 1)
+                    if isinstance(_free, (int, float)):
+                        _dev_map["disk"].append(("剩余", f"{_free} / {_tot} GB", ""))
+                    else:
+                        _dev_map["disk"].append(("容量", f"{_tot} GB", ""))
+                    if isinstance(_used, (int, float)):
+                        _dev_map["disk"].append(("已用", f"{_used} GB", ""))
                 elif isinstance(disk, (int, float)):
                     _dev_map["disk"].append(("占用", f"{disk}%", ""))
             except Exception:
