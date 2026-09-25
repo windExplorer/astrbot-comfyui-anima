@@ -2,6 +2,57 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.12（图片放大支持 SeedVR2 单步采样器型工作流 + 提示词写入点安全网）
+
+**背景**：v7.7.1 只收了「无采样器」的纯放大工作流（TE-Speed VOSR2）。而 SeedVR2 3B
+（`LoadImage → 缩放 → VAE编码 → KSampler(steps=1) → VAE解码 → 后处理 → 保存`）**带一个
+KSampler**（单步扩散），条件来自 `SeedVR2Conditioning`、链上没有任何文本编码器 —— 它既进不了
+放大类，又被出图链路**误收**，而且注记是错的（见下）。
+
+### 1. 放大类旁路放宽：0 ~ 1 个采样器都能收
+
+- 触发条件从「采样器必须 0 个」放宽到「**≤1 个**采样器 **且整条链没有文本编码器** + 有图输入 +
+  有保存节点」；同时加了**反向前提**：若采样器的正/负向**确实能定位到可写文本框**，说明它是出图
+  工作流（只是类名没命中文本编码器特征），一律交回原逻辑报错，绝不误收；
+- 处理链回溯新增**隐式图像流**字段（`samples` / `latent_image` / `pixels` / `resized_images` /
+  `input`），于是能**穿过采样器**：`保存 ← 后处理.images ← 解码.samples ← 采样器.latent_image
+  ← 编码.pixels ← 预处理.resized_images ← 缩放.input ← 图输入`；
+- 有采样器时它被记为「放大执行体」（`apply` / `sampler`），倍率与种子的搜索以它为中心；
+  无采样器型行为不变。
+
+### 2. 倍率识别支持 `resize_type.multiplier`
+
+SeedVR2 的倍率在 `ResizeImageMaskNode` 的**带点号**字段 `resize_type.multiplier` 上（= 输出
+目标倍率：先按此倍率做 lanczos 放大，再由模型单步复原细化）。改动：
+
+- `_SCALE_FIELD_PREFS` 增补该字段名；倍率搜索范围从「离保存最近的节点」扩到**整条处理链**；
+- 加**模式守卫**：只有 `resize_type` 含 `multiplier`（即「按倍率缩放」）时才认这个字段，
+  换成「按边长 / 目标尺寸」等模式时不再产生倍率注记（避免写了不生效）。
+
+### 3. 提示词写入点安全网（**修掉一个会写坏工作流的隐患**）
+
+老逻辑在找不到文本编码节点时，会沿「任意第一条上游连线」乱走、并兜底取第一个字符串字段当提示词
+写入点。SeedVR2 因此把 `UNETLoader.unet_name`（模型文件名！）当成了正向/负向写入点——
+实测出图时会把 `unet_name` 覆盖成 `"lowres"`，ComfyUI 直接报「值不在列表里」；
+宽高也会被指到 `VAEEncodeTiled` 并**凭空造出** `width`/`height` 两个不存在的输入。
+
+现在：**资源文件名类字段一律不算文本框**（`unet_name` / `ckpt_name` / `vae_name` / `lora_name` /
+`clip_name` / `*_name` / `*_file` / `*_path`…，以及值以 `.safetensors`/`.ckpt`/`.gguf` 等结尾的
+字段），定位不到就**明确报错**并提示「纯放大/超分工作流请按放大工作流上传」。
+
+### 验证
+
+- 新增 `tests/test_image_upscale.py` 四组：SeedVR2 解析（穿采样器回溯 + 带点号倍率 + 正向/负向/
+  宽高必须为空）、倍率模式守卫、安全网（资源名判失败 + 明确报错 + 正常文本框不受影响）、
+  真实入库链路（上传 → 绑定挑中 → 三处注入 → 确认 `unet_name` 与 `VAEEncodeTiled` 没被动过）；
+- **A/B 对比**（旧解析器跑 `logs/` 下 9 个真实工作流）：8 个结果**完全一致**（含 mmh1.6 / qwen 系 /
+  zit，提示词写入点也没变），仅 SeedVR2 按预期 `img2img → upscale` 且错误的 `unet_name` 写入点消失；
+- 全套回归通过（`test_workflow_v7` 14 组、`test_draw_card`、`test_prompt_boost`、`test_prompt_guard`、
+  `test_force_draw`、`test_lora_base_filter`、`test_wait_for_result`、`test_size_helpers` 等）。
+
+用法：把 SeedVR2 工作流上传到「基础工作流」页（类型会显示为「放大」），再到「更多功能 → 图片放大」
+新建一条目绑定它即可，倍率 / 种子策略 / 尺寸护栏与 VOSR2 完全同一套。
+
 ## v7.7.11（图片放大的失败卡副标题改为「图片放大」，不再沿用「图生图」）
 
 `_card_fail_info` 原本是出图链路的复用件，副标题固定拼成「工作流名 · 图生图/文生图」；

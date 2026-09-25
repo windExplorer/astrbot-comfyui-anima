@@ -31,17 +31,64 @@ _IMAGE_LOADER_HINTS = (
 # --------------------------------------------------------------------------- #
 # 纯处理 / 放大类工作流（v7.7.1，如 TE-Speed VOSR2 超分）
 # --------------------------------------------------------------------------- #
-# 「倍率」可写字段优先级（VOSR2 的 scale、UltraSharp 的 scale_factor 等）
+# 「倍率」可写字段优先级（VOSR2 的 scale、UltraSharp 的 scale_factor、
+# SeedVR2 那类 ResizeImageMaskNode 的 resize_type.multiplier 等）
 _SCALE_FIELD_PREFS = (
     "scale", "scale_factor", "upscale_by", "magnification",
     "resize_scale", "scale_by", "factor", "upscale_factor",
+    "resize_type.multiplier",       # v7.7.12：字段名带点号，是 ComfyUI 的真实键名
 )
 # 「种子」字段优先级
 _SEED_FIELD_PREFS = ("seed", "noise_seed", "rand_seed", "seed_value")
 # 独立数值节点（如 `easy int` / PrimitiveInt）里可写的数值字段
 _NUM_FIELD_PREFS = ("value", "int", "number", "float", "value_int", "num", "i")
 # 处理链上「图像输入」字段名（沿它向上回溯到图像输入节点）
-_IMAGE_IN_FIELDS = ("image", "images", "image1", "input_image", "img", "pixels", "anything")
+# 前半是显式图像流；后半是**隐式图像流**（v7.7.12，SeedVR2 单步采样器型实测）：
+# 链路形如 保存←后处理.images←VAEDecode.samples←KSampler.latent_image
+#           ←VAEEncode.pixels←预处理.resized_images←缩放.input←图输入
+_IMAGE_IN_FIELDS = (
+    "image", "images", "image1", "input_image", "img", "pixels", "anything",
+    "samples", "latent_image", "latent", "resized_images", "input",
+)
+
+# --------------------------------------------------------------------------- #
+# 文本写入点合理性（v7.7.12 安全网）
+# --------------------------------------------------------------------------- #
+# 这些字段装的是**资源文件名**（模型 / VAE / LoRA / CLIP…），绝不能当提示词写入口：
+# 写上去 = 把「模型名」改成提示词，ComfyUI 直接报「值不在列表里」。
+# 背景：SeedVR2 这类工作流的 positive 连到 SeedVR2Conditioning（无字符串框），
+# 旧逻辑沿「任意第一条连线」乱走，走到 UNETLoader 后兜底取 str_fields[0]，
+# 于是把 `unet_name` 当成了正向提示词写入点（实测会把 unet_name 写成 "lowres"）。
+_RESOURCE_FIELD_EXACT = {
+    "unet_name", "ckpt_name", "vae_name", "lora_name", "clip_name", "clip_name1",
+    "clip_name2", "clip_name3", "model_name", "gguf_name", "control_net_name",
+    "style_model_name", "text_encoder_name", "diffusion_model_name",
+    "embedding_name", "upscale_model_name", "sampler_name", "scheduler",
+    "weight_dtype", "device", "dtype", "model_type", "format", "precision",
+}
+# 这类后缀基本是「文件名 / 路径」而非文本
+_RESOURCE_FIELD_SUFFIX = ("_name", "_file", "_path", "_filename", "_dir", "_folder")
+# 值看起来是模型/权重文件名
+_RESOURCE_VALUE_SUFFIX = (
+    ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".sft",
+)
+
+
+def _is_resource_field(field: str, node: dict) -> bool:
+    """该字符串字段是否为「资源文件名」类，不能当提示词写入点（v7.7.12）。"""
+    f = str(field or "").strip().lower()
+    if not f:
+        return False
+    if f in _RESOURCE_FIELD_EXACT:
+        return True
+    if f.endswith(_RESOURCE_FIELD_SUFFIX):
+        return True
+    # 兜底：字段名不是文本语义、但值是权重文件名 → 也算资源字段
+    val = ((node.get("inputs") or {}).get(field))
+    if isinstance(val, str) and val.strip().lower().endswith(_RESOURCE_VALUE_SUFFIX):
+        if not any(p in f for p in _TEXT_FIELD_PREFS):
+            return True
+    return False
 
 
 def _ct(node: dict) -> str:
@@ -63,11 +110,15 @@ def _find_text_field(node: dict, exclude: tuple = (), prefer_neg: bool = False) 
 
     prefer_neg：该节点同时充当负向编码（如 TextEncodeQwenImage21 同一节点出
     正/负两个输出）时，优先选名字含 neg 的字段，避免正负向写到同一个框。
+
+    v7.7.12：**资源文件名类字段一律不算可写入的文本框**（`_is_resource_field`）——
+    否则没有文本编码器的工作流会把提示词写进 `unet_name` 这类模型名里。
     """
     inputs = node.get("inputs") or {}
     str_fields = [
         f for f, v in inputs.items()
         if isinstance(v, str) and f not in exclude and f not in ("class_type", "_meta")
+        and not _is_resource_field(f, node)
     ]
     if prefer_neg:
         negs = [f for f in str_fields if "neg" in f.lower()]
@@ -256,10 +307,15 @@ def _numeric_target(nodes: dict, node_id: str, field: str) -> dict | None:
 
 
 def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
-    """尝试按「纯处理 / 放大」工作流解析（v7.7.1）。
+    """尝试按「纯处理 / 放大」工作流解析（v7.7.1，v7.7.12 扩到单步采样器型）。
 
-    适用对象：VOSR2 超分这类**无采样器、无提示词**的工作流，
-    链路形如 `LoadImage → 处理/放大节点 → SaveImage(Extended)`。
+    适用对象：**没有提示词可写** 的处理/超分工作流，链路形如
+    `LoadImage → 处理链 → SaveImage(Extended)`。两种形态都收：
+
+      · 无采样器型（TE-Speed VOSR2）：`LoadImage → VOSR2放大 → 保存`；
+      · 单步采样器型（SeedVR2 3B）：`LoadImage → 缩放 → VAE编码 → KSampler(steps=1)
+        → VAE解码 → 后处理 → 保存`——有 KSampler，但条件来自 SeedVR2Conditioning，
+        整条链上没有任何文本编码器。
 
     与出图工作流的入库标准完全不同，因此走单独旁路，返回三种语义：
       - `(roles, [])`     解析通过（`kind="upscale"`）；
@@ -271,6 +327,17 @@ def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
     # 「像是处理类工作流」的前提：有图输入 + 有保存节点 + 完全没有文本编码器
     if not save_nodes or not image_loaders or _text_encoder_nodes(nodes):
         return None, []
+    # v7.7.12 反向前提：采样器的正/负向若**确实能定位到可写文本框**，说明它是出图工作流
+    # （只是类名没命中 `_text_encoder_nodes` 的特征），该按出图工作流的原逻辑去报错，
+    # 不能当处理类收编。这条同时兜住了 `_text_encoder_nodes` 漏判的风险。
+    samplers = [nid for nid, n in nodes.items() if _is_sampler(n)]
+    if len(samplers) > 1:                 # 多阶段：交回原逻辑报「多阶段暂不支持」
+        return None, []
+    for _sid in samplers:
+        _s_in = nodes[_sid].get("inputs") or {}
+        for _k in ("positive", "negative"):
+            if _resolve_text_write_node(nodes, _link(_s_in.get(_k))):
+                return None, []
 
     errors: list[str] = []
     save_id = next(
@@ -308,6 +375,11 @@ def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
         errors.append("处理链没有连回图像输入节点（LoadImage 等），请检查工作流连线。")
         return None, errors
 
+    # 有采样器（单步扩散式放大，如 SeedVR2）时它才是「放大执行体」：
+    # 展示、倍率/种子搜索都以它为中心（种子就在 KSampler.seed 上）。
+    sampler_id = samplers[0] if (samplers and samplers[0] in chain) else ""
+    if sampler_id:
+        apply_id = sampler_id
     apply = nodes[apply_id]
     a_in = apply.get("inputs") or {}
 
@@ -335,18 +407,31 @@ def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
             "",
         )
 
-    # 倍率：处理节点上的可写数值目标（字面量就地写 / 连线写独立数值节点）
+    # 倍率：处理链上第一个可写数值目标（字面量就地写 / 连线写独立数值节点）。
+    # v7.7.12：搜索范围从「离保存最近的节点」扩到**整条处理链**——SeedVR2 的倍率在
+    # ResizeImageMaskNode 的 `resize_type.multiplier` 上，位置在链偏上游。
     scale = None
-    for f in _SCALE_FIELD_PREFS:
-        if f in a_in:
-            scale = _numeric_target(nodes, apply_id, f)
+    for _nid in [apply_id, *chain]:
+        _in = (nodes.get(_nid) or {}).get("inputs") or {}
+        for f in _SCALE_FIELD_PREFS:
+            if f not in _in:
+                continue
+            if f == "resize_type.multiplier":
+                # 只有「按倍率缩放」模式下这个字段才生效，别的模式（改边长/目标尺寸）不认
+                _mode = str(_in.get("resize_type") or "").strip().lower()
+                if "multiplier" not in _mode:
+                    continue
+            scale = _numeric_target(nodes, _nid, f)
             if scale:
                 scale["field_name"] = f
+                scale["node_class"] = nodes[_nid].get("class_type") or ""
                 break
+        if scale:
+            break
 
-    # 种子：优先处理节点自身，其次处理链上任意节点
+    # 种子：采样器（单步扩散式放大）优先，其次处理节点与整条处理链
     seed = None
-    for nid in [apply_id, *chain]:
+    for nid in ([sampler_id] if sampler_id else []) + [apply_id, *chain]:
         _in = (nodes.get(nid) or {}).get("inputs") or {}
         for f in _SEED_FIELD_PREFS:
             v = _in.get(f)
@@ -359,7 +444,8 @@ def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
     save_in = _save_in
     roles = {
         "kind": "upscale",
-        "sampler": "",
+        # 单步采样器型（SeedVR2）才有采样器；无采样器型（VOSR2）为 ""
+        "sampler": sampler_id,
         "positive": None,
         "negative": None,
         "latent": None,
@@ -377,7 +463,7 @@ def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
         "model_file": model_file,
         "chain_nodes": chain,
         "aux_nodes": aux_nodes,
-        "scale": scale,          # {"node","field","default","field_name"} 或 None
+        "scale": scale,          # {"node","field","default","field_name","node_class"} 或 None
         "seed": seed,            # {"node","field","default"} 或 None
         "cleanup_nodes": [nid for nid, n in nodes.items() if _is_cleanup(n)],
         # 纯放大工作流没有「出图工作流内部那条放大链」，显式置空：
@@ -402,16 +488,18 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
 
     # ---- 采样器：必须恰好 1 个 ----
     samplers = [nid for nid, n in nodes.items() if _is_sampler(n)]
+    # v7.7.1：采样器不是 1 个时，先试「纯放大 / 纯处理」工作流；
+    # v7.7.12：把**单步采样器型**也纳入（SeedVR2 3B 这类：有 KSampler(steps=1)，
+    # 但条件来自 SeedVR2Conditioning，链上没有任何文本编码器）。
+    # 判定很严 —— 必须有图输入 + 保存节点 + 完全没有文本编码器 + 采样器的正/负向
+    # 确实定位不到可写文本框，所以不会把「丢了采样器的出图工作流」误收成放大类。
+    if len(samplers) <= 1:
+        _up_roles, _up_errors = _parse_upscale(nodes)
+        if _up_roles is not None:
+            return _up_roles, []
+        if _up_errors:
+            return None, _up_errors
     if len(samplers) != 1:
-        # v7.7.1：0 个采样器时先试「纯放大 / 纯处理」工作流（VOSR2 超分这类
-        # 没有采样器、没有提示词的工作流）。判定很严（必须有图输入 + 保存节点 +
-        # 完全没有文本编码器），所以不会把「丢了采样器的出图工作流」误收成放大类。
-        if not samplers:
-            _up_roles, _up_errors = _parse_upscale(nodes)
-            if _up_roles is not None:
-                return _up_roles, []
-            if _up_errors:
-                return None, _up_errors
         errors.append(
             f"要求恰好 1 个采样器节点（含 model/positive 输入），实际 {len(samplers)} 个：{samplers or '无'}。"
             "多阶段工作流暂不支持，请拆分后再传。"
@@ -430,7 +518,12 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     else:
         found = _resolve_text_write_node(nodes, pos_link)
         if not found:
-            errors.append("无法定位正向提示词的可写入文本节点（沿 positive 连线及其上游均无文本输入框）。")
+            errors.append(
+                "无法定位正向提示词的可写入文本节点（沿 positive 连线及其上游都没有文本输入框；"
+                "模型名/VAE 名这类资源字段不算）。若这是**纯放大/超分工作流**（本来就不吃提示词），"
+                "请检查它是否有采样器、或条件是否来自 SeedVR2Conditioning 这类非文本节点——"
+                "这类工作流请按「放大工作流」上传（在「更多功能 → 图片放大」里绑定）。"
+            )
         else:
             pnode = nodes[found[0]]
             roles["positive"] = {"node": found[0], "field": found[1], "class_type": pnode.get("class_type")}
@@ -444,7 +537,10 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
             exclude=((roles["positive"]["field"],) if same_first else ()),
         )
         if not found:
-            errors.append("无法定位负向提示词的可写入文本节点。")
+            errors.append(
+                "无法定位负向提示词的可写入文本节点（资源名字段不算文本框）。"
+                "若这是纯放大/超分工作流，属正常现象，请按「放大工作流」上传。"
+            )
         else:
             nnode = nodes[found[0]]
             roles["negative"] = {"node": found[0], "field": found[1], "class_type": nnode.get("class_type")}

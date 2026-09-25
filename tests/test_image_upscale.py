@@ -1,15 +1,21 @@
-"""图片放大（v7.7.1 起，v7.7.5 改为「更多功能」多条条目）。
+"""图片放大（v7.7.1 起，v7.7.5 改为「更多功能」多条条目，v7.7.12 收编 SeedVR2）。
 
 覆盖：
-1) `workflow_parser._parse_upscale`：VOSR2 这类「图 → 放大 → 保存」的无采样器工作流
-   能被解析成 `kind="upscale"`（图节点 / 处理节点 / 保存节点 / 倍率 / 种子注记）；
+1) `workflow_parser._parse_upscale` 的**两种放大形态**：
+   · 无采样器型（VOSR2）：`图 → 放大 → 保存`；
+   · 单步采样器型（SeedVR2 3B，v7.7.12）：`图 → 缩放 → VAE编码 → KSampler(steps=1)
+     → VAE解码 → 后处理 → 保存`，回溯要能**穿过采样器**，倍率在带点号的
+     `resize_type.multiplier` 上；
    同时「丢了采样器的出图工作流」「连线断掉的放大工作流」都必须被拒；
 2) 「图片放大」指令参数解析：`3x` / `x3` / `3倍` / `--倍率 3` / 纯数字；
-3) 倍率规则：允许列表校验 + 不在范围内回落默认；
-4) prompt 注入：倍率写进独立整数节点（`easy int.value`）、种子按 random/fixed 策略；
+3) 倍率规则：允许列表校验 + 不在范围内回落默认；倍率模式守卫（非 multiplier 不认）；
+4) prompt 注入：倍率写进独立整数节点（`easy int.value` / `resize_type.multiplier`）、
+   种子按 random/fixed 策略；
 5) **功能条目**（v7.7.5）：`features` 列表解析（含旧版单条 image_upscale 兼容）、
    按名字/ID 点名、停用与全停用的提示、条目绑定的基础工作流解析（绑错类型/找不到要报错）；
-6) 真实入库链路：上传 → 解析通过 → 条目绑定 → 三处注入（图 / 倍率 / 种子）。
+6) 真实入库链路：上传 → 解析通过 → 条目绑定 → 三处注入（图 / 倍率 / 种子）；
+7) **文本写入点安全网**（v7.7.12）：`unet_name` 这类资源名**绝不当**提示词写入点——
+   旧逻辑会把提示词写进模型名（SeedVR2 实测把 unet_name 写成 "lowres"），现在必须明确报错。
 
 main.py 里的方法依赖 astrbot 运行时（本地装不了），沿用 tests/test_size_helpers.py 的
 做法：用 ast 把源码摘出来单独执行。
@@ -169,6 +175,44 @@ VOSR2 = {
           "inputs": {"filename_prefix": "vosr2", "images": ["2", 0]}},
 }
 
+# ── 与 logs/seedvr2-3b-int8.json 等价的 SeedVR2 3B 放大（内联） ──────────────
+# v7.7.12 新收的形态：**有 KSampler**（单步扩散），但条件来自 SeedVR2Conditioning，
+# 链上没有任何文本编码器；倍率在 ResizeImageMaskNode.resize_type.multiplier 上。
+# 节点 ID 带 `:` 是 ComfyUI 子图展开的正常现象。
+SEEDVR2 = {
+    "73": {"class_type": "SaveImage",
+           "inputs": {"filename_prefix": "seedvr2_after/image", "images": ["74:59", 0]}},
+    "75": {"class_type": "LoadImage", "inputs": {"image": "hardcoded.jpg"}},
+    "74:48": {"class_type": "VAEEncodeTiled",
+              "inputs": {"tile_size": 512, "overlap": 128, "temporal_size": 4096,
+                         "temporal_overlap": 8, "pixels": ["74:58", 0], "vae": ["74:51", 0]}},
+    "74:50": {"class_type": "JoinImageWithAlpha",
+              "inputs": {"image": ["75", 0], "alpha": ["75", 1]}},
+    "74:51": {"class_type": "VAELoader",
+              "inputs": {"vae_name": "seedvr2_ema_vae_fp16.safetensors"}},
+    "74:52": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": "seedvr2_3b_int8_convrot.safetensors",
+                         "weight_dtype": "default"}},
+    "74:54": {"class_type": "KSampler",
+              "inputs": {"seed": 219920970385576, "steps": 1, "cfg": 1,
+                         "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+                         "model": ["74:52", 0], "positive": ["74:61", 0],
+                         "negative": ["74:61", 1], "latent_image": ["74:48", 0]}},
+    "74:55": {"class_type": "VAEDecodeTiled",
+              "inputs": {"tile_size": 512, "overlap": 128, "temporal_size": 4096,
+                         "temporal_overlap": 8, "samples": ["74:54", 0], "vae": ["74:51", 0]}},
+    "74:57": {"class_type": "ResizeImageMaskNode",
+              "inputs": {"resize_type": "scale by multiplier",
+                         "resize_type.multiplier": 2, "scale_method": "lanczos",
+                         "input": ["74:50", 0]}},
+    "74:58": {"class_type": "SeedVR2Preprocess", "inputs": {"resized_images": ["74:57", 0]}},
+    "74:59": {"class_type": "SeedVR2PostProcessing",
+              "inputs": {"color_correction_method": "none", "images": ["74:55", 0],
+                         "original_resized_images": ["74:57", 0]}},
+    "74:61": {"class_type": "SeedVR2Conditioning",
+              "inputs": {"model": ["74:52", 0], "vae_conditioning": ["74:48", 0]}},
+}
+
 # 三条可用条目（第 2 条停用）+ 一条 base_id 指向非放大工作流
 _ROWS = [
     {"id": 3, "name": "VOSR2 极速放大", "file_name": "vosr2-api.json",
@@ -200,7 +244,8 @@ def test_parse_upscale_workflow():
     assert roles["chain_nodes"] == ["2"], roles["chain_nodes"]
     # 倍率连线到独立整数节点（easy int.value），必须记到那个节点上
     assert roles["scale"] == {"node": "6", "field": "value", "default": 3,
-                              "field_name": "scale"}, roles["scale"]
+                              "field_name": "scale",
+                              "node_class": "TESpeedVOSR2Image"}, roles["scale"]
     assert roles["seed"] == {"node": "2", "field": "seed", "default": 6666}, roles["seed"]
     # 纯放大工作流不该带「出图工作流内部的放大链」注记（免得被 bypass/inject 误用）
     assert roles["upscale"] is None
@@ -472,7 +517,33 @@ def test_store_import_and_pick():
         "坏图", json.dumps({"1": {"class_type": "LoadImage", "inputs": {}}}), "x.json"
     )
     assert bad_id is None and bad_err, (bad_id, bad_err)
-    print("== 8. 入库链路（解析通过 + 条目绑定 + 三处注入 + 坏图仍被拒） OK")
+
+    # v7.7.12：SeedVR2（单步采样器型）同样入库成放大类，并能被条目绑定挑中
+    sid, sroles, serr = st.import_json("SeedVR2 3B", json.dumps(SEEDVR2), "seedvr2-3b-int8.json")
+    assert serr is None and sid and sroles["kind"] == "upscale", (sid, serr)
+    me2 = _FakePlugin()
+    me2.workflow_store = st
+    me2._cfg_all = {"features": [{
+        "__template_key": "k2", "kind": "upscale", "name": "seedvr2", "enabled": True,
+        "base_id": str(sid), "default_scale": 2, "allowed_scales": "2,3,4",
+        "seed_mode": "random",
+    }]}
+    entry2 = _resolve_upscale_entry(me2, "")
+    assert entry2["name"] == "seedvr2", entry2
+    base2 = _upscale_base_of(me2, entry2)
+    assert base2["id"] == sid and base2.get("wf_json"), base2
+    _, p2s = _load_upscale_base(st.get(sid, with_json=True))
+    assert wb.set_image_node(p2s, base2["roles"]["image_node"], "up.png")
+    assert p2s["75"]["inputs"]["image"] == "up.png"
+    assert _apply_upscale_scale(p2s, base2["roles"], 3) == 3
+    assert p2s["74:57"]["inputs"]["resize_type.multiplier"] == 3
+    assert _apply_upscale_seed(p2s, base2["roles"],
+                               {"seed_mode": "fixed", "seed_value": 7}) == [7]
+    assert p2s["74:54"]["inputs"]["seed"] == 7
+    # ★关键回归：工作流里**不该**被写入提示词 / 凭空造宽高（旧逻辑会把 unet_name 写坏）
+    assert p2s["74:52"]["inputs"]["unet_name"] == "seedvr2_3b_int8_convrot.safetensors"
+    assert "width" not in p2s["74:48"]["inputs"] and "height" not in p2s["74:48"]["inputs"]
+    print("== 8. 入库链路（VOSR2/SeedVR2 解析通过 + 绑定挑中 + 三处注入 + 坏图仍被拒） OK")
 
 
 def test_cmd_alias_and_strip():
@@ -575,6 +646,80 @@ def test_size_guard():
     print("== 10. 尺寸护栏（档位 8g/12g/16g + 旧名映射 / 输入拦截 / 自适应降倍率 / 文案） OK")
 
 
+def test_seedvr2_workflow():
+    """SeedVR2（单步采样器型，v7.7.12）：收成放大类，倍率/种子落到正确节点。"""
+    roles, errors = wp.parse_workflow(SEEDVR2)
+    assert not errors, errors
+    assert roles and roles["kind"] == "upscale", roles
+    # 有采样器，但它是「放大执行体」（不是出图链路）
+    assert roles["sampler"] == "74:54", roles["sampler"]
+    assert roles["image_node"] == "75" and roles["save"]["node"] == "73", roles
+    assert roles["apply"] == {"node": "74:54", "class_type": "KSampler"}, roles["apply"]
+    assert roles["loader"] == {"node": "74:52", "class_type": "UNETLoader"}, roles["loader"]
+    assert roles["model_file"] == "seedvr2_3b_int8_convrot.safetensors", roles["model_file"]
+    # 回溯必须**穿过采样器**：解码 / 采样 / 编码 / 预处理 / 缩放都要在链上
+    for nid in ("74:59", "74:55", "74:54", "74:48", "74:58", "74:57"):
+        assert nid in roles["chain_nodes"], (nid, roles["chain_nodes"])
+    # 倍率：ResizeImageMaskNode 的**带点号**字段
+    assert roles["scale"]["node"] == "74:57", roles["scale"]
+    assert roles["scale"]["field"] == "resize_type.multiplier", roles["scale"]
+    assert roles["scale"]["default"] == 2, roles["scale"]
+    assert roles["seed"] == {"node": "74:54", "field": "seed",
+                             "default": 219920970385576}, roles["seed"]
+    # 关键：正向/负向/宽高必须为空——绝不能把 unet_name 当文本框、给 VAEEncodeTiled 造 width
+    assert roles["positive"] is None and roles["negative"] is None, roles
+    assert roles["latent"] is None, roles["latent"]
+    # 真实导出（logs/seedvr2-3b-int8.json）也过一遍
+    real = ROOT / "logs" / "seedvr2-3b-int8.json"
+    if real.is_file():
+        r2, e2 = wp.parse_workflow(json.loads(real.read_text(encoding="utf-8")))
+        assert not e2 and r2["kind"] == "upscale", (e2, r2)
+        assert r2["scale"]["field"] == "resize_type.multiplier", r2["scale"]
+        assert r2["seed"]["node"] == "74:54" and r2["image_node"] == "75"
+    print("== 11. 放大类工作流解析（SeedVR2 单步采样器型：穿采样器回溯 + 带点号倍率） OK")
+
+
+def test_scale_mode_guard():
+    """倍率模式守卫：`resize_type` 不是「按倍率」时，multiplier 字段不算可写倍率。"""
+    wf = json.loads(json.dumps(SEEDVR2))
+    wf["74:57"]["inputs"]["resize_type"] = "scale by side length"
+    roles, errors = wp.parse_workflow(wf)
+    assert not errors and roles["kind"] == "upscale", (errors, roles)
+    assert roles["scale"] is None, roles["scale"]
+    print("== 12. 倍率模式守卫（非 multiplier 模式不认 resize_type.multiplier） OK")
+
+
+def test_text_field_safety_net():
+    """安全网（v7.7.12）：资源名字段（unet_name 等）绝不当提示词写入点。"""
+    # ① 有采样器、无文本编码点、也没图输入 → 明确报错，且提示「按放大工作流上传」
+    bad = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "a.safetensors",
+                                                     "weight_dtype": "default"}},
+        "2": {"class_type": "SeedVR2Conditioning", "inputs": {"model": ["1", 0]}},
+        "3": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 1024}},
+        "4": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 1, "cfg": 1,
+                                                   "model": ["1", 0], "positive": ["2", 0],
+                                                   "negative": ["2", 1],
+                                                   "latent_image": ["3", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["4", 0]}},
+    }
+    roles, errors = wp.parse_workflow(bad)
+    assert roles is None and errors, (roles, errors)
+    assert any("可写入文本节点" in e for e in errors), errors
+    assert any("放大工作流" in e for e in errors), errors
+    # ② 走到 UNETLoader 时，定位必须返回 None（旧逻辑会返回 ("1", "unet_name")）
+    assert wp._resolve_text_write_node(bad, ("2", 0)) is None
+    # ③ 正常文本节点不受影响
+    ok = {"2": {"class_type": "CLIPTextEncode", "inputs": {"text": "1girl", "clip": ["1", 1]}}}
+    assert wp._resolve_text_write_node(ok, ("2", 0)) == ("2", "text")
+    # ④ 资源名判定本身
+    assert wp._is_resource_field("unet_name", bad["1"]) is True
+    assert wp._is_resource_field("lora_name", {"inputs": {"lora_name": "x.safetensors"}}) is True
+    assert wp._is_resource_field("text", {"inputs": {"text": "1girl"}}) is False
+    assert wp._is_resource_field("positive", {"inputs": {"positive": "1girl"}}) is False
+    print("== 13. 文本写入点安全网（资源名判失败 + 明确报错 + 正常文本框不受影响） OK")
+
+
 if __name__ == "__main__":
     test_parse_upscale_workflow()
     test_reject_cases()
@@ -586,4 +731,7 @@ if __name__ == "__main__":
     test_store_import_and_pick()
     test_cmd_alias_and_strip()
     test_size_guard()
-    print("图片放大（解析/参数/倍率/注入/条目/绑定/入库/别名/尺寸护栏）全部通过")
+    test_seedvr2_workflow()
+    test_scale_mode_guard()
+    test_text_field_safety_net()
+    print("图片放大（解析/参数/倍率/注入/条目/绑定/入库/别名/尺寸护栏/SeedVR2/安全网）全部通过")
