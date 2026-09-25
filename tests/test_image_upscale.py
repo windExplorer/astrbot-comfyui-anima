@@ -71,8 +71,10 @@ NAMES = {
     "_parse_scale_list", "_resolve_upscale_scale", "_parse_upscale_args",
     "_upscale_base_rows", "_upscale_base_of", "_resolve_upscale_entry",
     "_load_upscale_base", "_apply_upscale_scale", "_apply_upscale_seed",
+    "_strip_command",
 }
 NS = _load_helpers(NAMES)
+_strip_command = NS["_strip_command"]
 
 _upscale_entries = NS["_upscale_entries"]
 _upscale_entry_enabled = NS["_upscale_entry_enabled"]
@@ -419,6 +421,11 @@ def test_store_import_and_pick():
     assert entry["name"] == "vosr2"
     rec = _upscale_base_of(me, entry)
     assert rec["id"] == wf_id
+    # ★v7.7.8 回归：绑定的记录**必须带工作流 JSON**——`WorkflowStore.get()` 默认会把它摘掉，
+    #   只拿 roles 的话出图时 prompt 是空字典，报「图片输入节点写入失败」（线上踩的就是这个）。
+    assert rec.get("wf_json"), "取回的记录丢了 wf_json（应为 with_json=True 取）"
+    _, _p = _load_upscale_base(rec)
+    assert _p and rec["roles"]["image_node"] in _p, "拼出来的 prompt 里没有图片节点"
 
     # 取完整记录 → 注入「输入图 + 倍率 + 种子」三处
     full = st.get(wf_id, with_json=True)
@@ -438,6 +445,38 @@ def test_store_import_and_pick():
     print("== 8. 入库链路（解析通过 + 条目绑定 + 三处注入 + 坏图仍被拒） OK")
 
 
+def test_cmd_alias_and_strip():
+    """指令别名（含简称「放大」）与参数剥离（v7.7.8）。"""
+    # 注册别名必须含「放大」（并保留原有几个）
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and n.name == "cmd_image_upscale")
+    alias: set[str] = set()
+    for dec in fn.decorator_list:
+        for kw in getattr(dec, "keywords", []) or []:
+            if kw.arg == "alias" and isinstance(kw.value, ast.Set):
+                alias = {e.value for e in kw.value.elts if isinstance(e, ast.Constant)}
+    assert "放大" in alias, f"别名里没有「放大」：{sorted(alias)}"
+    assert {"图片超分", "超分", "放大图片"} <= alias, sorted(alias)
+
+    # 参数剥离：主名与各别名都要能剥掉（首 token 命中后返回剩余参数）
+    ALIASES = ("放大", "放大图片", "图片超分", "超分")
+    cases = [
+        ("/图片放大 3x", "3x"),
+        ("/放大 3x", "3x"),
+        ("/放大", ""),
+        ("/放大 vosr2 --倍率 4", "vosr2 --倍率 4"),
+        ("/放大图片 2倍", "2倍"),
+        ("/超分 vosr2 2x", "vosr2 2x"),
+    ]
+    for raw, exp in cases:
+        got = _strip_command(raw, "图片放大", ALIASES)
+        assert got == exp, f"{raw!r}: 期望 {exp!r}，实际 {got!r}"
+    print(f"== 9. 指令别名（含简称「放大」）+ 参数剥离（{len(cases)} 组） OK")
+
+
 if __name__ == "__main__":
     test_parse_upscale_workflow()
     test_reject_cases()
@@ -447,4 +486,5 @@ if __name__ == "__main__":
     test_entries_and_pick()
     test_base_binding()
     test_store_import_and_pick()
-    print("图片放大（解析/参数/倍率/注入/条目/绑定/入库）全部通过")
+    test_cmd_alias_and_strip()
+    print("图片放大（解析/参数/倍率/注入/条目/绑定/入库/别名）全部通过")

@@ -2,6 +2,32 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.8（修复：图片放大报「图片输入节点写入失败」+ 指令加简称「放大」）
+
+**① 修复 `/图片放大` 报「图片输入节点写入失败」**（v7.7.5 引入的 bug）
+
+- **根因**：`_upscale_base_of()` 解析绑定的放大工作流时用的是 `store.get(id)`，
+  而 `WorkflowStore.get()` 默认 `with_json=False` —— **会把 `wf_json` 摘掉**（列表接口省流量
+  用的）。于是 `_load_upscale_base()` 拿到的是 `json.loads("{}")` = **空 prompt**；
+  `roles` 还在、节点 ID 也找到了，但那个节点在空字典里根本不存在 → `set_image_node()` 返回
+  False → 用户看到「放大工作流的图片输入节点写入失败，请检查工作流」。
+  按 id 绑定走的那条分支与「按名字/唯一一个」回退分支都受影响（`list_all()` 同样不含 JSON）。
+- **修法**：`_upscale_base_of()` 一律带 `with_json=True` 取记录（回退分支再按 id 补一次
+  `get(id, with_json=True)`），并在加载后加一道兜底：若工作流 JSON 为空，直接给「记录没有可用
+  工作流内容，请重新上传/重解析」的明确提示，不再报成含糊的节点写入失败。
+
+**② 指令新增简称「放大」**
+
+`/放大` ＝ `/图片放大`（别名现为：`放大`、`放大图片`、`图片超分`、`超分`），用法完全一致：
+`/放大`、`/放大 3x`、`/放大 vosr2 2x`、`/放大 --倍率 4`。帮助文案与 WebUI「更多功能」页的
+用法说明同步更新。
+
+验证：`tests/test_image_upscale.py` 扩到 **9 组** —— 新增「指令别名（含简称 `放大`）+ 参数剥离
+（6 组写法）」，并在真实入库链路里加了本次 bug 的回归断言（取回的记录**必须带 `wf_json`**、
+拼出的 prompt 里必须有图片节点）；全套回归（workflow_v7 14 组、model_walk、baseworkflow_meta、
+draw_card、lora_base_filter、wait_for_result、force_draw、prompt_boost/guard、size_helpers、
+session_isolation、character 99 项等）通过。
+
 ## v7.7.7（图片放大补齐信息卡片：处理中卡 / 结果卡 / 失败卡，全套与出图一致）
 
 此前 `/图片放大` 只有一行文字「正在放大…」，结果才发一张报表卡，且**不受出图卡片开关约束**。

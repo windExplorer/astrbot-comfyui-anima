@@ -33,7 +33,7 @@
       <n-spin :show="loading">
         <div v-if="!entries.length" class="empty">
           还没有添加功能。点右上角「＋ 添加功能」新增一条「图片放大」，绑定放大工作流即可使用
-          <code>/图片放大</code>。
+          <code>/放大</code>（同 <code>/图片放大</code>）。
         </div>
 
         <n-card
@@ -79,11 +79,11 @@
         </n-card>
 
         <div class="usage">
-          <div class="usage-title">指令用法</div>
+          <div class="usage-title">指令用法（<code>/放大</code> 是 <code>/图片放大</code> 的简称，另有 <code>/超分</code>）</div>
           <ul>
-            <li><code>/图片放大</code> — 用**第一个启用**的功能 + 它的默认倍率（图片跟指令一起发，或引用一条带图的消息）</li>
-            <li><code>/图片放大 3x</code> — 指定倍率（也支持 <code>x3</code>、<code>3倍</code>、<code>--倍率 3</code>）</li>
-            <li><code>/图片放大 {{ entries[0]?.name || "功能名" }} 2x</code> — 点名功能 + 倍率（也可用绑定的放大工作流名）</li>
+            <li><code>/放大</code> — 用**第一个启用**的功能 + 它的默认倍率（图片跟指令一起发，或引用一条带图的消息）</li>
+            <li><code>/放大 3x</code> — 指定倍率（也支持 <code>x3</code>、<code>3倍</code>、<code>--倍率 3</code>）</li>
+            <li><code>/放大 {{ entries[0]?.name || "功能名" }} 2x</code> — 点名功能 + 倍率（也可用绑定的放大工作流名）</li>
           </ul>
           <div class="usage-note">
             倍率不在该功能的「允许倍率」里时自动改用它的默认倍率；停用的功能不参与默认选择、也不能被点名；
@@ -300,7 +300,7 @@ const FEATURE_KINDS = [
     kind: "upscale",
     name: "图片放大（超分）",
     icon: "🔍",
-    desc: "用户带图 + /图片放大 [功能名] [倍率]，把图送进纯放大工作流超分（如 TE-Speed VOSR2）",
+    desc: "用户带图 + /放大 [功能名] [倍率]，把图送进纯放大工作流超分（如 TE-Speed VOSR2）",
   },
 ];
 

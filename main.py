@@ -8245,14 +8245,31 @@ class ComfyUIDrawPlugin(Star):
 
         顺序：base_id（校验它确实是放大类且解析通过）→ base_name / 旧版 workflow 名
         → 库里唯一一个放大工作流。找不到/绑错类型时抛 ValueError（文案直接给用户看）。
+
+        ★v7.7.8：**必须带 `with_json=True` 取记录**——`WorkflowStore.get()` 默认会把
+        `wf_json` 摘掉（列表接口省流量用的），只拿 roles 的话出图时会得到一个空 prompt，
+        表现为「图片输入节点写入失败」（节点照 roles 找到了，但那个节点在空字典里根本不存在）。
         """
         store = getattr(self, "workflow_store", None)
         if store is None:
             raise ValueError("基础工作流库未初始化（插件启动异常），暂时无法放大")
+
+        def _with_json(rec: dict | None) -> dict | None:
+            """确保记录带工作流 JSON（拼装/注入要用）。"""
+            if not rec:
+                return rec
+            if rec.get("wf_json"):
+                return rec
+            try:
+                _full = store.get(int(rec.get("id")), with_json=True)
+                return _full or rec
+            except Exception:
+                return rec
+
         bid = str((entry or {}).get("base_id") or "").strip()
         if bid:
             try:
-                rec = store.get(int(bid)) if bid.isdigit() else None
+                rec = store.get(int(bid), with_json=True) if bid.isdigit() else None
             except Exception:
                 rec = None
             if rec:
@@ -8268,20 +8285,20 @@ class ComfyUIDrawPlugin(Star):
                         f"绑定的放大工作流「{rec.get('name')}」解析未通过："
                         f"{rec.get('parse_msg') or '未知原因'}，请重新解析或重新上传。"
                     )
-                return rec
+                return _with_json(rec)
             logger.warning(f"【放大】 base_id={bid} 不存在（可能已被删除），回退按名字解析")
-        rows = self._upscale_base_rows()
+        rows = self._upscale_base_rows()      # 列表接口：只有 roles，没有 wf_json
         want = str((entry or {}).get("base_name") or "").strip()
         if want:
             low = want.lower()
             for w in rows:
                 if str(w.get("name") or "").strip().lower() == low:
-                    return w
+                    return _with_json(w)
             for w in rows:
                 _nm = str(w.get("name") or "").strip().lower()
                 _fn = str(w.get("file_name") or "").strip().lower()
                 if (_nm and (_nm in low or low in _nm)) or (_fn and low in _fn):
-                    return w
+                    return _with_json(w)
             raise ValueError(
                 f"绑定的放大工作流「{want}」不存在或未通过解析，请到「更多功能」页改绑一个。"
             )
@@ -8291,7 +8308,7 @@ class ComfyUIDrawPlugin(Star):
                 "（如 TE-Speed VOSR2：图 → 放大 → 保存，无提示词、无采样器），解析通过后再试。"
             )
         if len(rows) == 1:
-            return rows[0]
+            return _with_json(rows[0])
         _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5])
         raise ValueError(
             f"这条功能没有绑定放大工作流，而库里可用 {len(rows)} 个（{_names}）："
@@ -8502,6 +8519,15 @@ class ComfyUIDrawPlugin(Star):
             )
             return
         roles = rec.get("roles") or {}
+        if not prompt:
+            # 兜底：记录在但工作流 JSON 为空（损坏/半途入库）→ 给明确原因，别报成「节点写入失败」
+            logger.warning(f"【放大·失败】 绑定的放大工作流「{_wfname}」工作流 JSON 为空")
+            await self._send(
+                event,
+                f"绑定的放大工作流「{_wfname}」没有可用的工作流内容，"
+                "请到「基础工作流」页重新上传或重解析后再试。",
+            )
+            return
         node = str(roles.get("image_node") or "").strip() or (
             workflow_builder.find_image_loader_node(prompt) or ""
         )
@@ -8786,16 +8812,16 @@ class ComfyUIDrawPlugin(Star):
                     pass
             await self._safe_close(client)
 
-    @filter.command("图片放大", alias={"放大图片", "图片超分", "超分"})
+    @filter.command("图片放大", alias={"放大", "放大图片", "图片超分", "超分"})
     async def cmd_image_upscale(self, event: AstrMessageEvent):
-        """图片放大（超分）。用法：/图片放大 [功能名] [倍率]
+        """图片放大（超分）。用法：/放大 [功能名] [倍率]（同 /图片放大）
 
         把消息里（或引用的）图片送进纯放大工作流超分，例如：
-        /图片放大、/图片放大 vosr2、/图片放大 3x、/图片放大 vosr2 --倍率 4"""
+        /放大、/放大 3x、/放大 vosr2 2x、/图片放大 vosr2 --倍率 4"""
         args = self._strip_command(
             (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
             "图片放大",
-            ("放大图片", "图片超分", "超分"),
+            ("放大", "放大图片", "图片超分", "超分"),
         )
         wf_spec, scale = self._parse_upscale_args(args or "")
         logger.info(f"【放大】 指令解析：功能={wf_spec!r} 倍率={scale}")
