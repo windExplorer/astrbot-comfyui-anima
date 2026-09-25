@@ -1043,6 +1043,50 @@ def find_multi_image_node(prompt: dict) -> "dict | None":
     return best
 
 
+def find_size_switch(prompt: dict) -> "dict | None":
+    """找图生图的「尺寸来源开关」（v7.7.39，如 Qwen 2.1 Edit 的 ComfySwitchNode）。
+
+    判定：`switch` 输入是布尔，且 `on_true`/`on_false` 两路连线**恰好一路**指向
+    EmptyLatentImage 类节点（自定义尺寸侧）、另一路非 latent 节点（参考图侧）。
+    返回 {"node", "field", "empty_side"}（empty_side=指向 EmptyLatentImage 的那路）；
+    没有返回 None。
+    """
+    for nid, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        ins = node.get("inputs") or {}
+        sw = ins.get("switch")
+        if not isinstance(sw, bool):
+            continue
+        sides: dict = {}
+        ok = True
+        for k in ("on_true", "on_false"):
+            v = ins.get(k)
+            if not (isinstance(v, list) and len(v) >= 2 and str(v[0]) in prompt):
+                ok = False
+                break
+            ct = str((prompt[str(v[0])] or {}).get("class_type") or "").lower()
+            sides[k] = "emptylatentimage" in ct
+        if not ok or sides["on_true"] == sides["on_false"]:
+            continue
+        return {
+            "node": str(nid),
+            "field": "switch",
+            "empty_side": "on_true" if sides["on_true"] else "on_false",
+        }
+    return None
+
+
+def set_size_switch(prompt: dict, sw: dict, enable: bool) -> bool:
+    """拨动尺寸来源开关：enable=True → 用 EmptyLatentImage（自定义尺寸生效）；
+    enable=False → 用参考图（on_* 另一路）。写入布尔值（ComfySwitchNode 期待 bool）。"""
+    node = _get_node(prompt, (sw or {}).get("node"))
+    if node is None:
+        return False
+    node.setdefault("inputs", {})[str((sw or {}).get("field") or "switch")] = bool(enable)
+    return True
+
+
 def prepare_multi_image_refs(
     prompt: dict, roles: dict, image_names: list[str]
 ) -> "list[str | None] | None":

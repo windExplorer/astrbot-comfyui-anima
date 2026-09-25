@@ -169,10 +169,31 @@ def test_short_hw_name():
     print("== 5. 硬件名精简 OK")
 
 
+def test_size_switch():
+    """尺寸来源开关（Qwen 2.1 Edit 的 ComfySwitchNode）：识别 + 拨动。"""
+    sw = wb.find_size_switch(QWEN_MULTI)
+    assert sw and sw["node"] == "459:468" and sw["empty_side"] == "on_true", sw
+    # 拨 true → EmptyLatentImage 侧（自定义尺寸）；拨 false → 参考图侧
+    assert wb.set_size_switch(QWEN_MULTI, sw, True) is True
+    assert QWEN_MULTI["459:468"]["inputs"]["switch"] is True
+    assert wb.set_size_switch(QWEN_MULTI, sw, False) is True
+    assert QWEN_MULTI["459:468"]["inputs"]["switch"] is False
+    # 普通工作流（无开关）→ None
+    assert wb.find_size_switch({"1": {"class_type": "KSampler", "inputs": {}}}) is None
+    # 两路都指向 EmptyLatentImage（语义不明）→ 不识别
+    amb = {"9": {"class_type": "ComfySwitchNode",
+                 "inputs": {"switch": True, "on_true": ["1", 0], "on_false": ["2", 0]}},
+           "1": {"class_type": "EmptyLatentImage", "inputs": {}},
+           "2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+    assert wb.find_size_switch(amb) is None
+    print("== 6. 尺寸来源开关（识别/拨动/歧义不识别） OK")
+
+
 if __name__ == "__main__":
     test_parse_multi_image()
     test_prepare_multi_image_refs()
     test_find_multi_image_node_none()
     test_ref_selector()
     test_short_hw_name()
+    test_size_switch()
     print("多参考图图生图全部通过")

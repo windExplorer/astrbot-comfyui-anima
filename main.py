@@ -6473,7 +6473,15 @@ class ComfyUIDrawPlugin(Star):
         #   ③ 最高支持档位（max_size_tier，默认 2K）：超预算等比降级
         #   ④ 最大宽/高（max_width/max_height）：最后硬裁剪
         # v7.0.17：比例/档位关键词只扫**用户原话**（此前扫 LLM 画面描述，`portrait` 会误触发）
+        # v7.7.39：图生图「尺寸来源开关」——用户**显式**传了尺寸（--w/--h 或比例词）且工作流
+        # 有 ComfySwitchNode 这类开关时，拨开关走 EmptyLatentImage（自定义尺寸生效）；
+        # 没传 → 开关保持/写回 false，尺寸=参考图（多图=图1）。无开关的工作流行为不变。
+        _size_sw = workflow_builder.find_size_switch(prompt) if init_images else None
+        _explicit_size = bool(width or height)
         _ratio_wh, _tier_req = self._resolve_ratio_size(_ratio_src, width, height)
+        if _ratio_wh is not None:
+            _explicit_size = True
+        _custom_size = bool(init_images and _size_sw and _explicit_size)
         _dw = int(wf.get("default_width", 512) or 512)
         _dh = int(wf.get("default_height", 512) or 512)
         _max_tier = _tier_key_norm(wf.get("max_size_tier")) or _SIZE_TIER_DEFAULT
@@ -6518,8 +6526,8 @@ class ComfyUIDrawPlugin(Star):
             f"={(_ratio_src or '')[:60]!r}）"
         )
         # v7.0.2：最大宽高限制（max_width/max_height，留空=不限制）——
-        # 超限按比例等比缩到限内并对齐 8 的倍数（图生图不适用）。
-        if not init_images and (w and h):
+        # 超限按比例等比缩到限内并对齐 8 的倍数；v7.7.39：图生图「自定义尺寸」时同样适用。
+        if (not init_images or _custom_size) and (w and h):
             def _wh_limit(key: str):
                 v = str(wf.get(key) or "").strip()
                 return int(v) if v.isdigit() and int(v) > 0 else None
@@ -6542,7 +6550,7 @@ class ComfyUIDrawPlugin(Star):
         #   all   ：注入「所有」EmptyLatentImage —— 多 latent 串联工作流前后各有一个
         #           latent，尺寸必须同步，否则构图被拉伸
         #   none  ：完全不注入，沿用工作流 JSON 原值 —— 多格拼接等尺寸固定的工作流
-        if init_images:
+        if init_images and not _custom_size:
             res_nodes: list = []
         else:
             _res_mode = (wf.get("resolution_mode") or "single").strip().lower()
@@ -6566,6 +6574,13 @@ class ComfyUIDrawPlugin(Star):
         for _rn in res_nodes:
             workflow_builder.set_number_node(prompt, _rn, width_field, w)
             workflow_builder.set_number_node(prompt, _rn, height_field, h)
+        if _size_sw:
+            # 拨尺寸来源开关：自定义尺寸（用户显式传了宽高）→ EmptyLatentImage；
+            # 否则写回 false → 参考图（多图=图1）。写入 bool（ComfySwitchNode 期待布尔）。
+            workflow_builder.set_size_switch(prompt, _size_sw, enable=_custom_size)
+            logger.info(
+                f"【宽高】 图生图尺寸开关 → {'自定义尺寸（EmptyLatentImage ' + str(w) + 'x' + str(h) + '）' if _custom_size else '参考图尺寸'}"
+            )
 
         # v7.4.4：算出本次**实际输入尺寸**，写进图库大图信息的「输入尺寸」栏。
         # 旧版工作流此前这一栏拿不到值（面板直接不显示），其实是可以适配的：
@@ -7048,8 +7063,13 @@ class ComfyUIDrawPlugin(Star):
         # 万一还是拿不到（图生图等极端情况），用实际输入尺寸（参考图 / 工作流 JSON）兜底。
         # v7.7.22：图生图的输出尺寸由参考图决定（插件不改宽高），所以卡片**直接显示
         # 输入图尺寸**——工作流里配的默认宽高对图生图没有意义，显示它只会误导。
+        # v7.7.39：例外——用户**显式传了尺寸**且工作流有「尺寸来源开关」时，开关已拨向
+        # EmptyLatentImage、注入的就是 w/h，卡片「尺寸」要显示**注入尺寸**（与实际输出
+        # 对应）；「输入」胶囊仍是参考图尺寸。
         _disp_w, _disp_h = w, h
-        if is_img2img and locals().get("_in_w") and locals().get("_in_h"):
+        if is_img2img and locals().get("_custom_size"):
+            pass  # 自定义尺寸：w/h 就是注入值，直接用
+        elif is_img2img and locals().get("_in_w") and locals().get("_in_h"):
             _disp_w, _disp_h = _in_w, _in_h
         elif not (_disp_w and _disp_h) and locals().get("_in_w") and locals().get("_in_h"):
             _disp_w, _disp_h = _in_w, _in_h

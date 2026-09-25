@@ -2,6 +2,22 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.39（图生图支持自定义尺寸：自动拨「尺寸来源开关」）
+
+Qwen 2.1 Edit 这类工作流的 latent 挂在 **ComfySwitchNode** 上：`switch=false` 走参考
+latent（尺寸跟参考图，多图=图1），`switch=true` 走 EmptyLatentImage（自定义尺寸才生效）。
+此前图生图一律不注入宽高，用户传 `--w/--h` 也无效。
+
+- 新增 `workflow_builder.find_size_switch` / `set_size_switch`：通用识别「`switch` 为布尔 +
+  `on_true`/`on_false` 两路、恰好一路是 EmptyLatentImage」的切换节点（两路同为 latent 的
+  歧义结构不识别）；
+- **联动规则**：图生图时用户**显式**传了尺寸（`--w/--h` 或比例词命中）→ 自动拨开关到
+  EmptyLatentImage 侧并按分辨率机制注入宽高；没传 → 开关写回 `false`，尺寸=参考图；
+  **没有开关的工作流行为完全不变**；工作流配的 max_width/max_height 此时同样生效；
+- **卡片尺寸对应**：自定义尺寸时「尺寸」显示注入值（与实际输出一致），「输入」仍是
+  参考图尺寸；未传尺寸时「尺寸」=参考图尺寸（多图=图1）；
+- 新增开关识别/拨动测试（含两路皆 latent 的歧义结构不识别）。
+
 ## v7.7.38（WebUI：新版工作流编辑弹窗也加「参考图上限」）
 
 v7.7.37 只把「参考图上限（多参图生图）」加到了旧版节点配置区——新版工作流
