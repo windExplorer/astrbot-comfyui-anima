@@ -136,6 +136,15 @@
             <n-space :size="6">
               <n-button size="tiny" @click="move(idx, -1)" :disabled="idx === 0">↑</n-button>
               <n-button size="tiny" @click="move(idx, 1)" :disabled="idx === entries.length - 1">↓</n-button>
+              <n-button
+                v-if="!isMatting(e) && !e.is_default"
+                size="tiny"
+                type="success"
+                ghost
+                @click="setDefault(idx)"
+              >
+                设为默认
+              </n-button>
               <n-button size="tiny" type="primary" ghost @click="openForm(idx)">编辑</n-button>
               <n-button size="tiny" type="error" ghost @click="remove(idx)">删除</n-button>
             </n-space>
@@ -328,10 +337,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { useMessage } from "naive-ui";
+import { useDialog, useMessage } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 
 const message = useMessage();
+const dialog = useDialog();
 const loading = ref(false);
 const saving = ref(false);
 const msg = ref("");
@@ -704,12 +714,31 @@ async function move(idx: number, delta: number) {
   await saveAll("顺序已保存");
 }
 
+/** 列表里直接「设为默认」：清掉其它放大条目的默认，立即保存 */
+async function setDefault(idx: number) {
+  const e = entries.value[idx];
+  if (!e || isMatting(e) || e.is_default) return;
+  entries.value.forEach((x: any) => {
+    if (!isMatting(x)) x.is_default = false;
+  });
+  e.is_default = true;
+  await saveAll(`已把「${e.name || ""}」设为默认放大功能`);
+}
+
 async function remove(idx: number) {
   const e = entries.value[idx] || {};
-  const arr = entries.value.slice();
-  arr.splice(idx, 1);
-  entries.value = arr;
-  await saveAll(`已删除「${e.name || ""}」`);
+  dialog.warning({
+    title: "删除功能",
+    content: `确定删除「${e.name || "(未命名)"}」吗？删除后对应指令不可用（绑定的基础工作流不受影响）。`,
+    positiveText: "删除",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      const arr = entries.value.slice();
+      arr.splice(idx, 1);
+      entries.value = arr;
+      await saveAll(`已删除「${e.name || ""}」`);
+    },
+  });
 }
 
 async function load() {
@@ -902,6 +931,13 @@ onMounted(load);
 }
 .feat-modal.pick {
   width: min(520px, 94vw);
+}
+/* ★根因修复：naive-ui 的表单项内容区默认横向 flex，控件和说明会被排成一行（说明跑到右边）。
+   这里强制竖排：控件在上、说明在下。 */
+.feat-modal :deep(.n-form-item-blank) {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
 }
 .kind-line {
   display: flex;

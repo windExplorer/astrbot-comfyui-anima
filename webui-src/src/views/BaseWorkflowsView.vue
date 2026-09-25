@@ -573,6 +573,13 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* naive-ui 表单项内容区默认横向 flex，控件+说明会被排成一行（说明跑到右边）→ 强制竖排 */
+.bw-modal { width: min(720px, 94vw); }
+.bw-modal :deep(.n-form-item-blank) {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+}
 .bw-view { height: 100%; overflow: auto; padding: 0 4px; }
 .view-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
 .view-head h2 { margin: 0 0 4px; }
