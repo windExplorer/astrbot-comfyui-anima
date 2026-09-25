@@ -4,8 +4,10 @@
 1) `parse_workflow` 对抠图工作流（Qwen Image 2.1 Edit 去背景）的注记：`kind=img2img`、
    图输入 / 采样器（含默认步数）/ 正向·负向写入点，以及**工作流当前提示词**
    （`positive.default_text`，前端表单预填就靠它）；
-2) `_resolve_matting_base`：配置绑定（ID / 名字 / 包含）→ 库里唯一一个 → 各类失败文案
-   （库里没有 / 绑到放大类 / 绑到没有图输入的工作流）；
+2) 条目（v7.7.16 改为「更多功能」条目式，与图片放大同一套）：
+   `_matting_entries`（features 过滤 + 旧版单条 matting 配置折算）、
+   `_resolve_matting_entry`（第一个启用 / 点名功能名·key·绑定工作流名 / 停用与找不到的文案）、
+   `_matting_base_of`（条目绑定的工作流校验：放大类 / 无图输入 / 解析失败 / 多候选）；
 3) 注入：步数写进采样器、提示词写进正向节点；**留空就不写**（= 沿用工作流原值）；
 4) 真实入库链路：上传 → parse_ok → default_text 可用于预填 → 挑中 → 注入，
    并确认模型 / CLIP / VAE 等资源节点没被动过；
@@ -60,7 +62,8 @@ def _load_helpers(want: set[str]) -> dict:
 
 
 NAMES = {
-    "_matting_cfg", "_matting_base_rows", "_resolve_matting_base",
+    "_matting_entries", "_matting_base_rows", "_resolve_matting_entry",
+    "_matting_base_of", "_upscale_entry_enabled",
     "_load_matting_base", "_apply_matting_steps", "_apply_matting_prompt",
     "_apply_matting_pixel_target", "_strip_command",
 }
@@ -70,7 +73,9 @@ _load_matting_base = NS["_load_matting_base"]
 _apply_matting_steps = NS["_apply_matting_steps"]
 _apply_matting_prompt = NS["_apply_matting_prompt"]
 _apply_matting_pixel_target = NS["_apply_matting_pixel_target"]
-_resolve_matting_base = NS["_resolve_matting_base"]
+_resolve_matting_entry = NS["_resolve_matting_entry"]
+_matting_base_of = NS["_matting_base_of"]
+_matting_entries = NS["_matting_entries"]
 
 
 class _FakeStore:
@@ -101,9 +106,10 @@ class _FakePlugin:
         return v if v is not None else default
 
 
-# `_resolve_matting_base` 内部会调这两个（摘出来的）→ 绑给假 self
-_FakePlugin._matting_cfg = NS["_matting_cfg"]            # type: ignore[attr-defined]
-_FakePlugin._matting_base_rows = NS["_matting_base_rows"]  # type: ignore[attr-defined]
+# `_resolve_matting_entry` / `_matting_base_of` 内部会调这几个（摘出来的）→ 绑给假 self
+_FakePlugin._matting_entries = NS["_matting_entries"]            # type: ignore[attr-defined]
+_FakePlugin._matting_base_rows = NS["_matting_base_rows"]        # type: ignore[attr-defined]
+_FakePlugin._upscale_entry_enabled = staticmethod(NS["_upscale_entry_enabled"])  # type: ignore[attr-defined]
 
 
 # ── 与 logs/qwen2.1抠图.json 等价的抠图工作流（Qwen Image 2.1 Edit 去背景）──
@@ -191,61 +197,109 @@ _ROWS = [
 ]
 
 
-def test_resolve_matting_base():
-    """挑工作流：ID / 名字 / 包含 / 唯一，以及各种绑错的文案。"""
-    # ① 库里只有 1 个可用候选 → 不配 base_id 也能自动选中
-    me = _FakePlugin([_ROWS[0]], {"matting": {}})
-    assert _resolve_matting_base(me, "")["id"] == 1
-    # ② 配置绑定 ID
-    me = _FakePlugin(_ROWS, {"matting": {"base_id": "1"}})
-    assert _resolve_matting_base(me, "")["id"] == 1
-    # ③ 指令参数点名：名字 / 包含 / 文件名包含
-    assert _resolve_matting_base(me, "抠图 Qwen2.1")["id"] == 1
-    assert _resolve_matting_base(me, "qwen2.1抠图")["id"] == 1
-    # ④ 放大类不可绑（即使显式按 ID 绑）
-    me_up = _FakePlugin(_ROWS, {"matting": {"base_id": "2"}})
+def _entry(**kw):
+    """造一条抠图功能条目（features 列表里的 kind=matting 项）。"""
+    base = {"kind": "matting", "name": "抠图", "enabled": True, "base_id": "",
+            "steps": 0, "prompt": "", "no_upscale": True, "timeout": 300}
+    base.update(kw)
+    return base
+
+
+def test_matting_entries():
+    """条目读取：只收 features 里 kind=matting 的；旧版单条 matting 配置折算成一条。"""
+    feats = [
+        {"kind": "upscale", "name": "vosr2", "enabled": True, "base_id": "3"},
+        {"kind": "matting", "name": "抠图", "enabled": True, "base_id": "1"},
+    ]
+    me = _FakePlugin(_ROWS, {"features": feats})
+    rows = _matting_entries(me)
+    assert len(rows) == 1 and rows[0]["name"] == "抠图" and rows[0]["base_id"] == "1", rows
+    # 旧版单条配置（features 里没有抠图条目时）→ 折算成一条（v7.7.13~v7.7.15 升级兼容）
+    me2 = _FakePlugin(_ROWS, {"features": [feats[0]],
+                              "matting": {"enabled": True, "base_id": "7",
+                                          "steps": 30, "prompt": "去背景", "timeout": 240}})
+    rows2 = _matting_entries(me2)
+    assert len(rows2) == 1 and rows2[0]["base_id"] == "7" and rows2[0]["steps"] == 30, rows2
+    assert rows2[0]["no_upscale"] is True and rows2[0]["timeout"] == 240, rows2
+    # 两者都没有 → 空
+    assert _matting_entries(_FakePlugin(_ROWS, {})) == []
+    print("== 2. 抠图条目读取（features 过滤 + 旧版单条配置折算） OK")
+
+
+def test_resolve_matting_entry():
+    """挑功能条目：第一个启用的 / 点名（功能名·key·绑定工作流名）/ 停用与找不到的文案。"""
+    entries = [_entry(name="抠图", base_id="1"),
+               _entry(name="抠真人", base_id="1", enabled=False)]
+    me = _FakePlugin(_ROWS, {"features": entries})
+    # 不点名 → 第一个启用的
+    assert _resolve_matting_entry(me, "")["name"] == "抠图"
+    # 点名：功能名 / 条目 key
+    assert _resolve_matting_entry(me, "抠图")["name"] == "抠图"
+    entries[0]["__template_key"] = "k123"
+    assert _resolve_matting_entry(me, "k123")["name"] == "抠图"
+    # 点名**绑定的工作流**（名字 / ID / 文件名包含）也能命中
+    assert _resolve_matting_entry(me, "抠图 Qwen2.1")["name"] == "抠图"
+    assert _resolve_matting_entry(me, "1")["name"] == "抠图"
+    assert _resolve_matting_entry(me, "qwen2.1抠图")["name"] == "抠图"
+    # 点到停用的 → 明确提示（而不是"找不到"）
     try:
-        _resolve_matting_base(me_up, "")
-        raise AssertionError("绑到放大类应当报错")
+        _resolve_matting_entry(me, "抠真人")
+        raise AssertionError("点名停用条目应报错")
     except ValueError as e:
-        assert "放大类" in str(e), e
-    # ⑤ 没有图输入的工作流不可绑
-    me_t2i = _FakePlugin(_ROWS, {"matting": {"base_id": "3"}})
+        assert "已停用" in str(e), e
+    # 点不存在的 → 列出现有功能
     try:
-        _resolve_matting_base(me_t2i, "")
-        raise AssertionError("绑到无图输入的工作流应当报错")
+        _resolve_matting_entry(me, "不存在的")
+        raise AssertionError("点名不存在应报错")
     except ValueError as e:
-        assert "没有图片输入节点" in str(e), e
-    # ⑥ 解析未通过 → 提示重新解析（且它不会出现在候选里）
-    me_bad = _FakePlugin(_ROWS, {"matting": {"base_id": "4"}})
+        assert "没找到叫「不存在的」" in str(e), e
+    # 全部停用 / 没有条目
+    me_off = _FakePlugin(_ROWS, {"features": [_entry(name="抠图", enabled=False)]})
     try:
-        _resolve_matting_base(me_bad, "")
-        raise AssertionError("绑到解析失败的工作流应当报错")
+        _resolve_matting_entry(me_off, "")
+        raise AssertionError("全部停用应报错")
     except ValueError as e:
-        assert "解析未通过" in str(e), e
-    # ⑦ 库里一个候选都没有 → 引导去基础工作流页
-    only_t2i = _FakePlugin([_ROWS[2]], {"matting": {}})
+        assert "都被停用" in str(e), e
     try:
-        _resolve_matting_base(only_t2i, "")
-        raise AssertionError("没有可用抠图工作流时应报错")
+        _resolve_matting_entry(_FakePlugin(_ROWS, {}), "")
+        raise AssertionError("没有条目应报错")
+    except ValueError as e:
+        assert "＋ 添加功能" in str(e), e
+    print("== 3. 挑抠图功能条目（第一个启用/点名/停用/不存在/无条目） OK")
+
+
+def test_matting_base_of():
+    """条目绑定的工作流校验：ID / 名字 / 包含 / 唯一 + 放大类·无图输入·解析失败。"""
+    me = _FakePlugin(_ROWS, {})
+    # base_id 绑定
+    assert _matting_base_of(me, _entry(base_id="1"))["id"] == 1
+    # base_name（名字 / 文件名包含）
+    assert _matting_base_of(me, _entry(base_name="抠图 Qwen2.1"))["id"] == 1
+    assert _matting_base_of(me, _entry(base_name="qwen2.1抠图"))["id"] == 1
+    # 没绑 + 库里只有一个候选 → 自动
+    assert _matting_base_of(me, _entry())["id"] == 1
+    # 绑错类型 / 解析失败 → 各自的明确文案
+    for row, tag in ((_ROWS[1], "放大类"), (_ROWS[2], "没有图片输入节点"), (_ROWS[3], "解析未通过")):
+        try:
+            _matting_base_of(me, _entry(base_id=str(row["id"])))
+            raise AssertionError(f"绑到 {tag} 应报错")
+        except ValueError as e:
+            assert tag in str(e), (tag, e)
+    # 没绑 + 多个候选 → 要求到「更多功能」页指定
+    two = _FakePlugin([_ROWS[0], {"id": 5, "name": "抠图B", "parse_ok": True,
+                                  "roles": {"kind": "img2img", "image_node": "1"}}], {})
+    try:
+        _matting_base_of(two, _entry())
+        raise AssertionError("多候选未绑定应报错")
+    except ValueError as e:
+        assert "请到「更多功能」页给它选一个" in str(e), e
+    # 没绑 + 没有候选 → 引导去基础工作流页
+    try:
+        _matting_base_of(_FakePlugin([_ROWS[2]], {}), _entry())
+        raise AssertionError("无候选应报错")
     except ValueError as e:
         assert "还没有可用的抠图工作流" in str(e), e
-    # ⑧ 有多个候选 + 没绑 → 要求指定
-    two = _FakePlugin([_ROWS[0], {"id": 5, "name": "抠图B", "parse_ok": True,
-                                  "roles": {"kind": "img2img", "image_node": "1"}}],
-                      {"matting": {}})
-    try:
-        _resolve_matting_base(two, "")
-        raise AssertionError("多个候选且未绑定时应要求指定")
-    except ValueError as e:
-        assert "请到「更多功能 → 抠图」里指定" in str(e), e
-    # ⑨ 点名不存在的工作流 → 列出可用的
-    try:
-        _resolve_matting_base(me, "不存在的抠图")
-        raise AssertionError("点名不存在时应报错")
-    except ValueError as e:
-        assert "没找到叫「不存在的抠图」" in str(e), e
-    print("== 2. 挑工作流（ID/名字/包含/唯一 + 放大类·无图输入·解析失败·无候选·多候选） OK")
+    print("== 4. 条目绑定的工作流校验（ID/名字/包含/唯一 + 放大类·无图输入·解析失败·多候选） OK")
 
 
 def test_matting_injection():
@@ -274,7 +328,7 @@ def test_matting_injection():
     assert _apply_matting_steps(prompt, {}, 30) is None
     assert _apply_matting_prompt(prompt, {}, "x") is False
     assert _apply_matting_steps(prompt, {"sampler": "不存在的节点"}, 30) is None
-    print("== 3. 注入（步数 / 提示词 / 留空沿用原值 / 无注记不报错） OK")
+    print("== 5. 注入（步数 / 提示词 / 留空沿用原值 / 无注记不报错） OK")
 
 
 def test_store_and_pick():
@@ -290,12 +344,15 @@ def test_store_and_pick():
     rows = st.list_all()
     assert rows and rows[0]["parse_ok"] is True and rows[0]["roles"]["image_node"] == "477"
 
-    # 真实 store 交给挑选逻辑；配置里绑它 + 填了步数与提示词
+    # 真实 store 交给挑选逻辑；一条抠图条目绑它 + 填了步数与提示词
     me = _FakePlugin()
     me.workflow_store = st
-    me._cfg_all = {"matting": {"base_id": str(wf_id), "steps": 40,
-                               "prompt": "去掉背景，输出 PNG"}}
-    rec = _resolve_matting_base(me, "")
+    me._cfg_all = {"features": [{"kind": "matting", "name": "抠图", "enabled": True,
+                                 "base_id": str(wf_id), "steps": 40,
+                                 "prompt": "去掉背景，输出 PNG"}]}
+    entry = _resolve_matting_entry(me, "")
+    assert entry["base_id"] == str(wf_id), entry
+    rec = _matting_base_of(me, entry)
     assert rec["id"] == wf_id and rec.get("wf_json"), rec
     # ★前端预填就靠这两个：工作流里的步数 / 提示词
     assert rec["roles"]["sampler_defaults"]["steps"] == 25
@@ -312,9 +369,9 @@ def test_store_and_pick():
     assert prompt["478:451"]["inputs"]["unet_name"] == "qwen_image_2.1_int8_convrot.safetensors"
     assert prompt["478:453"]["inputs"]["clip_name"] == "qwen3vl_8b_int8_convrot.safetensors"
     assert prompt["478:454"]["inputs"]["vae_name"] == "qwen_image_2.1_vae_bf16.safetensors"
-    # 按名字点名也能挑中
-    assert _resolve_matting_base(me, "抠图 Qwen2.1")["id"] == wf_id
-    print("== 4. 真实入库 + 挑选 + 注入（step/prompt/图；资源节点未被动过） OK")
+    # 按绑定的工作流名点名也能挑中这条功能
+    assert _resolve_matting_entry(me, "抠图 Qwen2.1")["name"] == "抠图"
+    print("== 7. 真实入库 + 挑条目 + 注入（step/prompt/图；资源节点未被动过） OK")
 
 
 def test_pre_scale_no_upscale():
@@ -372,7 +429,7 @@ def test_pre_scale_no_upscale():
     if real.is_file():
         r4, e4 = wp.parse_workflow(json.loads(real.read_text(encoding="utf-8")))
         assert not e4 and r4["pre_scale"]["node"] == "484", (e4, r4.get("pre_scale"))
-    print("== 5. 预处理缩放 + 不放大（小图保持 / 大图缩小 / 关掉不碰 / px 单位 / 无节点） OK")
+    print("== 6. 预处理缩放 + 不放大（小图保持 / 大图缩小 / 关掉不碰 / px 单位 / 无节点） OK")
 
 
 def test_cmd_alias_and_strip():
@@ -405,14 +462,16 @@ def test_cmd_alias_and_strip():
     for raw, exp in cases:
         got = _strip_command(raw, "抠图", ALIASES)
         assert got == exp, f"{raw!r}: 期望 {exp!r}，实际 {got!r}"
-    print(f"== 6. 指令别名（抠图/抠像/去背景/去背）+ 参数剥离（{len(cases)} 组） OK")
+    print(f"== 8. 指令别名（抠图/抠像/去背景/去背）+ 参数剥离（{len(cases)} 组） OK")
 
 
 if __name__ == "__main__":
     test_parse_matting_workflow()
-    test_resolve_matting_base()
+    test_matting_entries()
+    test_resolve_matting_entry()
+    test_matting_base_of()
     test_matting_injection()
-    test_store_and_pick()
     test_pre_scale_no_upscale()
+    test_store_and_pick()
     test_cmd_alias_and_strip()
-    print("抠图（解析 / 挑工作流 / 注入 / 不放大 / 入库 / 指令）全部通过")
+    print("抠图（解析 / 条目 / 挑条目 / 绑定 / 注入 / 不放大 / 入库 / 指令）全部通过")

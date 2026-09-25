@@ -9034,11 +9034,44 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # ------------------------------------------------------------------ #
-    # 抠图（v7.7.13）：独立功能——带提示词的编辑/抠图工作流（Qwen Image 2.1 去背景等）
+    # 抠图（v7.7.13；v7.7.16 改为「更多功能」条目式，与图片放大同一套）
     # ------------------------------------------------------------------ #
-    def _matting_cfg(self) -> dict:
-        """抠图功能配置块（matting，单条）：{enabled, base_id, steps, prompt, timeout}。"""
-        return dict(self._cfg("matting", {}) or {})
+    def _matting_entries(self) -> list[dict]:
+        """「更多功能」里配置的抠图条目（kind=matting），按配置顺序返回。
+
+        条目结构：{__template_key, kind:"matting", name, enabled, base_id,
+                  steps, prompt, no_upscale, timeout}
+
+        兼容 v7.7.13~v7.7.15 的**单条**配置 `matting`（对象）：列表里没有抠图条目时把它
+        折算成一条，免得升级后功能凭空消失（首次到「更多功能」页保存一次即完成迁移）。
+        """
+        raw = self._cfg("features", []) or []
+        out: list[dict] = []
+        if isinstance(raw, list):
+            for it in raw:
+                if not isinstance(it, dict):
+                    continue
+                if str(it.get("kind") or "").strip().lower() == "matting":
+                    out.append(dict(it))
+        if out:
+            return out
+        legacy = self._cfg("matting", {}) or {}
+        if isinstance(legacy, dict) and (legacy.get("base_id") or legacy.get("enabled")):
+            out.append({
+                "kind": "matting",
+                "name": "抠图",
+                "enabled": bool(legacy.get("enabled", False)),
+                "base_id": str(legacy.get("base_id") or "").strip(),
+                "steps": legacy.get("steps", 0),
+                "prompt": legacy.get("prompt", ""),
+                "no_upscale": bool(legacy.get("no_upscale", True)),
+                "timeout": legacy.get("timeout", 300),
+            })
+            logger.info(
+                "【抠图】 检测到旧版单条配置（matting），已按兼容模式折算成一条「更多功能」条目；"
+                "建议到 WebUI「更多功能」页保存一次以完成迁移"
+            )
+        return out
 
     def _matting_base_rows(self) -> list[dict]:
         """基础工作流库里可绑的抠图工作流：解析通过 + **带图输入**（图生图 / 编辑类）。"""
@@ -9060,18 +9093,78 @@ class ComfyUIDrawPlugin(Star):
                 out.append(w)
         return out
 
-    def _resolve_matting_base(self, spec: str = "") -> dict:
-        """决定用哪个抠图工作流：指令参数 > 配置绑定 > 库里唯一一个候选。
+    def _resolve_matting_entry(self, spec: str = "") -> dict:
+        """决定用哪条抠图功能：指令参数点名 > 第一个启用的条目（与图片放大同一套）。
 
-        匹配顺序：ID → 名字（忽略大小写/首尾空格）→ 名字/文件名包含匹配。
-        找不到时抛 ValueError（文案直接给用户看）。
+        点名支持：功能名（如「抠图」）、条目 key、绑定的基础工作流名/ID。
+        没有任何启用的条目时抛 ValueError（文案直接给用户看）。
+        """
+        rows = self._matting_entries()
+        if not rows:
+            raise ValueError(
+                "「更多功能」里还没有添加抠图哦～ 请到 WebUI「更多功能」页点右上角"
+                "「＋ 添加功能」，选「抠图（去背景）」添加一条并绑定工作流后再试。"
+            )
+        want = str(spec or "").strip()
+        if want:
+            low = want.lower()
+            try:
+                _by_id = {str(w.get("id")): w for w in self._matting_base_rows()}
+            except Exception:
+                _by_id = {}
+
+            def _named(e: dict) -> bool:
+                """点名命中：功能名 / 条目 key / 绑定的基础工作流 ID·名字·文件名。"""
+                if str(e.get("__template_key") or "") == want:
+                    return True
+                if str(e.get("name") or "").strip().lower() == low:
+                    return True
+                if str(e.get("base_id") or "").strip() == want:
+                    return True
+                _bn = str(e.get("base_name") or "").strip().lower()
+                if _bn and (_bn == low or low in _bn or _bn in low):
+                    return True
+                _b = _by_id.get(str(e.get("base_id") or "").strip()) or {}
+                for _f in ("name", "file_name"):
+                    _v = str(_b.get(_f) or "").strip().lower()
+                    if _v and (_v == low or low in _v or _v in low):
+                        return True
+                return False
+
+            for e in rows:
+                # 复用通用的「条目启用」判定（语义与图片放大完全一致）
+                if _named(e) and self._upscale_entry_enabled(e):
+                    return e
+            for e in rows:          # 名字对上了但被停用 → 明确提示（而不是"找不到"）
+                if _named(e):
+                    raise ValueError(
+                        f"抠图功能「{e.get('name') or want}」已停用，"
+                        "请到「更多功能」页启用后再试。"
+                    )
+            _names = "、".join(str(e.get("name") or e.get("base_id") or "?") for e in rows[:5])
+            raise ValueError(f"没找到叫「{want}」的抠图功能哦～ 现在有：{_names}")
+        for e in rows:
+            if self._upscale_entry_enabled(e):
+                return e
+        raise ValueError("抠图功能都被停用了，请到「更多功能」页启用一条后再试。")
+
+    def _matting_base_of(self, entry: dict) -> dict:
+        """解析某条抠图功能**绑定的基础工作流**（v7.7.16）。
+
+        顺序：base_id → base_name → 库里唯一一个候选。校验：解析通过 + 带图输入 + 不是放大类；
+        找不到/绑错时抛 ValueError（文案直接给用户看）。
+        ★必须带 `with_json=True` 取记录（列表接口会把 wf_json 摘掉，只拿 roles 拼不出 prompt）。
         """
         store = getattr(self, "workflow_store", None)
+        if store is None:
+            raise ValueError("基础工作流库未初始化（插件启动异常），暂时无法抠图")
 
         def _with_json(rec: dict | None) -> dict:
-            """确保记录带工作流 JSON（拼装/注入要用；列表接口会把它摘掉）。"""
-            if not rec or rec.get("wf_json") or store is None:
-                return rec or {}
+            """确保记录带工作流 JSON（拼装/注入要用）。"""
+            if not rec:
+                return {}
+            if rec.get("wf_json"):
+                return rec
             try:
                 return store.get(int(rec.get("id")), with_json=True) or rec
             except Exception:
@@ -9098,23 +9191,18 @@ class ComfyUIDrawPlugin(Star):
                 )
             return _with_json(rec)
 
-        want = str(spec or "").strip() or str(self._matting_cfg().get("base_id") or "").strip()
+        bid = str((entry or {}).get("base_id") or "").strip()
+        if bid:
+            try:
+                rec = store.get(int(bid), with_json=True) if bid.isdigit() else None
+            except Exception:
+                rec = None
+            if rec:
+                return _check(rec)
+            logger.warning(f"【抠图】 base_id={bid} 不存在（可能已被删除），回退按名字解析")
         rows = self._matting_base_rows()
-        if not rows:
-            raise ValueError(
-                "还没有可用的抠图工作流哦～ 请先到「基础工作流」页上传一个抠图/去背景工作流"
-                "（如 Qwen Image 2.1 Edit：带图输入 + 文本编码 + 采样器，提示词写去背景），"
-                "解析通过后再到「更多功能 → 抠图」里绑定。"
-            )
+        want = str((entry or {}).get("base_name") or "").strip()
         if want:
-            if want.isdigit() and store is not None:
-                try:
-                    rec = store.get(int(want), with_json=True)
-                except Exception:
-                    rec = None
-                if rec:
-                    return _check(rec)
-                logger.warning(f"【抠图】 base_id={want} 不存在（可能已被删除），回退按名字解析")
             low = want.lower()
             for w in rows:
                 if str(w.get("name") or "").strip().lower() == low:
@@ -9124,17 +9212,21 @@ class ComfyUIDrawPlugin(Star):
                 _fn = str(w.get("file_name") or "").strip().lower()
                 if (_nm and (_nm in low or low in _nm)) or (_fn and low in _fn):
                     return _check(w)
-            _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5]) or "无"
             raise ValueError(
-                f"没找到叫「{want}」的抠图工作流哦～ 现在可用的有：{_names}。"
-                "（可在「更多功能 → 抠图」里改绑）"
+                f"绑定的抠图工作流「{want}」不存在或未通过解析，请到「更多功能」页改绑一个。"
+            )
+        if not rows:
+            raise ValueError(
+                "还没有可用的抠图工作流哦～ 请先到「基础工作流」页上传一个抠图/去背景工作流"
+                "（如 Qwen Image 2.1 Edit：带图输入 + 文本编码 + 采样器，提示词写去背景），"
+                "解析通过后再到「更多功能」页给这条功能绑定。"
             )
         if len(rows) == 1:
             return _check(rows[0])
         _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5])
         raise ValueError(
-            f"库里有 {len(rows)} 个可用的抠图工作流（{_names}），"
-            "请到「更多功能 → 抠图」里指定要用的那个。"
+            f"这条抠图功能没有绑定工作流，而库里可用 {len(rows)} 个（{_names}）："
+            "请到「更多功能」页给它选一个。"
         )
 
     @staticmethod
@@ -9225,14 +9317,14 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【抠图】 写入提示词失败（沿用工作流原值）: {e}")
             return False
 
-    async def _do_matting(self, event, wf_spec: str = "") -> None:
+    async def _do_matting(self, event, spec: str = "") -> None:
         """抠图：把用户图送进「带提示词的抠图/编辑工作流」出图。
 
-        配置留空的那一项**沿用工作流原值**（步数默认取工作流的、提示词默认取工作流的），
+        `spec` 是**功能条目名**（不写就用第一个启用的抠图条目）。
+        条目里留空的那一项**沿用工作流原值**（步数默认取工作流的、提示词默认取工作流的），
         所以「什么都不配」也能直接跑。与出图/放大同一套权限、限额、NSFW、归档与记账口径。
         """
         _t0 = time.time()
-        mcfg = self._matting_cfg()
         _uid = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         _sid = str(getattr(event, "session_id", "") or "")
         # 1) 权限总闸（与出图同一套：白名单优先，未启用则走黑名单）+ 生图限额
@@ -9262,9 +9354,16 @@ class ComfyUIDrawPlugin(Star):
         src = images[0]
         if len(images) > 1:
             logger.info(f"【抠图】 收到 {len(images)} 张图，只处理第一张: {src}")
-        # 3) 定抠图工作流（指令参数 > 配置绑定 > 库里唯一一个）
+        # 3) 定用哪条「抠图」功能（指令点名 > 第一个启用的条目，与图片放大同一套）
         try:
-            rec = self._resolve_matting_base(wf_spec)
+            entry = self._resolve_matting_entry(wf_spec)
+        except ValueError as e:
+            await self._send(event, str(e))
+            return
+        _ename = str(entry.get("name") or "").strip() or "抠图"
+        # 4) 定它绑定的抠图工作流
+        try:
+            rec = self._matting_base_of(entry)
         except ValueError as e:
             await self._send(event, str(e))
             return
@@ -9287,16 +9386,16 @@ class ComfyUIDrawPlugin(Star):
         if not node:
             await self._send(event, "这个抠图工作流里没找到图片输入节点（LoadImage），请检查工作流后再试。")
             return
-        # 步数：配置里填了就用配置的，留空/0 → 用工作流原值
+        # 步数：条目里填了就用条目的，留空/0 → 用工作流原值
         try:
-            _want_steps = int(mcfg.get("steps") or 0)
+            _want_steps = int(self._upscale_param(entry, "steps", 0) or 0)
         except (TypeError, ValueError):
             _want_steps = 0
         applied_steps = self._apply_matting_steps(prompt, roles, _want_steps) if _want_steps > 0 else None
         if _want_steps > 0 and applied_steps is None:
             logger.info(f"【抠图】 工作流未暴露可写步数，沿用其内置值（本次请求 {_want_steps} 步）")
-        # 提示词：配置里填了就用配置的，留空 → 用工作流原值
-        _want_text = str(mcfg.get("prompt") or "").strip()
+        # 提示词：条目里填了就用条目的，留空 → 用工作流原值
+        _want_text = str(self._upscale_param(entry, "prompt", "") or "").strip()
         applied_text = self._apply_matting_prompt(prompt, roles, _want_text) if _want_text else False
         if _want_text and not applied_text:
             logger.info("【抠图】 工作流未暴露可写提示词，沿用其内置提示词")
@@ -9307,7 +9406,7 @@ class ComfyUIDrawPlugin(Star):
         )
         _text_now = _want_text or str((roles.get("positive") or {}).get("default_text") or "")
         logger.info(
-            f"【抠图】 工作流「{_wfname}」｜步数 {_steps_now or '工作流默认'}｜"
+            f"【抠图】 功能「{_ename}」→ 工作流「{_wfname}」｜步数 {_steps_now or '工作流默认'}｜"
             f"提示词 {(_text_now[:40] + '…') if len(_text_now) > 40 else (_text_now or '工作流内置')}"
         )
         # 5) 服务器 + 客户端
@@ -9326,7 +9425,7 @@ class ComfyUIDrawPlugin(Star):
                 info=self._card_fail_info(
                     wf={"name": _wfname}, prompt="抠图", is_img2img=True,
                     srv_key=srv_key, cost=time.time() - _t0, extra=extra,
-                    flow=f"{_wfname} · 抠图",
+                    flow=f"{_ename} · 抠图",
                 ),
             )
             self._record_failed(
@@ -9357,13 +9456,14 @@ class ComfyUIDrawPlugin(Star):
                     pass
             # 预处理缩放（v7.7.14）：默认「只缩不放」——小图保持原尺寸，别被插值放大
             _target_mp, _px_note = self._apply_matting_pixel_target(
-                prompt, roles, in_w, in_h, bool(mcfg.get("no_upscale", True))
+                prompt, roles, in_w, in_h,
+                bool(self._upscale_param(entry, "no_upscale", True)),
             )
             if _px_note:
                 logger.info(f"【抠图】 预处理缩放：{_px_note}")
             # 7) 提交 + 等待（本功能自带超时，不套出图那套「单张等待硬上限」）
             try:
-                _to_cfg = int(mcfg.get("timeout") or 300)
+                _to_cfg = int(self._upscale_param(entry, "timeout", 300) or 300)
             except (TypeError, ValueError):
                 _to_cfg = 300
             timeout = max(30, _to_cfg)
@@ -9394,7 +9494,7 @@ class ComfyUIDrawPlugin(Star):
             try:
                 _start_sent = await self._send_draw_card(event, {
                     "kicker": "ComfyUI萌绘",
-                    "workflow": f"{_wfname} · 抠图",
+                    "workflow": f"{_ename} · 抠图",
                     "right_top": (f"排队 {ahead}" if ahead > 0 else f"{_steps_now or ''}步"),
                     "device": self._card_device(srv_key),
                     "today": self._card_today(),
@@ -9527,7 +9627,7 @@ class ComfyUIDrawPlugin(Star):
                     "right_top": (f"{_steps_now}步" if _steps_now else ""),
                     "tiles": _tiles[:4],
                     "sections": [{
-                        "label": "抠图",
+                        "label": f"抠图 · {_ename}",
                         "rows": [(_wfname, (f"{_steps_now}步 · " if _steps_now else "") + f"{_cost:.1f}s", "ok")]
                                 + ([("预处理缩放", f"{_target_mp:.2f}MP（未放大）", "")] if _px_note else []),
                     }] + ([{
@@ -9571,12 +9671,15 @@ class ComfyUIDrawPlugin(Star):
     async def cmd_matting(self, event: AstrMessageEvent):
         """抠图（去背景）。用法：/抠图（不用传参数）
 
-        把消息里（或引用的）图片送进绑定的抠图工作流（如 Qwen Image 2.1 去背景）。
-        步数与提示词在「更多功能 → 抠图」里配置：留空则**沿用工作流原值**。
-        指令后面**可以**跟一个工作流名/ID（库里有多套抠图工作流时临时指定），不写就用配置绑定的。"""
-        mcfg = self._matting_cfg()
-        if not mcfg.get("enabled", False):
-            await self._send(event, "抠图功能未开启哦～ 让管理员到「更多功能 → 抠图」里打开。")
+        把消息里（或引用的）图片送进「更多功能」里启用的抠图条目所绑定的工作流
+        （如 Qwen Image 2.1 去背景）。步数 / 提示词 / 不放大在条目里配置：留空则沿用工作流原值。
+        指令后面**可以**跟一个功能名（多条抠图功能时点名，如 `/抠图 抠真人`），不写就用第一个启用的。
+        """
+        # 早失败：没配置条目 / 全部停用 → 直接说明，省掉取图与上传
+        try:
+            self._resolve_matting_entry("")
+        except ValueError as e:
+            await self._send(event, str(e))
             event.stop_event()
             return
         args = self._strip_command(
@@ -9586,12 +9689,12 @@ class ComfyUIDrawPlugin(Star):
         )
         _spec = " ".join(str(args or "").split()).strip()
         if _spec:
-            # 参数只当「工作流名/ID」理解：能匹配上就用它，匹配不到（比如用户写了句话）
-            # 就 silently 回到配置绑定的那个，不让文案把人卡住。
+            # 参数只当「功能名」理解：能点名就用它，点不到（比如用户顺手写了句话）
+            # 就 silently 回到第一个启用的条目，不让文案把人卡住。
             try:
-                self._resolve_matting_base(_spec)
+                self._resolve_matting_entry(_spec)
             except ValueError:
-                logger.info(f"【抠图】 指令带的「{_spec}」不是工作流名，按配置绑定的工作流跑")
+                logger.info(f"【抠图】 指令带的「{_spec}」不是抠图功能名，改用第一个启用的抠图功能")
                 _spec = ""
         await self._do_matting(event, _spec)
         event.stop_event()
