@@ -748,6 +748,59 @@
       }
     }
   },
+  "image_upscale": {
+    "type": "object",
+    "description": "图片放大（超分）",
+    "hint": "独立功能：用户在消息里带图（或引用一张图）后发「/图片放大 [放大工作流] [倍率]」即可超分放大。需要先到「基础工作流」页上传**纯放大工作流**（如 TE-Speed VOSR2：LoadImage → 放大 → SaveImage，无提示词、无采样器），解析通过后它的类型会显示为「放大」。用法：/图片放大、/图片放大 vosr2、/图片放大 3x、/图片放大 vosr2 --倍率 4。（WebUI 的「更多功能 → 图片放大」页有可视化配置）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用图片放大",
+        "hint": "开启后 /图片放大 指令才可用。",
+        "default": false
+      },
+      "workflow": {
+        "type": "string",
+        "description": "默认放大工作流",
+        "hint": "填放大工作流的名字或 ID（可在 WebUI「更多功能 → 图片放大」里下拉选择）。留空时：基础工作流库里只有 1 个放大类工作流就自动用它，有多个则每次都要在指令里写明。",
+        "default": ""
+      },
+      "default_scale": {
+        "type": "int",
+        "description": "默认放大倍率",
+        "hint": "用户没写倍率时用它（如 3 = 3×）。不在「允许的放大倍率」里时会自动改用允许列表的第一个。",
+        "default": 3
+      },
+      "allowed_scales": {
+        "type": "string",
+        "description": "允许的放大倍率",
+        "hint": "逗号分隔，如 2,3,4。用户写的倍率不在此列时自动改用默认倍率（避免手滑写出 8× 把显存打爆）。留空 = 不校验，用户写多少用多少。",
+        "default": "2,3,4"
+      },
+      "seed_mode": {
+        "type": "string",
+        "description": "种子策略",
+        "options": [
+          "random",
+          "fixed"
+        ],
+        "hint": "VOSR2 / SeedVR2 这类放大是**单步扩散**式复原模型，种子决定采样初始噪声：random（推荐）=每次随机，同一张图细节会略有差异；fixed=固定用下面的种子值，结果完全可复现（方便对比不同倍率/参数）。",
+        "default": "random"
+      },
+      "seed_value": {
+        "type": "int",
+        "description": "固定种子值",
+        "hint": "仅「种子策略 = fixed」时生效。",
+        "default": 6666
+      },
+      "timeout": {
+        "type": "int",
+        "description": "放大等待超时（秒）",
+        "hint": "放大比出图慢得多（尤其 3×/4× 或视频超分），默认 300。这是本功能自己的等待上限，不受出图那套「单张等待硬上限」约束（/图片放大 是独立指令，不走 AstrBot 工具调用）。",
+        "default": 300
+      }
+    }
+  },
   "danbooru": {
     "type": "object",
     "description": "Danbooru 标签服务器",

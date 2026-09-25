@@ -12,6 +12,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { path: "/config", name: "config", label: "配置", icon: "⚙️", key: "config" },
+  { path: "/features", name: "features", label: "更多功能", icon: "🧩", key: "features" },
   { path: "/logs", name: "logs", label: "日志", icon: "📋", key: "logs" },
   { path: "/stats", name: "stats", label: "统计", icon: "📊", key: "stats" },
   { path: "/workflows", name: "workflows", label: "工作流", icon: "🗂️", key: "workflows" },

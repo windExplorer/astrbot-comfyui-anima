@@ -359,6 +359,13 @@ def _upscale_label(model: str) -> str:
     return f"{f:g}×（{name}）" if f else name
 
 
+# ---- 图片放大（v7.7.1）指令参数解析 --------------------------------------- #
+# 倍率写法：`3x` / `x3` / `3倍`（放大倍率都是 1~2 位整数）
+_UPSCALE_SCALE_ARG_RE = re.compile(r"^(?:[xX]\s*(\d{1,2})|(\d{1,2})\s*[xX倍])$")
+# 倍率 flag 写法：`--倍率 3` / `--倍数 3` / `--倍 3` / `--scale 3`
+_UPSCALE_SCALE_FLAGS = ("--倍率", "--倍数", "--倍", "--scale", "--放大倍率")
+
+
 def _size_tier_table(ratio_items: list | None) -> dict:
     """档位 × 比例对照表（供 WebUI 展示与文档）。
 
@@ -8049,6 +8056,532 @@ class ComfyUIDrawPlugin(Star):
             explicit_default=(wf_name is None),
         ):
             yield m
+        event.stop_event()
+
+    # ------------------------------------------------------------------ #
+    # 图片放大（v7.7.1）：独立功能——纯放大/超分工作流（无提示词、无采样器）
+    # ------------------------------------------------------------------ #
+    def _upscale_cfg(self) -> dict:
+        """图片放大功能配置块（image_upscale）。"""
+        return dict(self._cfg("image_upscale", {}) or {})
+
+    @staticmethod
+    def _parse_scale_list(raw) -> list[int]:
+        """把「允许的放大倍率」解析成整数列表（逗号/顿号/分号/空格分隔，只收 1~8）。"""
+        out: list[int] = []
+        for tok in re.split(r"[,，、;；\s]+", str(raw or "")):
+            tok = tok.strip().rstrip("xX倍")
+            if not tok.isdigit():
+                continue
+            n = int(tok)
+            if 1 <= n <= 8 and n not in out:
+                out.append(n)
+        return out
+
+    @staticmethod
+    def _resolve_upscale_scale(asked: int | None, allowed: list[int],
+                               default: int) -> tuple[int, str]:
+        """决定本次放大倍率，返回 (倍率, 说明)。说明非空时调用方写日志。
+
+        规则（与「更多功能 → 图片放大」页一致）：
+          · 允许列表为空 → 不校验：用户写多少用多少，没写用默认；
+          · 用户写的在允许列表内 → 用它；
+          · 用户写的**不在**允许列表内 → 回落到默认（默认也不在则取允许列表第一个）；
+          · 用户没写 → 默认（同上兜底）。
+        """
+        try:
+            dft = int(default or 0)
+        except (TypeError, ValueError):
+            dft = 0
+        if allowed and dft not in allowed:
+            dft = allowed[0]
+        if asked is None:
+            return dft, "未指定倍率，用默认"
+        try:
+            ask = int(asked)
+        except (TypeError, ValueError):
+            return dft, "倍率无法识别，用默认"
+        if not allowed or ask in allowed:
+            return ask, ""
+        return dft, f"{ask}× 不在允许的倍率里，已改用默认"
+
+    @staticmethod
+    def _parse_upscale_args(text: str) -> tuple[str, int | None]:
+        """解析「图片放大」指令参数 → (放大工作流名, 倍率)。
+
+        倍率（可选）三种写法：
+          · `3x` / `x3` / `3倍`
+          · `--倍率 3`（亦支持 --倍数 / --倍 / --scale）
+          · 纯数字位置参数（`/图片放大 vosr2 3`）
+        其余位置参数按顺序拼成工作流名；解析不到倍率时返回 None（调用方用默认）。
+        """
+        scale: int | None = None
+        wf_parts: list[str] = []
+        toks = str(text or "").replace("\r", " ").replace("\n", " ").split()
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            if t.lower() in _UPSCALE_SCALE_FLAGS:
+                if i + 1 < len(toks) and toks[i + 1].isdigit():
+                    scale = int(toks[i + 1])
+                    i += 2
+                    continue
+                i += 1
+                continue
+            m = _UPSCALE_SCALE_ARG_RE.match(t)
+            if m:
+                scale = int(m.group(1) or m.group(2))
+                i += 1
+                continue
+            if t.isdigit() and len(t) <= 2:
+                scale = int(t)
+                i += 1
+                continue
+            wf_parts.append(t)
+            i += 1
+        return " ".join(wf_parts).strip(), scale
+
+    def _upscale_base_rows(self) -> list[dict]:
+        """基础工作流库里可用的「放大类」工作流（roles.kind=upscale 且解析通过）。"""
+        store = getattr(self, "workflow_store", None)
+        if store is None:
+            return []
+        try:
+            rows = store.list_all() or []
+        except Exception as e:
+            logger.warning(f"【放大】 读取基础工作流库失败: {e}")
+            return []
+        return [
+            w for w in rows
+            if ((w.get("roles") or {}).get("kind") == "upscale") and w.get("parse_ok")
+        ]
+
+    def _resolve_upscale_base(self, spec: str = "") -> dict | None:
+        """决定用哪个放大工作流：指令参数 > 配置绑定 > 库里唯一一个。
+
+        匹配顺序：ID → 名字（忽略大小写/首尾空格）→ 名字/文件名包含匹配。
+        找不到时抛 ValueError（文案直接给用户看）。
+        """
+        rows = self._upscale_base_rows()
+        if not rows:
+            raise ValueError(
+                "还没有可用的放大工作流哦～ 请先到「基础工作流」页上传一个纯放大工作流"
+                "（如 TE-Speed VOSR2：图 → 放大 → 保存，无提示词、无采样器），解析通过后再试。"
+            )
+        want = str(spec or "").strip() or str(self._upscale_cfg().get("workflow") or "").strip()
+        if not want:
+            if len(rows) == 1:
+                return rows[0]
+            _first = str(rows[0].get("name") or rows[0].get("id") or "").strip()
+            raise ValueError(
+                f"库里有 {len(rows)} 个放大工作流，请在「更多功能 → 图片放大」里指定默认的那个，"
+                f"或在指令里写明，例如：/图片放大 {_first}"
+            )
+        low = want.lower()
+        for w in rows:
+            if str(w.get("id")) == want:
+                return w
+        for w in rows:
+            if str(w.get("name") or "").strip().lower() == low:
+                return w
+        for w in rows:
+            _nm = str(w.get("name") or "").strip().lower()
+            _fn = str(w.get("file_name") or "").strip().lower()
+            if (_nm and (_nm in low or low in _nm)) or (_fn and low in _fn):
+                return w
+        _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5])
+        raise ValueError(f"没找到叫「{want}」的放大工作流哦～ 现在可用的有：{_names}")
+
+    @staticmethod
+    def _load_upscale_base(rec: dict) -> tuple[dict, dict]:
+        """取放大工作流的 prompt（全新副本）与解析注记。
+
+        与出图链路的 `_load_from_base` 不同：这里**不做任何**提示词 / 宽高 /
+        LoRA / 采样器覆盖——纯放大工作流只有「输入图 + 倍率 + 种子」三处要写。
+        """
+        prompt = json.loads(rec.get("wf_json") or "{}")
+        roles = rec.get("roles") or {}
+        wf = {
+            "name": rec.get("name") or "",
+            "_base_name": rec.get("name") or "",
+            "_upscale_roles": roles,
+        }
+        return wf, prompt
+
+    @staticmethod
+    def _apply_upscale_scale(prompt: dict, roles: dict, scale: int) -> int | None:
+        """把倍率写进放大工作流（写不到就沿用工作流原值），返回实际写入的倍率或 None。"""
+        tgt = (roles or {}).get("scale") or {}
+        _nid, _f = str(tgt.get("node") or ""), str(tgt.get("field") or "")
+        if not _nid or not _f:
+            return None
+        try:
+            if workflow_builder.set_number_node(prompt, _nid, _f, int(scale)):
+                return int(scale)
+        except Exception as e:
+            logger.warning(f"【放大】 写入倍率失败（沿用工作流原值）: {e}")
+        return None
+
+    @staticmethod
+    def _apply_upscale_seed(prompt: dict, roles: dict, ucfg: dict) -> list[int]:
+        """按配置给放大工作流写种子，返回实际写入的种子列表。
+
+        VOSR2 / SeedVR2 这类是**单步扩散**式复原模型，种子决定采样初始噪声：
+        同一张图同倍率、不同种子，复原出的细节会略有差异；固定种子则完全可复现。
+        工作流没有种子输入时返回空列表（沿用原值）。
+        """
+        tgt = (roles or {}).get("seed") or {}
+        _nid, _f = str(tgt.get("node") or ""), str(tgt.get("field") or "")
+        if not _nid or not _f:
+            return []
+        if str((ucfg or {}).get("seed_mode") or "random").strip().lower() == "fixed":
+            try:
+                val = int((ucfg or {}).get("seed_value", 0) or 0)
+            except (TypeError, ValueError):
+                val = 0
+        else:
+            val = random.randint(1, 2 ** 31 - 1)
+        try:
+            return [val] if workflow_builder.set_number_node(prompt, _nid, _f, val) else []
+        except Exception as e:
+            logger.warning(f"【放大】 写入种子失败（忽略）: {e}")
+            return []
+
+    async def _pick_recent_images(self, event) -> list[str]:
+        """取图兜底：本会话「用户最近发的图 → 本插件最近生成的图」（返回 1 张或空）。
+
+        与 /img2img 的兜底同源：有会话标识就只认本会话，避免捞到别的会话的图。
+        """
+        sid = str(getattr(event, "session_id", "") or "").strip()
+        if sid:
+            stores = (
+                list(reversed(g_last_received.get(sid) or [])),
+                list(reversed(g_recent_user_images.get(sid) or [])),
+                list(reversed(g_last_generated.get(sid) or [])),
+            )
+        else:
+            stores = (list(reversed(g_last_generated.get("__global__") or [])),)
+        for store in stores:
+            for p in store:
+                if p and os.path.exists(p):
+                    return [p]
+        return []
+
+    async def _do_upscale(self, event, wf_spec: str = "",
+                          asked_scale: int | None = None) -> None:
+        """图片放大：把用户图送进「纯放大工作流」超分后发回。
+
+        与出图链路完全独立：不注入提示词 / 宽高 / LoRA / 采样器，只写
+        「输入图 + 倍率 + 种子」，其余交给工作流自己。
+        """
+        _t0 = time.time()
+        ucfg = self._upscale_cfg()
+        _uid = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        _sid = str(getattr(event, "session_id", "") or "")
+        # 权限总闸（与出图同一套：白名单优先，未启用则走黑名单）+ 生图限额
+        if self._is_whitelist_active():
+            _ok, _why = self._check_whitelist(event)
+        else:
+            _ok, _why = self._check_blacklist(event)
+        if not _ok:
+            await self._send(event, _why)
+            return
+        _ok, _why = self._check_draw_limit(event)
+        if not _ok:
+            await self._send(event, _why)
+            return
+        # 1) 取图：消息内图片 / 引用消息图片 / 本插件最近生成的图
+        images = await self._extract_images(event)
+        if not images:
+            images = await self._pick_recent_images(event)
+            if images:
+                logger.info(f"【放大】 启用兜底图片: {images}")
+        if not images:
+            await self._send(
+                event,
+                "图片放大需要一张图哦～ 把图片和「/图片放大」一起发（或引用一条带图的消息）就行。",
+            )
+            return
+        src = images[0]
+        if len(images) > 1:
+            logger.info(f"【放大】 收到 {len(images)} 张图，只放大第一张: {src}")
+        # 2) 定放大工作流
+        try:
+            rec = self._resolve_upscale_base(wf_spec)
+        except ValueError as e:
+            await self._send(event, str(e))
+            return
+        _wfname = str(rec.get("name") or "").strip() or f"放大工作流 #{rec.get('id')}"
+        # 3) 定倍率（不在允许列表 → 回落默认）
+        _allowed = self._parse_scale_list(ucfg.get("allowed_scales", ""))
+        try:
+            _dft = int(ucfg.get("default_scale", 3) or 3)
+        except (TypeError, ValueError):
+            _dft = 3
+        scale, _why = self._resolve_upscale_scale(asked_scale, _allowed, _dft)
+        if _why:
+            logger.info(f"【放大】 倍率 {scale}×（{_why}）")
+        # 4) 组装 prompt：写倍率 + 种子
+        try:
+            _wf, prompt = self._load_upscale_base(rec)
+        except Exception as e:
+            await self._card_or_text(
+                event, self._friendly_error(e, "放大工作流加载", "workflow"),
+                info=self._card_fail_info(wf={"name": _wfname}, is_img2img=True,
+                                          cost=time.time() - _t0),
+            )
+            return
+        roles = rec.get("roles") or {}
+        node = str(roles.get("image_node") or "").strip() or (
+            workflow_builder.find_image_loader_node(prompt) or ""
+        )
+        if not node:
+            await self._send(event, "这个放大工作流里没找到图片输入节点（LoadImage），请检查工作流后再试。")
+            return
+        applied = self._apply_upscale_scale(prompt, roles, scale)
+        if applied is None:
+            logger.info(f"【放大】 工作流未暴露可写倍率，沿用其内置倍率（本次请求 {scale}×）")
+        seeds = self._apply_upscale_seed(prompt, roles, ucfg)
+        if seeds:
+            logger.info(f"【放大】 种子 {seeds[0]}（策略 {ucfg.get('seed_mode') or 'random'}）")
+        # 5) 服务器 + 客户端
+        try:
+            server = self._resolve_server(None)
+        except ValueError as e:
+            await self._send(event, f"图片放大配置有误：{e}")
+            return
+        srv_key = self._server_key(server)
+        client = self._build_client(server)
+
+        async def _fail(reason_text: str, reason_log: str, extra: list | None = None) -> None:
+            """放大失败统一出口：失败卡（画不出来退回文字）+ 一条失败记录。"""
+            await self._card_or_text(
+                event, reason_text,
+                info=self._card_fail_info(
+                    wf={"name": _wfname}, prompt=f"图片放大 {scale}×", is_img2img=True,
+                    srv_key=srv_key, seed=(seeds[0] if seeds else None),
+                    cost=time.time() - _t0, extra=extra,
+                ),
+            )
+            self._record_failed(
+                event, f"图片放大 {scale}×", {"name": _wfname}, True, "",
+                _t0, reason_log,
+            )
+
+        try:
+            # 6) 上传输入图 → 注入 LoadImage
+            try:
+                up = await client.upload_image(src)
+            except Exception as e:
+                await _fail(self._friendly_error(e, "上传放大输入图"),
+                            f"上传输入图失败：{type(e).__name__}")
+                return
+            img_name = (up or {}).get("name") or os.path.basename(src)
+            if not workflow_builder.set_image_node(prompt, node, img_name):
+                await _fail("放大工作流的图片输入节点写入失败，请检查工作流。",
+                            f"set_image_node 失败（节点 {node}）")
+                return
+            logger.info(f"【放大】 输入图已注入节点 {node}: {src} -> {img_name}")
+            in_w = in_h = 0
+            if _PILImage is not None:
+                try:
+                    with _PILImage.open(src) as _im:
+                        in_w, in_h = _im.width, _im.height
+                except Exception:
+                    pass
+            await self._send(event, f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～")
+            # 7) 提交 + 等待（本功能自带超时，不套出图那套「单张等待硬上限」）
+            timeout = max(30, int(ucfg.get("timeout", 300) or 300))
+            interval = max(1, int(self._cfg("queue_poll_interval", 2)))
+            try:
+                result = await client.queue_prompt(prompt)
+                prompt_id = (result or {}).get("prompt_id")
+            except Exception as e:
+                await _fail(self._friendly_error(e, "提交放大任务"), "提交任务失败")
+                return
+            if not prompt_id:
+                logger.warning(f"【放大·失败】[提交] ComfyUI 未返回 prompt_id（{_wfname}）")
+                await _fail(self._cute("no_task_id"), "ComfyUI 未返回 prompt_id（提交失败）")
+                return
+            try:
+                self._last_prompt[_sid or "global"] = prompt_id
+            except Exception:
+                pass
+            logger.info(
+                f"【放大】 已提交 {_wfname}｜prompt_id={prompt_id}｜倍率 {applied or scale}×"
+                f"｜等待上限 {timeout}s"
+            )
+            history = await client.wait_for_result(prompt_id, timeout, interval)
+            if not history:
+                logger.warning(f"【放大·失败】[超时] 等待 {timeout} 秒仍无结果，prompt_id={prompt_id}")
+                await _fail(self._cute("timeout"),
+                            f"等待 {timeout} 秒仍无结果（超时）",
+                            extra=[("等待", f"{timeout} 秒")])
+                return
+            imgs = comfyui_client.extract_images(
+                history, (roles.get("save") or {}).get("node") or ""
+            )
+            if not imgs:
+                _task_err = comfyui_client.task_error(history)
+                logger.warning(
+                    f"【放大·失败】[无图] {_wfname}"
+                    + (f"｜ComfyUI 报错：{_task_err}" if _task_err else "（任务完成但无输出图片）")
+                )
+                await _fail(
+                    self._cute("no_image"),
+                    f"任务完成但未找到输出图片{'；ComfyUI报错: ' + _task_err if _task_err else ''}",
+                    extra=[("节点错误", _task_err)] if _task_err else None,
+                )
+                return
+            # 8) 逐张下载 → 护栏 → 归档 → 发送 → 计数
+            for img in imgs:
+                try:
+                    data = await client.get_image(
+                        img["filename"], img.get("subfolder", ""), img.get("type", "")
+                    )
+                except Exception as e:
+                    await self._send(event, self._friendly_error(e, "下载放大结果"))
+                    continue
+                suffix = os.path.splitext(img["filename"])[1] or ".png"
+                tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
+                with open(tmp_path, "wb") as f:
+                    f.write(data)
+                img_path = str(tmp_path)
+                out_w = out_h = 0
+                if _PILImage is not None:
+                    try:
+                        with _PILImage.open(img_path) as _im:
+                            out_w, out_h = _im.width, _im.height
+                    except Exception:
+                        pass
+                # NSFW 护栏：与出图同口径（群聊拦截，私聊按图库打标策略）
+                _nsfw_pre = None
+                if self._nsfw_should_detect(event):
+                    _nsfw_pre = await self._detect_nsfw(img_path)
+                _blocked = False
+                if _nsfw_pre is not None:
+                    _is_nsfw, _score, _avail = _nsfw_pre
+                    if _is_nsfw and not self._is_private_event(event):
+                        _blocked = True
+                        _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
+                        logger.warning(f"【NSFW】 放大结果被群聊拦截{_sc} workflow={_wfname}")
+                        await self._send(
+                            event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。"
+                        )
+                # 图库归档（移动转正）：必须用返回路径发送，不能再用 temp 路径
+                _send_path = img_path
+                if self.gallery is not None:
+                    try:
+                        try:
+                            from .image_store import SRC_GEN, _sha256_of
+                        except ImportError:
+                            from image_store import SRC_GEN, _sha256_of
+                        _final = self.gallery.archive_image(
+                            img_path,
+                            source=SRC_GEN,
+                            prompt=f"图片放大 {applied or scale}×",
+                            prompt_raw="",
+                            workflow=_wfname,
+                            seed=(seeds[0] if seeds else None),
+                            w=out_w or None, h=out_h or None,
+                            in_w=in_w or None, in_h=in_h or None,
+                            upscale=f"{applied or scale}×",
+                            is_img2img=True,
+                            ref_sha256=(_sha256_of(src) or ""),
+                            user_id=_uid,
+                            user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                            session_id=_sid,
+                            group_id=str(getattr(event, "get_group_id", lambda: "")() or ""),
+                            cost_sec=time.time() - _t0,
+                            nsfw_pre=_nsfw_pre,
+                            trigger_msg="图片放大",
+                        )
+                        if _final:
+                            _send_path = _final
+                    except Exception as _e:
+                        logger.warning(f"【放大】 归档失败（继续发送原图）: {_e}")
+                if _blocked:
+                    continue
+                try:
+                    await self._send_image_with_recall(
+                        event, MessageChain([Image.fromFileSystem(_send_path)])
+                    )
+                except Exception as e:
+                    await self._send(event, self._friendly_error(e, "发送放大结果"))
+                    continue
+                # 结果卡（复用报表卡渲染器）：输入/输出/倍率/耗时；画不出来退回一行文字
+                _cost = time.time() - _t0
+                _tiles: list[tuple] = []
+                if in_w and in_h:
+                    _tiles.append(("输入", f"{in_w}×{in_h}", ""))
+                if out_w and out_h:
+                    _tiles.append(("输出", f"{out_w}×{out_h}", ""))
+                _tiles.append(("倍率", f"{applied or scale}×", ""))
+                _tiles.append(("耗时", f"{_cost:.1f}s", ""))
+                _rep = {
+                    "kicker": "ComfyUI萌绘 · 图片放大",
+                    "title": "图片放大",
+                    "right_top": f"{applied or scale}×",
+                    "tiles": _tiles[:4],
+                    "sections": [{
+                        "label": "放大工作流",
+                        "rows": [(_wfname, f"{applied or scale}× · {_cost:.1f}s", "ok")],
+                    }],
+                }
+                if not await self._send_report_card(event, _rep, foot_left="口径：输入图直接超分，不重绘"):
+                    await self._send(
+                        event,
+                        f"放大完成：{applied or scale}×"
+                        + (f"，{out_w}×{out_h}" if out_w and out_h else "")
+                        + f"，耗时 {_cost:.1f}s",
+                    )
+                # 计数：配额 + 今日已出图（与出图同一口径）
+                self._record_draw_used(event)
+                try:
+                    self._card_module().bump_today(self.data_dir, ok=True)
+                except Exception:
+                    pass
+                try:
+                    if self.oplog is not None:
+                        self.oplog.add(
+                            "upscale_success",
+                            f"图片放大成功（{_wfname} · {applied or scale}×）",
+                            user_id=_uid, session_id=_sid,
+                            detail=f"in={in_w}x{in_h} out={out_w}x{out_h} 耗时={_cost:.1f}s",
+                            extra={
+                                "workflow": _wfname, "scale": applied or scale,
+                                "seed": (seeds[0] if seeds else None),
+                            },
+                        )
+                except Exception:
+                    pass
+                logger.info(
+                    f"【放大·成功】 {_wfname}｜{applied or scale}×｜"
+                    f"in={in_w}x{in_h} → out={out_w}x{out_h}｜耗时 {_cost:.1f}s"
+                    f"｜seed={seeds[0] if seeds else '—'}"
+                )
+        finally:
+            await self._safe_close(client)
+
+    @filter.command("图片放大", alias={"放大图片", "图片超分", "超分"})
+    async def cmd_image_upscale(self, event: AstrMessageEvent):
+        """图片放大（超分）。用法：/图片放大 [放大工作流] [倍率]
+
+        把消息里（或引用的）图片送进纯放大工作流超分，例如：
+        /图片放大、/图片放大 vosr2、/图片放大 3x、/图片放大 vosr2 --倍率 4"""
+        ucfg = self._upscale_cfg()
+        if not ucfg.get("enabled", False):
+            await self._send(event, "图片放大功能未开启哦～ 让管理员到「更多功能 → 图片放大」里打开。")
+            event.stop_event()
+            return
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "图片放大",
+            ("放大图片", "图片超分", "超分"),
+        )
+        wf_spec, scale = self._parse_upscale_args(args or "")
+        logger.info(f"【放大】 指令解析：工作流={wf_spec!r} 倍率={scale}")
+        await self._do_upscale(event, wf_spec, scale)
         event.stop_event()
 
     @filter.command("萌绘", alias={"萌绘分享", "meng", "share"})

@@ -88,9 +88,13 @@ const config = reactive<Record<string, any>>({});
 const expanded = ref<string[]>([]); // 默认全部收起
 const baseConfig: Record<string, any> = {};
 
+// 由「更多功能」页（/features）自己渲染的配置键：本页不重复展示（也不进兜底分区）
+const HIDDEN_KEYS = ["image_upscale"];
+
 // 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）。
 // ★新增顶层配置键时必须同步加进对应分区的 keys（或新建分区），
-//   否则会掉进兜底的「其他」分区（v5.12.9 教训：permissions/recall 曾因此埋在「其他」里）。
+//   否则会掉进兜底的「其他」分区（v5.12.9 教训：permissions/recall 曾因此埋在「其他」里）；
+//   若该键由「更多功能」页管理，则加进上面的 HIDDEN_KEYS。
 const GROUP_META = [
   { name: "服务器与模型", description: "ComfyUI 服务器连接配置", icon: "🖥️", keys: ["comfyui_servers"] },
   { name: "工作流列表", description: "各工作流的启用与参数（含封面/底模等）", icon: "🗂️", keys: ["workflows"] },
@@ -118,7 +122,8 @@ const groups = computed(() => {
   const gkeys: Record<string, boolean> = {};
   GROUP_META.forEach((g) => g.keys.forEach((k) => (gkeys[k] = true)));
   const list = GROUP_META.filter((g) => g.keys.some((k) => sk.includes(k)));
-  const leftover = sk.filter((k) => !gkeys[k]);
+  // HIDDEN_KEYS：由「更多功能」页自己管理的配置键，不在本页兜底分区里重复出现
+  const leftover = sk.filter((k) => !gkeys[k] && !HIDDEN_KEYS.includes(k));
   if (leftover.length) {
     list.push({ name: "其他", description: "未分区的配置项", icon: "📦", keys: leftover });
   }

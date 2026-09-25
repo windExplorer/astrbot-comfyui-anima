@@ -28,6 +28,21 @@ _IMAGE_LOADER_HINTS = (
     "loadimagemasked", "imageloader",
 )
 
+# --------------------------------------------------------------------------- #
+# 纯处理 / 放大类工作流（v7.7.1，如 TE-Speed VOSR2 超分）
+# --------------------------------------------------------------------------- #
+# 「倍率」可写字段优先级（VOSR2 的 scale、UltraSharp 的 scale_factor 等）
+_SCALE_FIELD_PREFS = (
+    "scale", "scale_factor", "upscale_by", "magnification",
+    "resize_scale", "scale_by", "factor", "upscale_factor",
+)
+# 「种子」字段优先级
+_SEED_FIELD_PREFS = ("seed", "noise_seed", "rand_seed", "seed_value")
+# 独立数值节点（如 `easy int` / PrimitiveInt）里可写的数值字段
+_NUM_FIELD_PREFS = ("value", "int", "number", "float", "value_int", "num", "i")
+# 处理链上「图像输入」字段名（沿它向上回溯到图像输入节点）
+_IMAGE_IN_FIELDS = ("image", "images", "image1", "input_image", "img", "pixels", "anything")
+
 
 def _ct(node: dict) -> str:
     return (node.get("class_type") or "").strip().lower()
@@ -179,6 +194,186 @@ def list_nodes(prompt: dict) -> list[dict]:
     return out
 
 
+def _text_encoder_nodes(nodes: dict) -> list[str]:
+    """文本编码节点（CLIPTextEncode 等）。
+
+    纯放大/处理工作流**不该**有它们——用来把「丢了采样器但本该是出图工作流」
+    和「真的是纯处理工作流」区分开（防误判成放大类）。
+    """
+    out = []
+    for nid, n in nodes.items():
+        ct = _ct(n)
+        if "encode" in ct and ("clip" in ct or "text" in ct or "condition" in ct):
+            out.append(nid)
+    return out
+
+
+def _numeric_target(nodes: dict, node_id: str, field: str) -> dict | None:
+    """把一个输入框定位成「可写数值目标」。
+
+    - 字面量数字 → 就地可写（node=本节点、field=该字段）；
+    - 连线到独立数值节点（如 `easy int.value`）→ 写那个节点的数值字段
+      （VOSR2 的倍率就是这样：`scale` 连到 `easy int` 的 `value`）；
+    - 定位不到返回 None。
+    """
+    node = nodes.get(node_id)
+    if not isinstance(node, dict):
+        return None
+    val = (node.get("inputs") or {}).get(field)
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return {"node": node_id, "field": field, "default": int(val)}
+    lk = _link(val)
+    if not lk or lk[0] not in nodes:
+        return None
+    src = nodes[lk[0]]
+    if not isinstance(src, dict):
+        return None
+    sin = src.get("inputs") or {}
+    for f in _NUM_FIELD_PREFS:
+        v = sin.get(f)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return {"node": lk[0], "field": f, "default": int(v)}
+    for f, v in sin.items():          # 兜底：任意数值型输入
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return {"node": lk[0], "field": f, "default": int(v)}
+    return None
+
+
+def _parse_upscale(nodes: dict) -> tuple[dict | None, list[str]]:
+    """尝试按「纯处理 / 放大」工作流解析（v7.7.1）。
+
+    适用对象：VOSR2 超分这类**无采样器、无提示词**的工作流，
+    链路形如 `LoadImage → 处理/放大节点 → SaveImage(Extended)`。
+
+    与出图工作流的入库标准完全不同，因此走单独旁路，返回三种语义：
+      - `(roles, [])`     解析通过（`kind="upscale"`）；
+      - `(None, [错误…])` 看起来是处理类工作流、但没配全/连错线（给针对性提示）；
+      - `(None, [])`      不是处理类工作流（调用方按出图工作流的原逻辑报错）。
+    """
+    save_nodes = [nid for nid, n in nodes.items() if "saveimage" in _ct(n)]
+    image_loaders = [nid for nid, n in nodes.items() if _is_image_loader(n)]
+    # 「像是处理类工作流」的前提：有图输入 + 有保存节点 + 完全没有文本编码器
+    if not save_nodes or not image_loaders or _text_encoder_nodes(nodes):
+        return None, []
+
+    errors: list[str] = []
+    save_id = next(
+        (nid for nid in save_nodes if "extended" in _ct(nodes[nid])), save_nodes[0]
+    )
+    image_id = image_loaders[0]
+
+    # 从保存节点沿图像连线向上回溯，直到图像输入节点（沿途即处理链）
+    chain: list[str] = []
+    seen: set = set()
+    apply_id = ""
+    _save_in = nodes[save_id].get("inputs") or {}
+    cur = _link(_save_in.get("images")) or _link(_save_in.get("image"))
+    while cur and cur[0] in nodes and cur[0] not in seen:
+        seen.add(cur[0])
+        if cur[0] == image_id:
+            break
+        chain.append(cur[0])
+        if not apply_id:
+            apply_id = cur[0]              # 离保存节点最近的 = 处理/放大执行节点
+        _sin = nodes[cur[0]].get("inputs") or {}
+        nxt = None
+        for _f in _IMAGE_IN_FIELDS:
+            nxt = _link(_sin.get(_f))
+            if nxt:
+                break
+        cur = nxt
+    if not chain or not apply_id:
+        errors.append(
+            "未在「图像输入 → 保存节点」之间找到处理节点（放大/超分节点），"
+            "请检查工作流连线是否断开。"
+        )
+        return None, errors
+    if not cur or cur[0] != image_id:
+        errors.append("处理链没有连回图像输入节点（LoadImage 等），请检查工作流连线。")
+        return None, errors
+
+    apply = nodes[apply_id]
+    a_in = apply.get("inputs") or {}
+
+    # 处理节点旁的「模型/设置」等资源节点（供展示与日志；模型名尤其有用）
+    loader_id, loader_class, aux_nodes = "", "", []
+    for _v in a_in.values():
+        lk = _link(_v)
+        if not lk or lk[0] not in nodes or lk[0] == image_id or lk[0] in chain:
+            continue
+        _c = nodes[lk[0]].get("class_type") or ""
+        if "loader" in _c.lower() and not loader_id:
+            loader_id, loader_class = lk[0], _c
+        else:
+            aux_nodes.append(lk[0])
+    model_file = ""
+    if loader_id:
+        _li = nodes[loader_id].get("inputs") or {}
+        model_file = next(
+            (
+                str(_li[k]).strip()
+                for k in ("model_bundle", "model_name", "ckpt_name", "unet_name",
+                          "gguf_name", "model")
+                if isinstance(_li.get(k), str) and str(_li[k]).strip()
+            ),
+            "",
+        )
+
+    # 倍率：处理节点上的可写数值目标（字面量就地写 / 连线写独立数值节点）
+    scale = None
+    for f in _SCALE_FIELD_PREFS:
+        if f in a_in:
+            scale = _numeric_target(nodes, apply_id, f)
+            if scale:
+                scale["field_name"] = f
+                break
+
+    # 种子：优先处理节点自身，其次处理链上任意节点
+    seed = None
+    for nid in [apply_id, *chain]:
+        _in = (nodes.get(nid) or {}).get("inputs") or {}
+        for f in _SEED_FIELD_PREFS:
+            v = _in.get(f)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                seed = {"node": nid, "field": f, "default": int(v)}
+                break
+        if seed:
+            break
+
+    save_in = _save_in
+    roles = {
+        "kind": "upscale",
+        "sampler": "",
+        "positive": None,
+        "negative": None,
+        "latent": None,
+        "image_node": image_id,
+        "save": {
+            "node": save_id,
+            "class_type": nodes[save_id].get("class_type"),
+            "has_quality": "quality" in save_in,
+            "has_output_ext": "output_ext" in save_in,
+            "quality": save_in.get("quality") if isinstance(save_in.get("quality"), (int, float)) else None,
+            "output_ext": save_in.get("output_ext") if isinstance(save_in.get("output_ext"), str) else None,
+        },
+        "apply": {"node": apply_id, "class_type": apply.get("class_type")},
+        "loader": {"node": loader_id, "class_type": loader_class},
+        "model_file": model_file,
+        "chain_nodes": chain,
+        "aux_nodes": aux_nodes,
+        "scale": scale,          # {"node","field","default","field_name"} 或 None
+        "seed": seed,            # {"node","field","default"} 或 None
+        "cleanup_nodes": [nid for nid, n in nodes.items() if _is_cleanup(n)],
+        # 纯放大工作流没有「出图工作流内部那条放大链」，显式置空：
+        # 避免被 bypass / inject 那套（针对出图工作流的）逻辑误用。
+        "upscale": None,
+        "subgraph_ids": [k for k in nodes if ":" in str(k)],
+    }
+    return roles, []
+
+
 def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     """解析工作流。返回 (roles, errors)：errors 非空即拒绝入库。"""
     errors: list[str] = []
@@ -194,6 +389,15 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     # ---- 采样器：必须恰好 1 个 ----
     samplers = [nid for nid, n in nodes.items() if _is_sampler(n)]
     if len(samplers) != 1:
+        # v7.7.1：0 个采样器时先试「纯放大 / 纯处理」工作流（VOSR2 超分这类
+        # 没有采样器、没有提示词的工作流）。判定很严（必须有图输入 + 保存节点 +
+        # 完全没有文本编码器），所以不会把「丢了采样器的出图工作流」误收成放大类。
+        if not samplers:
+            _up_roles, _up_errors = _parse_upscale(nodes)
+            if _up_roles is not None:
+                return _up_roles, []
+            if _up_errors:
+                return None, _up_errors
         errors.append(
             f"要求恰好 1 个采样器节点（含 model/positive 输入），实际 {len(samplers)} 个：{samplers or '无'}。"
             "多阶段工作流暂不支持，请拆分后再传。"

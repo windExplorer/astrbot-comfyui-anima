@@ -152,7 +152,7 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/stats" }, { default: () => "统计" }), key: "stats", icon: () => iconSvg("📊") },
   { label: () => h(RouterLink, { to: "/workflows" }, { default: () => "工作流" }), key: "workflows", icon: () => iconSvg("🗂️") },
   { label: () => h(RouterLink, { to: "/workflows-legacy" }, { default: () => "旧版工作流" }), key: "workflows-legacy", icon: () => iconSvg("📦") },
-  { label: () => h(RouterLink, { to: "/features" }, { default: () => "功能配置" }), key: "features", icon: () => iconSvg("🧩") },
+  { label: () => h(RouterLink, { to: "/features" }, { default: () => "更多功能" }), key: "features", icon: () => iconSvg("🧩") },
   { label: () => h(RouterLink, { to: "/loras" }, { default: () => "LoRA" }), key: "loras", icon: () => iconSvg("🎨") },
   { label: () => h(RouterLink, { to: "/options" }, { default: () => "配置项" }), key: "options", icon: () => iconSvg("🧱") },
   { label: () => h(RouterLink, { to: "/baseworkflows" }, { default: () => "基础工作流" }), key: "baseworkflows", icon: () => iconSvg("📄") },

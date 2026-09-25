@@ -32,7 +32,7 @@ const router = createRouter({
     { path: "/stats", name: "stats", component: StatsView, meta: { title: "统计" } },
     { path: "/workflows", name: "workflows", component: WorkflowsView, meta: { title: "工作流" } },
     { path: "/workflows-legacy", name: "workflows-legacy", component: WorkflowsView, props: { legacy: true }, meta: { title: "旧版工作流" } },
-    { path: "/features", name: "features", component: FeaturesView, meta: { title: "功能配置" } },
+    { path: "/features", name: "features", component: FeaturesView, meta: { title: "更多功能" } },
     { path: "/loras", name: "loras", component: LorasView, meta: { title: "LoRA" } },
     { path: "/options", name: "options", component: OptionsView, meta: { title: "配置项" } },
     { path: "/baseworkflows", name: "baseworkflows", component: BaseWorkflowsView, meta: { title: "基础工作流" } },

@@ -210,6 +210,7 @@ const items = ref<any[]>([]);
 function typeLabel(kind?: string) {
   if (kind === "img2img") return "图生图";
   if (kind === "t2i") return "文生图";
+  if (kind === "upscale") return "放大";
   return "类型未知";
 }
 function fmtTime(ts: any) {
