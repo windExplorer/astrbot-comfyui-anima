@@ -10701,12 +10701,13 @@ class ComfyUIDrawPlugin(Star):
 
     @filter.command("绘图状态", alias={"drawstatus", "画图状态"})
     async def cmd_draw_status(self, event: AstrMessageEvent):
-        """查询绘图服务器连通情况、延迟，以及正在出图还是空闲、队列数量。
+        """查询绘图服务器状态、延迟、设备与生图统计（v7.7.29 改版）。
 
-        只探测启用的服务器；用 /queue 一次请求同时测得连通性、延迟与队列状态，
-        不额外请求 system_stats。展示时不暴露服务器名称/IP。
-        v7.7.28：服务器若是中转站（TaskHub），额外用它的 /device 辅助接口展示
-        设备状态（显卡/CPU/内存）、上游 ComfyUI 与 CosyVoice 状态、调度队列与自检。
+        只探「当前默认服务器」；状态与延迟放右上角胶囊。服务器若是中转站（TaskHub），
+        用它的 /device 辅助接口把设备拆成 CPU/显卡/内存/风扇/硬盘五块（缺项整节跳过），
+        外加 ComfyUI、调度队列与上游自检；末尾给热门工作流 TOP3 与生图统计（今日/昨日/累计）。
+        直连 ComfyUI 的服务器没有 /device（404），按原样跳过设备各节。
+        展示时不暴露服务器名称/IP。
         """
         servers = self._servers()
         active = [
@@ -10717,101 +10718,181 @@ class ComfyUIDrawPlugin(Star):
             await self._send(event, "当前没有正在使用的绘图服务器。")
             event.stop_event()
             return
+        # 只探「当前默认服务器」（与出图实际选中同一台）
+        try:
+            cur = self._resolve_server(None)
+        except ValueError:
+            cur = active[0]
         lines = ["🖥️ 绘图服务器状态"]
-        # v7.5.1：结构化数据（发报表卡用；卡片失败退回 lines 文字）
-        _srv_rows: list[tuple] = []
-        _quota_rows: list[tuple] = []
-        _device_rows: list[tuple] = []
+        # ---- 1) 探测当前服务器：连通性 + 延迟 + 队列状态（右上角胶囊 + ComfyUI 节） ----
+        url = cur["url"].strip()
+        client = comfyui_client.ComfyUIClient(url, timeout=60, probe_timeout=20)
+        p = await client.probe()
+        reachable = bool(p.get("ok"))
+        latency = int(p.get("elapsed_ms", 0)) if reachable else 0
+        _rt = (f"正常 · {latency}ms" if reachable
+               else f"🔴 不可达（{str(p.get('error', ''))[:20]}）")
+        if reachable:
+            lines.append(f"· 当前服务器：🟢 正常（HTTP 往返 {latency}ms）")
+        else:
+            lines.append(f"· 当前服务器：🔴 不可达（{p.get('error', '')}）")
+        # ---- 2) 中转站辅助接口（/device）：设备五块 + 上游 + 调度 + 自检 ----
+        dev = await self._fetch_json(url.rstrip("/") + "/device", timeout=8) if reachable else None
+        _sec = self._taskhub_sections(dev) if isinstance(dev, dict) else {}
+        _dev_map: dict[str, list] = {"cpu": [], "gpu": [], "ram": [], "fan": [], "disk": []}
         _comfy_rows: list[tuple] = []
-        _tts_rows: list[tuple] = []
         _sched_rows: list[tuple] = []
         _check_rows: list[tuple] = []
-        for idx, s in enumerate(active, 1):
-            url = s["url"].strip()
-            # 探测用较短的超时（不可达时更快返回），整体 60s 上限（连接/握手慢的服务器也给足等待）
-            client = comfyui_client.ComfyUIClient(url, timeout=60, probe_timeout=20)
-            # 1) 用根路径探测连通性与 HTTP 往返耗时（不依赖 system_stats 等可能 404 的端点）
-            p = await client.probe()
-            if not p.get("ok"):
-                lines.append(f"· 服务器{idx}：🔴 不可达（{p.get('error', '')}）")
-                _srv_rows.append((f"服务器 {idx}", f"不可达（{p.get('error', '')}）", "bad"))
-                await self._safe_close(client)
-                continue
-            latency = int(p.get("elapsed_ms", 0))
-            # 2) 再查队列状态；/queue 不可用时回退本地队列近似
-            state = "空闲"
+        if _sec:
             try:
-                q = await client.get_queue()
-                running = len(q.get("queue_running") or [])
-                pending = len(q.get("queue_pending") or [])
-                if running > 0:
-                    state = f"正在出图（{running} 个，队列 {pending} 个）"
-                elif pending > 0:
-                    state = f"排队中（{pending} 个待处理）"
-                else:
-                    state = "空闲"
+                host = dev.get("host") or {}
+                gpus = host.get("gpus") or []
+                g = (gpus or [{}])[0] or {}
+                if g.get("name"):
+                    _dev_map["gpu"].append(("型号", str(g.get("name")), ""))
+                if g.get("util_percent") is not None or g.get("mem_total_gb"):
+                    _parts = []
+                    if g.get("util_percent") is not None:
+                        _parts.append(f"{g.get('util_percent')}%")
+                    if g.get("mem_total_gb"):
+                        _free = g.get("mem_free_gb")
+                        _parts.append(f"{'?' if _free is None else _free}/{g.get('mem_total_gb')}GB")
+                    if g.get("temperature_c") is not None:
+                        _parts.append(f"{g.get('temperature_c')}°C")
+                    if _parts:
+                        _dev_map["gpu"].append(("状态", " · ".join(str(x) for x in _parts), ""))
+                fanv = g.get("fan_speed_rpm") or g.get("fan_rpm") or g.get("fan")
+                if isinstance(fanv, (int, float)) and fanv > 0:
+                    _dev_map["fan"].append(("转速", f"{int(fanv)} RPM", ""))
+                elif isinstance(fanv, str) and fanv.strip():
+                    _dev_map["fan"].append(("转速", fanv.strip(), ""))
+                if len(gpus) > 1:
+                    _dev_map["fan"].append(("多卡", f"共 {len(gpus)} 张", ""))
+                cpu = host.get("cpu") or {}
+                if isinstance(cpu, dict):
+                    if cpu.get("name"):
+                        _dev_map["cpu"].append(("型号", str(cpu.get("name")), ""))
+                    if cpu.get("percent") is not None:
+                        _dev_map["cpu"].append(("占用", f"{cpu.get('percent')}%", ""))
+                if host.get("cpu_percent") is not None:
+                    _dev_map["cpu"].append(("占用", f"{host.get('cpu_percent')}%", ""))
+                cpu_t = host.get("cpu_temp") or host.get("cpu_temperature")
+                if isinstance(cpu_t, (int, float)):
+                    _dev_map["cpu"].append(("温度", f"{cpu_t}°C", ""))
+                if host.get("ram_total_gb"):
+                    _dev_map["ram"].append(("总量", f"{host.get('ram_total_gb')} GB", ""))
+                    if host.get("ram_used_gb") is not None:
+                        _dev_map["ram"].append(("已用", f"{host.get('ram_used_gb')} GB", ""))
+                disk = host.get("disk") or host.get("disk_usage") or {}
+                if isinstance(disk, dict) and disk.get("total_gb"):
+                    _dev_map["disk"].append(("容量", f"{disk.get('used_gb') or '?'}/{disk.get('total_gb')} GB", ""))
+                elif isinstance(disk, (int, float)):
+                    _dev_map["disk"].append(("占用", f"{disk}%", ""))
             except Exception:
-                srv_key = self._server_key(s)
-                local = len(self._server_pending.get(srv_key, []))
-                state = "正在出图" if local > 0 else "空闲"
-            lines.append(f"· 服务器{idx}：🟢 正常（HTTP 往返 {latency}ms）· {state}")
-            _srv_rows.append((f"服务器 {idx}", f"正常 · {latency}ms · {state}", "ok"))
-            # 3) v7.7.28：中转站（TaskHub）辅助接口 —— /device 一次拿全设备+上游+调度。
-            #    直连 ComfyUI 的服务器没有这个接口（404），按「不是中转站」静默跳过。
-            dev = await self._fetch_json(url.rstrip("/") + "/device", timeout=8)
-            if isinstance(dev, dict) and (dev.get("host") or dev.get("upstreams")):
-                _sec = self._taskhub_sections(dev)
-                for k in ("device", "comfyui", "cosyvoice", "scheduler", "check"):
-                    if _sec.get(k):
-                        _label = f"服务器 {idx} · " if len(active) > 1 else ""
-                        _map = {"device": _device_rows, "comfyui": _comfy_rows,
-                                "cosyvoice": _tts_rows, "scheduler": _sched_rows,
-                                "check": _check_rows}
-                        for row in _sec[k]:
-                            _map[k].append((f"{_label}{row[0]}", row[1], row[2]))
-                _dev_parts = [r[1] for r in _sec.get("device", [])[:2]]
-                if _dev_parts:
-                    lines.append(f"  ├ 设备：{' · '.join(_dev_parts)}")
-                _cu = next((r[1] for r in _sec.get("comfyui", []) if r[0] == "状态"), "")
-                _cv = next((r[1] for r in _sec.get("cosyvoice", []) if r[0] == "状态"), "")
-                if _cu:
-                    lines.append(f"  ├ ComfyUI：{_cu}")
-                if _cv:
-                    lines.append(f"  └ CosyVoice：{_cv}")
-            await self._safe_close(client)
-        # 生图限额配置（v7.7.28：去掉「管理员豁免」——那是内部权限细节，不该对外展示）
+                pass
+            if _sec.get("comfyui"):
+                _comfy_rows = list(_sec["comfyui"])
+            if _sec.get("scheduler"):
+                _sched_rows = list(_sec["scheduler"])
+            if _sec.get("check"):
+                _check_rows = list(_sec["check"])
+            # 文字版摘要
+            if _dev_map.get("gpu"):
+                lines.append(f"  ├ 显卡：{' · '.join(r[1] for r in _dev_map['gpu'][:2])}")
+            if _dev_map.get("cpu"):
+                lines.append(f"  ├ CPU：{' · '.join(r[1] for r in _dev_map['cpu'][:2])}")
+            _cu = next((r[1] for r in _comfy_rows if r[0] == "状态"), "")
+            if _cu:
+                lines.append(f"  └ ComfyUI：{_cu}")
+        else:
+            # 非中转站：用本地 /queue 数据给 ComfyUI 节
+            if reachable:
+                try:
+                    q = await client.get_queue()
+                    running = len(q.get("queue_running") or [])
+                    pending = len(q.get("queue_pending") or [])
+                    _comfy_rows = [("状态", "🟢 可达", "ok"),
+                                   ("队列", f"执行中 {running} · 排队 {pending}", "")]
+                except Exception:
+                    srv_key = self._server_key(cur)
+                    local = len(self._server_pending.get(srv_key, []))
+                    _comfy_rows = [("状态", "🟢 可达", "ok"),
+                                   ("本插件任务", f"{local} 个进行中" if local else "空闲", "")]
+        await self._safe_close(client)
+        # ---- 3) 热门工作流 TOP3 + 生图统计（与 /绘图统计 同数据源，今天口径） ----
+        _top_rows: list[tuple] = []
+        _stat_rows: list[tuple] = []
+        if self.gallery is not None:
+            try:
+                st = self.gallery.stats()
+                _total = st.get("total", 0) if isinstance(st, dict) else 0
+            except Exception:
+                _total = 0
+            _today = _yest = 0
+            try:
+                lt = time.localtime(time.time())
+                day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+                _today = self.gallery.range_stats(start_ts=day_start).get("total", 0)
+                _yest = self.gallery.range_stats(start_ts=day_start - 86400,
+                                                 end_ts=day_start).get("total", 0)
+            except Exception:
+                pass
+            _stat_rows = [("今日", f"{_today:,} 张", "ok" if _today else ""),
+                          ("昨日", f"{_yest:,} 张", ""),
+                          ("累计", f"{_total:,} 张", "")]
+            try:
+                wfs = self.gallery.range_stats(
+                    start_ts=time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+                ).get("workflows", []) or self.gallery.workflow_stats(top=3, days=0)
+                for w in (wfs or [])[:3]:
+                    speed = "—" if not w.get("avg_sec") else f"{w['avg_sec']}s/张"
+                    _top_rows.append((str(w.get("workflow") or "—"),
+                                      f"{w.get('count', 0)} 张 · {speed}", ""))
+            except Exception:
+                pass
+        # ---- 4) 组 sections（span：4 列网格；缺省通栏） ----
+        _sections: list[dict] = []
+        if _dev_map["cpu"]:
+            _sections.append({"label": "CPU", "icon": "chip", "span": 1, "rows": _dev_map["cpu"]})
+        if _dev_map["gpu"]:
+            _sections.append({"label": "显卡", "icon": "gpu", "span": 1, "rows": _dev_map["gpu"]})
+        if _dev_map["ram"]:
+            _sections.append({"label": "内存", "icon": "ram", "span": 1, "rows": _dev_map["ram"]})
+        if _dev_map["fan"]:
+            _sections.append({"label": "风扇", "icon": "fan", "span": 1, "rows": _dev_map["fan"]})
+        if _dev_map["disk"]:
+            _sections.append({"label": "硬盘", "icon": "disk", "span": 1, "rows": _dev_map["disk"]})
+        if _comfy_rows:
+            _sections.append({"label": "ComfyUI", "icon": "comfyui", "span": 1,
+                              "rows": _comfy_rows})
+        if _sched_rows:
+            _sections.append({"label": "调度队列", "icon": "queue", "span": 1,
+                              "rows": _sched_rows})
+        if _check_rows:
+            _sections.append({"label": "上游自检", "icon": "check", "span": 1,
+                              "rows": _check_rows})
+        if _top_rows:
+            _sections.append({"label": "热门工作流（今天）", "icon": "trophy", "span": 2,
+                              "rows": _top_rows})
+        if _stat_rows:
+            _sections.append({"label": "生图统计", "icon": "chart", "span": 2,
+                              "rows": _stat_rows})
+        if not lines[1:]:
+            lines.append("· 未能获取服务器状态（超时或配置有误）")
         lines.append("")
-        lines.append("📊 生图限额配置")
-        try:
-            qc = self._draw_limit_cfg()
-            enabled = bool(qc.get("enabled", False))
-            lines.append(f"· 开关：{'已开启' if enabled else '未开启'}")
-            fmt_n = lambda n: "不限" if int(n) < 0 else str(n)
-            _q3 = f"{fmt_n(qc.get('max_total', -1))} / {fmt_n(qc.get('max_hour', -1))} / {fmt_n(qc.get('max_day', -1))}"
-            lines.append(f"· 总次数 / 每小时 / 每天：{_q3}")
-            _quota_rows.append(("限额开关", "已开启" if enabled else "未开启", ""))
-            _quota_rows.append(("总次数 / 每小时 / 每天", _q3, ""))
-            if self.quota is not None:
-                users = self.quota.list_users()
-                day_total = sum(int(u.get("day_used") or 0) for u in users)
-                lines.append(f"· 今日全群已生图：{day_total} 次")
-                _quota_rows.append(("今日全群已生图", f"{day_total} 次", ""))
-        except Exception as e:
-            lines.append(f"· 限额配置读取失败（{e}）")
-        # v7.5.1：优先发报表卡，渲染失败退回文字；v7.7.28 增加中转站的设备/上游各节
+        lines.append("📊 生图统计")
+        for _l, _v, _s in _stat_rows:
+            lines.append(f"· {_l}：{_v}")
+        if _top_rows:
+            lines.append("🏆 热门工作流（今天）")
+            for _l, _v, _s in _top_rows:
+                lines.append(f"· {_l}：{_v}")
+        # 优先发报表卡，渲染失败退回文字
         _rep = {
             "kicker": "ComfyUI萌绘 · 绘图状态",
             "title": "绘图状态",
-            "right_top": f"{len(active)} 台",
-            "sections": (
-                [{"label": "服务器", "rows": _srv_rows}]
-                + ([{"label": "设备状态", "rows": _device_rows}] if _device_rows else [])
-                + ([{"label": "ComfyUI", "rows": _comfy_rows}] if _comfy_rows else [])
-                + ([{"label": "CosyVoice", "rows": _tts_rows}] if _tts_rows else [])
-                + ([{"label": "调度队列", "rows": _sched_rows}] if _sched_rows else [])
-                + ([{"label": "上游自检", "rows": _check_rows}] if _check_rows else [])
-                + ([{"label": "生图限额", "rows": _quota_rows}] if _quota_rows else [])
-            ),
+            "right_top": _rt,
+            "sections": _sections,
         }
         if await self._send_report_card(event, _rep, foot_left="服务器 / 设备 / 上游为实时采样"):
             event.stop_event()

@@ -495,18 +495,138 @@ def render(info: dict, *, state: str = "drawing", theme: str = "", cfg: dict | N
     return out.resize((W, H), Image.LANCZOS)
 
 
+# --------------------------------------------------------------------------- #
+# 报表卡 · 节图标（v7.7.29）：自绘白色线性图标（16px 见方，画在 26px 徽章内）。
+# 不用 emoji 字体——seguiemj 在小字号会糊成色块，自绘几何图形任何尺寸都清晰。
+# --------------------------------------------------------------------------- #
+_SEC_ICON_KEYWORDS: list[tuple[str, str]] = [
+    ("cpu", "chip"), ("显卡", "gpu"), ("gpu", "gpu"),
+    ("内存", "ram"), ("memory", "ram"),
+    ("风扇", "fan"), ("fan", "fan"),
+    ("硬盘", "disk"), ("磁盘", "disk"), ("disk", "disk"),
+    ("comfyui", "comfyui"),
+    ("调度", "queue"), ("队列", "queue"), ("queue", "queue"),
+    ("自检", "check"), ("check", "check"),
+    ("统计", "chart"), ("stats", "chart"), ("限额", "chart"),
+    ("热门", "trophy"), ("排行", "trophy"), ("top", "trophy"),
+]
+
+
+def _sec_icon_kind(label: str) -> str:
+    """按节标题猜图标类型（section 里显式给了 icon 字段时优先）。"""
+    low = str(label or "").strip().lower()
+    for kw, kind in _SEC_ICON_KEYWORDS:
+        if kw in low:
+            return kind
+    return "server"
+
+
+def _draw_sec_icon(d, cx: float, cy: float, kind: str, col) -> None:
+    """以 (cx, cy) 为中心画一个 16x16（逻辑像素）的白色线性图标。"""
+    r = 8
+    L = max(2, int(1.5 * S))
+    x0, y0, x1, y1 = (cx - r) * S, (cy - r) * S, (cx + r) * S, (cy + r) * S
+    if kind == "server":            # 两个叠放的设备条
+        for yy0 in (y0 + 1 * S, y0 + 9.5 * S):
+            d.rounded_rectangle([x0 + 1 * S, yy0, x1 - 1 * S, yy0 + 5.5 * S],
+                                radius=2 * S, outline=col, width=L)
+            d.ellipse([(cx - 4) * S, (yy0 + 1.5) * S, (cx - 1.5) * S, (yy0 + 4) * S],
+                      fill=col)
+    elif kind == "chip":            # CPU：芯片 + 引脚
+        d.rounded_rectangle([x0 + 2.5 * S, y0 + 2.5 * S, x1 - 2.5 * S, y1 - 2.5 * S],
+                            radius=2 * S, outline=col, width=L)
+        d.rounded_rectangle([(cx - 2.2) * S, (cy - 2.2) * S,
+                             (cx + 2.2) * S, (cy + 2.2) * S], radius=1 * S, fill=col)
+        for k in (-3.5, 3.5):
+            d.line([(cx + k) * S, y0, (cx + k) * S, y0 + 2.5 * S], fill=col, width=L)
+            d.line([(cx + k) * S, y1 - 2.5 * S, (cx + k) * S, y1], fill=col, width=L)
+            d.line([x0, (cy + k) * S, x0 + 2.5 * S, (cy + k) * S], fill=col, width=L)
+            d.line([x1 - 2.5 * S, (cy + k) * S, x1, (cy + k) * S], fill=col, width=L)
+    elif kind == "gpu":             # 显卡：横置卡身 + 风扇圆 + 挡板
+        d.rounded_rectangle([x0, y0 + 2 * S, x1 - 3 * S, y0 + 12 * S],
+                            radius=2.5 * S, outline=col, width=L)
+        d.ellipse([(cx - 1) * S, (y0 + 3.5) * S, (cx + 7) * S, (y0 + 11.5) * S],
+                  outline=col, width=L)
+        d.line([x1 - 3 * S, y0 + 12 * S, x1 - 3 * S, y1 - 2 * S], fill=col, width=L)
+    elif kind == "ram":             # 内存条：长条 + 金手指齿
+        d.rounded_rectangle([x0 + 1 * S, y0 + 2 * S, x1 - 1 * S, y0 + 10 * S],
+                            radius=1.5 * S, outline=col, width=L)
+        d.line([(x0 + 4) * S, (y0 + 6) * S, (x1 - 4) * S, (y0 + 6) * S],
+               fill=col, width=L)
+        for k in (-5, -1.5, 2, 5.5):
+            d.line([(cx + k) * S, y0 + 10 * S, (cx + k) * S, y1 - 1 * S],
+                   fill=col, width=L)
+    elif kind == "fan":             # 风扇：外圈 + 中心 + 四根辐条
+        d.ellipse([x0 + 1 * S, y0 + 1 * S, x1 - 1 * S, y1 - 1 * S], outline=col, width=L)
+        d.ellipse([(cx - 1.8) * S, (cy - 1.8) * S, (cx + 1.8) * S, (cy + 1.8) * S],
+                  fill=col)
+        import math
+        for ang in (45, 135, 225, 315):
+            rad = math.radians(ang)
+            xk, yk = cx + 6.2 * math.cos(rad), cy + 6.2 * math.sin(rad)
+            d.line([cx * S, cy * S, xk * S, yk * S], fill=col, width=L)
+    elif kind == "disk":            # 硬盘/数据库：圆柱
+        d.ellipse([x0 + 1.5 * S, y0 + 1 * S, x1 - 1.5 * S, y0 + 7.5 * S],
+                  outline=col, width=L)
+        d.line([(x0 + 1.5) * S, y0 + 4.2 * S, (x0 + 1.5) * S, y1 - 4.2 * S],
+               fill=col, width=L)
+        d.line([(x1 - 1.5) * S, y0 + 4.2 * S, (x1 - 1.5) * S, y1 - 4.2 * S],
+               fill=col, width=L)
+        d.arc([x0 + 1.5 * S, y1 - 7.5 * S, x1 - 1.5 * S, y1 - 1 * S],
+              start=0, end=180, fill=col, width=L)
+    elif kind == "comfyui":         # 2x2 方块（一块实心）
+        for gx in (0, 1):
+            for gy in (0, 1):
+                bx0 = x0 + gx * 9 * S
+                by0 = y0 + gy * 9 * S
+                if gx == 0 and gy == 0:
+                    d.rounded_rectangle([bx0, by0, bx0 + 7 * S, by0 + 7 * S],
+                                        radius=2 * S, fill=col)
+                else:
+                    d.rounded_rectangle([bx0, by0, bx0 + 7 * S, by0 + 7 * S],
+                                        radius=2 * S, outline=col, width=L)
+    elif kind == "queue":           # 三条横线（队列）
+        for i, wfrac in enumerate((1.0, 0.72, 0.45)):
+            yy = y0 + 1 * S + i * 5.5 * S
+            d.rounded_rectangle([x0 + 1 * S, yy, x0 + 1 * S + 14 * S * wfrac,
+                                 yy + 3.2 * S], radius=1.6 * S, fill=col)
+    elif kind == "check":           # 对勾圆环
+        d.ellipse([x0 + 1 * S, y0 + 1 * S, x1 - 1 * S, y1 - 1 * S], outline=col, width=L)
+        d.line([(cx - 3.5) * S, cy * S, (cx - 0.5) * S, (cy + 3.2) * S],
+               fill=col, width=L)
+        d.line([(cx - 0.5) * S, (cy + 3.2) * S, (cx + 4) * S, (cy - 2.8) * S],
+               fill=col, width=L)
+    elif kind == "trophy":          # 奖杯
+        d.rounded_rectangle([(cx - 5) * S, y0 + 2 * S, (cx + 5) * S, (cy + 1) * S],
+                            radius=2 * S, outline=col, width=L)
+        d.arc([(cx - 8) * S, y0 + 1 * S, (cx - 2) * S, (cy - 1) * S],
+              start=90, end=270, fill=col, width=L)
+        d.arc([(cx + 2) * S, y0 + 1 * S, (cx + 8) * S, (cy - 1) * S],
+              start=270, end=90, fill=col, width=L)
+        d.line([cx * S, (cy + 1) * S, cx * S, y1 - 3 * S], fill=col, width=L)
+        d.line([(cx - 4) * S, y1 - 2 * S, (cx + 4) * S, y1 - 2 * S], fill=col, width=L)
+    elif kind == "chart":           # 三根柱
+        for i, hfrac in enumerate((0.5, 0.78, 1.0)):
+            bx0 = x0 + 1 * S + i * 5.5 * S
+            d.rounded_rectangle([bx0, y1 - 1 * S - 14 * S * hfrac,
+                                 bx0 + 4 * S, y1 - 1 * S], radius=1.2 * S, fill=col)
+
+
 def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
                   data_dir=None, foot_left: str = "") -> Image.Image | None:
-    """统计 / 状态类报表卡（/绘图统计、/绘图状态 用，v7.5.1）。
+    """统计 / 状态类报表卡（/绘图统计、/绘图状态 用，v7.5.1，v7.7.29 改版式）。
 
     info 字段（全部可缺省，缺啥跳啥）：
       kicker    左上小字（如「ComfyUI萌绘 · 绘图统计」）
       title     大标题（「绘图统计」/「绘图状态」）
-      right_top 右上胶囊文字（统计范围，如「今天」）
+      right_top 右上胶囊文字（统计范围 / 服务器状态·延迟）
       tiles     [(label, value, unit)] 大数字块，最多 4 个等宽一排
-      sections  [{"label": "热门工作流", "rows": [(左文, 右值, 状态?)]}, ...]
-                状态: "ok"=强调色圆点、""=无点、其他=红点（不可达等）
-    版式与出图卡同源：同一套主题/字体/footer（左说明+时间、右品牌）。
+      sections  [{"label": "...", "rows": [(左文, 右值, 状态?)]}, ...]
+                状态: "ok"=值强调色、""=灰、"warn"=橙、其他=红
+                v7.7.29 新增：{"span": 1~4}（跨几格，缺省 0=通栏单列，旧行为）、
+                              {"icon": "chip"}（节图标类型，缺省按 label 关键字猜）
+    版式（v7.7.29）：非通栏节进 **4 列网格**（同行等高），节标题带图标徽章、
+    行 label 左对齐 / 值右对齐同基线。版式与出图卡同源：同一套主题/字体/footer。
     """
     if Image is None:
         return None
@@ -518,7 +638,11 @@ def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
     text_muted = (152, 158, 180, 255) if dark else (126, 133, 152, 255)
     tile_bg = (38, 41, 50, 255) if dark else c["soft"] + (255,)
     tile_border = (66, 76, 82, 255) if dark else c["border"] + (255,)
+    # 节卡底（v7.7.29）
+    sec_bg = (44, 48, 58, 255) if dark else c["soft"] + (255,)
+    sec_border = (66, 76, 82, 255) if dark else c["border"] + (150,)
     _bad = (224, 82, 82)
+    _warn = (230, 150, 30)
 
     fpath = find_font(cfg, data_dir=data_dir)
     if not fpath:
@@ -528,11 +652,9 @@ def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
     except Exception as e:
         logger.warning(f"【出图卡片】 字体加载失败 {fpath}: {e}")
         return None
-    f_kicker, f_title = f(14), f(30)
-    f_pill = f(15)
+    f_kicker, f_title = f(14), f(28)
+    f_pill = f(14)
     f_tlabel, f_tval, f_tunit = f(14), f(30), f(13)
-    f_row_l, f_row_v = f(16), f(15)
-    f_label = f(15)
     f_foot, f_brand, f_mark = f(14), f(14), f(12)
 
     def _ink(text: str, font):
@@ -544,21 +666,62 @@ def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
     sections = [s for s in (info.get("sections") or [])
                 if isinstance(s, dict) and (s.get("rows") or [])]
 
-    # ---- 版式预算 ----
-    HEAD_H, FOOT_H = 108, 54
-    y = HEAD_H + 20
+    # ---- 版式预算（v7.7.29：4 列网格，同行等高，span 跨格，span<=0 通栏） ----
+    HEAD_H, FOOT_H = 100, 54
+    N_COLS, grid_gap = 4, 12
+    col_w = (W - PAD * 2 - grid_gap * (N_COLS - 1)) // N_COLS
+    row_h, title_h, sec_pad, sec_gap = 24, 28, 10, 12
+    y = HEAD_H + 14
     tile_geo = []
     if tiles:
         n = len(tiles)
         _gap = 14
         _tw = (W - PAD * 2 - _gap * (n - 1)) // n
         tile_geo = [(PAD + i * (_tw + _gap), _tw) for i in range(n)]
-        y += 96 + 18
-    sec_geo = []
+        y += 96 + 14
+
+    def _sec_w(sec) -> int:
+        span = int(sec.get("span") or 0)
+        if span <= 0:
+            return W - PAD * 2
+        return span * col_w + (span - 1) * grid_gap
+
+    def _sec_hh(sec) -> int:
+        return sec_pad + title_h + len(sec["rows"]) * row_h + sec_pad - 4
+
+    placed: list = []      # (x, y, w, h, sec)
+    cur_y = y
+    row_buf: list = []     # [(start_col, span, sec)]
+    row_max = 0
+    row_cols = 0
+
+    def _flush_row() -> None:
+        nonlocal cur_y, row_buf, row_max, row_cols
+        if not row_buf:
+            return
+        for c0, sp, sec in row_buf:
+            placed.append((PAD + c0 * (col_w + grid_gap), cur_y,
+                           sp * col_w + (sp - 1) * grid_gap, row_max, sec))
+        cur_y += row_max + sec_gap
+        row_buf, row_max, row_cols = [], 0, 0
+
     for sec in sections:
-        sec_geo.append((y, sec))
-        y += 30 + len(sec["rows"]) * 40 + 16
-    H = int(y + 4 + FOOT_H)
+        span = int(sec.get("span") or 0)
+        if span <= 0:
+            _flush_row()
+            placed.append((PAD, cur_y, W - PAD * 2, _sec_hh(sec), sec))
+            cur_y += _sec_hh(sec) + sec_gap
+            continue
+        span = min(span, N_COLS)
+        if row_cols + span > N_COLS:
+            _flush_row()
+        row_buf.append((row_cols, span, sec))
+        row_cols += span
+        row_max = max(row_max, _sec_hh(sec))
+        if row_cols >= N_COLS:
+            _flush_row()
+    _flush_row()
+    H = int(cur_y + 4 + FOOT_H)
 
     img = Image.new("RGBA", (W * S, H * S), body_bg)
 
@@ -572,32 +735,26 @@ def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
             px[xx, yy] = _mix(c["top"], c["bottom"], t)
     img.alpha_composite(small.resize((W * S, HEAD_H * S), Image.BICUBIC).convert("RGBA"), (0, 0))
     d = ImageDraw.Draw(img)
-    d.text((PAD * S, 24 * S), str(info.get("kicker") or ""), font=f_kicker, fill=c["sub"] + (255,))
-    d.text((PAD * S, 44 * S), str(info.get("title") or "统计"), font=f_title, fill=c["ink"] + (255,))
+    d.text((PAD * S, 18 * S), str(info.get("kicker") or ""), font=f_kicker, fill=c["sub"] + (255,))
+    d.text((PAD * S, 36 * S), str(info.get("title") or "统计"), font=f_title, fill=c["ink"] + (255,))
 
-    def _ink(text: str, font):
-        p = Image.new("L", (900 * S, 90 * S), 0)
-        ImageDraw.Draw(p).text((0, 0), text, font=font, fill=255)
-        return p.getbbox() or (0, 0, 0, 0)
-
-    # 右上胶囊（范围）：淡强调底 + 描边，文字居中（与出图卡同语言）
+    # 右上胶囊：**不透明**强调色混白底 + 描边（RGBA 上画半透明会丢 alpha 变纯色，
+    # 把同色文字吞掉——v7.7.28 之前的淡底写法在部分环境就是这个坑）
     _rt = str(info.get("right_top") or "")
     if _rt:
         _rb = _ink(_rt, f_pill)
         _pw = (_rb[2] - _rb[0]) + 28 * S
         _ph = 30 * S
         _px = (W - PAD) * S - _pw
-        _py = 24 * S
-        _hl = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(_hl).rounded_rectangle(
-            [_px, _py, _px + _pw, _py + _ph], radius=15 * S,
-            fill=c["accent"] + (30,), outline=c["accent"] + (100,), width=S)
-        img.alpha_composite(_hl)
+        _py = 20 * S
+        _pill_bg = _mix(c["accent"], (40, 44, 54) if dark else (255, 255, 255), 0.88)
+        d.rounded_rectangle([_px, _py, _px + _pw, _py + _ph], radius=15 * S,
+                            fill=_pill_bg + (255,), outline=c["accent"] + (160,), width=S)
         d.text((_px + _pw / 2 - (_rb[0] + _rb[2]) / 2, _py + _ph / 2 - (_rb[1] + _rb[3]) / 2),
                _rt, font=f_pill, fill=c["accent"] + (255,))
 
     # ---- tiles ----
-    _tiles_y = HEAD_H + 20
+    _tiles_y = HEAD_H + 14
     for (tx, tw), (label, value, unit) in zip(tile_geo, tiles):
         _x0, _y0 = tx * S, _tiles_y * S
         _x1, _y1 = (tx + tw) * S, (_tiles_y + 96) * S
@@ -619,25 +776,44 @@ def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
             d.text((_vx + (_vb[2] - _vb[0]) + 6 * S, _y0 + 56 * S), _un,
                    font=f_tunit, fill=text_muted)
 
-    # ---- sections ----
-    for _sy, sec in sec_geo:
-        d.text((PAD * S, (_sy + 8) * S), str(sec.get("label") or ""), font=f_label, fill=text_muted)
-        for _i, row in enumerate(sec["rows"]):
+    # ---- sections（图标徽章 + 网格 + 基线对齐） ----
+    for _sx, _sy, _sw, _sh, sec in placed:
+        d.rounded_rectangle([_sx * S, _sy * S, (_sx + _sw) * S, (_sy + _sh) * S],
+                            radius=12 * S, fill=sec_bg, outline=sec_border, width=S)
+        ix, iy = _sx + sec_pad, _sy + sec_pad - 2
+        bw = 26
+        d.rounded_rectangle([ix * S, iy * S, (ix + bw) * S, (iy + bw) * S],
+                            radius=8 * S, fill=c["accent"] + (255,))
+        _draw_sec_icon(d, ix + bw / 2, iy + bw / 2,
+                       str(sec.get("icon") or _sec_icon_kind(sec.get("label") or "")),
+                       (255, 255, 255, 255))
+        _lab_f = f(14.5)
+        d.text(((ix + bw + 8) * S, (iy + bw / 2) * S), str(sec.get("label") or ""),
+               font=_lab_f, fill=text_main, anchor="lm")
+        _lw = d.textlength(str(sec.get("label") or ""), font=_lab_f)
+        ly = (iy + bw / 2) * S
+        d.line([((ix + bw + 8) * S + _lw + 9 * S, ly), (( _sx + _sw - sec_pad) * S, ly)],
+               fill=sec_border, width=S)
+        # 行：label 左对齐、值右对齐，anchor 同基线
+        ry = iy + bw + 5
+        _f_l, _f_v = f(13.5), f(13)
+        for row in sec["rows"]:
             _left = str(row[0]) if len(row) > 0 else ""
             _val = str(row[1]) if len(row) > 1 else ""
             _state = str(row[2]) if len(row) > 2 else ""
-            _ry = (_sy + 30 + _i * 40) * S
-            _cy = _ry + 20 * S
+            _cy = (ry + row_h / 2) * S
+            _vc = text_muted
             if _state == "ok":
-                d.ellipse([PAD * S, _cy - 4.5 * S, (PAD + 9) * S, _cy + 4.5 * S],
-                          fill=c["accent"] + (255,))
-            elif _state and _state != "":
-                d.ellipse([PAD * S, _cy - 4.5 * S, (PAD + 9) * S, _cy + 4.5 * S], fill=_bad + (255,))
-            d.text(((PAD + 16) * S, _ry + 4 * S), _left, font=f_row_l, fill=text_main)
+                _vc = c["accent"]
+            elif _state == "warn":
+                _vc = _warn
+            elif _state:
+                _vc = _bad
+            d.text((ix * S, _cy), _left, font=_f_l, fill=text_main, anchor="lm")
             if _val:
-                _vb = _ink(_val, f_row_v)
-                d.text(((W - PAD) * S - _vb[2], _ry + 7 * S), _val, font=f_row_v,
-                       fill=(_bad if (_state and _state != "" and _state != "ok") else text_muted))
+                d.text(((_sx + _sw - sec_pad) * S, _cy), _val, font=_f_v,
+                       fill=_vc, anchor="rm")
+            ry += row_h
 
     # ---- footer（与出图卡同款：左说明+时间，右品牌） ----
     _fy = (H - FOOT_H) * S
