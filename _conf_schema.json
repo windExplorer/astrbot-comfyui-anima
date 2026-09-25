@@ -791,16 +791,59 @@
             "default": ""
           },
           "default_scale": {
-            "type": "int",
+            "type": "float",
             "description": "默认放大倍率",
-            "hint": "仅图片放大用。用户没写倍率时用它（如 3 = 3×）。不在「允许的放大倍率」里时自动改用允许列表的第一个。",
+            "hint": "仅图片放大用。用户没写倍率时用它（如 3 = 3×）。**支持小数**（如 1.5）。不在「允许的放大倍率」里时自动改用允许列表的第一个。",
             "default": 3
           },
           "allowed_scales": {
             "type": "string",
             "description": "允许的放大倍率",
-            "hint": "仅图片放大用。逗号分隔，如 2,3,4。用户写的倍率不在此列时自动改用默认倍率（避免手滑写出 8× 把显存打爆）。留空 = 不校验，用户写多少用多少。",
+            "hint": "仅图片放大用。逗号分隔，**支持小数**（如 1.5,2,2.5,3）——只支持整数倍率的工作流别填小数即可。用户写的倍率不在此列时**就近向下**取：请求 2.7× 时选 ≤2.7 的最大允许值（2.5×）；列表全都更大时取最小值。留空 = 不校验，用户写多少用多少。",
             "default": "2,3,4"
+          },
+          "scale_node": {
+            "type": "string",
+            "description": "倍率字段 · 节点 ID（手动指定，选填）",
+            "hint": "仅图片放大用。解析器没识别到倍率字段、或识别错了（写到了无关节点）时，在这里手动指定「节点 ID + 输入框名」（如 74:57 / resize_type.multiplier）。**两项都填才生效**，填了优先于解析注记。",
+            "default": ""
+          },
+          "scale_field": {
+            "type": "string",
+            "description": "倍率字段 · 输入框名（手动指定，选填）",
+            "hint": "仅图片放大用。与上面的「节点 ID」配套填写（字段名带点号的如 resize_type.multiplier 原样填）。",
+            "default": ""
+          },
+          "guard_preset": {
+            "type": "string",
+            "description": "尺寸护栏 · 档位（条目覆盖，选填）",
+            "hint": "仅图片放大用。**留空 = 沿用全局护栏**（配置项页的「图片放大 · 尺寸护栏」）。不同工作流显存开销不同时可单独配：8g / 12g / 16g / custom（自定义时用下面四个数值）。",
+            "default": "",
+            "options": ["", "8g", "12g", "16g", "custom"]
+          },
+          "guard_in_side": {
+            "type": "int",
+            "description": "护栏自定义 · 输入长边上限（px）",
+            "hint": "仅 guard_preset=custom 时生效。0 = 不限制该项。",
+            "default": 0
+          },
+          "guard_in_mp": {
+            "type": "float",
+            "description": "护栏自定义 · 输入总像素上限（MP）",
+            "hint": "仅 guard_preset=custom 时生效。0 = 不限制该项。",
+            "default": 0
+          },
+          "guard_out_side": {
+            "type": "int",
+            "description": "护栏自定义 · 输出长边上限（px）",
+            "hint": "仅 guard_preset=custom 时生效。0 = 不限制该项。",
+            "default": 0
+          },
+          "guard_out_mp": {
+            "type": "float",
+            "description": "护栏自定义 · 输出总像素上限（MP）",
+            "hint": "仅 guard_preset=custom 时生效。0 = 不限制该项。",
+            "default": 0
           },
           "seed_mode": {
             "type": "string",

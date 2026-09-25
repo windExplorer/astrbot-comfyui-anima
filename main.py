@@ -360,8 +360,12 @@ def _upscale_label(model: str) -> str:
 
 
 # ---- 图片放大（v7.7.1）指令参数解析 --------------------------------------- #
-# 倍率写法：`3x` / `x3` / `3倍`（放大倍率都是 1~2 位整数）
-_UPSCALE_SCALE_ARG_RE = re.compile(r"^(?:[xX]\s*(\d{1,2})|(\d{1,2})\s*[xX倍])$")
+# 倍率写法：`3x` / `x3` / `3倍`；v7.7.27 起支持小数（`1.5x` / `x2.5` / `2.5倍`）
+_UPSCALE_SCALE_ARG_RE = re.compile(
+    r"^(?:[xX]\s*(\d{1,2}(?:\.\d)?)|(\d{1,2}(?:\.\d)?)\s*[xX倍])$"
+)
+# 独立数字 token 也当倍率（`/放大 vosr2 2.5`）；其余仍是工作流名
+_UPSCALE_SCALE_NUM_RE = re.compile(r"^\d{1,2}(?:\.\d)?$")
 # 倍率 flag 写法：`--倍率 3` / `--倍数 3` / `--倍 3` / `--scale 3`
 _UPSCALE_SCALE_FLAGS = ("--倍率", "--倍数", "--倍", "--scale", "--放大倍率")
 
@@ -449,38 +453,58 @@ def _upscale_input_verdict(w: int, h: int, limits: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def _upscale_fit_scale(w: int, h: int, want: int, limits: dict) -> tuple[int | None, str]:
+def _upscale_fit_scale(w: int, h: int, want, limits: dict,
+                       allowed: list | None = None) -> tuple[float | None, str]:
     """按输出上限把倍率「压到放得下」，返回 (可用倍率 或 None, 说明)。
 
-    从 want 往下一档一档试（want, want-1, …, 1），取第一个同时满足输出长边与输出总像素的：
+    候选顺序（v7.7.27 起支持小数倍率）：
+      · 传了 allowed（允许列表）→ want 本身 + 允许列表**从高到低**逐个试；
+      · 没传 allowed → 旧行为：整数逐级往下（want, want-1, …, 1；want 是小数时
+        先试 want 本身再落回整数逐级）。
+    取第一个同时满足输出长边与输出总像素的：
     - 说明非空 ⇒ **发生了降档**，调用方要在卡片里写明；
-    - 返回 None ⇒ 连 1× 都超上限（拒绝）；
+    - 返回 None ⇒ 连最小的候选倍率都超上限（拒绝）；
     - 尺寸未知 / 未设上限 ⇒ 原样返回 want、说明为空。
     """
     try:
-        want = int(want)
+        want_f = round(float(want), 2)
     except (TypeError, ValueError):
         return None, "倍率无法识别"
-    if want < 1 or not w or not h:
-        return want, ""
+    if want_f < 1 or not w or not h:
+        return want_f, ""
     _side_lim = int((limits or {}).get("out_side") or 0)
     _mp_lim = float((limits or {}).get("out_mp") or 0)
     if not _side_lim and not _mp_lim:
-        return want, ""
+        return want_f, ""
     _lim_txt = _upscale_limits_desc(limits, "out")
-    for s in range(want, 0, -1):
-        ow, oh = int(w) * s, int(h) * s
+
+    def _fits(s: float) -> bool:
+        ow, oh = float(w) * s, float(h) * s
         if _side_lim and max(ow, oh) > _side_lim:
-            continue
+            return False
         if _mp_lim and (ow * oh) / 1_000_000 > _mp_lim + 1e-9:
+            return False
+        return True
+
+    if allowed:
+        cands = [want_f] + sorted({round(float(x), 2) for x in allowed}, reverse=True)
+    elif float(want_f).is_integer():
+        cands = [float(x) for x in range(int(want_f), 0, -1)]
+    else:
+        cands = [want_f] + [float(x) for x in range(int(want_f), 0, -1)]
+    tried: list[float] = []
+    for c in cands:
+        if c < 1 or any(abs(c - s) < 1e-9 for s in tried):
             continue
-        if s == want:
-            return want, ""
-        return s, (
-            f"输入 {w}×{h} 用 {want}× 会到 {int(w) * want}×{int(h) * want}，"
-            f"超过输出上限（{_lim_txt}）→ 已自动降为 {s}×"
-        )
-    return None, f"输入 {w}×{h} 即使 1× 也超过输出上限（{_lim_txt}）"
+        tried.append(c)
+        if _fits(c):
+            if abs(c - want_f) < 1e-9:
+                return want_f, ""
+            return c, (
+                f"输入 {w}×{h} 用 {want_f:g}× 会到 {w * want_f:g}×{h * want_f:g}，"
+                f"超过输出上限（{_lim_txt}）→ 已自动降为 {c:g}×"
+            )
+    return None, f"输入 {w}×{h} 即使 {min(tried):g}× 也超过输出上限（{_lim_txt}）"
 
 
 def _size_tier_table(ratio_items: list | None) -> dict:
@@ -8294,76 +8318,109 @@ class ComfyUIDrawPlugin(Star):
             return default
         return _v
 
-    def _upscale_limits(self) -> dict:
-        """图片放大 · 尺寸护栏（全局配置 `upscale_limits` 解析后的生效值）。"""
+    def _upscale_limits(self, entry: dict | None = None) -> dict:
+        """图片放大 · 尺寸护栏生效值（v7.7.27 支持按条目覆盖）。
+
+        条目配了 `guard_preset`（8g/12g/16g/custom）→ 用条目的（custom 时读条目的
+        guard_in_side / guard_in_mp / guard_out_side / guard_out_mp）；
+        没配（空/留空）→ 沿用全局 `upscale_limits`。
+        """
+        if entry:
+            gp = str(self._upscale_param(entry, "guard_preset", "") or "").strip().lower()
+            gp = _UPSCALE_LIMIT_ALIASES.get(gp, gp)
+            if gp == "custom":
+                return _upscale_limits_of({
+                    "preset": "custom",
+                    "custom_max_input_side": self._upscale_param(entry, "guard_in_side", 0),
+                    "custom_max_input_mp": self._upscale_param(entry, "guard_in_mp", 0),
+                    "custom_max_output_side": self._upscale_param(entry, "guard_out_side", 0),
+                    "custom_max_output_mp": self._upscale_param(entry, "guard_out_mp", 0),
+                })
+            if gp in _UPSCALE_LIMIT_PRESETS:
+                return _upscale_limits_of({"preset": gp})
         return _upscale_limits_of(self._cfg("upscale_limits", {}) or {})
 
     @staticmethod
-    def _parse_scale_list(raw) -> list[int]:
-        """把「允许的放大倍率」解析成整数列表（逗号/顿号/分号/空格分隔，只收 1~8）。"""
-        out: list[int] = []
+    def _parse_scale_list(raw) -> list[float]:
+        """把「允许的放大倍率」解析成列表（逗号/顿号/分号/空格分隔，只收 1~8）。
+
+        v7.7.27：支持**小数**倍率（如 1.5、2.5）——工作流只支持整数倍率的，
+        允许列表里不填小数即可；解析与写入全程按数值处理。
+        """
+        out: list[float] = []
         for tok in re.split(r"[,，、;；\s]+", str(raw or "")):
             tok = tok.strip().rstrip("xX倍")
-            if not tok.isdigit():
+            if not tok:
                 continue
-            n = int(tok)
-            if 1 <= n <= 8 and n not in out:
+            try:
+                n = round(float(tok), 2)
+            except ValueError:
+                continue
+            if 1 <= n <= 8 and not any(abs(n - x) < 1e-9 for x in out):
                 out.append(n)
         return out
 
     @staticmethod
-    def _resolve_upscale_scale(asked: int | None, allowed: list[int],
-                               default: int) -> tuple[int, str]:
+    def _resolve_upscale_scale(asked, allowed: list, default) -> tuple[float, str]:
         """决定本次放大倍率，返回 (倍率, 说明)。说明非空时调用方写日志。
 
-        规则（与「更多功能 → 图片放大」页一致）：
-          · 允许列表为空 → 不校验：用户写多少用多少，没写用默认；
+        规则（v7.7.27 细化回退原则——就近向下优先）：
+          · 用户没写 → 默认倍率（默认不在允许列表时取列表第一个，沿用旧行为）；
+          · 允许列表为空 → 不校验：用户写多少用多少；
           · 用户写的在允许列表内 → 用它；
-          · 用户写的**不在**允许列表内 → 回落到默认（默认也不在则取允许列表第一个）；
-          · 用户没写 → 默认（同上兜底）。
+          · **不在**列表里 → 就近向下：选 ≤ 请求值的最大允许倍率（2.7×→2.5×）；
+            列表全都大于请求值 → 取列表最小值；「无法识别」仍回落默认。
         """
         try:
-            dft = int(default or 0)
+            dft = round(float(default or 0), 2)
         except (TypeError, ValueError):
-            dft = 0
-        if allowed and dft not in allowed:
+            dft = 0.0
+        if allowed and not any(abs(dft - x) < 1e-9 for x in allowed):
             dft = allowed[0]
-        if asked is None:
+        if asked is None or (isinstance(asked, str) and not str(asked).strip()):
             return dft, "未指定倍率，用默认"
         try:
-            ask = int(asked)
+            ask = round(float(asked), 2)
         except (TypeError, ValueError):
             return dft, "倍率无法识别，用默认"
-        if not allowed or ask in allowed:
+        if not allowed:
             return ask, ""
-        return dft, f"{ask}× 不在允许的倍率里，已改用默认"
+        if any(abs(ask - x) < 1e-9 for x in allowed):
+            return ask, ""
+        downs = [x for x in allowed if x <= ask + 1e-9]
+        if downs:
+            pick = max(downs)
+            return pick, f"{ask:g}× 不在允许的倍率里，就近降为 {pick:g}×"
+        pick = min(allowed)
+        return pick, f"{ask:g}× 低于最小允许倍率，已改用 {pick:g}×"
 
     @staticmethod
     def _parse_upscale_args(text: str) -> tuple[str, int | None]:
         """解析「图片放大」指令参数 → (放大工作流名, 倍率)。
 
         倍率（可选）三种写法：
-          · `3x` / `x3` / `3倍`
-          · `--倍率 3`（亦支持 --倍数 / --倍 / --scale）
-          · 纯数字位置参数（`/图片放大 vosr2 3`）
+          · `3x` / `x3` / `3倍`（v7.7.27：带后缀写法支持小数，如 `1.5x` / `x2.5` / `2.5倍`）
+          · `--倍率 3`（亦支持 --倍数 / --倍 / --scale，同样支持小数 `--倍率 2.5`）
+          · 纯数字位置参数（`/图片放大 vosr2 3`，**只认整数**——裸 `2.0` 这类歧义 token
+            留给工作流名（如「VOSR 2.0」），小数倍率请带后缀或用 --倍率）
         其余位置参数按顺序拼成工作流名；解析不到倍率时返回 None（调用方用默认）。
         """
-        scale: int | None = None
+        scale: float | None = None
         wf_parts: list[str] = []
         toks = str(text or "").replace("\r", " ").replace("\n", " ").split()
         i = 0
         while i < len(toks):
             t = toks[i]
             if t.lower() in _UPSCALE_SCALE_FLAGS:
-                if i + 1 < len(toks) and toks[i + 1].isdigit():
-                    scale = int(toks[i + 1])
+                if i + 1 < len(toks) and _UPSCALE_SCALE_NUM_RE.match(toks[i + 1] or ""):
+                    scale = float(toks[i + 1])
                     i += 2
                     continue
                 i += 1
                 continue
             m = _UPSCALE_SCALE_ARG_RE.match(t)
             if m:
-                scale = int(m.group(1) or m.group(2))
+                scale = float(m.group(1) or m.group(2))
                 i += 1
                 continue
             if t.isdigit() and len(t) <= 2:
@@ -8539,15 +8596,28 @@ class ComfyUIDrawPlugin(Star):
         return wf, prompt
 
     @staticmethod
-    def _apply_upscale_scale(prompt: dict, roles: dict, scale: int) -> int | None:
-        """把倍率写进放大工作流（写不到就沿用工作流原值），返回实际写入的倍率或 None。"""
+    def _apply_upscale_scale(prompt: dict, roles: dict, scale,
+                             override: tuple = ("", "")) -> float | None:
+        """把倍率写进放大工作流（写不到就沿用工作流原值），返回实际写入的倍率或 None。
+
+        v7.7.27：支持小数倍率（1.5 这类直接写入；整数值保持 int，JSON 干净）；
+        `override=(node, field)` 为条目里**手动指定**的倍率字段——解析器没识别到
+        倍率字段、或识别错了（如写到了无关节点）时，用它救场，优先于解析注记。
+        """
         tgt = (roles or {}).get("scale") or {}
         _nid, _f = str(tgt.get("node") or ""), str(tgt.get("field") or "")
+        _on = str((override or ("", ""))[0] or "").strip()
+        _of = str((override or ("", ""))[1] or "").strip()
+        if _on and _of:
+            _nid, _f = _on, _of
         if not _nid or not _f:
             return None
         try:
-            if workflow_builder.set_number_node(prompt, _nid, _f, int(scale)):
-                return int(scale)
+            val = float(scale)
+            if val.is_integer():
+                val = int(val)
+            if workflow_builder.set_number_node(prompt, _nid, _f, val):
+                return val
         except Exception as e:
             logger.warning(f"【放大】 写入倍率失败（沿用工作流原值）: {e}")
         return None
@@ -8663,12 +8733,12 @@ class ComfyUIDrawPlugin(Star):
         # 4) 定倍率（条目配置：不在允许列表 → 回落默认）
         _allowed = self._parse_scale_list(self._upscale_param(entry, "allowed_scales", ""))
         try:
-            _dft = int(self._upscale_param(entry, "default_scale", 3) or 3)
+            _dft = round(float(self._upscale_param(entry, "default_scale", 3) or 3), 2)
         except (TypeError, ValueError):
-            _dft = 3
+            _dft = 3.0
         scale, _why = self._resolve_upscale_scale(asked_scale, _allowed, _dft)
         if _why:
-            logger.info(f"【放大】 倍率 {scale}×（{_why}）")
+            logger.info(f"【放大】 倍率 {(scale):g}×（{_why}）")
         logger.info(
             f"【放大】 功能「{_ename}」→ 工作流「{_wfname}」｜允许倍率 {_allowed or '不限'}｜"
             f"默认 {_dft}×｜种子 {self._upscale_param(entry, 'seed_mode', 'random')}"
@@ -8699,7 +8769,8 @@ class ComfyUIDrawPlugin(Star):
                     ),
                 )
                 return
-            _fit_scale, _fit_note = _upscale_fit_scale(in_w, in_h, scale, _limits)
+            _fit_scale, _fit_note = _upscale_fit_scale(in_w, in_h, scale, _limits,
+                                                       allowed=_allowed)
             if _fit_scale is None:
                 logger.info(f"【放大】 输出尺寸超限被拦：{_fit_note}")
                 await self._card_or_text(
@@ -8720,7 +8791,7 @@ class ComfyUIDrawPlugin(Star):
             logger.info(
                 f"【放大】 尺寸护栏：输入 {_size_txt}｜档位 {_limits.get('label')}"
                 f"（输入 {_upscale_limits_desc(_limits, 'in')}／"
-                f"输出 {_upscale_limits_desc(_limits, 'out')}）｜倍率 {_want_scale}×→{scale}×"
+                f"输出 {_upscale_limits_desc(_limits, 'out')}）｜倍率 {_want_scale:g}×→{(scale):g}×"
             )
         # 4) 组装 prompt：写倍率 + 种子
         try:
@@ -8748,9 +8819,12 @@ class ComfyUIDrawPlugin(Star):
         if not node:
             await self._send(event, "这个放大工作流里没找到图片输入节点（LoadImage），请检查工作流后再试。")
             return
-        applied = self._apply_upscale_scale(prompt, roles, scale)
+        applied = self._apply_upscale_scale(prompt, roles, scale, override=(
+            self._upscale_param(entry, "scale_node", ""),
+            self._upscale_param(entry, "scale_field", ""),
+        ))
         if applied is None:
-            logger.info(f"【放大】 工作流未暴露可写倍率，沿用其内置倍率（本次请求 {scale}×）")
+            logger.info(f"【放大】 工作流未暴露可写倍率，沿用其内置倍率（本次请求 {(scale):g}×）")
         seeds = self._apply_upscale_seed(prompt, roles, entry)
         if seeds:
             logger.info(
@@ -8772,7 +8846,7 @@ class ComfyUIDrawPlugin(Star):
             await self._card_or_text(
                 event, reason_text,
                 info=self._card_fail_info(
-                    wf={"name": _wfname}, prompt=f"图片放大 {scale}×", is_img2img=True,
+                    wf={"name": _wfname}, prompt=f"图片放大 {(scale):g}×", is_img2img=True,
                     srv_key=srv_key, seed=(seeds[0] if seeds else None),
                     cost=time.time() - _t0, extra=extra,
                     # 副标题写成「功能名 · 图片放大」，别沿用出图那套「图生图」
@@ -8834,8 +8908,8 @@ class ComfyUIDrawPlugin(Star):
             # 8) 处理中卡片（v7.7.7）：与出图链路同一套卡片/同一套开关（enabled、作用域、
             #    撤回都适用）；卡片不可发或渲染失败时，退回原来那行文字。
             _start_txt = (
-                f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～"
-                + (f"（尺寸护栏已把 {_want_scale}× 降为 {scale}×）" if _fit_note else "")
+                f"正在放大（{(applied or scale):g}×）…这步比较慢，稍等一下～"
+                + (f"（尺寸护栏已把 {_want_scale:g}× 降为 {(scale):g}×）" if _fit_note else "")
             )
             _start_sent = False
             try:
@@ -8849,7 +8923,7 @@ class ComfyUIDrawPlugin(Star):
                     "today": self._card_today(),
                     "params": self._card_chips([
                         ("输入", f"{in_w}×{in_h}" if (in_w and in_h) else None),
-                        ("倍率", f"{applied or scale}×"),
+                        ("倍率", f"{(applied or scale):g}×"),
                         # 尺寸护栏降档时在卡片上写明（没降档就不显示，避免噪音）
                         ("护栏降档", (f"{_want_scale}×→{scale}×" if _fit_note else None)),
                         ("输出上限", (_upscale_limits_desc(_limits, "out") if _fit_note else None)),
@@ -8863,7 +8937,7 @@ class ComfyUIDrawPlugin(Star):
             if not _start_sent:
                 await self._send(event, _start_txt)
             logger.info(
-                f"【放大】 已提交 {_wfname}｜prompt_id={prompt_id}｜倍率 {applied or scale}×"
+                f"【放大】 已提交 {_wfname}｜prompt_id={prompt_id}｜倍率 {(applied or scale):g}×"
                 f"｜等待上限 {timeout}s"
             )
             history = await client.wait_for_result(prompt_id, timeout, interval)
@@ -8916,7 +8990,10 @@ class ComfyUIDrawPlugin(Star):
                 _blocked = False
                 if _nsfw_pre is not None:
                     _is_nsfw, _score, _avail = _nsfw_pre
-                    if _is_nsfw and not self._is_private_event(event):
+                    # v7.7.27：补上 NSFW 群白名单（_nsfw_group_allowed）——出图/取图链路
+                    # 一直有查，放大此前漏了，白名单内的群也被拦截
+                    if (_is_nsfw and not self._is_private_event(event)
+                            and not self._nsfw_group_allowed(event)):
                         _blocked = True
                         _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
                         logger.warning(f"【NSFW】 放大结果被群聊拦截{_sc} workflow={_wfname}")
@@ -8931,18 +9008,41 @@ class ComfyUIDrawPlugin(Star):
                             from .image_store import SRC_GEN, _sha256_of
                         except ImportError:
                             from image_store import SRC_GEN, _sha256_of
+                        # v7.7.27：先把**输入图**归档进图库（按用户图），拿到库内 sha 作为
+                        # ref_sha256 —— 此前只对 temp 输入图算哈希、从不归档，成品记录的
+                        # ref 指向一条不存在的记录，图库大图的参考图永远显示缺失。
+                        _ref_sha = ""
+                        try:
+                            try:
+                                from .image_store import SRC_USER
+                            except ImportError:
+                                from image_store import SRC_USER
+                            _ref_final = self.gallery.archive_image(
+                                src, source=SRC_USER, user_id=_uid,
+                                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                                session_id=_sid,
+                            )
+                            if _ref_final:
+                                _ref_sha = _sha256_of(_ref_final) or ""
+                        except Exception as _re:
+                            logger.warning(f"【放大】 参考图归档失败（不影响放大）: {_re}")
+                        if not _ref_sha:
+                            try:
+                                _ref_sha = _sha256_of(src) or ""
+                            except Exception:
+                                _ref_sha = ""
                         _final = self.gallery.archive_image(
                             img_path,
                             source=SRC_GEN,
-                            prompt=f"图片放大 {applied or scale}×",
+                            prompt=f"图片放大 {(applied or scale):g}×",
                             prompt_raw="",
                             workflow=_wfname,
                             seed=(seeds[0] if seeds else None),
                             w=out_w or None, h=out_h or None,
                             in_w=in_w or None, in_h=in_h or None,
-                            upscale=f"{applied or scale}×",
+                            upscale=f"{(applied or scale):g}×",
                             is_img2img=True,
-                            ref_sha256=(_sha256_of(src) or ""),
+                            ref_sha256=_ref_sha,
                             user_id=_uid,
                             user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                             session_id=_sid,
@@ -8971,23 +9071,23 @@ class ComfyUIDrawPlugin(Star):
                     _tiles.append(("输入", f"{in_w}×{in_h}", ""))
                 if out_w and out_h:
                     _tiles.append(("输出", f"{out_w}×{out_h}", ""))
-                _tiles.append(("倍率", f"{applied or scale}×", ""))
+                _tiles.append(("倍率", f"{(applied or scale):g}×", ""))
                 _tiles.append(("耗时", f"{_cost:.1f}s", ""))
                 _rep = {
                     "kicker": "ComfyUI萌绘 · 图片放大",
                     "title": "图片放大",
-                    "right_top": f"{applied or scale}×",
+                    "right_top": f"{(applied or scale):g}×",
                     "tiles": _tiles[:4],
                     "sections": [{
                         "label": "放大功能",
                         "rows": [
-                            (_ename, f"{applied or scale}× · {_cost:.1f}s", "ok"),
-                            (_wfname, f"{applied or scale}×", ""),
+                            (_ename, f"{(applied or scale):g}× · {_cost:.1f}s", "ok"),
+                            (_wfname, f"{(applied or scale):g}×", ""),
                         ],
                     }] + ([{
                         "label": "尺寸护栏",
                         "rows": [
-                            ("自动降档", f"{_want_scale}× → {scale}×", "ok"),
+                            ("自动降档", f"{_want_scale:g}× → {(scale):g}×", "ok"),
                             ("输出上限", _upscale_limits_desc(_limits, "out"), ""),
                         ],
                     }] if _fit_note else []),
@@ -9005,10 +9105,10 @@ class ComfyUIDrawPlugin(Star):
                 if not _done_ok and self._card_cfg().get("result_text", True):
                     await self._send(
                         event,
-                        f"放大完成：{applied or scale}×"
+                        f"放大完成：{(applied or scale):g}×"
                         + (f"，{out_w}×{out_h}" if out_w and out_h else "")
                         + f"，耗时 {_cost:.1f}s"
-                        + (f"（尺寸护栏已把 {_want_scale}× 降为 {scale}×）" if _fit_note else ""),
+                        + (f"（尺寸护栏已把 {_want_scale:g}× 降为 {(scale):g}×）" if _fit_note else ""),
                     )
                 # 计数：配额 + 今日已出图（与出图同一口径）
                 self._record_draw_used(event)
@@ -9020,7 +9120,7 @@ class ComfyUIDrawPlugin(Star):
                     if self.oplog is not None:
                         self.oplog.add(
                             "upscale_success",
-                            f"图片放大成功（{_wfname} · {applied or scale}×）",
+                            f"图片放大成功（{_wfname} · {(applied or scale):g}×）",
                             user_id=_uid, session_id=_sid,
                             detail=f"in={in_w}x{in_h} out={out_w}x{out_h} 耗时={_cost:.1f}s",
                             extra={
@@ -9031,7 +9131,7 @@ class ComfyUIDrawPlugin(Star):
                 except Exception:
                     pass
                 logger.info(
-                    f"【放大·成功】 {_wfname}｜{applied or scale}×｜"
+                    f"【放大·成功】 {_wfname}｜{(applied or scale):g}×｜"
                     f"in={in_w}x{in_h} → out={out_w}x{out_h}｜耗时 {_cost:.1f}s"
                     f"｜seed={seeds[0] if seeds else '—'}"
                 )
@@ -9602,7 +9702,9 @@ class ComfyUIDrawPlugin(Star):
                 _blocked = False
                 if _nsfw_pre is not None:
                     _is_nsfw, _score, _avail = _nsfw_pre
-                    if _is_nsfw and not self._is_private_event(event):
+                    # v7.7.27：补上 NSFW 群白名单（与出图/放大链路同口径）
+                    if (_is_nsfw and not self._is_private_event(event)
+                            and not self._nsfw_group_allowed(event)):
                         _blocked = True
                         _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
                         logger.warning(f"【NSFW】 抠图结果被群聊拦截{_sc} workflow={_wfname}")
@@ -9617,6 +9719,27 @@ class ComfyUIDrawPlugin(Star):
                             from .image_store import SRC_GEN, _sha256_of
                         except ImportError:
                             from image_store import SRC_GEN, _sha256_of
+                        # v7.7.27：同放大链路——先把输入图归档成用户图，ref 指向真实记录
+                        _ref_sha = ""
+                        try:
+                            try:
+                                from .image_store import SRC_USER
+                            except ImportError:
+                                from image_store import SRC_USER
+                            _ref_final = self.gallery.archive_image(
+                                src, source=SRC_USER, user_id=_uid,
+                                user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                                session_id=_sid,
+                            )
+                            if _ref_final:
+                                _ref_sha = _sha256_of(_ref_final) or ""
+                        except Exception as _re:
+                            logger.warning(f"【抠图】 参考图归档失败（不影响抠图）: {_re}")
+                        if not _ref_sha:
+                            try:
+                                _ref_sha = _sha256_of(src) or ""
+                            except Exception:
+                                _ref_sha = ""
                         _final = self.gallery.archive_image(
                             img_path,
                             source=SRC_GEN,
@@ -9628,7 +9751,7 @@ class ComfyUIDrawPlugin(Star):
                             in_w=in_w or None, in_h=in_h or None,
                             steps=_steps_now,
                             is_img2img=True,
-                            ref_sha256=(_sha256_of(src) or ""),
+                            ref_sha256=_ref_sha,
                             user_id=_uid,
                             user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                             session_id=_sid,

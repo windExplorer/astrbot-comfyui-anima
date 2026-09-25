@@ -59,7 +59,7 @@ def _load_helpers(want: set[str]) -> dict:
         if not isinstance(node, ast.Assign):
             continue
         names = {getattr(t, "id", "") for t in node.targets}
-        if names & {"_UPSCALE_SCALE_ARG_RE", "_UPSCALE_SCALE_FLAGS"}:
+        if names & {"_UPSCALE_SCALE_ARG_RE", "_UPSCALE_SCALE_FLAGS", "_UPSCALE_SCALE_NUM_RE"}:
             exec(ast.get_source_segment(src, node) or "", ns)  # noqa: S102
     for node in cls.body:
         if not isinstance(node, ast.FunctionDef) or node.name not in want:
@@ -93,7 +93,8 @@ def _load_module_funcs(want: set[str]) -> dict:
         tgts = node.targets if isinstance(node, ast.Assign) else [node.target]
         names = {getattr(t, "id", "") for t in tgts}
         if names & {"_UPSCALE_LIMIT_PRESETS", "_UPSCALE_LIMIT_ALIASES",
-                    "_UPSCALE_SCALE_ARG_RE", "_UPSCALE_SCALE_FLAGS"}:
+                    "_UPSCALE_SCALE_ARG_RE", "_UPSCALE_SCALE_FLAGS",
+                    "_UPSCALE_SCALE_NUM_RE"}:
             exec(ast.get_source_segment(src, node) or "", ns)  # noqa: S102
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in want:
@@ -321,20 +322,30 @@ def test_parse_args():
 
 
 def test_scale_rules():
-    """允许倍率列表 + 「不在范围内回落默认」。"""
+    """允许倍率列表（v7.7.27 支持小数）+ 回退原则（就近向下优先）。"""
     assert _parse_scale_list("2,3,4") == [2, 3, 4]
     assert _parse_scale_list("2、3 4；4") == [2, 3, 4]      # 顿号/空格/重复
     assert _parse_scale_list("3x,4X") == [3, 4]
     assert _parse_scale_list("") == []
     assert _parse_scale_list("9,0,-1") == []               # 只收 1~8
+    # v7.7.27：小数倍率
+    assert _parse_scale_list("1.5,2,2.5,3") == [1.5, 2, 2.5, 3]
+    assert _parse_scale_list("1.5x,2.5倍") == [1.5, 2.5]
+    assert _parse_scale_list("1.50,1.5") == [1.5]          # 浮点去重
+    # 回退原则（v7.7.27：就近向下优先）
     assert _resolve_upscale_scale(None, [2, 3, 4], 3) == (3, "未指定倍率，用默认")
     assert _resolve_upscale_scale(4, [2, 3, 4], 3) == (4, "")
     got, why = _resolve_upscale_scale(5, [2, 3, 4], 3)
-    assert got == 3 and "不在允许" in why, (got, why)
+    assert got == 4 and "就近降为" in why, (got, why)       # 5× → 就近向下 4×
+    got, why = _resolve_upscale_scale(2.7, [1.5, 2, 2.5, 3], 2)
+    assert got == 2.5 and "就近降为" in why, (got, why)     # 2.7× → 2.5×
+    assert _resolve_upscale_scale(1.2, [1.5, 2], 2)[0] == 1.5   # 全更大 → 最小值
     assert _resolve_upscale_scale(5, [], 3) == (5, "")        # 不校验
     assert _resolve_upscale_scale(None, [2, 4], 3)[0] == 2    # 默认不在允许里 → 取第一个
-    assert _resolve_upscale_scale(7, [2, 4], 3)[0] == 2
-    print("== 4. 倍率规则（允许列表校验 + 回落默认） OK")
+    # 无法识别 → 用默认；默认不在允许列表 → 已被替换为列表第一个（2）
+    assert _resolve_upscale_scale("abc", [2, 4], 3) == (2, "倍率无法识别，用默认")
+    assert _resolve_upscale_scale("abc", [2, 4], 2) == (2, "倍率无法识别，用默认")
+    print("== 4. 倍率规则（小数倍率 + 就近向下回退） OK")
 
 
 def test_prompt_injection():
@@ -354,6 +365,10 @@ def test_prompt_injection():
     assert len(rnd) == 1 and 1 <= rnd[0] < 2 ** 31, rnd
     assert prompt["2"]["inputs"]["seed"] == rnd[0]
 
+    # v7.7.27：条目手动指定倍率字段（override）优先于解析注记；小数倍率直接写
+    assert _apply_upscale_scale(prompt, {}, 1.5, override=("6", "value")) == 1.5
+    assert prompt["6"]["inputs"]["value"] == 1.5
+    # 旧调用（无 override）+ roles 为空 → 仍返回 None
     assert _apply_upscale_scale(prompt, {}, 4) is None
     assert _apply_upscale_seed(prompt, {}, {}) == []
 
@@ -663,10 +678,17 @@ def test_size_guard():
     assert _upscale_fit_scale(832, 1216, 4, _upscale_limits_of({"preset": "off"})) == (4, "")
     assert _upscale_fit_scale(0, 0, 3, g8) == (3, "")
 
-    # 与条目参数配合：允许列表回落默认 → 再按尺寸降档（两层规则不互相打架）
-    scale, _ = _resolve_upscale_scale(8, [2, 3, 4], 3)          # 8 不在列表 → 回落 3
-    assert scale == 3
+    # 与条目参数配合：允许列表就近向下 → 再按尺寸降档（两层规则不互相打架）
+    scale, _ = _resolve_upscale_scale(8, [2, 3, 4], 3)          # 8 不在列表 → 就近向下 4
+    assert scale == 4
     assert _upscale_fit_scale(1024, 1536, scale, g8)[0] == 2
+    # v7.7.27：fit 支持小数倍率；给允许列表时候选 = want + 允许列表降序
+    assert _upscale_fit_scale(832, 1216, 2.5, g8) == (2.5, "")  # 2080×3040 放得下 → 不降
+    s, note = _upscale_fit_scale(1024, 1536, 2.5, g8)           # 2560×3840 超长边 → 2×
+    assert s == 2 and "已自动降为 2×" in note, (s, note)         # 无 allowed：小数先试再落整数
+    s, note = _upscale_fit_scale(1024, 1024, 3, g8, allowed=[1.5, 2, 2.5, 3])
+    assert s == 2.5 and "已自动降为 2.5×" in note, (s, note)     # 3× 超总像素 → 在允许列表内降档
+    assert _upscale_fit_scale(832, 1216, 2, g12, allowed=[1.5, 2]) == (2, "")
     print("== 10. 尺寸护栏（档位 8g/12g/16g + 旧名映射 / 输入拦截 / 自适应降倍率 / 文案） OK")
 
 

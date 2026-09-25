@@ -292,7 +292,7 @@
         <template v-else>
           <n-grid cols="1 640:3" :x-gap="16" :y-gap="14">
             <n-form-item-gi :label="meta('default_scale', '默认放大倍率').label">
-              <n-input-number v-model:value="form.default_scale" :min="1" :max="8" style="width: 100%" />
+              <n-input-number v-model:value="form.default_scale" :min="1" :max="8" :step="0.5" style="width: 100%" />
               <div class="hint">
                 {{ meta('default_scale', "").hint }}
                 <template v-if="formBaseScale != null">工作流内置：{{ formBaseScale }}×。</template>
@@ -323,6 +323,48 @@
             <n-form-item-gi :label="meta('seed_value', '固定种子值').label">
               <n-input-number v-model:value="form.seed_value" :disabled="form.seed_mode !== 'fixed'" style="width: 100%" />
               <div class="hint">仅「种子策略 = fixed」时生效。</div>
+            </n-form-item-gi>
+          </n-grid>
+
+          <div class="sec-title">倍率字段（进阶，一般留空）</div>
+          <n-grid cols="1 640:2" :x-gap="16" :y-gap="14">
+            <n-form-item-gi :label="meta('scale_node', '倍率字段 · 节点 ID').label">
+              <n-input v-model:value="form.scale_node" placeholder="留空 = 用解析器自动识别的" />
+              <div class="hint">{{ meta('scale_node', "").hint }}</div>
+            </n-form-item-gi>
+            <n-form-item-gi :label="meta('scale_field', '倍率字段 · 输入框名').label">
+              <n-input v-model:value="form.scale_field" placeholder="如 scale / resize_type.multiplier" />
+              <div class="hint">{{ meta('scale_field', "").hint }}</div>
+            </n-form-item-gi>
+          </n-grid>
+
+          <div class="sec-title">尺寸护栏（本条目覆盖）</div>
+          <n-form-item :label="meta('guard_preset', '护栏档位').label">
+            <n-select v-model:value="form.guard_preset" :options="[
+              { label: '沿用全局（配置项页的「图片放大 · 尺寸护栏」）', value: '' },
+              { label: '8G 显存档', value: '8g' },
+              { label: '12G 显存档', value: '12g' },
+              { label: '16G 显存档', value: '16g' },
+              { label: '自定义（用下面四个数值）', value: 'custom' },
+            ]" />
+            <div class="hint">{{ meta('guard_preset', "").hint }}</div>
+          </n-form-item>
+          <n-grid v-if="form.guard_preset === 'custom'" cols="1 640:2" :x-gap="16" :y-gap="14">
+            <n-form-item-gi :label="meta('guard_in_side', '输入长边上限（px）').label">
+              <n-input-number v-model:value="form.guard_in_side" :min="0" :max="20000" :step="256" style="width: 100%" />
+              <div class="hint">{{ meta('guard_in_side', "").hint }}</div>
+            </n-form-item-gi>
+            <n-form-item-gi :label="meta('guard_in_mp', '输入总像素上限（MP）').label">
+              <n-input-number v-model:value="form.guard_in_mp" :min="0" :max="500" :step="0.5" style="width: 100%" />
+              <div class="hint">{{ meta('guard_in_mp', "").hint }}</div>
+            </n-form-item-gi>
+            <n-form-item-gi :label="meta('guard_out_side', '输出长边上限（px）').label">
+              <n-input-number v-model:value="form.guard_out_side" :min="0" :max="20000" :step="256" style="width: 100%" />
+              <div class="hint">{{ meta('guard_out_side', "").hint }}</div>
+            </n-form-item-gi>
+            <n-form-item-gi :label="meta('guard_out_mp', '输出总像素上限（MP）').label">
+              <n-input-number v-model:value="form.guard_out_mp" :min="0" :max="500" :step="0.5" style="width: 100%" />
+              <div class="hint">{{ meta('guard_out_mp', "").hint }}</div>
             </n-form-item-gi>
           </n-grid>
         </template>
@@ -368,6 +410,15 @@ const DEFAULTS: Record<string, any> = {
   seed_mode: "random",
   seed_value: 6666,
   is_default: false,
+  // 倍率字段手动指定（解析不到/识别错时救场，两项都填才生效）
+  scale_node: "",
+  scale_field: "",
+  // 尺寸护栏条目覆盖（guard_preset 空 = 沿用全局；custom 用四个数值）
+  guard_preset: "",
+  guard_in_side: 0,
+  guard_in_mp: 0,
+  guard_out_side: 0,
+  guard_out_mp: 0,
   // —— 抠图专属 ——
   steps: 0,
   prompt: "",
@@ -583,7 +634,7 @@ const formAllowed = computed(() =>
   String(form.allowed_scales || "")
     .split(/[,，、;；\s]+/)
     .map((s) => s.trim().replace(/[xX倍]$/, ""))
-    .filter((s) => /^\d+$/.test(s) && +s >= 1 && +s <= 8)
+    .filter((s) => /^\d+(\.\d)?$/.test(s) && +s >= 1 && +s <= 8)
     .map((s) => +s)
 );
 
@@ -654,6 +705,15 @@ async function saveForm() {
     v.steps = Number(v.steps) > 0 ? Number(v.steps) : 0;
     v.prompt = String(v.prompt || "");
     v.no_upscale = v.no_upscale !== false;
+  } else {
+    // 放大（v7.7.27）：默认倍率支持小数；倍率字段/护栏覆盖清理空值
+    v.default_scale = Number(v.default_scale) > 0 ? Number(v.default_scale) : 3;
+    v.scale_node = String(v.scale_node || "").trim();
+    v.scale_field = String(v.scale_field || "").trim();
+    v.guard_preset = String(v.guard_preset || "");
+    ["guard_in_side", "guard_in_mp", "guard_out_side", "guard_out_mp"].forEach((k) => {
+      v[k] = Math.max(0, Number(v[k]) || 0);
+    });
   }
   v.timeout = Number(v.timeout) > 0 ? Number(v.timeout) : 300;
   // 「设为默认」唯一性：一条设为默认 → 其它图片放大条目自动取消默认
