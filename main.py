@@ -370,15 +370,20 @@ _UPSCALE_SCALE_FLAGS = ("--倍率", "--倍数", "--倍", "--scale", "--放大倍
 # 口径：长边(px) + 总像素(MP)——扩散式放大（VOSR2 / SeedVR2）的显存占用与**输出总像素**最相关。
 # 0 = 该项不限制。档位面向「显存档」，用户只选档位，不用自己算像素。
 _UPSCALE_LIMIT_PRESETS: dict[str, dict] = {
-    "strict": {"label": "严格（8G 显存以下）", "in_side": 2048, "in_mp": 4,
-               "out_side": 3072, "out_mp": 8},
-    "standard": {"label": "标准（8~12G 显存，默认）", "in_side": 3072, "in_mp": 9,
-                 "out_side": 4096, "out_mp": 12},
-    "loose": {"label": "宽松（16G 显存以上）", "in_side": 4096, "in_mp": 16,
-              "out_side": 6144, "out_mp": 24},
+    "8g": {"label": "8G 显存（默认）", "in_side": 2048, "in_mp": 4,
+           "out_side": 3072, "out_mp": 8},
+    "12g": {"label": "12G 显存", "in_side": 3072, "in_mp": 9,
+            "out_side": 4096, "out_mp": 12},
+    "16g": {"label": "16G 显存以上", "in_side": 4096, "in_mp": 16,
+            "out_side": 6144, "out_mp": 24},
     "off": {"label": "不限制（自行承担爆显存风险）", "in_side": 0, "in_mp": 0,
             "out_side": 0, "out_mp": 0},
     "custom": {"label": "自定义", "in_side": 0, "in_mp": 0, "out_side": 0, "out_mp": 0},
+}
+# v7.7.10：档位名改成按显存标注（更直观，也方便把默认值对准 8G 卡）。
+# 首版（v7.7.9）存过 strict/standard/loose 的配置继续按同一档位生效，不会跑偏。
+_UPSCALE_LIMIT_ALIASES: dict[str, str] = {
+    "strict": "8g", "standard": "12g", "loose": "16g",
 }
 
 
@@ -386,12 +391,14 @@ def _upscale_limits_of(cfg: dict) -> dict:
     """把 `upscale_limits` 配置解析成生效数值（纯函数，便于测试）。
 
     返回 {"preset","label","in_side","in_mp","out_side","out_mp","unlimited"}。
-    档位非法/缺省按 standard；custom 时读四个自定义值（0 = 不限制该项）。
+    档位非法/缺省按 8g（默认，面向 8G 显存）；旧档位名（strict/standard/loose）自动映射；
+    custom 时读四个自定义值（0 = 不限制该项）。
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    preset = str(cfg.get("preset") or "standard").strip().lower()
+    preset = str(cfg.get("preset") or "8g").strip().lower()
+    preset = _UPSCALE_LIMIT_ALIASES.get(preset, preset)
     if preset not in _UPSCALE_LIMIT_PRESETS:
-        preset = "standard"
+        preset = "8g"
     out = dict(_UPSCALE_LIMIT_PRESETS[preset])
 
     def _num(key, default, as_int):

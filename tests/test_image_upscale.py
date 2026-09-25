@@ -86,7 +86,8 @@ def _load_module_funcs(want: set[str]) -> dict:
             continue
         tgts = node.targets if isinstance(node, ast.Assign) else [node.target]
         names = {getattr(t, "id", "") for t in tgts}
-        if names & {"_UPSCALE_LIMIT_PRESETS", "_UPSCALE_SCALE_ARG_RE", "_UPSCALE_SCALE_FLAGS"}:
+        if names & {"_UPSCALE_LIMIT_PRESETS", "_UPSCALE_LIMIT_ALIASES",
+                    "_UPSCALE_SCALE_ARG_RE", "_UPSCALE_SCALE_FLAGS"}:
             exec(ast.get_source_segment(src, node) or "", ns)  # noqa: S102
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in want:
@@ -507,60 +508,71 @@ def test_cmd_alias_and_strip():
 
 
 def test_size_guard():
-    """尺寸护栏（v7.7.9）：档位解析 / 输入拦截 / 自适应降倍率 / 文案。"""
-    # 档位解析：默认 standard；非法档位回落 standard；off=不限；custom 读自定义数值
-    std = _upscale_limits_of({})
-    assert std["preset"] == "standard" and std["unlimited"] is False
-    assert (std["in_side"], std["in_mp"], std["out_side"], std["out_mp"]) == (3072, 9, 4096, 12)
-    assert _upscale_limits_of(None)["preset"] == "standard"
-    assert _upscale_limits_of({"preset": "不存在的档位"})["preset"] == "standard"
+    """尺寸护栏（v7.7.9 起；v7.7.10 档位按显存命名，默认 8g）：档位/输入拦截/自适应降倍率/文案。"""
+    # 档位解析：默认 8g（面向 8G 卡）；非法档位回落 8g；off=不限；custom 读自定义数值
+    g8 = _upscale_limits_of({})
+    assert g8["preset"] == "8g" and g8["unlimited"] is False
+    assert (g8["in_side"], g8["in_mp"], g8["out_side"], g8["out_mp"]) == (2048, 4, 3072, 8)
+    assert _upscale_limits_of(None)["preset"] == "8g"
+    assert _upscale_limits_of({"preset": "不存在的档位"})["preset"] == "8g"
     assert _upscale_limits_of({"preset": "OFF"})["unlimited"] is True
+    # 旧档位名（v7.7.9 首版的 strict/standard/loose）自动映射到新档位，配置不跑偏
+    assert _upscale_limits_of({"preset": "strict"})["preset"] == "8g"
+    assert _upscale_limits_of({"preset": "standard"})["preset"] == "12g"
+    assert _upscale_limits_of({"preset": "loose"})["preset"] == "16g"
     _cus = _upscale_limits_of({"preset": "custom", "custom_max_input_side": 1500,
                                "custom_max_input_mp": 2, "custom_max_output_side": 2400,
                                "custom_max_output_mp": 5})
     assert (_cus["in_side"], _cus["in_mp"], _cus["out_side"], _cus["out_mp"]) == (1500, 2.0, 2400, 5.0)
-    # 容错：负数/非数字按 0（= 不限制该项）/ 默认值处理
+    # 容错：负数按 0（= 不限制该项）；非数字回落默认值
     assert _upscale_limits_of({"preset": "custom", "custom_max_input_side": -5})["in_side"] == 0
     assert _upscale_limits_of({"preset": "custom", "custom_max_input_side": "abc",
                                "custom_max_input_mp": 3})["in_mp"] == 3.0
-    # 档位宽严有序（strict < standard < loose）
-    _s, _l = _upscale_limits_of({"preset": "strict"}), _upscale_limits_of({"preset": "loose"})
-    assert _s["in_side"] < std["in_side"] < _l["in_side"]
-    assert _s["out_mp"] < std["out_mp"] < _l["out_mp"]
+    # 档位宽严有序（8g < 12g < 16g）
+    g12, g16 = _upscale_limits_of({"preset": "12g"}), _upscale_limits_of({"preset": "16g"})
+    assert g8["in_side"] < g12["in_side"] < g16["in_side"]
+    assert g8["out_mp"] < g12["out_mp"] < g16["out_mp"]
 
     # 文案
-    assert _upscale_limits_desc(std, "in") == "长边 ≤3072px、总像素 ≤9MP"
-    assert _upscale_limits_desc(std, "out") == "长边 ≤4096px、总像素 ≤12MP"
+    assert _upscale_limits_desc(g8, "in") == "长边 ≤2048px、总像素 ≤4MP"
+    assert _upscale_limits_desc(g8, "out") == "长边 ≤3072px、总像素 ≤8MP"
+    assert _upscale_limits_desc(g12, "in") == "长边 ≤3072px、总像素 ≤9MP"
     assert _upscale_limits_desc(_upscale_limits_of({"preset": "off"}), "out") == "不限"
 
     # 输入拦截：正常图放行；超长边 / 超像素分别拦；尺寸未知（0）不拦
-    assert _upscale_input_verdict(832, 1216, std) == (True, "")
-    assert _upscale_input_verdict(0, 0, std) == (True, "")
-    ok, why = _upscale_input_verdict(6000, 4000, std)
+    assert _upscale_input_verdict(832, 1216, g8) == (True, "")
+    assert _upscale_input_verdict(0, 0, g8) == (True, "")
+    ok, why = _upscale_input_verdict(6000, 4000, g8)
     assert ok is False and "长边 6000px" in why, why
-    ok, why = _upscale_input_verdict(3072, 3000, std)      # 长边刚好达标，但 9.2MP 超限
+    ok, why = _upscale_input_verdict(2048, 2000, g8)     # 长边刚好达标，但 4.1MP 超限
     assert ok is False and "总像素" in why, why
-    assert _upscale_input_verdict(3000, 3000, std)[0] is True   # 恰好 9MP（≤9MP）放行
-    assert _upscale_input_verdict(3840, 2160, _l)[0] is True   # 宽松档放行 4K
+    assert _upscale_input_verdict(2000, 2000, g8)[0] is True    # 恰好 4MP（≤4MP）放行
+    assert _upscale_input_verdict(3840, 2160, g16)[0] is True   # 16G 档放行 4K
+    assert _upscale_input_verdict(3840, 2160, g8)[0] is False   # 8G 档拦 4K（长边 3840 > 2048）
 
     # 自适应倍率：放得下就不动；放不下降档；连 1× 都不行 → None；off/尺寸未知 → 不动
-    assert _upscale_fit_scale(832, 1216, 3, std) == (3, "")
-    s, note = _upscale_fit_scale(1024, 1536, 3, std)       # 3× → 3072×4608 = 14.2MP 超 12MP
+    assert _upscale_fit_scale(832, 1216, 3, g8)[0] == 2        # 8G 档：3× 到 2496×3648 超长边 → 2×
+    assert _upscale_fit_scale(832, 1216, 3, g12) == (3, "")    # 12G 档不动
+    s, note = _upscale_fit_scale(1024, 1536, 3, g8)            # 3072×4608 超长边 → 2×
     assert s == 2 and "已自动降为 2×" in note, (s, note)
-    assert _upscale_fit_scale(1024, 1536, 4, std)[0] == 2  # 4× 一路降到 2×
-    s, note = _upscale_fit_scale(2496, 3648, 4, std)
+    assert _upscale_fit_scale(1024, 1536, 4, g8)[0] == 2       # 4× 一路降到 2×
+    s, note = _upscale_fit_scale(2496, 3648, 4, g12)      # 12G 档：降到 1×
     assert s == 1 and "降为 1×" in note, (s, note)
-    assert _upscale_fit_scale(3000, 3000, 2, std)[0] == 1       # 2× 超 → 降到 1×（9MP ≤ 12MP）
-    assert _upscale_fit_scale(5000, 5000, 2, std)[0] is None    # 连 1× 都超输出长边 ⇒ 拒绝
-    assert _upscale_fit_scale(832, 1216, 4, _l)[0] == 4         # 宽松档不动
+    # 8G 档：这个尺寸连 1× 都超（长边 3648 > 3072、9.1MP > 8MP）⇒ 直接拒绝
+    #（注意：实际链路里这种输入更早已被「输入上限」拦下，这里是直接单测降档函数）
+    assert _upscale_fit_scale(2496, 3648, 4, g8)[0] is None
+    assert _upscale_fit_scale(3000, 3000, 2, g8)[0] is None    # 8G 档：1× 也超 8MP ⇒ 拒绝
+    assert _upscale_fit_scale(3000, 3000, 2, g12)[0] == 1      # 12G 档：降到 1×（9MP ≤ 12MP）
+    assert _upscale_fit_scale(5000, 5000, 2, g8)[0] is None    # 连 1× 都超输出长边 ⇒ 拒绝
+    assert _upscale_fit_scale(832, 1216, 4, g16)[0] == 4       # 16G 档不动
     assert _upscale_fit_scale(832, 1216, 4, _upscale_limits_of({"preset": "off"})) == (4, "")
-    assert _upscale_fit_scale(0, 0, 3, std) == (3, "")
+    assert _upscale_fit_scale(0, 0, 3, g8) == (3, "")
 
     # 与条目参数配合：允许列表回落默认 → 再按尺寸降档（两层规则不互相打架）
     scale, _ = _resolve_upscale_scale(8, [2, 3, 4], 3)          # 8 不在列表 → 回落 3
     assert scale == 3
-    assert _upscale_fit_scale(1024, 1536, scale, std)[0] == 2
-    print("== 10. 尺寸护栏（档位/输入拦截/自适应降倍率/文案） OK")
+    assert _upscale_fit_scale(1024, 1536, scale, g8)[0] == 2
+    print("== 10. 尺寸护栏（档位 8g/12g/16g + 旧名映射 / 输入拦截 / 自适应降倍率 / 文案） OK")
 
 
 if __name__ == "__main__":

@@ -262,7 +262,7 @@ const DEFAULTS: Record<string, any> = {
 // ---- 尺寸护栏（全局，防爆显存）----
 // 对照表数值需与后端 main.py 的 _UPSCALE_LIMIT_PRESETS 保持一致（这里仅用于展示/选择）
 const LIMIT_DEFAULTS: Record<string, any> = {
-  preset: "standard",
+  preset: "8g",
   custom_max_input_side: 3072,
   custom_max_input_mp: 9,
   custom_max_output_side: 4096,
@@ -272,16 +272,16 @@ const limits = reactive({ ...LIMIT_DEFAULTS });
 const limitsDirty = ref(false);
 const savingLimits = ref(false);
 const PRESET_TABLE = [
-  { key: "strict", label: "严格（8G 以下）", inTxt: "长边 ≤2048px、≤4MP", outTxt: "长边 ≤3072px、≤8MP" },
-  { key: "standard", label: "标准（8~12G，默认）", inTxt: "长边 ≤3072px、≤9MP", outTxt: "长边 ≤4096px、≤12MP" },
-  { key: "loose", label: "宽松（16G 以上）", inTxt: "长边 ≤4096px、≤16MP", outTxt: "长边 ≤6144px、≤24MP" },
+  { key: "8g", label: "8G 显存（默认）", inTxt: "长边 ≤2048px、≤4MP", outTxt: "长边 ≤3072px、≤8MP" },
+  { key: "12g", label: "12G 显存", inTxt: "长边 ≤3072px、≤9MP", outTxt: "长边 ≤4096px、≤12MP" },
+  { key: "16g", label: "16G 显存以上", inTxt: "长边 ≤4096px、≤16MP", outTxt: "长边 ≤6144px、≤24MP" },
   { key: "off", label: "不限制", inTxt: "不限", outTxt: "不限（自行承担爆显存风险）" },
   { key: "custom", label: "自定义", inTxt: "见上方四个数值", outTxt: "见上方四个数值" },
 ];
 const presetOptions = [
-  { label: "严格（8G 显存以下）", value: "strict" },
-  { label: "标准（8~12G 显存，默认）", value: "standard" },
-  { label: "宽松（16G 显存以上）", value: "loose" },
+  { label: "8G 显存（默认）", value: "8g" },
+  { label: "12G 显存", value: "12g" },
+  { label: "16G 显存以上", value: "16g" },
   { label: "不限制（自行承担爆显存风险）", value: "off" },
   { label: "自定义", value: "custom" },
 ];

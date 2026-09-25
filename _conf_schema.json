@@ -837,14 +837,14 @@
         "type": "string",
         "description": "护栏档位",
         "options": [
-          "strict",
-          "standard",
-          "loose",
+          "8g",
+          "12g",
+          "16g",
           "off",
           "custom"
         ],
-        "hint": "standard（默认，8~12G 显存）：输入 ≤ 长边 3072 / 9MP，输出 ≤ 长边 4096 / 12MP；strict（8G 以下）：输入 ≤2048 / 4MP，输出 ≤3072 / 8MP；loose（16G 以上）：输入 ≤4096 / 16MP，输出 ≤6144 / 24MP；off：不限制（自行承担爆显存风险）；custom：用下面四个自定义数值。",
-        "default": "standard"
+        "hint": "按显存挑一个即可：8g（**默认，面向 8G 卡**）：输入 ≤ 长边 2048px / 4MP，输出 ≤ 长边 3072px / 8MP；12g：输入 ≤3072 / 9MP，输出 ≤4096 / 12MP；16g：输入 ≤4096 / 16MP，输出 ≤6144 / 24MP；off：不限制（自行承担爆显存风险）；custom：用下面四个自定义数值。注：8G 档下「1MP 的图 ×3」会因输出超 8MP 被自动降到 2×，这是正常保护（卡片上会写明）。",
+        "default": "8g"
       },
       "custom_max_input_side": {
         "type": "int",
