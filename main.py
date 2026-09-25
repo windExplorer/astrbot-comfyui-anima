@@ -8825,7 +8825,9 @@ class ComfyUIDrawPlugin(Star):
                 _start_sent = await self._send_draw_card(event, {
                     "kicker": "ComfyUI萌绘",
                     "workflow": f"{_ename} · 图片放大",
-                    "right_top": (f"排队 {ahead}" if ahead > 0 else f"{applied or scale}×"),
+                    # 与出图链路同口径（v7.4.6）：恒显「排队 N」，0 也显示（无排队=空闲
+                    # 一目了然）；倍率本来就在下面的参数胶囊里，右上角不放它。
+                    "right_top": f"排队 {ahead}",
                     "device": self._card_device(srv_key),
                     "today": self._card_today(),
                     "params": self._card_chips([
@@ -9512,7 +9514,8 @@ class ComfyUIDrawPlugin(Star):
                 _start_sent = await self._send_draw_card(event, {
                     "kicker": "ComfyUI萌绘",
                     "workflow": f"{_ename} · 抠图",
-                    "right_top": (f"排队 {ahead}" if ahead > 0 else f"{_steps_now or ''}步"),
+                    # 与出图链路同口径：恒显「排队 N」（0 也显示）；步数在参数胶囊里
+                    "right_top": f"排队 {ahead}",
                     "device": self._card_device(srv_key),
                     "today": self._card_today(),
                     "params": self._card_chips([
@@ -9652,7 +9655,13 @@ class ComfyUIDrawPlugin(Star):
                         "rows": [(_text_now[:60], "")],
                     }] if _text_now else []),
                 }
-                if not await self._send_report_card(event, _rep, foot_left="口径：按提示词抠图/去背景，透明通道保留"):
+                # 结果卡同样受卡片配置约束（总开关 / 结果卡开关 / 发送范围）——
+                # v7.7.24：这里此前漏了检查，关了「出图完成发结果卡」抠图还是会发卡
+                # （放大链路一直有查，行为不一致）。关了就直接退文字小结。
+                _done_ok = False
+                if self._card_would_send(event, "done"):
+                    _done_ok = await self._send_report_card(event, _rep, foot_left="口径：按提示词抠图/去背景，透明通道保留")
+                if not _done_ok:
                     await self._send(
                         event,
                         "抠图完成"
