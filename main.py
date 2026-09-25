@@ -8525,6 +8525,7 @@ class ComfyUIDrawPlugin(Star):
             return
         srv_key = self._server_key(server)
         client = self._build_client(server)
+        _up_pid: str | None = None       # 本次任务的 prompt_id（本地队列登记用）
 
         async def _fail(reason_text: str, reason_log: str, extra: list | None = None) -> None:
             """放大失败统一出口：失败卡（画不出来退回文字）+ 一条失败记录。"""
@@ -8562,7 +8563,6 @@ class ComfyUIDrawPlugin(Star):
                         in_w, in_h = _im.width, _im.height
                 except Exception:
                     pass
-            await self._send(event, f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～")
             # 7) 提交 + 等待（本功能自带超时，不套出图那套「单张等待硬上限」）
             try:
                 _to_cfg = int(self._upscale_param(entry, "timeout", 300) or 300)
@@ -8580,10 +8580,38 @@ class ComfyUIDrawPlugin(Star):
                 logger.warning(f"【放大·失败】[提交] ComfyUI 未返回 prompt_id（{_wfname}）")
                 await _fail(self._cute("no_task_id"), "ComfyUI 未返回 prompt_id（提交失败）")
                 return
+            _up_pid = str(prompt_id)
             try:
                 self._last_prompt[_sid or "global"] = prompt_id
             except Exception:
                 pass
+            # 排队位置（与出图同口径：中转站响应头 X-Queue-Position 优先，退回本地队列统计）
+            _pos = (result or {}).get("_queue_position")
+            ahead = int(_pos) if _pos is not None else self._local_queue_ahead(srv_key)
+            self._local_queue_add(srv_key, prompt_id)
+            # 8) 处理中卡片（v7.7.7）：与出图链路同一套卡片/同一套开关（enabled、作用域、
+            #    撤回都适用）；卡片不可发或渲染失败时，退回原来那行文字。
+            _start_txt = f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～"
+            _start_sent = False
+            try:
+                _start_sent = await self._send_draw_card(event, {
+                    "kicker": "ComfyUI萌绘",
+                    "workflow": f"{_ename} · 图片放大",
+                    "right_top": (f"排队 {ahead}" if ahead > 0 else f"{applied or scale}×"),
+                    "device": self._card_device(srv_key),
+                    "today": self._card_today(),
+                    "params": self._card_chips([
+                        ("输入", f"{in_w}×{in_h}" if (in_w and in_h) else None),
+                        ("倍率", f"{applied or scale}×"),
+                        ("种子", (seeds[0] if seeds else None)),
+                        ("工作流", _wfname),
+                    ]),
+                    "prompt": f"图片放大：{os.path.basename(src)}",
+                }, "queued" if ahead > 0 else "drawing")
+            except Exception as _ce:
+                logger.warning(f"【放大】 处理中卡片构建失败（忽略，退回文字）: {_ce}")
+            if not _start_sent:
+                await self._send(event, _start_txt)
             logger.info(
                 f"【放大】 已提交 {_wfname}｜prompt_id={prompt_id}｜倍率 {applied or scale}×"
                 f"｜等待上限 {timeout}s"
@@ -8708,7 +8736,16 @@ class ComfyUIDrawPlugin(Star):
                         ],
                     }],
                 }
-                if not await self._send_report_card(event, _rep, foot_left="口径：输入图直接超分，不重绘"):
+                # 结果卡同样受卡片配置约束（总开关 / 结果卡开关 / 发送范围）；不可发或画不出来
+                # 就退回一行文字小结，保证信息一定送达。
+                _done_ok = False
+                if self._card_would_send(event, "done"):
+                    _done_ok = await self._send_report_card(
+                        event, _rep, foot_left="口径：输入图直接超分，不重绘"
+                    )
+                else:
+                    logger.info("【放大】 结果卡未发送：卡片总开关/结果卡开关关闭，或发送范围不含当前会话")
+                if not _done_ok:
                     await self._send(
                         event,
                         f"放大完成：{applied or scale}×"
@@ -8741,6 +8778,12 @@ class ComfyUIDrawPlugin(Star):
                     f"｜seed={seeds[0] if seeds else '—'}"
                 )
         finally:
+            # 无论成功/失败/超时，均从本地队列移除本任务（与出图链路同一套排队统计）
+            if _up_pid:
+                try:
+                    self._local_queue_remove(srv_key, _up_pid)
+                except Exception:
+                    pass
             await self._safe_close(client)
 
     @filter.command("图片放大", alias={"放大图片", "图片超分", "超分"})
