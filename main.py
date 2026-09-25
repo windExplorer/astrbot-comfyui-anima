@@ -10576,14 +10576,137 @@ class ComfyUIDrawPlugin(Star):
         event.stop_event()
 
     # ------------------------------------------------------------------ #
-    # 指令：/绘图状态 服务器连通 / 延迟 / 队列
+    # 指令：/绘图状态 服务器连通 / 延迟 / 队列（v7.7.28：接入中转站 TaskHub 辅助接口）
     # ------------------------------------------------------------------ #
+    @staticmethod
+    async def _fetch_json(url: str, timeout: float = 6.0):
+        """GET 一个 JSON 接口（中转站 TaskHub 辅助接口用），任何失败返回 None。
+
+        与 ComfyUI 客户端解耦：这些是中转站独有的监控接口（/device 等），
+        直连 ComfyUI 的服务器没有，404/超时都按「不是中转站」静默处理。
+        """
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    return await resp.json(content_type=None)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _taskhub_sections(dev: dict) -> dict:
+        """把中转站 /device 响应整理成报表卡的小节（全部容错，缺项跳过）。
+
+        返回 {"device": [...], "comfyui": [...], "cosyvoice": [...],
+              "scheduler": [...], "check": [...]}，值可能为空列表。
+        """
+        out: dict[str, list] = {"device": [], "comfyui": [], "cosyvoice": [],
+                                "scheduler": [], "check": []}
+        try:
+            host = dev.get("host") or {}
+            gpus = host.get("gpus") or []
+            g = (gpus or [{}])[0] or {}
+            if g.get("name"):
+                out["device"].append(("显卡", str(g.get("name")), ""))
+                _parts: list[str] = []
+                if g.get("util_percent") is not None:
+                    _parts.append(f"利用率 {g.get('util_percent')}%")
+                if g.get("mem_total_gb"):
+                    _free = g.get("mem_free_gb")
+                    _parts.append(f"显存 {'?' if _free is None else _free}/{g.get('mem_total_gb')}GB")
+                if g.get("temperature_c") is not None:
+                    _parts.append(f"{g.get('temperature_c')}°C")
+                if g.get("power_w") is not None and g.get("power_limit_w"):
+                    _parts.append(f"{g.get('power_w')}/{g.get('power_limit_w')}W")
+                if _parts:
+                    out["device"].append(("GPU 状态", " · ".join(_parts), ""))
+            if len(gpus) > 1:
+                out["device"].append(("多卡", f"共 {len(gpus)} 张（展示第 1 张）", ""))
+            if host.get("cpu_percent") is not None:
+                out["device"].append(("CPU", f"占用 {host.get('cpu_percent')}%", ""))
+            if host.get("ram_total_gb"):
+                out["device"].append(("内存", f"{host.get('ram_used_gb')}/{host.get('ram_total_gb')}GB", ""))
+        except Exception:
+            pass
+        try:
+            ups = dev.get("upstreams") or {}
+            cu = ups.get("comfyui") or {}
+            if cu:
+                if cu.get("reachable"):
+                    out["comfyui"].append(("状态", "🟢 可达", "ok"))
+                    _sys = cu.get("system") or {}
+                    if _sys.get("comfyui_version"):
+                        out["comfyui"].append(("版本", str(_sys.get("comfyui_version")), ""))
+                    q = cu.get("queue")
+                    if isinstance(q, dict):
+                        _r = q.get("running") or q.get("executing") or 0
+                        _p = q.get("pending") or q.get("queued") or 0
+                        out["comfyui"].append(("队列", f"执行中 {_r} · 排队 {_p}", ""))
+                    elif q is not None and q != "":
+                        out["comfyui"].append(("队列", str(q), ""))
+                else:
+                    out["comfyui"].append(("状态", "🔴 不可达", "bad"))
+            cv = ups.get("cosyvoice") or {}
+            if cv:
+                if cv.get("reachable"):
+                    _t = "🟢 可达" + (" · 模型已加载" if cv.get("model_loaded") else "")
+                    out["cosyvoice"].append(("状态", _t, "ok"))
+                    if cv.get("sample_rate"):
+                        out["cosyvoice"].append(("采样率", f"{cv.get('sample_rate')} Hz", ""))
+                    v = cv.get("voices") or cv.get("voice_count")
+                    if isinstance(v, list):
+                        out["cosyvoice"].append(("音色", f"{len(v)} 个", ""))
+                    elif isinstance(v, (int, float)):
+                        out["cosyvoice"].append(("音色", f"{int(v)} 个", ""))
+                else:
+                    out["cosyvoice"].append(("状态", "🔴 不可达", "bad"))
+        except Exception:
+            pass
+        try:
+            sch = dev.get("scheduler") or {}
+            if sch:
+                if sch.get("queue_length") is not None or sch.get("running") is not None:
+                    out["scheduler"].append(
+                        ("队列", f"排队 {sch.get('queue_length', 0)} · 运行中 {sch.get('running', 0)}", ""))
+                if sch.get("effective_concurrent") is not None:
+                    _mx = sch.get("max_concurrent")
+                    out["scheduler"].append(
+                        ("并发", f"有效 {sch.get('effective_concurrent')}"
+                                + (f" / {_mx}" if _mx is not None else ""), ""))
+                if sch.get("total_queued") is not None:
+                    out["scheduler"].append(
+                        ("累计", f"入队 {sch.get('total_queued')} · 完成 {sch.get('total_completed')}", ""))
+                _deg = sch.get("degraded") or sch.get("degrade_reason")
+                if _deg:
+                    out["scheduler"].append(("降级", str(_deg), "warn"))
+        except Exception:
+            pass
+        try:
+            sc = dev.get("self_check") or {}
+            if sc.get("count"):
+                out["check"].append(
+                    (f"自检 · {sc.get('level')}", f"{sc.get('count')} 条异常",
+                     "warn" if sc.get("level") in ("warn", "error") else ""))
+                for it in (sc.get("items") or [])[:3]:
+                    out["check"].append(
+                        (str(it.get("code") or "异常"), str(it.get("msg") or "")[:44],
+                         str(it.get("level") or "")))
+            elif sc.get("level") == "ok":
+                out["check"].append(("自检", "一切正常", "ok"))
+        except Exception:
+            pass
+        return out
+
     @filter.command("绘图状态", alias={"drawstatus", "画图状态"})
     async def cmd_draw_status(self, event: AstrMessageEvent):
         """查询绘图服务器连通情况、延迟，以及正在出图还是空闲、队列数量。
 
         只探测启用的服务器；用 /queue 一次请求同时测得连通性、延迟与队列状态，
         不额外请求 system_stats。展示时不暴露服务器名称/IP。
+        v7.7.28：服务器若是中转站（TaskHub），额外用它的 /device 辅助接口展示
+        设备状态（显卡/CPU/内存）、上游 ComfyUI 与 CosyVoice 状态、调度队列与自检。
         """
         servers = self._servers()
         active = [
@@ -10598,6 +10721,11 @@ class ComfyUIDrawPlugin(Star):
         # v7.5.1：结构化数据（发报表卡用；卡片失败退回 lines 文字）
         _srv_rows: list[tuple] = []
         _quota_rows: list[tuple] = []
+        _device_rows: list[tuple] = []
+        _comfy_rows: list[tuple] = []
+        _tts_rows: list[tuple] = []
+        _sched_rows: list[tuple] = []
+        _check_rows: list[tuple] = []
         for idx, s in enumerate(active, 1):
             url = s["url"].strip()
             # 探测用较短的超时（不可达时更快返回），整体 60s 上限（连接/握手慢的服务器也给足等待）
@@ -10628,8 +10756,30 @@ class ComfyUIDrawPlugin(Star):
                 state = "正在出图" if local > 0 else "空闲"
             lines.append(f"· 服务器{idx}：🟢 正常（HTTP 往返 {latency}ms）· {state}")
             _srv_rows.append((f"服务器 {idx}", f"正常 · {latency}ms · {state}", "ok"))
+            # 3) v7.7.28：中转站（TaskHub）辅助接口 —— /device 一次拿全设备+上游+调度。
+            #    直连 ComfyUI 的服务器没有这个接口（404），按「不是中转站」静默跳过。
+            dev = await self._fetch_json(url.rstrip("/") + "/device", timeout=8)
+            if isinstance(dev, dict) and (dev.get("host") or dev.get("upstreams")):
+                _sec = self._taskhub_sections(dev)
+                for k in ("device", "comfyui", "cosyvoice", "scheduler", "check"):
+                    if _sec.get(k):
+                        _label = f"服务器 {idx} · " if len(active) > 1 else ""
+                        _map = {"device": _device_rows, "comfyui": _comfy_rows,
+                                "cosyvoice": _tts_rows, "scheduler": _sched_rows,
+                                "check": _check_rows}
+                        for row in _sec[k]:
+                            _map[k].append((f"{_label}{row[0]}", row[1], row[2]))
+                _dev_parts = [r[1] for r in _sec.get("device", [])[:2]]
+                if _dev_parts:
+                    lines.append(f"  ├ 设备：{' · '.join(_dev_parts)}")
+                _cu = next((r[1] for r in _sec.get("comfyui", []) if r[0] == "状态"), "")
+                _cv = next((r[1] for r in _sec.get("cosyvoice", []) if r[0] == "状态"), "")
+                if _cu:
+                    lines.append(f"  ├ ComfyUI：{_cu}")
+                if _cv:
+                    lines.append(f"  └ CosyVoice：{_cv}")
             await self._safe_close(client)
-        # 生图限额配置
+        # 生图限额配置（v7.7.28：去掉「管理员豁免」——那是内部权限细节，不该对外展示）
         lines.append("")
         lines.append("📊 生图限额配置")
         try:
@@ -10639,10 +10789,8 @@ class ComfyUIDrawPlugin(Star):
             fmt_n = lambda n: "不限" if int(n) < 0 else str(n)
             _q3 = f"{fmt_n(qc.get('max_total', -1))} / {fmt_n(qc.get('max_hour', -1))} / {fmt_n(qc.get('max_day', -1))}"
             lines.append(f"· 总次数 / 每小时 / 每天：{_q3}")
-            lines.append(f"· 管理员豁免：{'是' if qc.get('admin_exempt', False) else '否'}")
             _quota_rows.append(("限额开关", "已开启" if enabled else "未开启", ""))
             _quota_rows.append(("总次数 / 每小时 / 每天", _q3, ""))
-            _quota_rows.append(("管理员豁免", "是" if qc.get("admin_exempt", False) else "否", ""))
             if self.quota is not None:
                 users = self.quota.list_users()
                 day_total = sum(int(u.get("day_used") or 0) for u in users)
@@ -10650,17 +10798,22 @@ class ComfyUIDrawPlugin(Star):
                 _quota_rows.append(("今日全群已生图", f"{day_total} 次", ""))
         except Exception as e:
             lines.append(f"· 限额配置读取失败（{e}）")
-        # v7.5.1：优先发报表卡，渲染失败退回文字
+        # v7.5.1：优先发报表卡，渲染失败退回文字；v7.7.28 增加中转站的设备/上游各节
         _rep = {
             "kicker": "ComfyUI萌绘 · 绘图状态",
             "title": "绘图状态",
             "right_top": f"{len(active)} 台",
             "sections": (
                 [{"label": "服务器", "rows": _srv_rows}]
+                + ([{"label": "设备状态", "rows": _device_rows}] if _device_rows else [])
+                + ([{"label": "ComfyUI", "rows": _comfy_rows}] if _comfy_rows else [])
+                + ([{"label": "CosyVoice", "rows": _tts_rows}] if _tts_rows else [])
+                + ([{"label": "调度队列", "rows": _sched_rows}] if _sched_rows else [])
+                + ([{"label": "上游自检", "rows": _check_rows}] if _check_rows else [])
                 + ([{"label": "生图限额", "rows": _quota_rows}] if _quota_rows else [])
             ),
         }
-        if await self._send_report_card(event, _rep, foot_left="服务器与限额为实时数据"):
+        if await self._send_report_card(event, _rep, foot_left="服务器 / 设备 / 上游为实时采样"):
             event.stop_event()
             return
         await self._send(event, "\n".join(lines))
