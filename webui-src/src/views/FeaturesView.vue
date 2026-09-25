@@ -171,18 +171,30 @@
 
     <!-- 编辑弹窗（按功能类型显示不同字段） -->
     <n-modal v-model:show="formShow" preset="card" class="feat-modal" :bordered="false"
-             :title="`${formIndex < 0 ? '添加功能' : '编辑功能'}（${kindName(form)}）`">
-      <n-form label-placement="top" size="small">
-        <n-form-item :label="meta('name', '功能名称（引用键）').label">
-          <n-input v-model:value="form.name" :placeholder="form.kind === 'matting' ? '抠图' : 'vosr2'" />
-          <div class="hint">{{ meta("name", "").hint }}</div>
-        </n-form-item>
+             :title="`${formIndex < 0 ? '添加功能' : '编辑功能'} · ${kindName(form)}`">
+      <div class="kind-line">
+        <n-tag size="small" :bordered="false" type="info">{{ kindIcon(form) }} {{ kindName(form) }}</n-tag>
+        <span class="hint inline">
+          {{ isMatting(form)
+              ? "用户带图发 /抠图 即可，不用传参数（另有 /抠像、/去背景、/去背）"
+              : "用户带图发 /放大 [倍率]（同 /图片放大，另有 /超分）" }}
+        </span>
+      </div>
 
-        <n-form-item label="启用">
-          <n-switch v-model:value="form.enabled" />
-        </n-form-item>
+      <n-form label-placement="top" size="small" :show-feedback="false">
+        <div class="sec-title">基本</div>
+        <n-grid cols="1 640:3" :x-gap="16">
+          <n-form-item-gi :span="2" :label="meta('name', '功能名称（引用键）').label">
+            <n-input v-model:value="form.name" :placeholder="form.kind === 'matting' ? '抠图' : 'vosr2'" />
+            <div class="hint">{{ meta("name", "").hint }}</div>
+          </n-form-item-gi>
+          <n-form-item-gi label="启用">
+            <n-switch v-model:value="form.enabled" />
+            <div class="hint">停用后不参与默认选择，也不能被点名。</div>
+          </n-form-item-gi>
+        </n-grid>
 
-        <n-form-item :label="meta('base_id', form.kind === 'matting' ? '绑定的抠图工作流' : '绑定的放大基础工作流').label">
+        <n-form-item :label="meta('base_id', isMatting(form) ? '绑定的抠图工作流' : '绑定的放大基础工作流').label">
           <n-select
             v-model:value="form.base_id"
             :options="formBaseOptions"
@@ -199,18 +211,20 @@
           </div>
         </n-form-item>
 
+        <div class="sec-title">{{ isMatting(form) ? "抠图参数" : "放大参数" }}</div>
+
         <!-- ── 抠图专属字段 ── -->
         <template v-if="form.kind === 'matting'">
           <n-form-item :label="meta('no_upscale', '不放大（小图保持原尺寸）').label">
-            <n-space align="center" :size="10">
+            <div class="switch-row">
               <n-switch v-model:value="form.no_upscale" :disabled="!formPreScale" />
-              <span v-if="formPreScale" class="hint" style="margin: 0">
+              <span v-if="formPreScale" class="hint inline">
                 工作流的预处理缩放：{{ formPreScaleText }}
               </span>
-              <span v-else class="hint" style="margin: 0">
+              <span v-else class="hint inline">
                 工作流里没有「按总像素缩放」的节点，本项无效（照工作流原值跑）
               </span>
-            </n-space>
+            </div>
             <div class="hint">{{ meta("no_upscale", "").hint }}</div>
           </n-form-item>
 
@@ -247,7 +261,7 @@
             </div>
           </n-form-item>
 
-          <n-space :size="8" align="center" style="margin-bottom: 4px">
+          <n-space :size="8" align="center" style="margin: 2px 0 6px">
             <n-button size="tiny" :disabled="!formBase" @click="fillMattingForm">
               从工作流填充步数与提示词
             </n-button>
@@ -259,7 +273,7 @@
 
         <!-- ── 图片放大专属字段 ── -->
         <template v-else>
-          <n-grid cols="1 640:2" :x-gap="16">
+          <n-grid cols="1 640:3" :x-gap="16">
             <n-form-item-gi :label="meta('default_scale', '默认放大倍率').label">
               <n-input-number v-model:value="form.default_scale" :min="1" :max="8" style="width: 100%" />
               <div class="hint">{{ meta('default_scale', "").hint }}</div>
@@ -272,6 +286,10 @@
                 <template v-else>当前为「不校验」。</template>
               </div>
             </n-form-item-gi>
+            <n-form-item-gi :label="meta('timeout', '等待超时（秒）').label">
+              <n-input-number v-model:value="form.timeout" :min="30" :max="3600" :step="30" style="width: 100%" />
+              <div class="hint">{{ meta('timeout', "").hint }}</div>
+            </n-form-item-gi>
           </n-grid>
 
           <n-grid cols="1 640:2" :x-gap="16">
@@ -280,17 +298,13 @@
                 { label: 'random（每次随机，推荐）', value: 'random' },
                 { label: 'fixed（固定种子，结果可复现）', value: 'fixed' },
               ]" />
+              <div class="hint">{{ meta('seed_mode', "").hint }}</div>
             </n-form-item-gi>
             <n-form-item-gi :label="meta('seed_value', '固定种子值').label">
               <n-input-number v-model:value="form.seed_value" :disabled="form.seed_mode !== 'fixed'" style="width: 100%" />
+              <div class="hint">仅「种子策略 = fixed」时生效。</div>
             </n-form-item-gi>
           </n-grid>
-          <div class="hint">{{ meta('seed_mode', "").hint }}</div>
-
-          <n-form-item :label="meta('timeout', '放大等待超时（秒）').label">
-            <n-input-number v-model:value="form.timeout" :min="30" :max="3600" :step="30" style="width: 220px" />
-            <div class="hint">{{ meta('timeout', "").hint }}</div>
-          </n-form-item>
         </template>
       </n-form>
 
@@ -843,6 +857,40 @@ onMounted(load);
   color: var(--text-sub);
   font-size: 12px;
   line-height: 1.6;
+}
+.hint.inline {
+  width: auto;
+  margin: 0;
+}
+/* 添加/编辑功能弹窗：给足宽度让分栏网格真正生效；功能选择面板窄一些 */
+.feat-modal {
+  width: min(760px, 94vw);
+}
+.feat-modal.pick {
+  width: min(520px, 94vw);
+}
+.kind-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.sec-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-sub);
+  margin: 2px 0 10px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed rgba(128, 128, 128, 0.28);
+}
+.n-form .sec-title:not(:first-child) {
+  margin-top: 14px;
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
 }
 .hint.ok {
   color: #18a058;
