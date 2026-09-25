@@ -371,6 +371,23 @@ def inject(
             _w = _w_default
         _w = max(1.1, min(1.3, _w))
         groups.append("(" + ", ".join(tags) + f":{_w:.2f})")
+    if len(groups) != len(hits):
+        # v7.6.0：有角色卡拿不出可用锚点标签（锚点空/被清空）时**不剥**模型自己写的分组——
+        # 否则锚点与模型分组两边都空，该角色特征直接全丢（比串味更糟）。改为逐个追加锚点标签。
+        logger.warning(
+            f"【角色卡·注入】 {len(hits)} 个角色里只有 {len(groups)} 个锚点有可用标签，"
+            f"保留模型原有分组（不剥），仅追加锚点标签"
+        )
+        merged = base
+        for _card, anchor in hits:
+            for t in _card_tags(anchor, drop_count_tags=True) or _card_tags(anchor):
+                if t and t.strip().lower() not in merged.lower():
+                    merged = (merged + ", " if merged else "") + t
+        return {
+            "prompt": merged, "negative": negatives, "loras": loras,
+            "mode": "multi",
+            "note": f"多角色（{len(groups)}/{len(hits)} 个锚点有标签，保留模型分组）",
+        }
     rest = strip_weight_groups(base)
     # 去掉 rest 里重复的计数标签与已被分组覆盖的标签
     _group_blob = " ".join(groups).lower()

@@ -658,6 +658,54 @@
       }
     }
   },
+  "prompt_boost": {
+    "type": "object",
+    "description": "提示词丰富化与防漂移",
+    "hint": "让 AI 写出的提示词更丰富、更精致，同时绝不画错角色。三件事：①【画质前缀】按底模风格自动补（标签系 masterpiece…、pony score_9…、NAI best quality…、自然语言系底模不加——加了会被当成文字渲染到图上）；②【短描述扩写】提示词标签太少时用 LLM 补细节，但只允许补镜头/构图/光影/氛围/场景/材质这类维度，**严禁新增或改写外观**（发色/发型/瞳色/兽耳/尾巴/角/体型/服装/角色名）；③【外观护栏】角色卡锚点是权威外观，AI 或用户写的冲突标签（如锚点是绿发却写了 white_hair）会被自动剥掉——这条以前只写在给 AI 的说明里（历史事故：角色被补成另一个人的发色），现在由代码强制执行。",
+    "items": {
+      "quality_prefix": {
+        "type": "bool",
+        "description": "自动补画质前缀",
+        "hint": "开启后：插件按工作流底模风格在正向提示词开头补画质词（已有就不重复）。用户自己写了 masterpiece 之类的不会再加。底模风格由「底模库的提示词风格」优先决定，其次按底模名推断（anima/illustrious/noobai/sd15 → 标签系；pony → score 体系；flux/qwen/z-image/krea → 自然语言系，不加）。",
+        "default": true
+      },
+      "quality_prefix_custom": {
+        "type": "string",
+        "description": "自定义画质前缀",
+        "hint": "填了就一律用它，不再按底模分档（所有工作流共用）。例：masterpiece, best quality, absurdres。留空 = 按底模自动。",
+        "default": ""
+      },
+      "enhance_llm": {
+        "type": "bool",
+        "description": "短描述自动扩写（LLM）",
+        "hint": "开启后：当提示词顶层标签数 ≤ 下面的阈值、且不含角色/作品 tag 时，用 LLM 补一次细节（+3~8 秒）。扩写结果必须保留原文全部标签，且新增/改写的外观标签会被剥掉——所以只会让它更丰富，不会换角色。关闭则只补画质前缀。",
+        "default": true
+      },
+      "enhance_max_tags": {
+        "type": "int",
+        "description": "触发扩写的标签数上限",
+        "hint": "提示词顶层标签数 ≤ 本值才考虑扩写（默认 8）。调大 = 更多图会走扩写（更丰富也更慢）；调小 = 只在很短的描述上扩写。",
+        "slider": {
+          "min": 1,
+          "max": 40,
+          "step": 1
+        },
+        "default": 8
+      },
+      "enhance_only_tag_family": {
+        "type": "bool",
+        "description": "只对 Danbooru 标签系底模扩写",
+        "hint": "开启（推荐）：只对 anima/illustrious/noobai/pony 这类标签系底模做 LLM 扩写；自然语言系底模（flux/qwen/z-image/krea2）跳过——它们靠整句表达，塞标签会破坏语义。关闭则所有底模都尝试扩写（不推荐）。",
+        "default": true
+      },
+      "guard_appearance": {
+        "type": "bool",
+        "description": "外观冲突剥除（角色保真）",
+        "hint": "开启（强烈建议）：命中角色卡时，把与锚点冲突的外观标签（如锚点 green_hair 却写了 white_hair）自动剥掉，杜绝「角色被画成另一个人」；用户明确要求改外观（「把头发染成粉色」）时自动放行。关闭则完全依赖 AI 自觉（历史事故来源）。",
+        "default": true
+      }
+    }
+  },
   "danbooru": {
     "type": "object",
     "description": "Danbooru 标签服务器",

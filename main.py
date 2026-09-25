@@ -418,6 +418,11 @@ except ImportError:
     import character
 
 try:
+    from . import prompt_guard
+except ImportError:
+    import prompt_guard
+
+try:
     from . import token_store
 except ImportError:
     import token_store
@@ -769,6 +774,29 @@ _QUEUE_HINTS_QUEUED = [
 #                      保证「有结果/没结果」都能给出明确反馈，而不是被框架静默取消。
 _WAIT_SEND_RESERVE = 8
 _WAIT_FLOOR = 5
+
+# 提示词丰富化（v7.6.0）：用户明确要求「改外观」时，跳过外观冲突剥除。
+# 例：「把头发染成粉色」「换件白裙子」「眼睛改成红色」——这是用户意图，不是模型臆造。
+# 两种语序都要认：动词在前（换成红裙子）与名词在前（眼睛改成红色）。
+_APPEARANCE_NOUNS = (r"头发|发型|发色|刘海|马尾|瞳|眼睛|眼珠|耳朵|尾巴|角|翅膀|"
+                     r"体型|身材|衣服|服装|裙子|上衣|裤子|鞋|帽子|眼镜")
+_APPEARANCE_CHANGE_RE = re.compile(
+    r"(改成|换成|染成|变成|设成|弄成|调成|改一下|换个|改色|染色)"
+    r"[^,，。；;\n]{0,10}(?:" + _APPEARANCE_NOUNS +
+    r"|黑|白|金|银|灰|棕|蓝|绿|粉|紫|红|橙|青|彩|双色)"
+    r"|[^,，。；;\n]{0,6}(?:" + _APPEARANCE_NOUNS + r")[^,，。；;\n]{0,8}(改|换|染|变|设|弄|调)")
+
+
+def _default_prompt_boost_cfg() -> dict:
+    """提示词丰富化配置的默认值（配置项缺失/类型异常时的兜底）。"""
+    return {
+        "quality_prefix": True,          # 自动补画质前缀（按底模分档）
+        "quality_prefix_custom": "",     # 自定义画质前缀（留空=按底模自动）
+        "enhance_llm": True,             # 短描述自动扩写（LLM，只补非外观维度）
+        "enhance_max_tags": 8,           # 顶层标签数 ≤ 此值才考虑扩写
+        "enhance_only_tag_family": True,  # 只对 Danbooru 标签系底模扩写
+        "guard_appearance": True,        # 外观冲突剥除（与角色卡锚点冲突的标签）
+    }
 
 # 面向用户的可爱错误话术：真实报错只写进日志，用户只看到经过包装的萌系提示。
 # 按错误类别分池，每类多条随机取一，避免每次都一样。
@@ -2829,6 +2857,242 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【提示词】 LLM 改写/翻译失败，保留原提示词: {e}")
         return positive
 
+    # ------------------------------------------------------------------ #
+    # 提示词丰富化与防漂移（v7.6.0）
+    # 设计见 prompt_guard.py：外观维度是冻结区（只能来自角色卡锚点/用户明说），
+    # 镜头/构图/光影/氛围/材质是自由区——「让提示词更丰富」只该发生在自由区。
+    # ------------------------------------------------------------------ #
+
+    def _prompt_boost_cfg(self) -> dict:
+        """读提示词丰富化配置（容错：非 dict/异常都退回默认）。"""
+        cfg = _default_prompt_boost_cfg()
+        try:
+            raw = self._cfg("prompt_boost", {}) or {}
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if v is None or v == "":
+                        continue
+                    cfg[k] = v
+        except Exception:
+            pass
+        return cfg
+
+    def _known_character_names(self) -> tuple[str, ...]:
+        """已配置的角色卡名 + 别名（用于「文本里是否点了某个角色」的判定，5 秒缓存）。"""
+        _now = time.time()
+        _cached = getattr(self, "_known_char_names_cache", None)
+        if _cached and (_now - float(_cached[1] or 0)) < 5.0:
+            return _cached[0]
+        names: list[str] = []
+        try:
+            store = getattr(self, "character", None)
+            if store is not None:
+                for c in (store.list_characters() or []):
+                    _n = str(c.get("name") or "").strip()
+                    if _n:
+                        names.append(_n)
+                    for a in (c.get("aliases") or []):
+                        if str(a).strip():
+                            names.append(str(a).strip())
+        except Exception as e:
+            logger.debug(f"【角色卡】 读取角色名列表失败（忽略）: {e}")
+        out = tuple(dict.fromkeys(names))
+        try:
+            self._known_char_names_cache = (out, _now)
+        except Exception:
+            pass
+        return out
+
+    def _prompt_style(self, wf: dict | None) -> str:
+        """推断本工作流底模的提示词风格：tags / pony / natural / unknown。"""
+        wf = wf or {}
+        try:
+            base = self._basemodel_of_workflow(wf) or {}
+        except Exception:
+            base = {}
+        try:
+            return prompt_guard.prompt_style_of(
+                is_anima=bool(wf.get("is_anima")),
+                base_name=str(base.get("name") or base.get("file_name")
+                              or wf.get("base_model") or ""),
+                prompt_style=str(base.get("prompt_style") or ""),
+                wf_name=str(wf.get("name") or ""),
+            )
+        except Exception:
+            return "unknown"
+
+    def _should_enhance(self, positive: str, style: str, cfg: dict, *,
+                        known_names: tuple[str, ...] = (), draw_start: float = 0.0,
+                        ) -> tuple[bool, str]:
+        """判断要不要做 LLM 扩写；返回 (是否扩写, 原因/跳过理由)。"""
+        text = (positive or "").strip()
+        if not text:
+            return False, "提示词为空"
+        if cfg.get("enhance_only_tag_family", True) and style not in ("tags", "pony"):
+            return False, f"底模风格={style}（仅标签系扩写）"
+        try:
+            _max_tags = int(cfg.get("enhance_max_tags", 8) or 8)
+        except (TypeError, ValueError):
+            _max_tags = 8
+        if not prompt_guard.is_short_prompt(text, _max_tags):
+            return False, f"标签数 > {_max_tags}（已经够丰富）"
+        if prompt_guard.appearance_frozen(text, known_names):
+            return False, "含角色/作品 tag（外观冻结，不扩写）"
+        # 预算保护：扩写要花 3~8 秒，别把「整次请求预算」吃掉导致超时提示发不出去
+        try:
+            _hard_cap = int(self._cfg("draw_wait_hard_cap", 100) or 0)
+        except (TypeError, ValueError):
+            _hard_cap = 100
+        if _hard_cap > 0 and draw_start:
+            _used = time.time() - draw_start
+            if _used > _hard_cap * 0.35:
+                return False, f"已耗时 {_used:.0f}s（占预算过多，跳过扩写）"
+        if not self._resolve_translate_provider_id():
+            return False, "无可用 LLM（translate_llm_model 未配置且无默认模型）"
+        return True, ""
+
+    async def _enhance_prompt_llm(self, positive: str, *, style: str = "tags") -> str:
+        """LLM 扩写：只补「非外观维度」，原文标签逐字保留（prompt_guard 会二次校验）。"""
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            return ""
+        _n = prompt_guard.count_tags(positive)
+        _target = min(28, max(_n + 8, 14))
+        _want_free = "、".join(prompt_guard.FREE_DIM_CLUES.keys())
+        prompt = (
+            "你是动漫（Anime/二次元）生图提示词扩写专家。用户会给你一串已写好的"
+            "Danbooru 风格英文标签，画面主体已经确定，你要做的就是**在不改变画面的前提下"
+            "把细节补足**，让出图更精致、更有氛围。要求：\n"
+            "1. 原有标签必须**逐字保留、顺序不变**，你只能在其后追加新标签；\n"
+            "2. ⛔严禁新增或修改任何「外观」标签：发色/发型/刘海/瞳色/兽耳/尾巴/角/翅膀/"
+            "体型/服装/配饰/角色名/作品名。这些由角色卡决定，你写错会把角色画成另一个人"
+            "（这是本插件历史上最严重的事故，绝对不允许）；\n"
+            f"3. 只允许补充这些维度：{_want_free}；\n"
+            "4. 每个维度最多补 2~3 个真实存在的 Danbooru 标签（如 depth of field、"
+            "backlighting、petals falling、detailed background、glossy），"
+            f"总标签数控制在 {_target} 个以内；\n"
+            "5. 不要写画质词（masterpiece / best quality / score_9 / very aesthetic 等，"
+            "插件会自动加，你加了会重复）；\n"
+            "6. 只输出逗号分隔的英文标签，不要解释、不要编号、不要代码块、不要中文。\n\n"
+            f"原标签：\n{positive}\n\n"
+            "扩写后的标签："
+        )
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("enhance_prompt", provider_id, llm_resp)
+            out = (getattr(llm_resp, "completion_text", "") or "").strip()
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"LLM 扩写超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"LLM 扩写失败: {e}") from e
+        out = out.strip("`").strip()
+        out = re.sub(r"^\s*(扩写后的标签|标签|prompt)\s*[:：]\s*", "", out, flags=re.I)
+        return re.sub(r"\s+", " ", out).strip()
+
+    async def _boost_positive(self, positive: str, *, wf: dict | None = None,
+                              style: str = "unknown", cfg: dict | None = None,
+                              known_names: tuple[str, ...] = (),
+                              draw_start: float = 0.0, trace_id: str = "",
+                              platform_style: str = "") -> str:
+        """提示词丰富化总入口：① LLM 扩写（只补自由维度）② 画质前缀（缺失才加）。
+
+        任何一步失败都保留原提示词；扩写结果必须保留原文全部标签，且新增/改写的
+        外观标签一律剥掉（prompt_guard）。
+        """
+        _cfg = cfg if isinstance(cfg, dict) else self._prompt_boost_cfg()
+        out = (positive or "").strip()
+        if not out:
+            return positive
+        _style = platform_style or style or "unknown"
+
+        # ① 扩写
+        if _cfg.get("enhance_llm", True):
+            _ok, _why = self._should_enhance(out, _style, _cfg, known_names=known_names,
+                                             draw_start=draw_start)
+            if _ok:
+                try:
+                    _t0 = time.time()
+                    _rich = await self._enhance_prompt_llm(out, style=_style)
+                    if _rich and _rich.strip() and _rich.strip() != out:
+                        if not prompt_guard.keeps_original_tags(out, _rich):
+                            logger.warning(
+                                "【提示词丰富化】 扩写结果丢了原文标签，已放弃本次扩写"
+                            )
+                        else:
+                            _kept, _dropped = prompt_guard.strip_new_appearance(out, _rich)
+                            if _dropped:
+                                logger.info(
+                                    f"【提示词丰富化】 剥掉扩写新增的外观标签 {_dropped}（防换角色）"
+                                )
+                            _kept = (_kept or "").strip()
+                            if _kept and _kept != out:
+                                logger.info(
+                                    f"【提示词丰富化】trace={trace_id} "
+                                    f"扩写耗时 {time.time() - _t0:.1f}s，"
+                                    f"标签 {prompt_guard.count_tags(out)} → "
+                                    f"{prompt_guard.count_tags(_kept)}，"
+                                    f"维度覆盖 +{len(prompt_guard.free_dim_coverage(_kept)) - len(prompt_guard.free_dim_coverage(out))}："
+                                    f"{_kept[:200]}"
+                                )
+                                out = _kept
+                except Exception as e:
+                    logger.warning(f"【提示词丰富化】 扩写失败（保留原提示词）: {e}")
+            else:
+                logger.info(f"【提示词丰富化】 跳过扩写：{_why}")
+
+        # ② 画质前缀（确定性，不依赖模型自觉）
+        if _cfg.get("quality_prefix", True):
+            try:
+                _custom = str(_cfg.get("quality_prefix_custom") or "")
+                _new, _added = prompt_guard.ensure_quality_prefix(out, _style, _custom)
+                if _added:
+                    logger.info(
+                        f"【画质前缀】 自动补 {_style} 档：{_added}"
+                        f"{'（自定义）' if _custom.strip() else ''}"
+                    )
+                    out = _new
+            except Exception as e:
+                logger.warning(f"【画质前缀】 追加失败（忽略）: {e}")
+        return out
+
+    def _guard_appearance(self, positive: str, hits: list, *, user_text: str = "",
+                          cfg: dict | None = None) -> str:
+        """外观冲突剥除：角色卡锚点是权威，模型/用户写的冲突外观标签剥掉。
+
+        用户明确要求改外观（「把头发染成粉色」）时整体跳过——那是用户意图而非臆造。
+        """
+        _cfg = cfg if isinstance(cfg, dict) else self._prompt_boost_cfg()
+        if not _cfg.get("guard_appearance", True):
+            return positive
+        if not hits or not (positive or "").strip():
+            return positive
+        if user_text and _APPEARANCE_CHANGE_RE.search(user_text):
+            logger.info("【外观护栏】 用户明确要求改外观，跳过冲突剥除")
+            return positive
+        try:
+            _auth_parts: list[str] = []
+            for _card, _anchor in hits:
+                _auth_parts.append(str(_anchor.get("positive") or ""))
+            authority = ", ".join(p for p in _auth_parts if p.strip())
+            if not authority.strip():
+                return positive
+            _new, _dropped = prompt_guard.strip_conflicting_appearance(
+                positive, authority, include_groups=(len(hits) == 1),
+            )
+            if _dropped:
+                logger.info(
+                    f"【外观护栏】 剥掉与角色卡锚点冲突的外观标签 {_dropped}"
+                    f"（权威：{authority[:80]}）"
+                )
+            return _new or positive
+        except Exception as e:
+            logger.warning(f"【外观护栏】 校验异常（忽略）: {e}")
+            return positive
+
     async def _translate_prompt(self, wf: dict | None, positive: str) -> str:
         """按翻译模式翻译提示词中「含中文的片段」，已有英文片段原样保留。
 
@@ -4881,6 +5145,51 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 logger.warning(f"【平台】 LLM 整理失败，保留原提示词: {e}")
 
+        # ── 提示词丰富化 + 角色保真（v7.6.0 补齐平台链路缺口）─────────────
+        # 此前平台链路（NAI / OpenAI 兼容 / 自定义）完全跳过画质前缀与角色卡锚点注入，
+        # 角色保真在这条链路上等于零。这里按平台性质补：
+        #   ① 画质前缀：NAI 走 nai 档，其它平台按自然语言系（自然语言系不加质量词）；
+        #   ② 角色卡锚点注入（纯文本标签，与 ComfyUI 链路同一套规则）；
+        #   ③ 外观护栏：剥掉与锚点冲突的外观标签（用户明确改外观时放行）。
+        try:
+            _pb_cfg = self._prompt_boost_cfg()
+            if (positive or "").strip():
+                _plat_style = "nai" if ptype == "nai" else "natural"
+                _u_txt = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
+                _cc_cfg2 = self._cfg("character_card", {}) or {}
+                if (
+                    isinstance(_cc_cfg2, dict)
+                    and _cc_cfg2.get("enabled", True)
+                    and _cc_cfg2.get("auto_inject", True)
+                    and getattr(self, "character", None) is not None
+                ):
+                    _plat_hits = await character.resolve_hits(self, event, _u_txt, positive)
+                    if _plat_hits:
+                        _pres = character.inject(
+                            self, positive, _plat_hits, _cc_cfg2, negative=negative
+                        )
+                        if (_pres.get("prompt") or "").strip():
+                            positive = _pres["prompt"]
+                        if (_pres.get("negative") or "").strip():
+                            negative = _pres["negative"]
+                        positive = self._guard_appearance(
+                            positive, _plat_hits, user_text=_u_txt, cfg=_pb_cfg
+                        )
+                        logger.info(
+                            f"【平台·角色卡】 注入 {len(_plat_hits)} 个角色锚点"
+                            f"（模式={_pres.get('mode')}）: {positive[:200]}"
+                        )
+                if _pb_cfg.get("quality_prefix", True):
+                    _new_pos, _added = prompt_guard.ensure_quality_prefix(
+                        positive, _plat_style,
+                        str(_pb_cfg.get("quality_prefix_custom") or ""),
+                    )
+                    if _added:
+                        positive = _new_pos
+                        logger.info(f"【平台·画质前缀】 {_plat_style} 档：{_added}")
+        except Exception as _pe:
+            logger.warning(f"【平台·提示词增强】 异常（保留原提示词）: {_pe}")
+
         # 平台卡（默认仅群聊）：底模位显示模型名、工作流位显示平台名、无 LoRA 区。
         # 注意：平台链路是「一次阻塞请求拿图」，没有 ComfyUI 那样的入队/排队阶段，
         # 所以卡片只能发在请求之前（ComfyUI 链路已改为入队成功后发，见 cmd_draw 侧）。
@@ -5705,6 +6014,25 @@ class ComfyUIDrawPlugin(Star):
                 f"【耗时】 出图前 LLM 整理（改写/翻译）耗时 {time.time() - _t_llm0:.1f}s"
             )
 
+        # ── 提示词丰富化（v7.6.0）──────────────────────────────────────
+        # 位置很关键：放在 sanitize / LLM 翻译之后、角色卡注入**之前**——
+        #   ① 扩写只补「镜头/构图/光影/氛围/材质」等自由维度，外观维度由 prompt_guard 把关；
+        #   ② 画质前缀在这里补，才能被角色卡多角色重排逻辑提到最前（_QUALITY_RE）；
+        #   ③ 固定提示词（作者配方）不碰。
+        _user_text_for_guard = (
+            (getattr(event, "message_str", "") or "").strip() if event is not None else ""
+        )
+        if not _fixed_prompt and (positive or "").strip():
+            try:
+                positive = await self._boost_positive(
+                    positive, wf=wf, style=self._prompt_style(wf),
+                    cfg=self._prompt_boost_cfg(),
+                    known_names=self._known_character_names(),
+                    draw_start=_draw_start, trace_id=_trace_id,
+                )
+            except Exception as _be:
+                logger.warning(f"【提示词丰富化】 异常（保留原提示词）: {_be}")
+
         # ── 角色卡片注入（时序后移，v6.0.0）──────────────────────────────
         # 覆盖所有入口（AI 对话 / 指令 / 伴侣插件）。命中规则见 character.py：
         #   单角色 → 锚点标签追加进正向提示词；多角色 → 计数标签 + 每角色一个权重分组，
@@ -5724,6 +6052,14 @@ class ComfyUIDrawPlugin(Star):
                 _hits = await character.resolve_hits(self, event, _u_text, positive)
                 if _hits and _cc_cfg.get("auto_inject", True):
                     _cres = character.inject(self, positive, _hits, _cc_cfg, negative=negative)
+                    # v7.6.0 外观护栏：锚点是权威，把模型/用户写的**冲突外观标签**剥掉。
+                    # docstring 里那句「不要手写与卡片冲突的外观描述（会被插件剥掉）」
+                    # 以前只是吓唬模型——现在真的会剥（历史上绿发被补成 white_hair 的事故）。
+                    if (_cres.get("prompt") or "").strip():
+                        _cres["prompt"] = self._guard_appearance(
+                            _cres["prompt"], _hits,
+                            user_text=_u_text or _user_text_for_guard,
+                        )
                     # 记下命中的锚点：图出来后按 (角色, 锚点) 自动关联回卡片。
                     # 只有**真的注入了锚点**才算命中——auto_inject=false 时锚点没参与出图，
                     # 把图挂上去反而是错误归因。
@@ -10520,7 +10856,8 @@ class ComfyUIDrawPlugin(Star):
           steps / sampler / cfg / noise_schedule / seed；**不改写、不翻译、不补质量前缀、
           不加画师串/风格词/服装/背景等任何额外内容**——用户已经指定了画面，加料只会画错。
           用户没给的参数就别传（走平台默认）。
-        - 反向场景：用户只随口说「画个XX」（没说死内容）时，才由你补全标签与质量词。
+        - 反向场景：用户只随口说「画个XX」（没说死内容）时，才由你补全标签
+          （**质量词不用你写**，插件会按底模自动补；见下方「细节密度」一节）。
         - NAI 平台：提示词里已经带 artist: 画师串时，artist 也按用户原样传，
           插件默认**不会**再补任何画师串（提示词自带或你显式传的都算已指定）。
         - 负面提示词不同：用户没给负向时，插件会照常套用平台/插件里启用的默认负面词，你不用管。
@@ -10550,6 +10887,22 @@ class ComfyUIDrawPlugin(Star):
         - pony 系：score_9, score_8_up, score_7_up 质量体系 + Danbooru 标签。
         - 未标注底模 / sd15 / sdxl：质量词（masterpiece, best quality）+ 标签混合。
         ★万能禁令：score_9 / score_8_up 等 Pony 质量词只允许 pony 底模用，其它底模出现都是错误。
+        ★★★细节密度（默认要写丰富，别只丢一句主体就交差）：
+        - 除非用户明确说「简单/白底/证件照」这类要求，否则按下面这张维度清单把画面补完整，
+          **至少覆盖 6 个维度**：
+          ①主体与人数（含计数标签）②外观（角色 tag / 角色卡锚点，**只写有来源的**）
+          ③表情与动作 ④构图与镜头（close-up / upper body / full body / from above / from behind）
+          ⑤场景与环境（室内外、天气、时间）⑥光影与氛围（backlighting / rim light / cinematic lighting）
+          ⑦材质与细节（detailed background / intricate details / fabric texture）
+        - 标签系底模（anima/illustrious/noobai/sd15/sdxl）：**15~25 个 Danbooru 标签**
+          （不含画质前缀），维度越全越好；但每个标签都必须是真实存在的 danbooru 标签（见上方禁令）。
+        - 自然语言系底模（flux/qwen/z-image/krea2）：1~3 句整句，写清「主体 + 动作 + 环境 + 镜头 + 光影」，
+          可加材质与氛围描述；**不要**写成标签堆。
+        - ⛔这张清单**只覆盖「非外观维度」**：发色/发型/瞳色/耳角尾兽化/体型/服装/配饰属于外观维度，
+          只在三种情况写——用户明确说了、命中角色卡锚点、或用户要的是泛化人物（「画个少女」）需要你自己定。
+          别为了「写丰富」给已定角色补外观（这是本插件最高频的翻车原因）。
+        - 画质前缀由插件自动补（按底模分档），**你不需要写** masterpiece / score_9 / very aesthetic 这类词；
+          写了也不会重复加。
         ★要在画面里出现文字：自然语言系用引号写清内容；anima 系文字渲染不可控
           （用户明确要清晰大字时建议改用 /漫画 指令），否则只能用 english text / japanese text 等标签。
         ★★点名角色/作品/画风（「来一张XX的图」「画个初音未来」「用XX风格画」）的查找链，逐级降级、不许跳步：
@@ -10564,6 +10917,9 @@ class ComfyUIDrawPlugin(Star):
            已锁定角色完整设定，禁止再叠加发色/发型、瞳色、耳朵/角/尾巴/兽化、服装/配饰/体型等任何外观标签——
            **你凭记忆写的角色外貌几乎一定是错的**（真实案例：角色本是绿发，却补了 white_hair，直接把角色画错）。
            拿不准就什么都不写；只有用户明确要求改某外观（如"头发染成粉色"）才加那一项。泛化人物（"画个少女"）不受此限。
+          ★但「不准补外观」≠「不许写细节」：镜头/构图/光影/氛围/场景/材质这些**非外观维度**照常写丰富
+          （见上方「细节密度」）——把它们写足，画面才不干瘪。
+          ★插件侧已强制校验：命中角色卡时，与锚点冲突的外观标签会被自动剥掉（白写），所以别赌。
         ★中文→英文标签：优先用 danbooru MCP 查/确认标准标签再填 prompt，不要臆造、不要透传中文、更不要抓官网。
         ★括号写法：角色/作品 tag 里的 `(` `)` 必须写成 `\\(` `\\)`（如 belle \\(zenless zone zero\\)）；MCP 返回什么就照抄什么。
         工作流（★★不许乱换）：用户没点名工作流就**留空**——插件会自动沿用本会话之前定过的工作流或全局默认，
@@ -13663,6 +14019,10 @@ class ComfyUIDrawPlugin(Star):
           优先调 danbooru MCP 查/确认标准标签（工具名含 danbooru / tag / 标签，**唯一正确来源**）；⛔禁止抓官网/镜像。
           涉及具体角色时只写「角色 tag + 作品 tag」，**禁止**补发色/瞳色/耳朵/角等外观标签（你记忆里的外貌常是错的）；
           括号写成 `\\(` `\\)`（如 belle \\(zenless zone zero\\)）。
+          ★细节照写丰富：镜头（close-up / from above / full body）、光影（backlighting / rim light）、
+          氛围、场景、材质这些**非外观**维度写足（同 comfyui_draw 的「细节密度」），
+          但别为了丰富去补外观；画质前缀由插件自动加，你不用写。
+          ★插件侧强制校验：与角色卡锚点冲突的外观标签会被自动剥掉（白写）。
         - negative_prompt 同规则。
 
         工作流选择：先调 comfyui_workflows 查列表（带 [支持图生图] / [仅文生图] 标记），再按优先级选 img2img_workflow：
