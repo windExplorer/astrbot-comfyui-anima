@@ -242,12 +242,22 @@ const uploadText = ref("");
 const uploadError = ref("");
 const uploadOk = ref(false);
 const uploadOkSummary = ref("");
+// v7.7.15：记住真实文件名（交给后端判定「同名同文件=更新」还是「同名不同文件=新增」），
+// 以及上一次**自动**填进名称框的值（用来判断用户有没有手改过名称）
+const uploadFileName = ref("");
+const uploadAutoName = ref("");
 
-function openUpload() {
+function resetUploadForm() {
   uploadName.value = "";
   uploadText.value = "";
+  uploadFileName.value = "";
+  uploadAutoName.value = "";
   uploadError.value = "";
   uploadOk.value = false;
+  uploadOkSummary.value = "";
+}
+function openUpload() {
+  resetUploadForm();
   uploadShow.value = true;
 }
 function pickFile() { fileInput.value?.click(); }
@@ -263,7 +273,18 @@ function onFileChange(ev: Event) {
   target.value = "";
 }
 function readFile(file: File) {
-  if (!uploadName.value.trim()) uploadName.value = file.name.replace(/\.json$/i, "");
+  // ★换文件时必须刷新名称：名称是空的、或还是上次自动填的那个（= 用户没手改）才替换。
+  //   此前「名称非空就不动」——第二次选文件会沿用上一个文件的名字，入库时被后端当成
+  //   「同名」直接覆盖掉上一条记录（v7.7.15 修复）。
+  const stem = file.name.replace(/\.json$/i, "");
+  const cur = uploadName.value.trim();
+  if (!cur || cur === uploadAutoName.value) {
+    uploadName.value = stem;
+    uploadAutoName.value = stem;
+  }
+  uploadFileName.value = file.name;
+  uploadError.value = "";
+  uploadOk.value = false;
   const reader = new FileReader();
   reader.onload = () => { uploadText.value = String(reader.result || ""); };
   reader.readAsText(file, "utf-8");
@@ -292,12 +313,26 @@ async function doUpload() {
     const d = await apiPost("baseworkflows/upload", {
       name: uploadName.value.trim(),
       content,
-      filename: "",
+      // ★传真实文件名：后端据此判定「同名同文件 = 覆盖更新」还是「同名不同文件 = 新增」
+      filename: uploadFileName.value || "",
     });
     uploadOk.value = true;
     uploadOkSummary.value = summarizeRoles(d.roles);
-    message.success(d.basemodel ? `入库成功（已关联底模 ${d.basemodel}）` : "入库成功");
+    const finalName = d.name || uploadName.value.trim();
+    if (d.updated) {
+      message.warning(`已覆盖更新同名工作流「${finalName}」`);
+    } else if (d.renamed) {
+      message.success(`同名工作流已存在，已新增为「${finalName}」`);
+    } else {
+      message.success(
+        d.basemodel ? `「${finalName}」入库成功（已关联底模 ${d.basemodel}）` : `「${finalName}」入库成功`
+      );
+    }
     await load();
+    // ★入库完成即关闭弹窗并清空表单：否则再选一个文件时容易沿用上一轮的名称，
+    //   被后端判成「同名」而把刚入库的那条覆盖掉（v7.7.15 修复）。
+    uploadShow.value = false;
+    resetUploadForm();
   } catch (e: any) {
     uploadError.value = e?.message || "上传失败";
   } finally {

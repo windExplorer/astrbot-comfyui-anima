@@ -167,23 +167,51 @@ class WorkflowStore:
         return best
 
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _unique_name(conn, name: str) -> str:
+        """同名（忽略大小写）已存在时，加 ` (2)` / ` (3)` 直到不冲突（v7.7.15）。"""
+        for i in range(2, 100):
+            cand = f"{name} ({i})"
+            if not conn.execute(
+                "SELECT 1 FROM base_workflows WHERE name=? COLLATE NOCASE", (cand,)
+            ).fetchone():
+                return cand
+        return f"{name} ({int(time.time())})"
+
     def import_json(self, name: str, json_text: str, original_filename: str = "",
                     force: bool = False) -> tuple[int | None, dict | None, str | None]:
-        """上传/更新基础工作流。
+        """上传/更新基础工作流（兼容包装：只要 (id, roles, error) 的调用方用这个）。
 
         流程：解析 JSON → 解析校验（失败拒绝）→ 原始文件落盘 → 入库（或更新同名）。
-        返回 (id, roles, error)。
+        """
+        wf_id, roles, err, _info = self.import_json_ex(
+            name, json_text, original_filename, force
+        )
+        return wf_id, roles, err
+
+    def import_json_ex(self, name: str, json_text: str, original_filename: str = "",
+                       force: bool = False
+                       ) -> tuple[int | None, dict | None, str | None, dict]:
+        """上传基础工作流，返回 (id, roles, error, info)。
+
+        入库规则（v7.7.15 修复「连续上传第二个文件把上一个覆盖掉」）：
+          · 同名 + **同一个文件名**（或两边都没文件名）→ **覆盖更新**（重复上传同一文件的新版本）；
+          · 同名但**明显是另一个文件**（两边文件名都非空且不同）→ **新增**，名字去重成
+            `xxx (2)` —— 不同工作流撞名时不再把旧记录（连同封面 / 底模关联）一起冲掉；
+          · 不同名 → 新增。
+
+        `info = {"updated", "renamed", "name", "id", "msg"}`：供 WebUI 明确提示「更新」还是「新增」。
         """
         name = (name or "").strip()
         if not name:
-            return None, None, "名称不能为空"
+            return None, None, "名称不能为空", {}
         try:
             prompt = json.loads(json_text)
         except Exception as e:
-            return None, None, f"JSON 解析失败: {e}"
+            return None, None, f"JSON 解析失败: {e}", {}
         roles, errors = parse_workflow(prompt)
         if errors and not force:
-            return None, None, "；".join(errors)
+            return None, None, "；".join(errors), {}
 
         # 原始文件落盘（文件关联：原始文件是唯一真相源头，永不再修改）
         sha = hashlib.sha256(json_text.encode("utf-8")).hexdigest()[:16]
@@ -194,15 +222,28 @@ class WorkflowStore:
         try:
             stored_path.write_text(json_text, encoding="utf-8")
         except Exception as e:
-            return None, None, f"原始文件落盘失败: {e}"
+            return None, None, f"原始文件落盘失败: {e}", {}
 
         now = time.time()
         conn = self._conn_get()
-        # 同名（显示名）已存在 → 更新；否则新增
+        # 同名（显示名）已存在 → 视情况「更新」或「改名新增」
         row = conn.execute(
-            "SELECT id FROM base_workflows WHERE name=? COLLATE NOCASE", (name,)
+            "SELECT id, file_name FROM base_workflows WHERE name=? COLLATE NOCASE", (name,)
         ).fetchone()
-        msg = ""
+        _want_fn = str(original_filename or "").strip()
+        _old_fn = str(row["file_name"] or "").strip() if row else ""
+        renamed = False
+        if row and _want_fn and _old_fn and _want_fn != _old_fn:
+            # 名字撞了但上传的是**另一个文件** → 不覆盖，改名新增（否则旧记录会被静默冲掉）
+            _dup_name = name
+            name = self._unique_name(conn, name)
+            row = None
+            renamed = True
+            logger.info(
+                f"【基础工作流】 名称「{_dup_name}」已被另一份文件占用"
+                f"（{_old_fn} ≠ {_want_fn}）→ 本次新增为「{name}」，不覆盖旧记录"
+            )
+        updated = False
         if row:
             conn.execute(
                 """UPDATE base_workflows SET file_name=?, stored_file=?, sha256=?, wf_json=?,
@@ -212,6 +253,7 @@ class WorkflowStore:
                  "；".join(errors), now, row["id"]),
             )
             wf_id = int(row["id"])
+            updated = True
             msg = "已覆盖更新同名基础工作流"
         else:
             cur = conn.execute(
@@ -223,8 +265,11 @@ class WorkflowStore:
                  "；".join(errors), now, now),
             )
             wf_id = int(cur.lastrowid)
+            msg = (f"同名工作流已存在，已新增为「{name}」" if renamed else "已新增基础工作流")
         conn.commit()
-        return wf_id, roles, None
+        return wf_id, roles, None, {
+            "updated": updated, "renamed": renamed, "name": name, "id": wf_id, "msg": msg,
+        }
 
     def update_meta(self, wf_id: int, fields: dict) -> str | None:
         """更新元数据字段（白名单：name / civitai_url / image / description / basemodel_id）。"""

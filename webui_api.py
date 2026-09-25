@@ -1453,6 +1453,8 @@ class WebUIApi:
         """上传基础工作流。body: {name, content(JSON 文本), filename(原始文件名，可选)}。
 
         解析失败 → 拒绝入库并在 message 里给出全部原因。
+        v7.7.15：返回 updated/renamed/name，让 WebUI 能明确提示「覆盖更新」还是「新增」
+        （此前只回「入库成功」，同名覆盖是静默的）。
         """
         try:
             body = await request.json(default={}) or {}
@@ -1461,7 +1463,8 @@ class WebUIApi:
             filename = (body.get("filename") or "").strip()
             if not content:
                 return error_response("缺少工作流 JSON 内容")
-            wf_id, roles, err = self._workflow_store().import_json(name, content, filename)
+            store = self._workflow_store()
+            wf_id, roles, err, _info = store.import_json_ex(name, content, filename)
             if err:
                 return error_response(err)
             # v7.0.3：按「底模匹配关键字」自动关联底模（模型族），可在编辑弹窗手动改
@@ -1476,7 +1479,13 @@ class WebUIApi:
                     _bm_matched = _bm.get("name")
             except Exception as _e:
                 logger.warning(f"【基础工作流】 底模自动关联失败（忽略）: {_e}")
-            return json_response({"id": wf_id, "roles": roles, "basemodel": _bm_matched, "msg": "入库成功"})
+            return json_response({
+                "id": wf_id, "roles": roles, "basemodel": _bm_matched,
+                "updated": bool((_info or {}).get("updated")),
+                "renamed": bool((_info or {}).get("renamed")),
+                "name": (_info or {}).get("name") or name,
+                "msg": (_info or {}).get("msg") or "入库成功",
+            })
         except Exception as e:
             return error_response(f"上传失败: {e}")
 

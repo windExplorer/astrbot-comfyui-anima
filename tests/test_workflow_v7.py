@@ -116,6 +116,52 @@ def test_parse_qwen_subgraph():
     print("== 3. 子图冒号 ID + 一体编码器解析 OK")
 
 
+def test_import_same_name_different_file():
+    """入库判定：同名同文件=覆盖更新；同名**不同文件**=新增去重（v7.7.15）。
+
+    背景（线上反馈）：上传弹窗入库后不关闭、名称框还留着上一个文件的名字，
+    于是第二次选另一个文件时被后端当成「同名」直接覆盖掉刚入库的那条。
+    现在：① 换文件会刷新名称；② 后端只对「同名 + 同一文件」覆盖，撞名但不同文件就新增
+    （名字去重成 `xxx (2)`），旧记录连同封面/底模关联都不会被冲掉。
+    """
+    tmp = Path(tempfile.mkdtemp())
+    st = WorkflowStore(tmp)
+
+    # ① 首次入库 A（文件 a.json）
+    id_a, _, err = st.import_json("图生图", json.dumps(WF_QWEN_SUBGRAPH), "a.json")
+    assert err is None and id_a and len(st.list_all()) == 1
+
+    # ② 同名 + **同一文件名** → 覆盖更新（重复上传同一文件的新版本）
+    id_a2, _, err, info = st.import_json_ex("图生图", json.dumps(WF_STD), "a.json")
+    assert err is None and id_a2 == id_a and info["updated"] is True, info
+    assert len(st.list_all()) == 1 and st.get(id_a)["file_name"] == "a.json"
+
+    # ③ 同名但**另一个文件** → 新增（名字去重），旧记录不受影响
+    id_b, _, err, info = st.import_json_ex("图生图", json.dumps(WF_QWEN_SUBGRAPH), "b.json")
+    assert err is None and info["updated"] is False and info["renamed"] is True, info
+    assert id_b != id_a and info["name"] == "图生图 (2)", info
+    assert len(st.list_all()) == 2, st.list_all()
+    assert st.get(id_a)["name"] == "图生图" and st.get(id_a)["file_name"] == "a.json"
+    assert st.get(id_b)["file_name"] == "b.json" and st.get(id_b)["parse_ok"] is True
+
+    # ④ 粘贴 JSON（没有文件名）+ 同名 → 仍按覆盖更新（保持原行为，否则粘贴没法更新已有条目）
+    id_c, _, err, info = st.import_json_ex("图生图 (2)", json.dumps(WF_STD), "")
+    assert err is None and id_c == id_b and info["updated"] is True, info
+    assert len(st.list_all()) == 2
+
+    # ⑤ 历史数据兼容：旧记录 file_name 为空 + 同名新上传 → 覆盖更新（不新增）
+    id_d, _, err, _ = st.import_json_ex("老记录", json.dumps(WF_STD), "")
+    assert err is None and id_d
+    id_d2, _, err, info = st.import_json_ex("老记录", json.dumps(WF_QWEN_SUBGRAPH), "new.json")
+    assert err is None and id_d2 == id_d and info["updated"] is True, info
+    assert len(st.list_all()) == 3
+
+    # ⑥ 兼容包装仍返回三元组（老调用方不破）
+    _three = st.import_json("std2", json.dumps(WF_STD), "std2.json")
+    assert isinstance(_three, tuple) and len(_three) == 3 and _three[2] is None, _three
+    print("== 15. 入库判定（同名同文件=更新 / 同名不同文件=新增去重 / 粘贴·历史兼容） OK")
+
+
 def test_store():
     tmp = Path(tempfile.mkdtemp())
     store = WorkflowStore(tmp)
@@ -430,4 +476,5 @@ if __name__ == "__main__":
     test_match_by_filename()
     test_sampler_defaults_extract()
     test_negative_shared_with_positive()
-    print("\n基础工作流体系测试全部通过（14 组）")
+    test_import_same_name_different_file()
+    print("\n基础工作流体系测试全部通过（15 组）")
