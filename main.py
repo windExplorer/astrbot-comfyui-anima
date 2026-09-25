@@ -10777,7 +10777,7 @@ class ComfyUIDrawPlugin(Star):
         dev = await self._fetch_json(url.rstrip("/") + "/device", timeout=8) if reachable else None
         _sec = self._taskhub_sections(dev) if isinstance(dev, dict) else {}
         _sys_rows: list[tuple] = []
-        _dev_map: dict[str, list] = {"cpu": [], "gpu": [], "ram": [], "disk": []}
+        _dev_map: dict[str, list] = {"cpu": [], "gpu": [], "ram": [], "fan": [], "disk": []}
         _comfy_rows: list[tuple] = []
         _sched_rows: list[tuple] = []
         _check_rows: list[tuple] = []
@@ -10793,13 +10793,21 @@ class ComfyUIDrawPlugin(Star):
             host = dev.get("host") or {}
             if isinstance(host, dict):
                 logger.debug(f"【绘图状态】 /device host 顶层键: {list(host.keys())}")
-            # -- 系统（首位）：系统版本 / 已运行时长（v7.7.31：不显示主机名） --
+            # -- 系统（首位）：系统版本 / 已运行时长（不显示主机名） --
             if host:
                 _os = host.get("os") or {}
                 if isinstance(_os, dict):
-                    osn = " ".join(str(x) for x in (
+                    # 版本号多候选：caption（Windows 11 专业工作站版）+ display_version（25H2），
+                    # 都没有再用 version / build 兜底
+                    _parts = [str(x).strip() for x in (
                         _os.get("caption") or "", _os.get("display_version") or ""
-                    ) if str(x).strip()).strip()
+                    ) if str(x or "").strip()]
+                    if not _parts:
+                        for k in ("version", "edition", "build"):
+                            v = str(_os.get(k) or "").strip()
+                            if v:
+                                _parts.append(v)
+                    osn = " ".join(_parts).strip() or str(host.get("system") or "").strip()
                 else:
                     osn = str(_os or host.get("system") or host.get("platform") or "").strip()
                 up = host.get("uptime_s") or host.get("uptime") or host.get("boot_elapsed_s")
@@ -10855,12 +10863,49 @@ class ComfyUIDrawPlugin(Star):
                     _dev_map["gpu"].append(("温度", f"{g.get('temperature_c')}°C", ""))
             except Exception:
                 pass
-            # -- 内存 --
+            # -- 内存：host 里字段名无文档明文，多候选都拿不到就退 /monitor --
+            #    （/monitor 的 ram_used_gb / ram_total_gb 是文档明义字段，必有）
             try:
                 if host.get("ram_total_gb"):
                     _dev_map["ram"].append(("总量", f"{host.get('ram_total_gb')} GB", ""))
                     if host.get("ram_used_gb") is not None:
                         _dev_map["ram"].append(("已用", f"{host.get('ram_used_gb')} GB", ""))
+                for _rk in ("ram", "memory"):
+                    _rm = host.get(_rk)
+                    if isinstance(_rm, dict) and (_rm.get("total_gb") or _rm.get("total")):
+                        if not any(r[0] == "总量" for r in _dev_map["ram"]):
+                            _dev_map["ram"].append(
+                                ("总量", f"{_rm.get('total_gb') or _rm.get('total')} GB", ""))
+                        _mu = _rm.get("used_gb") or _rm.get("used")
+                        if _mu is not None and not any(r[0] == "已用" for r in _dev_map["ram"]):
+                            _dev_map["ram"].append(("已用", f"{_mu} GB", ""))
+                        break
+            except Exception:
+                pass
+            if not _dev_map["ram"]:
+                _mon = await self._fetch_json(url.rstrip("/") + "/monitor", timeout=6)
+                if isinstance(_mon, dict) and _mon.get("ram_total_gb"):
+                    _dev_map["ram"].append(("总量", f"{_mon.get('ram_total_gb')} GB", ""))
+                    if _mon.get("ram_used_gb") is not None:
+                        _dev_map["ram"].append(("已用", f"{_mon.get('ram_used_gb')} GB", ""))
+                # CPU 占用同样用 /monitor 兜底（cpu_percent 为文档明义字段）
+                if _mon and isinstance(_mon.get("cpu_percent"), (int, float)):
+                    if not any(r[0] == "占用" for r in _dev_map["cpu"]):
+                        _dev_map["cpu"].append(("占用", f"{_mon['cpu_percent']}%", ""))
+            # -- 风扇：机箱风扇 RPM（host.fans.system，文档 3.2.1）+ GPU 风扇候选 --
+            try:
+                _fans = host.get("fans") or {}
+                _rpm: list[int] = []
+                if isinstance(_fans, dict):
+                    for v in (_fans.get("system") or []):
+                        if isinstance(v, (int, float)) and v > 0:
+                            _rpm.append(int(v))
+                for g_ in (host.get("gpus") or [])[:1]:
+                    gv = g_.get("fan_speed_rpm") or g_.get("fan_rpm") or g_.get("fan")
+                    if isinstance(gv, (int, float)) and gv > 0:
+                        _rpm.append(int(gv))
+                if _rpm:
+                    _dev_map["fan"].append(("转速", " / ".join(str(v) for v in _rpm[:3]) + " RPM", ""))
             except Exception:
                 pass
             # -- 硬盘（服务所在磁盘）：剩余 / 总量 + 已用（v7.7.31：补剩余空间） --
@@ -10953,6 +10998,8 @@ class ComfyUIDrawPlugin(Star):
             _sections.append({"label": "显卡", "icon": "gpu", "span": 1, "rows": _dev_map["gpu"]})
         if _dev_map["ram"]:
             _sections.append({"label": "内存", "icon": "ram", "span": 1, "rows": _dev_map["ram"]})
+        if _dev_map["fan"]:
+            _sections.append({"label": "风扇", "icon": "fan", "span": 1, "rows": _dev_map["fan"]})
         if _dev_map["disk"]:
             _sections.append({"label": "硬盘", "icon": "disk", "span": 1, "rows": _dev_map["disk"]})
         if _comfy_rows:

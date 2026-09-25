@@ -2,6 +2,15 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.32（绘图状态：风扇节回归 + 内存 /monitor 兜底 + 系统版本多候选）
+
+1. **风扇节回归**：读 `host.fans.system`（机箱风扇 RPM，文档 3.2.1）与 GPU 风扇候选，
+   多个风扇用 `/` 分隔；没有数据整节跳过；
+2. **内存 /monitor 兜底**：host 里字段名无文档明文，多候选拿不到时退 `GET /monitor`
+   （`ram_used_gb` / `ram_total_gb` 为文档明义字段必有）；CPU 占用同样用它兜底；
+3. **系统版本多候选**：`host.os.caption` + `display_version` → 没有再用 `version` /
+   `edition` / `build` 兜底。
+
 ## v7.7.31（绘图状态：硬盘显示剩余空间、系统节不显示主机名、接文档新字段）
 
 按更新后的中转站文档（3.2.1）对接：
