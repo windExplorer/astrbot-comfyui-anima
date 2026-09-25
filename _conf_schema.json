@@ -828,6 +828,43 @@
     },
     "default": []
   },
+  "matting": {
+    "type": "object",
+    "description": "抠图（去背景）",
+    "hint": "独立功能：用户在消息里带图（或引用一张图）后发 **`/抠图`** 即可去背景/抠图，**不用传任何参数**（也支持 `/抠像`、`/去背景`、`/去背`）。需要先到「基础工作流」页上传抠图工作流（如 Qwen Image 2.1 Edit 去背景：带图输入 + 文本编码 + 采样器，提示词写 Remove the background），解析通过后再到这里绑定。**步数与提示词留空 = 沿用工作流里的原值**（WebUI 的「更多功能 → 抠图」页会自动把工作流的当前值填进表单）。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用抠图",
+        "hint": "开启后 /抠图 指令才可用。",
+        "default": false
+      },
+      "base_id": {
+        "type": "string",
+        "description": "绑定的抠图工作流（ID 或名字）",
+        "hint": "必须是「基础工作流」库里解析通过、**带图片输入**的工作流（在 WebUI「更多功能 → 抠图」页用下拉选择）。留空时：库里只有一个可用的抠图工作流就自动用它。",
+        "default": ""
+      },
+      "steps": {
+        "type": "int",
+        "description": "采样步数",
+        "hint": "默认使用工作流里的步数（WebUI 表单会自动填工作流的当前值）。**留空 / 0 = 沿用工作流原值**；填了就覆盖。值越大越慢。",
+        "default": 0
+      },
+      "prompt": {
+        "type": "string",
+        "description": "提示词",
+        "hint": "告诉模型要做什么，例如 Remove the background, and output a PNG image（去背景）。默认填工作流里的原提示词；**留空 = 沿用工作流原值**。",
+        "default": ""
+      },
+      "timeout": {
+        "type": "int",
+        "description": "等待超时（秒）",
+        "hint": "抠图/编辑类工作流比普通出图慢一些（Qwen 系 25 步 + 大图），默认 300。",
+        "default": 300
+      }
+    }
+  },
   "upscale_limits": {
     "type": "object",
     "description": "图片放大 · 尺寸护栏（全局，防爆显存）",

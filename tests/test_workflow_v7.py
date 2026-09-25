@@ -84,8 +84,11 @@ WF_NO_UPSCALE = {k: v for k, v in WF_QWEN_SUBGRAPH.items() if k != "473"} | {
 def test_parse_std():
     roles, errs = parse_workflow(WF_STD)
     assert not errs, errs
-    assert roles["positive"] == {"node": "3", "field": "text", "class_type": "CLIPTextEncode"}
+    # v7.7.13：多了一个 default_text（工作流里的当前提示词，供「更多功能」表单预填）
+    assert roles["positive"] == {"node": "3", "field": "text", "class_type": "CLIPTextEncode",
+                                 "default_text": "pos"}
     assert roles["negative"]["node"] == "4" and roles["negative"]["field"] == "text"
+    assert roles["negative"]["default_text"] == "neg"
     assert roles["latent"]["node"] == "5" and roles["latent"]["default_width"] == 816
     assert roles["save"]["node"] == "8" and roles["save"]["has_quality"] and roles["save"]["has_output_ext"]
     assert roles["upscale"]["loader"] == "12" and roles["upscale"]["apply"] == "11"
@@ -106,7 +109,8 @@ def test_parse_reject_multi_sampler():
 def test_parse_qwen_subgraph():
     roles, errs = parse_workflow(WF_QWEN_SUBGRAPH)
     assert not errs, errs
-    assert roles["positive"] == {"node": "471:452", "field": "prompt", "class_type": "TextEncodeQwenImage21"}
+    assert roles["positive"] == {"node": "471:452", "field": "prompt",
+                                 "class_type": "TextEncodeQwenImage21", "default_text": "正"}
     assert roles["negative"]["node"] == "471:452" and roles["negative"]["field"] == "negative_prompt"
     assert roles["model_src"] == "471:451" and roles["subgraph_ids"]
     print("== 3. 子图冒号 ID + 一体编码器解析 OK")

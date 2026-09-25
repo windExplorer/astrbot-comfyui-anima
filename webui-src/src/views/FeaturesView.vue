@@ -5,7 +5,7 @@
         <h2>更多功能</h2>
         <p>
           插件里「不在出图主链路」的独立功能，可添加多条、各自配置、单独启用/禁用（用法同「工作流」页）。
-          目前支持：图片放大（超分）。
+          目前支持：图片放大（超分）、抠图（去背景）。
         </p>
       </div>
       <div class="view-actions">
@@ -87,9 +87,103 @@
         </div>
       </n-card>
 
+      <!-- 抠图（去背景）：单条配置，指令 /抠图，不用传参数 -->
+      <n-card class="feat-card" size="small" :class="{ off: !matting.enabled }">
+        <template #header>
+          <div class="card-head">
+            <span class="feat-icon">✂️</span>
+            <span class="feat-title">抠图（去背景）</span>
+            <n-tag size="tiny" :bordered="false" :type="mattingBaseTagType">{{ mattingBaseLabel }}</n-tag>
+            <span class="feat-desc">
+              用户带图发 <code>/抠图</code> 即可按提示词抠图/去背景（不用传参数）
+            </span>
+          </div>
+        </template>
+        <template #header-extra>
+          <n-button size="tiny" type="primary" ghost :loading="savingMatting" :disabled="!mattingDirty" @click="saveMatting">
+            保存
+          </n-button>
+        </template>
+
+        <n-form label-placement="top" size="small">
+          <n-form-item :label="mMeta('enabled', '启用抠图').label">
+            <n-switch v-model:value="matting.enabled" />
+            <div class="hint">{{ mMeta("enabled", "").hint }}</div>
+          </n-form-item>
+
+          <n-form-item :label="mMeta('base_id', '绑定的抠图工作流').label">
+            <n-select
+              v-model:value="matting.base_id"
+              :options="mattingBaseOptions"
+              filterable
+              clearable
+              placeholder="自动（库里只有一个可用时）"
+              @update:value="onMattingBaseChange"
+            />
+            <div class="hint">{{ mMeta("base_id", "").hint }}</div>
+            <div v-if="mattingBase" class="hint ok">
+              已绑定：{{ mattingBase.name }}（类型 {{ kindLabel(mattingBase.roles?.kind) }}；模型
+              {{ mattingBase.roles?.model_file || "未识别" }}）
+            </div>
+          </n-form-item>
+
+          <n-grid cols="1 640:2" :x-gap="16">
+            <n-form-item-gi :label="mMeta('steps', '采样步数').label">
+              <n-input-number
+                v-model:value="matting.steps"
+                :min="0"
+                :max="200"
+                :placeholder="mattingBaseSteps != null ? String(mattingBaseSteps) : '工作流默认'"
+                style="width: 100%"
+              />
+              <div class="hint">
+                {{ mMeta("steps", "").hint }}
+                <template v-if="mattingBaseSteps != null">工作流当前：{{ mattingBaseSteps }} 步。</template>
+              </div>
+            </n-form-item-gi>
+            <n-form-item-gi :label="mMeta('timeout', '等待超时（秒）').label">
+              <n-input-number v-model:value="matting.timeout" :min="30" :max="3600" :step="30" style="width: 100%" />
+              <div class="hint">{{ mMeta("timeout", "").hint }}</div>
+            </n-form-item-gi>
+          </n-grid>
+
+          <n-form-item :label="mMeta('prompt', '提示词').label">
+            <n-input
+              v-model:value="matting.prompt"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              :placeholder="mattingBasePrompt || '留空 = 用工作流里的提示词'"
+            />
+            <div class="hint">{{ mMeta("prompt", "").hint }}</div>
+            <div v-if="mattingBasePrompt" class="hint">
+              工作流里的提示词：<code>{{ mattingBasePrompt }}</code>
+            </div>
+          </n-form-item>
+
+          <n-space :size="8" align="center" style="margin-bottom: 4px">
+            <n-button size="tiny" :disabled="!mattingBase" @click="fillFromMattingBase">
+              从工作流填充步数与提示词
+            </n-button>
+            <n-button size="tiny" quaternary @click="clearMattingForm">清空（用工作流原值）</n-button>
+          </n-space>
+        </n-form>
+
+        <div class="usage">
+          <div class="usage-title">指令用法（另有 <code>/抠像</code>、<code>/去背景</code>、<code>/去背</code>）</div>
+          <ul>
+            <li><code>/抠图</code> — 用绑定的抠图工作流（图片跟指令一起发，或引用一条带图的消息），不用传参数</li>
+            <li><code>/抠图 工作流名</code> — 临时指定另一套抠图工作流（可选，写错了会自动回到绑定的那套）</li>
+          </ul>
+          <div class="usage-note">
+            步数与提示词留空即沿用工作流原值（表单里的「工作流里的提示词 / 工作流当前 N 步」就是当前值）；
+            抠图结果计入生图限额与图库（与出图同口径），透明通道保留。
+          </div>
+        </div>
+      </n-card>
+
       <n-spin :show="loading">
         <div v-if="!entries.length" class="empty">
-          还没有添加功能。点右上角「＋ 添加功能」新增一条「图片放大」，绑定放大工作流即可使用
+          还没有添加「图片放大」功能。点右上角「＋ 添加功能」新增一条，绑定放大工作流即可使用
           <code>/放大</code>（同 <code>/图片放大</code>）。
         </div>
 
@@ -311,6 +405,104 @@ async function saveLimits() {
   }
 }
 
+// ---- 抠图（去背景）：单条配置，指令 /抠图 ----
+const MATTING_DEFAULTS: Record<string, any> = {
+  enabled: false,
+  base_id: "",
+  steps: 0,
+  prompt: "",
+  timeout: 300,
+};
+const matting = reactive({ ...MATTING_DEFAULTS });
+const mattingDirty = ref(false);
+const savingMatting = ref(false);
+watch(matting, () => { mattingDirty.value = true; }, { deep: true });
+
+// 可绑的抠图工作流：解析通过 + **带图片输入**（放大类归「图片放大」管，不在这里出现）
+const mattingBases = computed<any[]>(() =>
+  (bases.value || []).filter(
+    (w: any) => w?.parse_ok && w?.roles?.image_node && w?.roles?.kind !== "upscale"
+  )
+);
+const mattingBaseOptions = computed(() => [
+  { label: "自动（库里只有一个可用时用它）", value: "" },
+  ...mattingBases.value.map((w: any) => ({
+    label: `${w.name || w.id}${w.roles?.model_file ? ` · ${w.roles.model_file}` : ""}`,
+    value: String(w.id),
+  })),
+]);
+const mattingBase = computed<any>(() => {
+  const k = String(matting.base_id || "").trim();
+  if (k) return baseById(k);
+  return mattingBases.value.length === 1 ? mattingBases.value[0] : null;
+});
+// 工作流里的当前值：用于「填充到表单」与占位提示（roles 由后端解析器产出）
+const mattingBaseSteps = computed<number | null>(() => {
+  const s = mattingBase.value?.roles?.sampler_defaults?.steps;
+  return typeof s === "number" ? s : null;
+});
+const mattingBasePrompt = computed<string>(() =>
+  String(mattingBase.value?.roles?.positive?.default_text || "")
+);
+function fillFromMattingBase() {
+  if (!mattingBase.value) return;
+  if (mattingBaseSteps.value != null) matting.steps = mattingBaseSteps.value;
+  if (mattingBasePrompt.value) matting.prompt = mattingBasePrompt.value;
+}
+function onMattingBaseChange() {
+  // 选定工作流后**自动把工作流里的步数/提示词填进表单**（默认值取工作流的）
+  fillFromMattingBase();
+}
+function clearMattingForm() {
+  matting.steps = 0;
+  matting.prompt = "";
+}
+async function saveMatting() {
+  savingMatting.value = true;
+  msg.value = "";
+  try {
+    const payload: Record<string, any> = {};
+    Object.keys(MATTING_DEFAULTS).forEach((k) => (payload[k] = (matting as any)[k]));
+    payload.steps = Number(payload.steps) > 0 ? Number(payload.steps) : 0;
+    payload.timeout = Number(payload.timeout) > 0 ? Number(payload.timeout) : 300;
+    payload.prompt = String(payload.prompt || "");
+    await apiPost("config", { config: { matting: payload } });
+    mattingDirty.value = false;
+    msgType.value = "success";
+    msg.value = "抠图配置已保存";
+    message.success("抠图配置已保存");
+  } catch (e: any) {
+    msgType.value = "error";
+    msg.value = e?.message || "保存失败";
+    message.error(msg.value);
+  } finally {
+    savingMatting.value = false;
+  }
+}
+function mMeta(key: string, fallbackLabel: string) {
+  const it = schema.value?.matting?.items?.[key] || {};
+  return { label: it.description || fallbackLabel, hint: it.hint || "" };
+}
+const mattingBaseLabel = computed<string>(() => {
+  const k = String(matting.base_id || "").trim();
+  if (!k) {
+    return mattingBases.value.length === 1 ? `自动：${mattingBases.value[0].name}` : "未绑定工作流";
+  }
+  const w = baseById(k);
+  if (!w) return `绑定的工作流已删除（ID ${k}）`;
+  if (w.roles?.kind === "upscale") return `${w.name}（放大类，不适用）`;
+  if (!w.roles?.image_node) return `${w.name}（没有图片输入）`;
+  if (!w.parse_ok) return `${w.name}（解析未通过）`;
+  return w.name;
+});
+const mattingBaseTagType = computed<any>(() => {
+  const k = String(matting.base_id || "").trim();
+  if (!k) return mattingBases.value.length === 1 ? "info" : "warning";
+  const w = baseById(k);
+  if (!w || !w.parse_ok || !w.roles?.image_node || w.roles?.kind === "upscale") return "error";
+  return "info";
+});
+
 // 只有解析通过、类型为「放大」的基础工作流才能绑定
 const upscaleBases = computed<any[]>(() =>
   (bases.value || []).filter((w: any) => w?.roles?.kind === "upscale" && w?.parse_ok)
@@ -512,6 +704,14 @@ async function load() {
       });
     }
     limitsDirty.value = false;
+    // 抠图（单条配置）
+    const _mt: any = cfg?.matting;
+    if (_mt && typeof _mt === "object") {
+      Object.keys(MATTING_DEFAULTS).forEach((k) => {
+        (matting as any)[k] = _mt[k] ?? MATTING_DEFAULTS[k];
+      });
+    }
+    mattingDirty.value = false;
     const list = Array.isArray(cfg?.features) ? cfg.features : [];
     entries.value = list
       .filter((x: any) => x && typeof x === "object")

@@ -527,6 +527,10 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
         else:
             pnode = nodes[found[0]]
             roles["positive"] = {"node": found[0], "field": found[1], "class_type": pnode.get("class_type")}
+            # v7.7.13：记下工作流里的**当前提示词**（供「更多功能」表单预填，如抠图）
+            _pt = (pnode.get("inputs") or {}).get(found[1])
+            if isinstance(_pt, str):
+                roles["positive"]["default_text"] = _pt
     if not neg_link:
         errors.append("无法从采样器的 negative 输入定位负向提示词节点。")
     else:
@@ -544,6 +548,9 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
         else:
             nnode = nodes[found[0]]
             roles["negative"] = {"node": found[0], "field": found[1], "class_type": nnode.get("class_type")}
+            _nt = (nnode.get("inputs") or {}).get(found[1])
+            if isinstance(_nt, str):
+                roles["negative"]["default_text"] = _nt
             # v7.7.4：负向与正向落在**同一个写入点**时标记出来。典型来源是工作流拿
             # `ConditioningZeroOut(正向编码)` 当负向（Z-Image / Qwen 系常见写法）——
             # 这种工作流**没有独立的负向输入**，出图时必须跳过负向注入，

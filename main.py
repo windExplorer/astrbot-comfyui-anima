@@ -9033,6 +9033,516 @@ class ComfyUIDrawPlugin(Star):
         await self._do_upscale(event, wf_spec, scale)
         event.stop_event()
 
+    # ------------------------------------------------------------------ #
+    # 抠图（v7.7.13）：独立功能——带提示词的编辑/抠图工作流（Qwen Image 2.1 去背景等）
+    # ------------------------------------------------------------------ #
+    def _matting_cfg(self) -> dict:
+        """抠图功能配置块（matting，单条）：{enabled, base_id, steps, prompt, timeout}。"""
+        return dict(self._cfg("matting", {}) or {})
+
+    def _matting_base_rows(self) -> list[dict]:
+        """基础工作流库里可绑的抠图工作流：解析通过 + **带图输入**（图生图 / 编辑类）。"""
+        store = getattr(self, "workflow_store", None)
+        if store is None:
+            return []
+        try:
+            rows = store.list_all() or []
+        except Exception as e:
+            logger.warning(f"【抠图】 读取基础工作流库失败: {e}")
+            return []
+        out: list[dict] = []
+        for w in rows:
+            roles = w.get("roles") or {}
+            if not w.get("parse_ok"):
+                continue
+            # 放大类有自己的功能（图片放大），不在这里重复出现
+            if roles.get("image_node") and roles.get("kind") != "upscale":
+                out.append(w)
+        return out
+
+    def _resolve_matting_base(self, spec: str = "") -> dict:
+        """决定用哪个抠图工作流：指令参数 > 配置绑定 > 库里唯一一个候选。
+
+        匹配顺序：ID → 名字（忽略大小写/首尾空格）→ 名字/文件名包含匹配。
+        找不到时抛 ValueError（文案直接给用户看）。
+        """
+        store = getattr(self, "workflow_store", None)
+
+        def _with_json(rec: dict | None) -> dict:
+            """确保记录带工作流 JSON（拼装/注入要用；列表接口会把它摘掉）。"""
+            if not rec or rec.get("wf_json") or store is None:
+                return rec or {}
+            try:
+                return store.get(int(rec.get("id")), with_json=True) or rec
+            except Exception:
+                return rec
+
+        def _check(rec: dict) -> dict:
+            """绑定的工作流必须：解析通过 + 带图输入 + 不是放大类。"""
+            _roles = rec.get("roles") or {}
+            if not rec.get("parse_ok"):
+                raise ValueError(
+                    f"绑定的抠图工作流「{rec.get('name')}」解析未通过："
+                    f"{rec.get('parse_msg') or '未知原因'}，请重新解析或重新上传。"
+                )
+            if _roles.get("kind") == "upscale":
+                raise ValueError(
+                    f"绑定的「{rec.get('name')}」是**放大类**工作流（没有提示词与采样器），"
+                    "抠图用不了哦～ 请改绑一个「带图输入的编辑/抠图工作流」"
+                    "（放大类请改用「图片放大」功能）。"
+                )
+            if not _roles.get("image_node"):
+                raise ValueError(
+                    f"绑定的「{rec.get('name')}」没有图片输入节点（LoadImage），"
+                    "抠图必须要有输入图哦～ 请到「基础工作流」页换一个带图输入的工作流。"
+                )
+            return _with_json(rec)
+
+        want = str(spec or "").strip() or str(self._matting_cfg().get("base_id") or "").strip()
+        rows = self._matting_base_rows()
+        if not rows:
+            raise ValueError(
+                "还没有可用的抠图工作流哦～ 请先到「基础工作流」页上传一个抠图/去背景工作流"
+                "（如 Qwen Image 2.1 Edit：带图输入 + 文本编码 + 采样器，提示词写去背景），"
+                "解析通过后再到「更多功能 → 抠图」里绑定。"
+            )
+        if want:
+            if want.isdigit() and store is not None:
+                try:
+                    rec = store.get(int(want), with_json=True)
+                except Exception:
+                    rec = None
+                if rec:
+                    return _check(rec)
+                logger.warning(f"【抠图】 base_id={want} 不存在（可能已被删除），回退按名字解析")
+            low = want.lower()
+            for w in rows:
+                if str(w.get("name") or "").strip().lower() == low:
+                    return _check(w)
+            for w in rows:
+                _nm = str(w.get("name") or "").strip().lower()
+                _fn = str(w.get("file_name") or "").strip().lower()
+                if (_nm and (_nm in low or low in _nm)) or (_fn and low in _fn):
+                    return _check(w)
+            _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5]) or "无"
+            raise ValueError(
+                f"没找到叫「{want}」的抠图工作流哦～ 现在可用的有：{_names}。"
+                "（可在「更多功能 → 抠图」里改绑）"
+            )
+        if len(rows) == 1:
+            return _check(rows[0])
+        _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5])
+        raise ValueError(
+            f"库里有 {len(rows)} 个可用的抠图工作流（{_names}），"
+            "请到「更多功能 → 抠图」里指定要用的那个。"
+        )
+
+    @staticmethod
+    def _load_matting_base(rec: dict) -> tuple[dict, dict]:
+        """取抠图工作流的 prompt（全新副本）与解析注记。
+
+        与出图链路不同：只写「输入图 + 步数 + 提示词」三处，其余（宽高 / LoRA /
+        采样器覆盖 / 提示词丰富化）一概不碰——抠图的构图与分辨率由工作流自己决定
+        （Qwen Edit 系的工作流是拿参考图编码出来的 latent 当输入）。
+        """
+        prompt = json.loads(rec.get("wf_json") or "{}")
+        roles = rec.get("roles") or {}
+        wf = {
+            "name": rec.get("name") or "",
+            "_base_name": rec.get("name") or "",
+            "_matting_roles": roles,
+        }
+        return wf, prompt
+
+    @staticmethod
+    def _apply_matting_steps(prompt: dict, roles: dict, steps: int) -> int | None:
+        """把步数写进工作流的采样器；写不到返回 None（沿用工作流原值）。"""
+        node = str((roles or {}).get("sampler") or "").strip()
+        if not node:
+            return None
+        try:
+            if workflow_builder.set_number_node(prompt, node, "steps", int(steps)):
+                return int(steps)
+        except Exception as e:
+            logger.warning(f"【抠图】 写入步数失败（沿用工作流原值）: {e}")
+        return None
+
+    @staticmethod
+    def _apply_matting_prompt(prompt: dict, roles: dict, text: str) -> bool:
+        """把提示词写进工作流的正向文本节点；写不到返回 False（沿用工作流原值）。"""
+        pos = (roles or {}).get("positive") or {}
+        node, field = str(pos.get("node") or ""), str(pos.get("field") or "")
+        if not node or not field:
+            return False
+        try:
+            return bool(workflow_builder.set_text_node(prompt, node, field, text))
+        except Exception as e:
+            logger.warning(f"【抠图】 写入提示词失败（沿用工作流原值）: {e}")
+            return False
+
+    async def _do_matting(self, event, wf_spec: str = "") -> None:
+        """抠图：把用户图送进「带提示词的抠图/编辑工作流」出图。
+
+        配置留空的那一项**沿用工作流原值**（步数默认取工作流的、提示词默认取工作流的），
+        所以「什么都不配」也能直接跑。与出图/放大同一套权限、限额、NSFW、归档与记账口径。
+        """
+        _t0 = time.time()
+        mcfg = self._matting_cfg()
+        _uid = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+        _sid = str(getattr(event, "session_id", "") or "")
+        # 1) 权限总闸（与出图同一套：白名单优先，未启用则走黑名单）+ 生图限额
+        if self._is_whitelist_active():
+            _ok, _why = self._check_whitelist(event)
+        else:
+            _ok, _why = self._check_blacklist(event)
+        if not _ok:
+            await self._send(event, _why)
+            return
+        _ok, _why = self._check_draw_limit(event)
+        if not _ok:
+            await self._send(event, _why)
+            return
+        # 2) 取图：消息内图片 / 引用消息图片 / 本插件最近生成的图
+        images = await self._extract_images(event)
+        if not images:
+            images = await self._pick_recent_images(event)
+            if images:
+                logger.info(f"【抠图】 启用兜底图片: {images}")
+        if not images:
+            await self._send(
+                event,
+                "抠图需要一张图哦～ 把图片和「/抠图」一起发（或引用一条带图的消息）就行。",
+            )
+            return
+        src = images[0]
+        if len(images) > 1:
+            logger.info(f"【抠图】 收到 {len(images)} 张图，只处理第一张: {src}")
+        # 3) 定抠图工作流（指令参数 > 配置绑定 > 库里唯一一个）
+        try:
+            rec = self._resolve_matting_base(wf_spec)
+        except ValueError as e:
+            await self._send(event, str(e))
+            return
+        _wfname = str(rec.get("name") or "").strip() or f"抠图工作流 #{rec.get('id')}"
+        # 4) 组装 prompt：只写「输入图 + 步数 + 提示词」
+        try:
+            _wf, prompt = self._load_matting_base(rec)
+        except Exception as e:
+            await self._card_or_text(
+                event, self._friendly_error(e, "抠图工作流加载", "workflow"),
+                info=self._card_fail_info(wf={"name": _wfname}, is_img2img=True,
+                                          cost=time.time() - _t0,
+                                          flow=f"{_wfname} · 抠图"),
+            )
+            return
+        roles = rec.get("roles") or {}
+        node = str(roles.get("image_node") or "").strip() or (
+            workflow_builder.find_image_loader_node(prompt) or ""
+        )
+        if not node:
+            await self._send(event, "这个抠图工作流里没找到图片输入节点（LoadImage），请检查工作流后再试。")
+            return
+        # 步数：配置里填了就用配置的，留空/0 → 用工作流原值
+        try:
+            _want_steps = int(mcfg.get("steps") or 0)
+        except (TypeError, ValueError):
+            _want_steps = 0
+        applied_steps = self._apply_matting_steps(prompt, roles, _want_steps) if _want_steps > 0 else None
+        if _want_steps > 0 and applied_steps is None:
+            logger.info(f"【抠图】 工作流未暴露可写步数，沿用其内置值（本次请求 {_want_steps} 步）")
+        # 提示词：配置里填了就用配置的，留空 → 用工作流原值
+        _want_text = str(mcfg.get("prompt") or "").strip()
+        applied_text = self._apply_matting_prompt(prompt, roles, _want_text) if _want_text else False
+        if _want_text and not applied_text:
+            logger.info("【抠图】 工作流未暴露可写提示词，沿用其内置提示词")
+        _steps_now = applied_steps if applied_steps else (
+            (roles.get("sampler_defaults") or {}).get("steps")
+            if isinstance((roles.get("sampler_defaults") or {}).get("steps"), (int, float))
+            else None
+        )
+        _text_now = _want_text or str((roles.get("positive") or {}).get("default_text") or "")
+        logger.info(
+            f"【抠图】 工作流「{_wfname}」｜步数 {_steps_now or '工作流默认'}｜"
+            f"提示词 {(_text_now[:40] + '…') if len(_text_now) > 40 else (_text_now or '工作流内置')}"
+        )
+        # 5) 服务器 + 客户端
+        try:
+            server = self._resolve_server(None)
+        except ValueError as e:
+            await self._send(event, f"抠图配置有误：{e}")
+            return
+        srv_key = self._server_key(server)
+        client = self._build_client(server)
+
+        async def _fail(reason_text: str, reason_log: str, extra: list | None = None) -> None:
+            """失败统一出口：失败卡（画不出来退回文字）+ 一条失败记录。"""
+            await self._card_or_text(
+                event, reason_text,
+                info=self._card_fail_info(
+                    wf={"name": _wfname}, prompt="抠图", is_img2img=True,
+                    srv_key=srv_key, cost=time.time() - _t0, extra=extra,
+                    flow=f"{_wfname} · 抠图",
+                ),
+            )
+            self._record_failed(
+                event, "抠图", {"name": _wfname}, True, "", _t0, reason_log,
+            )
+
+        try:
+            # 6) 上传输入图 → 注入 LoadImage
+            try:
+                up = await client.upload_image(src)
+            except Exception as e:
+                await _fail(self._friendly_error(e, "上传抠图输入图"),
+                            f"上传输入图失败：{type(e).__name__}")
+                return
+            img_name = (up or {}).get("name") or os.path.basename(src)
+            # 上传接口已把图写到 type=input 目录，这里只传文件名即可
+            if not workflow_builder.set_image_node(prompt, node, img_name):
+                await _fail("抠图工作流的图片输入节点写入失败，请检查工作流。",
+                            f"set_image_node 失败（节点 {node}）")
+                return
+            logger.info(f"【抠图】 输入图已注入节点 {node}: {src} -> {img_name}")
+            in_w = in_h = 0
+            if _PILImage is not None:
+                try:
+                    with _PILImage.open(src) as _im:
+                        in_w, in_h = _im.width, _im.height
+                except Exception:
+                    pass
+            # 7) 提交 + 等待（本功能自带超时，不套出图那套「单张等待硬上限」）
+            try:
+                _to_cfg = int(mcfg.get("timeout") or 300)
+            except (TypeError, ValueError):
+                _to_cfg = 300
+            timeout = max(30, _to_cfg)
+            interval = max(1, int(self._cfg("queue_poll_interval", 2)))
+            try:
+                result = await client.queue_prompt(prompt)
+                prompt_id = (result or {}).get("prompt_id")
+            except Exception as e:
+                await _fail(self._friendly_error(e, "提交抠图任务"), "提交任务失败")
+                return
+            if not prompt_id:
+                logger.warning(f"【抠图·失败】[提交] ComfyUI 未返回 prompt_id（{_wfname}）")
+                await _fail(self._cute("no_task_id"), "ComfyUI 未返回 prompt_id（提交失败）")
+                return
+            try:
+                self._last_prompt[_sid or "global"] = prompt_id
+            except Exception:
+                pass
+            _pos = (result or {}).get("_queue_position")
+            ahead = int(_pos) if _pos is not None else self._local_queue_ahead(srv_key)
+            self._local_queue_add(srv_key, prompt_id)
+            # 处理中卡片（与出图/放大同一套卡片与开关）
+            _start_txt = (
+                f"正在抠图…（{_steps_now} 步）稍等一下～"
+                if _steps_now else "正在抠图…稍等一下～"
+            )
+            _start_sent = False
+            try:
+                _start_sent = await self._send_draw_card(event, {
+                    "kicker": "ComfyUI萌绘",
+                    "workflow": f"{_wfname} · 抠图",
+                    "right_top": (f"排队 {ahead}" if ahead > 0 else f"{_steps_now or ''}步"),
+                    "device": self._card_device(srv_key),
+                    "today": self._card_today(),
+                    "params": self._card_chips([
+                        ("输入", f"{in_w}×{in_h}" if (in_w and in_h) else None),
+                        ("步数", _steps_now),
+                        ("工作流", _wfname),
+                        ("提示词", (_text_now[:28] + "…") if len(_text_now) > 28 else _text_now),
+                    ]),
+                    "prompt": f"抠图：{os.path.basename(src)}",
+                }, "queued" if ahead > 0 else "drawing")
+            except Exception as _ce:
+                logger.warning(f"【抠图】 处理中卡片构建失败（忽略，退回文字）: {_ce}")
+            if not _start_sent:
+                await self._send(event, _start_txt)
+            logger.info(
+                f"【抠图】 已提交 {_wfname}｜prompt_id={prompt_id}｜等待上限 {timeout}s"
+            )
+            history = await client.wait_for_result(prompt_id, timeout, interval)
+            if not history:
+                logger.warning(f"【抠图·失败】[超时] 等待 {timeout} 秒仍无结果，prompt_id={prompt_id}")
+                await _fail(self._cute("timeout"),
+                            f"等待 {timeout} 秒仍无结果（超时）",
+                            extra=[("等待", f"{timeout} 秒")])
+                return
+            imgs = comfyui_client.extract_images(
+                history, (roles.get("save") or {}).get("node") or ""
+            )
+            if not imgs:
+                _task_err = comfyui_client.task_error(history)
+                logger.warning(
+                    f"【抠图·失败】[无图] {_wfname}"
+                    + (f"｜ComfyUI 报错：{_task_err}" if _task_err else "（任务完成但无输出图片）")
+                )
+                await _fail(
+                    self._cute("no_image"),
+                    f"任务完成但未找到输出图片{'；ComfyUI报错: ' + _task_err if _task_err else ''}",
+                    extra=[("节点错误", _task_err)] if _task_err else None,
+                )
+                return
+            # 8) 逐张下载 → NSFW 护栏 → 归档 → 发送 → 卡片 → 计数
+            for img in imgs:
+                try:
+                    data = await client.get_image(
+                        img["filename"], img.get("subfolder", ""), img.get("type", "")
+                    )
+                except Exception as e:
+                    await self._send(event, self._friendly_error(e, "下载抠图结果"))
+                    continue
+                suffix = os.path.splitext(img["filename"])[1] or ".png"
+                tmp_path = self.temp_dir / f"{uuid.uuid4().hex}{suffix}"
+                with open(tmp_path, "wb") as f:
+                    f.write(data)
+                img_path = str(tmp_path)
+                out_w = out_h = 0
+                if _PILImage is not None:
+                    try:
+                        with _PILImage.open(img_path) as _im:
+                            out_w, out_h = _im.width, _im.height
+                    except Exception:
+                        pass
+                # NSFW 护栏：与出图同口径（群聊拦截，私聊按图库打标策略）
+                _nsfw_pre = None
+                if self._nsfw_should_detect(event):
+                    _nsfw_pre = await self._detect_nsfw(img_path)
+                _blocked = False
+                if _nsfw_pre is not None:
+                    _is_nsfw, _score, _avail = _nsfw_pre
+                    if _is_nsfw and not self._is_private_event(event):
+                        _blocked = True
+                        _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
+                        logger.warning(f"【NSFW】 抠图结果被群聊拦截{_sc} workflow={_wfname}")
+                        await self._send(
+                            event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。"
+                        )
+                # 图库归档（移动转正）：必须用返回路径发送，不能再用 temp 路径
+                _send_path = img_path
+                if self.gallery is not None:
+                    try:
+                        try:
+                            from .image_store import SRC_GEN, _sha256_of
+                        except ImportError:
+                            from image_store import SRC_GEN, _sha256_of
+                        _final = self.gallery.archive_image(
+                            img_path,
+                            source=SRC_GEN,
+                            prompt=_text_now,
+                            prompt_raw=_text_now,
+                            workflow=_wfname,
+                            seed=None,
+                            w=out_w or None, h=out_h or None,
+                            in_w=in_w or None, in_h=in_h or None,
+                            steps=_steps_now,
+                            is_img2img=True,
+                            ref_sha256=(_sha256_of(src) or ""),
+                            user_id=_uid,
+                            user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
+                            session_id=_sid,
+                            group_id=str(getattr(event, "get_group_id", lambda: "")() or ""),
+                            cost_sec=time.time() - _t0,
+                            nsfw_pre=_nsfw_pre,
+                            trigger_msg="抠图",
+                        )
+                        if _final:
+                            _send_path = _final
+                    except Exception as _e:
+                        logger.warning(f"【抠图】 归档失败（继续发送原图）: {_e}")
+                if _blocked:
+                    continue
+                try:
+                    await self._send_image_with_recall(
+                        event, MessageChain([Image.fromFileSystem(_send_path)])
+                    )
+                except Exception as e:
+                    await self._send(event, self._friendly_error(e, "发送抠图结果"))
+                    continue
+                # 结果卡（复用报表卡渲染器）：输入/输出/步数/耗时 + 提示词
+                _cost = time.time() - _t0
+                _tiles: list[tuple] = []
+                if in_w and in_h:
+                    _tiles.append(("输入", f"{in_w}×{in_h}", ""))
+                if out_w and out_h:
+                    _tiles.append(("输出", f"{out_w}×{out_h}", ""))
+                _tiles.append(("步数", str(_steps_now or "默认"), ""))
+                _tiles.append(("耗时", f"{_cost:.1f}s", ""))
+                _rep = {
+                    "kicker": "ComfyUI萌绘 · 抠图",
+                    "title": "抠图",
+                    "right_top": (f"{_steps_now}步" if _steps_now else ""),
+                    "tiles": _tiles[:4],
+                    "sections": [{
+                        "label": "抠图",
+                        "rows": [(_wfname, (f"{_steps_now}步 · " if _steps_now else "") + f"{_cost:.1f}s", "ok")],
+                    }] + ([{
+                        "label": "提示词",
+                        "rows": [(_text_now[:60], "")],
+                    }] if _text_now else []),
+                }
+                if not await self._send_report_card(event, _rep, foot_left="口径：按提示词抠图/去背景，透明通道保留"):
+                    await self._send(
+                        event,
+                        "抠图完成"
+                        + (f"，{out_w}×{out_h}" if out_w and out_h else "")
+                        + f"，耗时 {_cost:.1f}s",
+                    )
+                # 计数：配额 + 今日已出图（与出图同一口径）
+                self._record_draw_used(event)
+                try:
+                    self._card_module().bump_today(self.data_dir, ok=True)
+                except Exception:
+                    pass
+                try:
+                    if self.oplog is not None:
+                        self.oplog.add(
+                            "matting_success",
+                            f"抠图成功（{_wfname}）",
+                            user_id=_uid, session_id=_sid,
+                            detail=f"in={in_w}x{in_h} out={out_w}x{out_h} 步数={_steps_now} 耗时={_cost:.1f}s",
+                            extra={"workflow": _wfname, "steps": _steps_now,
+                                   "prompt": _text_now},
+                        )
+                except Exception:
+                    pass
+                logger.info(
+                    f"【抠图·成功】 {_wfname}｜步数 {_steps_now or '默认'}｜"
+                    f"in={in_w}x{in_h} → out={out_w}x{out_h}｜耗时 {_cost:.1f}s"
+                )
+        finally:
+            await self._safe_close(client)
+
+    @filter.command("抠图", alias={"抠像", "去背景", "去背"})
+    async def cmd_matting(self, event: AstrMessageEvent):
+        """抠图（去背景）。用法：/抠图（不用传参数）
+
+        把消息里（或引用的）图片送进绑定的抠图工作流（如 Qwen Image 2.1 去背景）。
+        步数与提示词在「更多功能 → 抠图」里配置：留空则**沿用工作流原值**。
+        指令后面**可以**跟一个工作流名/ID（库里有多套抠图工作流时临时指定），不写就用配置绑定的。"""
+        mcfg = self._matting_cfg()
+        if not mcfg.get("enabled", False):
+            await self._send(event, "抠图功能未开启哦～ 让管理员到「更多功能 → 抠图」里打开。")
+            event.stop_event()
+            return
+        args = self._strip_command(
+            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+            "抠图",
+            ("抠像", "去背景", "去背"),
+        )
+        _spec = " ".join(str(args or "").split()).strip()
+        if _spec:
+            # 参数只当「工作流名/ID」理解：能匹配上就用它，匹配不到（比如用户写了句话）
+            # 就 silently 回到配置绑定的那个，不让文案把人卡住。
+            try:
+                self._resolve_matting_base(_spec)
+            except ValueError:
+                logger.info(f"【抠图】 指令带的「{_spec}」不是工作流名，按配置绑定的工作流跑")
+                _spec = ""
+        await self._do_matting(event, _spec)
+        event.stop_event()
+
     @filter.command("萌绘", alias={"萌绘分享", "meng", "share"})
     async def cmd_meng_share(self, event: AstrMessageEvent):
         """发送 /萌绘：给本人生成一条可分享的临时图库链接（或二维码）。
