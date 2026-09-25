@@ -182,6 +182,9 @@
     <!-- 编辑弹窗（按功能类型显示不同字段） -->
     <n-modal v-model:show="formShow" preset="card" class="feat-modal" :bordered="false"
              :title="`${formIndex < 0 ? '添加功能' : '编辑功能'} · ${kindName(form)}`">
+      <!-- ★布局钩子必须挂在槽内容上（Teleport 的卡片根节点拿不到 scoped data-v，
+           挂在 .feat-modal 上的 :deep 规则不会生效——这就是说明跑到右边的原因） -->
+      <div class="feat-form">
       <div class="kind-line">
         <n-tag size="small" :bordered="false" type="info">{{ kindIcon(form) }} {{ kindName(form) }}</n-tag>
         <span class="hint inline">
@@ -324,6 +327,7 @@
           </n-grid>
         </template>
       </n-form>
+      </div>
 
       <template #footer>
         <n-space justify="end">
@@ -933,8 +937,9 @@ onMounted(load);
   width: min(520px, 94vw);
 }
 /* ★根因修复：naive-ui 的表单项内容区默认横向 flex，控件和说明会被排成一行（说明跑到右边）。
-   这里强制竖排：控件在上、说明在下。 */
-.feat-modal :deep(.n-form-item-blank) {
+   钩子必须挂在「槽内容」上——Teleport 出去的卡片根节点拿不到 scoped data-v，
+   挂在 .feat-modal 上的 :deep 规则不会生效（v7.7.19 就是这么踩坑的）。 */
+.feat-form :deep(.n-form-item-blank) {
   display: flex !important;
   flex-direction: column;
   align-items: stretch;

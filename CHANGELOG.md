@@ -2,6 +2,19 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.21（修 Bug：弹窗里字段说明跑到控件右边 —— 上次的 :deep 方案没生效的真因）
+
+v7.7.19 就想修「弹窗表单里说明文字排在控件右侧」，但当时把 CSS 钩子挂在
+`.feat-modal` / `.bw-modal`（弹窗卡片根节点）上——**naive-ui 的弹窗是 Teleport 渲染，
+scoped 的 `data-v` 属性不会可靠地落在卡片根上**，规则虽然编译进了产物却匹配不到 DOM，
+于是说明还在右边（用户截图实锤）。
+
+- 钩子改挂到**槽内容**上（必然带 `data-v`）：FeaturesView 弹窗内容包一层
+  `<div class="feat-form">`、BaseWorkflowsView 的两个 `<n-form>` 加 `class="bw-form"`，
+  规则从它们出发 `:deep(.n-form-item-blank)` 强制竖排（控件在上、说明在下）；
+- 同页 `.sec-title`（同为槽内容）的样式一直生效，佐证这个挂法可靠；
+- 已核实产物里规则为 `.feat-form[data-v-…] .n-form-item-blank{…}`。
+
 ## v7.7.20（修 Bug：/抠图 NameError + GIF 取首帧接入放大/抠图 + 静态检查兜底）
 
 1. **修 `/抠图` 必炸的 NameError**（线上报错）：v7.7.16 把抠图改条目式时参数从 `wf_spec`

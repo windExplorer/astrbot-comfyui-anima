@@ -79,7 +79,7 @@
         </div>
         <input ref="fileInput" type="file" accept=".json" hidden @change="onFileChange" />
       </div>
-      <n-form label-placement="top" style="margin-top: 12px">
+      <n-form label-placement="top" class="bw-form" style="margin-top: 12px">
         <n-form-item label="名称（默认取文件名去扩展名）">
           <n-input v-model:value="uploadName" placeholder="如 mmh1.6_turbo" />
         </n-form-item>
@@ -99,7 +99,7 @@
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="editShow" preset="card" title="编辑基础工作流" class="bw-modal" :bordered="false">
-      <n-form label-placement="top">
+      <n-form label-placement="top" class="bw-form">
         <n-form-item label="名称"><n-input v-model:value="editForm.name" /></n-form-item>
         <n-form-item label="底模（模型族，来自「配置项」页）">
           <n-select
@@ -575,7 +575,8 @@ onMounted(() => {
 <style scoped>
 /* naive-ui 表单项内容区默认横向 flex，控件+说明会被排成一行（说明跑到右边）→ 强制竖排 */
 .bw-modal { width: min(720px, 94vw); }
-.bw-modal :deep(.n-form-item-blank) {
+/* 钩子挂在槽内容（n-form）上：Teleport 的卡片根节点拿不到 scoped data-v */
+.bw-form :deep(.n-form-item-blank) {
   display: flex !important;
   flex-direction: column;
   align-items: stretch;
