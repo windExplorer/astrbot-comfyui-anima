@@ -1,4 +1,4 @@
-"""图片放大（v7.7.1）：放大类工作流解析 + 指令参数 + 倍率规则 + prompt 注入。
+"""图片放大（v7.7.1 起，v7.7.5 改为「更多功能」多条条目）。
 
 覆盖：
 1) `workflow_parser._parse_upscale`：VOSR2 这类「图 → 放大 → 保存」的无采样器工作流
@@ -7,7 +7,9 @@
 2) 「图片放大」指令参数解析：`3x` / `x3` / `3倍` / `--倍率 3` / 纯数字；
 3) 倍率规则：允许列表校验 + 不在范围内回落默认；
 4) prompt 注入：倍率写进独立整数节点（`easy int.value`）、种子按 random/fixed 策略；
-5) 放大工作流的挑选：ID / 名字 / 包含匹配 / 唯一一个 / 配置绑定 / 找不到报错。
+5) **功能条目**（v7.7.5）：`features` 列表解析（含旧版单条 image_upscale 兼容）、
+   按名字/ID 点名、停用与全停用的提示、条目绑定的基础工作流解析（绑错类型/找不到要报错）；
+6) 真实入库链路：上传 → 解析通过 → 条目绑定 → 三处注入（图 / 倍率 / 种子）。
 
 main.py 里的方法依赖 astrbot 运行时（本地装不了），沿用 tests/test_size_helpers.py 的
 做法：用 ast 把源码摘出来单独执行。
@@ -65,42 +67,59 @@ def _load_helpers(want: set[str]) -> dict:
 
 
 NAMES = {
-    "_upscale_cfg", "_parse_scale_list", "_resolve_upscale_scale",
-    "_parse_upscale_args", "_upscale_base_rows", "_resolve_upscale_base",
+    "_upscale_entries", "_upscale_entry_enabled", "_upscale_param",
+    "_parse_scale_list", "_resolve_upscale_scale", "_parse_upscale_args",
+    "_upscale_base_rows", "_upscale_base_of", "_resolve_upscale_entry",
     "_load_upscale_base", "_apply_upscale_scale", "_apply_upscale_seed",
 }
 NS = _load_helpers(NAMES)
 
+_upscale_entries = NS["_upscale_entries"]
+_upscale_entry_enabled = NS["_upscale_entry_enabled"]
+_upscale_param = NS["_upscale_param"]
 _parse_scale_list = NS["_parse_scale_list"]
 _resolve_upscale_scale = NS["_resolve_upscale_scale"]
 _parse_upscale_args = NS["_parse_upscale_args"]
-_resolve_upscale_base = NS["_resolve_upscale_base"]
+_upscale_base_of = NS["_upscale_base_of"]
+_resolve_upscale_entry = NS["_resolve_upscale_entry"]
 _load_upscale_base = NS["_load_upscale_base"]
 _apply_upscale_scale = NS["_apply_upscale_scale"]
 _apply_upscale_seed = NS["_apply_upscale_seed"]
 
 
 class _FakeStore:
+    """最小可用的基础工作流库（list_all / get）。"""
+
     def __init__(self, rows):
-        self._rows = rows
+        self._rows = [dict(r) for r in (rows or [])]
 
     def list_all(self):
-        return list(self._rows)
+        return [dict(r) for r in self._rows]
+
+    def get(self, wf_id, with_json: bool = False):
+        for r in self._rows:
+            if int(r.get("id") or 0) == int(wf_id):
+                return dict(r)
+        return None
 
 
 class _FakePlugin:
-    """只实现被摘方法依赖的两处：工作流库与 image_upscale 配置。"""
+    """只实现被摘方法依赖的几处：配置读取、工作流库。"""
 
     def __init__(self, rows=None, cfg=None):
         self.workflow_store = _FakeStore(rows or [])
-        self._all_cfg = {"image_upscale": dict(cfg or {})}
+        self._cfg_all = dict(cfg or {})
 
-    def _upscale_cfg(self):
-        return dict(self._all_cfg.get("image_upscale") or {})
+    def _cfg(self, key, default=None):
+        v = self._cfg_all.get(key, default)
+        return v if v is not None else default
 
 
-# `_resolve_upscale_base` 内部会调 `self._upscale_base_rows()` → 摘出来的那个绑给假 self
+# `_upscale_entries` / `_upscale_base_of` / `_resolve_upscale_entry` 内部互相调用与
+# 依赖 `self._upscale_base_rows()` → 摘出来的那几个都绑给假 self
 _FakePlugin._upscale_base_rows = NS["_upscale_base_rows"]  # type: ignore[attr-defined]
+_FakePlugin._upscale_entries = NS["_upscale_entries"]      # type: ignore[attr-defined]
+_FakePlugin._upscale_entry_enabled = staticmethod(NS["_upscale_entry_enabled"])  # type: ignore[attr-defined]
 
 
 # ── 与 logs/vosr2-api.json 等价的 VOSR2 工作流（内联，避免依赖 logs 目录）─────
@@ -117,6 +136,23 @@ VOSR2 = {
     "9": {"class_type": "SaveImageExtended",
           "inputs": {"filename_prefix": "vosr2", "images": ["2", 0]}},
 }
+
+# 三条可用条目（第 2 条停用）+ 一条 base_id 指向非放大工作流
+_ROWS = [
+    {"id": 3, "name": "VOSR2 极速放大", "file_name": "vosr2-api.json",
+     "parse_ok": True, "roles": {"kind": "upscale"}},
+    {"id": 5, "name": "Anime Sharp", "file_name": "anime-sharp.json",
+     "parse_ok": True, "roles": {"kind": "upscale"}},
+    {"id": 7, "name": "出图工作流", "parse_ok": True, "roles": {"kind": "t2i"}},
+    {"id": 8, "name": "坏掉的放大图", "parse_ok": False, "roles": {"kind": "upscale"}},
+]
+_ENTRIES = [
+    {"__template_key": "k_vosr", "kind": "upscale", "name": "vosr2",
+     "enabled": True, "base_id": "3", "default_scale": 3, "allowed_scales": "2,3,4",
+     "seed_mode": "random", "timeout": 300},
+    {"__template_key": "k_sharp", "kind": "upscale", "name": "sharp",
+     "enabled": False, "base_id": "5", "default_scale": 2},
+]
 
 
 def test_parse_upscale_workflow():
@@ -147,7 +183,6 @@ def test_parse_upscale_workflow():
 
 def test_reject_cases():
     """防误判：丢采样器的出图工作流、连线断掉的放大工作流都要被拒。"""
-    # ① 有文本编码器 → 按「出图工作流」标准拒（不能收成放大类）
     t2i = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "a.safetensors"}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "x", "clip": ["1", 1]}},
@@ -159,7 +194,6 @@ def test_reject_cases():
     assert roles is None and errors, (roles, errors)
     assert any("采样器" in e for e in errors), errors
 
-    # ② 放大工作流但处理链没连回图像节点 → 针对性报错
     broken = {
         "1": {"class_type": "LoadImage", "inputs": {"image": "in.png"}},
         "2": {"class_type": "TESpeedVOSR2Image", "inputs": {"images": "in.png"}},
@@ -168,7 +202,6 @@ def test_reject_cases():
     roles, errors = wp.parse_workflow(broken)
     assert roles is None and any("连回图像输入节点" in e for e in errors), errors
 
-    # ③ 保存节点直接接图像输入（中间没有处理节点）→ 报「没找到处理节点」
     noop = {
         "1": {"class_type": "LoadImage", "inputs": {"image": "in.png"}},
         "9": {"class_type": "SaveImageExtended", "inputs": {"images": ["1", 0]}},
@@ -176,7 +209,6 @@ def test_reject_cases():
     roles, errors = wp.parse_workflow(noop)
     assert roles is None and any("处理节点" in e for e in errors), errors
 
-    # ④ 没有保存节点 → 不认成放大类，按出图工作流的采样器报错
     no_save = {
         "1": {"class_type": "LoadImage", "inputs": {"image": "in.png"}},
         "2": {"class_type": "TESpeedVOSR2Image", "inputs": {"images": ["1", 0]}},
@@ -187,7 +219,7 @@ def test_reject_cases():
 
 
 def test_parse_args():
-    """指令参数：工作流名 + 倍率（3x / x3 / 3倍 / --倍率 3 / 纯数字）。"""
+    """指令参数：功能名 + 倍率（3x / x3 / 3倍 / --倍率 3 / 纯数字）。"""
     cases = [
         ("", ("", None)),
         ("vosr2", ("vosr2", None)),
@@ -200,9 +232,9 @@ def test_parse_args():
         ("--倍数 2 vosr2", ("vosr2", 2)),
         ("vosr2 --倍 5", ("vosr2", 5)),
         ("vosr2 2", ("vosr2", 2)),
-        ("超分放大 --scale 3 二号工作流", ("超分放大 二号工作流", 3)),
-        ("vosr2 --倍率", ("vosr2", None)),          # flag 后面没值 → 用默认
-        ("VOSR 2.0", ("VOSR 2.0", None)),           # 带点的不算倍率，是名字的一部分
+        ("超分放大 --scale 3 二号功能", ("超分放大 二号功能", 3)),
+        ("vosr2 --倍率", ("vosr2", None)),
+        ("VOSR 2.0", ("VOSR 2.0", None)),
         ("anime-upscale-v2", ("anime-upscale-v2", None)),
     ]
     for raw, exp in cases:
@@ -239,14 +271,12 @@ def test_prompt_injection():
     assert prompt["6"]["inputs"]["value"] == 4            # 倍率写进 easy int
     assert prompt["1"]["inputs"]["image"] == "in.png"     # 没动别的
 
-    # fixed → 用配置值；random → 落在 1..2^31-1
     fixed = _apply_upscale_seed(prompt, roles, {"seed_mode": "fixed", "seed_value": 6688})
     assert fixed == [6688] and prompt["2"]["inputs"]["seed"] == 6688, prompt["2"]
     rnd = _apply_upscale_seed(prompt, roles, {"seed_mode": "random"})
     assert len(rnd) == 1 and 1 <= rnd[0] < 2 ** 31, rnd
     assert prompt["2"]["inputs"]["seed"] == rnd[0]
 
-    # 工作流没暴露倍率/种子 → 不报错、返回 None/[]
     assert _apply_upscale_scale(prompt, {}, 4) is None
     assert _apply_upscale_seed(prompt, {}, {}) == []
 
@@ -261,57 +291,111 @@ def test_prompt_injection():
     print("== 5. prompt 注入（倍率 / 种子策略 / 字面量倍率） OK")
 
 
-def test_resolve_base():
-    """放大工作流挑选：ID / 名字 / 包含 / 唯一一个 / 配置绑定 / 报错文案。"""
-    rows = [
-        {"id": 3, "name": "VOSR2 极速放大", "file_name": "vosr2-api.json",
-         "parse_ok": True, "roles": {"kind": "upscale"}},
-        {"id": 5, "name": "Anime Sharp", "file_name": "anime-sharp.json",
-         "parse_ok": True, "roles": {"kind": "upscale"}},
-        {"id": 7, "name": "出图工作流", "parse_ok": True, "roles": {"kind": "t2i"}},
-        {"id": 8, "name": "坏掉的放大图", "parse_ok": False, "roles": {"kind": "upscale"}},
-    ]
-    me = _FakePlugin(rows)
+def test_entries_and_pick():
+    """功能条目（v7.7.5）：列表解析、旧版单条兼容、点名、停用与全停用提示。"""
+    me = _FakePlugin(_ROWS, {"features": _ENTRIES})
+    rows = _upscale_entries(me)
+    assert [e["name"] for e in rows] == ["vosr2", "sharp"], rows
+    assert _upscale_entry_enabled(rows[0]) is True and _upscale_entry_enabled(rows[1]) is False
+    assert _upscale_param(rows[1], "default_scale", 3) == 2        # 条目自己的值
+    assert _upscale_param(rows[0], "seed_mode", "random") == "random"
+    assert _upscale_param({"allowed_scales": "  "}, "allowed_scales", "2,3,4") == "2,3,4"
+    assert _upscale_param({}, "default_scale", 3) == 3
 
-    assert _resolve_upscale_base(me, "3")["id"] == 3          # 按 ID
-    assert _resolve_upscale_base(me, "vosr2 极速放大")["id"] == 3
-    assert _resolve_upscale_base(me, "VOSR2")["id"] == 3      # 名字包含（忽略大小写）
-    assert _resolve_upscale_base(me, "anime-sharp")["id"] == 5  # 文件名包含
-
-    # 没指定：库里多个 → 报错并给例子；配置绑定则用它
+    # 不写名字 → 第一个启用的（sharp 停用，故选 vosr2）
+    assert _resolve_upscale_entry(me, "")["name"] == "vosr2"
+    # 点名：功能名 / 条目标识 / 绑定的基础工作流 ID 或名字（含文件名包含）
+    assert _resolve_upscale_entry(me, "vosr2")["name"] == "vosr2"
+    assert _resolve_upscale_entry(me, "k_vosr")["name"] == "vosr2"
+    assert _resolve_upscale_entry(me, "3")["name"] == "vosr2"
+    assert _resolve_upscale_entry(me, "VOSR2 极速放大")["name"] == "vosr2"
+    assert _resolve_upscale_entry(me, "vosr2-api")["name"] == "vosr2"
+    # 点名到「已停用」的条目 → 明确说停用（不是「找不到」）
+    for spec in ("sharp", "k_sharp", "5", "Anime Sharp"):
+        try:
+            _resolve_upscale_entry(me, spec)
+            raise AssertionError(f"{spec}: 停用的条目不该被点名选中")
+        except ValueError as e:
+            assert "已停用" in str(e), (spec, e)
     try:
-        _resolve_upscale_base(me, "")
-        raise AssertionError("多个放大工作流时应报错")
-    except ValueError as e:
-        assert "有 2 个放大工作流" in str(e), e
-    me2 = _FakePlugin(rows, {"workflow": "Anime Sharp"})
-    assert _resolve_upscale_base(me2, "")["id"] == 5
-    me3 = _FakePlugin(rows, {"workflow": "不存在的名字"})
-    try:
-        _resolve_upscale_base(me3, "")
-        raise AssertionError("绑定到不存在的名字时应报错")
+        _resolve_upscale_entry(me, "不存在的")
+        raise AssertionError("点不存在的名字应报错")
     except ValueError as e:
         assert "没找到叫" in str(e), e
 
-    # 只有 1 个可用（解析未通过的不算）→ 直接用它
-    only = _FakePlugin([rows[0], rows[2], rows[3]])
-    assert _resolve_upscale_base(only, "")["id"] == 3
-
-    # 一个都没有 → 提示去上传
-    none = _FakePlugin([rows[2]])
+    # 只有停用条目 → 明确提示
+    me_off = _FakePlugin(_ROWS, {"features": [_ENTRIES[1]]})
     try:
-        _resolve_upscale_base(none, "")
+        _resolve_upscale_entry(me_off, "")
+        raise AssertionError("全停用时应报错")
+    except ValueError as e:
+        assert "都被停用" in str(e), e
+
+    # 一条都没配 → 引导去「更多功能」添加
+    me_none = _FakePlugin(_ROWS, {})
+    try:
+        _resolve_upscale_entry(me_none, "")
+        raise AssertionError("没条目时应报错")
+    except ValueError as e:
+        assert "还没有添加图片放大" in str(e), e
+
+    # 旧版单条配置（image_upscale 对象）→ 折算成一条，spec 走 base_name 匹配
+    me_legacy = _FakePlugin(_ROWS, {"image_upscale": {
+        "enabled": True, "workflow": "VOSR2 极速放大", "default_scale": 4,
+        "allowed_scales": "2,4", "seed_mode": "fixed", "seed_value": 7,
+    }})
+    lg = _upscale_entries(me_legacy)
+    assert len(lg) == 1 and lg[0]["name"] == "VOSR2 极速放大", lg
+    assert lg[0]["default_scale"] == 4 and lg[0]["seed_mode"] == "fixed"
+    assert _upscale_base_of(me_legacy, lg[0])["id"] == 3
+    print("== 6. 功能条目（列表/兼容/点名/停用/未配置） OK")
+
+
+def test_base_binding():
+    """条目绑定的基础工作流解析：base_id / 名字 / 唯一一个 / 绑错类型与失效的报错。"""
+    me = _FakePlugin(_ROWS, {"features": _ENTRIES})
+    assert _upscale_base_of(me, {"base_id": "3"})["id"] == 3
+    assert _upscale_base_of(me, {"base_name": "Anime Sharp"})["id"] == 5
+    # base_id 指向不存在的记录：没有名字可回退、库里有多个 → 提示去绑一个
+    try:
+        _upscale_base_of(_FakePlugin(_ROWS, {}), {"base_id": "999"})
+        raise AssertionError("base_id 失效且库里有多个放大工作流时应报错")
+    except ValueError as e:
+        assert "没有绑定放大工作流" in str(e), e
+    # 库里只有一个放大工作流 → 直接用它
+    assert _upscale_base_of(_FakePlugin([_ROWS[0]], {}), {"base_id": "999"})["id"] == 3
+    assert _upscale_base_of(_FakePlugin([_ROWS[0]], {}), {})["id"] == 3
+
+    # 绑到非放大类工作流 → 明确报错（提示改绑）
+    try:
+        _upscale_base_of(me, {"base_id": "7", "name": "x"})
+        raise AssertionError("绑非放大类应报错")
+    except ValueError as e:
+        assert "不是放大类工作流" in str(e), e
+    # 绑到解析未通过的 → 报错
+    try:
+        _upscale_base_of(me, {"base_id": "8"})
+        raise AssertionError("绑解析未通过应报错")
+    except ValueError as e:
+        assert "解析未通过" in str(e), e
+    # 名字绑了个不存在的 → 报错
+    try:
+        _upscale_base_of(me, {"base_name": "没这个"})
+        raise AssertionError("绑不存在的名字应报错")
+    except ValueError as e:
+        assert "不存在或未通过解析" in str(e), e
+    # 库里一个放大类都没有 → 引导去基础工作流页
+    only_t2i = _FakePlugin([_ROWS[2]], {})
+    try:
+        _upscale_base_of(only_t2i, {})
         raise AssertionError("没有放大工作流时应报错")
     except ValueError as e:
         assert "还没有可用的放大工作流" in str(e), e
-    print("== 6. 放大工作流挑选（ID/名字/包含/唯一/绑定/报错） OK")
+    print("== 7. 绑定解析（ID/名字/唯一/绑错类型/失效/无可用） OK")
 
 
 def test_store_import_and_pick():
-    """真实入库链路：VOSR2 上传后 parse_ok=True、kind=upscale，能被放大链路挑中并用上。
-
-    这一步覆盖用户实际操作：「基础工作流」页上传 → 解析入库 → 「更多功能」里绑定 → 出图时注入。
-    """
+    """真实入库链路：VOSR2 上传 → 条目绑定 → 挑中 → 三处注入（图 / 倍率 / 种子）。"""
     import tempfile
 
     from workflow_store import WorkflowStore
@@ -324,21 +408,26 @@ def test_store_import_and_pick():
     assert rows and rows[0]["parse_ok"] is True, rows
     assert rows[0]["roles"]["kind"] == "upscale" and rows[0]["name"] == "VOSR2 极速放大"
 
-    # 把真实 store 交给挑选逻辑（走 list_all 的真实字段）
+    # 真实 store + 一条绑定它的条目
     me = _FakePlugin()
     me.workflow_store = st
-    assert _resolve_upscale_base(me, "")["id"] == wf_id
-    assert _resolve_upscale_base(me, "vosr2 极速放大")["id"] == wf_id
-    assert _resolve_upscale_base(me, "vosr2-api")["id"] == wf_id     # 文件名包含匹配
+    me._cfg_all = {"features": [{
+        "__template_key": "k1", "kind": "upscale", "name": "vosr2", "enabled": True,
+        "base_id": str(wf_id), "default_scale": 3, "allowed_scales": "2,3,4",
+    }]}
+    entry = _resolve_upscale_entry(me, "")
+    assert entry["name"] == "vosr2"
+    rec = _upscale_base_of(me, entry)
+    assert rec["id"] == wf_id
 
     # 取完整记录 → 注入「输入图 + 倍率 + 种子」三处
-    rec = st.get(wf_id, with_json=True)
-    _, prompt = _load_upscale_base(rec)
-    assert wb.set_image_node(prompt, rec["roles"]["image_node"], "uploaded.png")
+    full = st.get(wf_id, with_json=True)
+    _, prompt = _load_upscale_base(full)
+    assert wb.set_image_node(prompt, full["roles"]["image_node"], "uploaded.png")
     assert prompt["1"]["inputs"]["image"] == "uploaded.png"
-    assert _apply_upscale_scale(prompt, rec["roles"], 2) == 2
+    assert _apply_upscale_scale(prompt, full["roles"], 2) == 2
     assert prompt["6"]["inputs"]["value"] == 2
-    assert _apply_upscale_seed(prompt, rec["roles"], {"seed_mode": "fixed", "seed_value": 42}) == [42]
+    assert _apply_upscale_seed(prompt, full["roles"], {"seed_mode": "fixed", "seed_value": 42}) == [42]
     assert prompt["2"]["inputs"]["seed"] == 42
 
     # 顺带回归：坏工作流（既没采样器也没图/保存）仍按原规则拒绝入库
@@ -346,7 +435,7 @@ def test_store_import_and_pick():
         "坏图", json.dumps({"1": {"class_type": "LoadImage", "inputs": {}}}), "x.json"
     )
     assert bad_id is None and bad_err, (bad_id, bad_err)
-    print("== 7. 入库链路（解析通过 + 类型 + 挑选 + 三处注入 + 坏图仍被拒） OK")
+    print("== 8. 入库链路（解析通过 + 条目绑定 + 三处注入 + 坏图仍被拒） OK")
 
 
 if __name__ == "__main__":
@@ -355,6 +444,7 @@ if __name__ == "__main__":
     test_parse_args()
     test_scale_rules()
     test_prompt_injection()
-    test_resolve_base()
+    test_entries_and_pick()
+    test_base_binding()
     test_store_import_and_pick()
-    print("图片放大（解析/参数/倍率/注入/挑选/入库）全部通过")
+    print("图片放大（解析/参数/倍率/注入/条目/绑定/入库）全部通过")

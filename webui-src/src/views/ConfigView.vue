@@ -88,8 +88,9 @@ const config = reactive<Record<string, any>>({});
 const expanded = ref<string[]>([]); // 默认全部收起
 const baseConfig: Record<string, any> = {};
 
-// 由「更多功能」页（/features）自己渲染的配置键：本页不重复展示（也不进兜底分区）
-const HIDDEN_KEYS = ["image_upscale"];
+// 由「更多功能」页（/features）自己渲染的配置键：本页不重复展示（也不进兜底分区）。
+// image_upscale 是 v7.7.1~v7.7.4 的旧键（保留在此仅为不显示，运行时仍按兼容模式读取）。
+const HIDDEN_KEYS = ["features", "image_upscale"];
 
 // 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）。
 // ★新增顶层配置键时必须同步加进对应分区的 keys（或新建分区），

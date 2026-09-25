@@ -8094,9 +8094,60 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 图片放大（v7.7.1）：独立功能——纯放大/超分工作流（无提示词、无采样器）
     # ------------------------------------------------------------------ #
-    def _upscale_cfg(self) -> dict:
-        """图片放大功能配置块（image_upscale）。"""
-        return dict(self._cfg("image_upscale", {}) or {})
+    def _upscale_entries(self) -> list[dict]:
+        """「更多功能」里配置的图片放大条目（kind=upscale），按配置顺序返回（v7.7.5）。
+
+        条目结构（每条独立配置、可单独启用/禁用）：
+          {__template_key, kind:"upscale", name, enabled, base_id,
+           default_scale, allowed_scales, seed_mode, seed_value, timeout}
+
+        兼容 v7.7.1~v7.7.4 的**单条**配置 `image_upscale`（对象）：列表为空时把它折算成
+        一条，免得用户升级后功能凭空消失（首次到「更多功能」页保存一次即完成迁移）。
+        """
+        raw = self._cfg("features", []) or []
+        out: list[dict] = []
+        if isinstance(raw, list):
+            for it in raw:
+                if not isinstance(it, dict):
+                    continue
+                _k = str(it.get("kind") or "upscale").strip().lower()
+                if _k in ("", "upscale"):
+                    out.append(dict(it))
+        if out:
+            return out
+        legacy = self._cfg("image_upscale", {}) or {}
+        if isinstance(legacy, dict) and (legacy.get("workflow") or legacy.get("enabled")):
+            out.append({
+                "kind": "upscale",
+                "name": str(legacy.get("workflow") or "默认放大").strip() or "默认放大",
+                "enabled": bool(legacy.get("enabled", False)),
+                "base_id": str(legacy.get("base_id") or "").strip(),
+                # 旧版绑定的是「工作流名」，解析时按名字匹配基础工作流
+                "base_name": str(legacy.get("workflow") or "").strip(),
+                "default_scale": legacy.get("default_scale", 3),
+                "allowed_scales": legacy.get("allowed_scales", "2,3,4"),
+                "seed_mode": legacy.get("seed_mode", "random"),
+                "seed_value": legacy.get("seed_value", 6666),
+                "timeout": legacy.get("timeout", 300),
+            })
+            logger.info(
+                "【放大】 检测到旧版单条配置（image_upscale），已按兼容模式折算为一条"
+                "「更多功能」条目；建议到 WebUI「更多功能」页保存一次以完成迁移"
+            )
+        return out
+
+    @staticmethod
+    def _upscale_entry_enabled(entry: dict) -> bool:
+        """条目是否启用（缺省视为启用，兼容手写配置）。"""
+        return bool((entry or {}).get("enabled", True))
+
+    @staticmethod
+    def _upscale_param(entry: dict, key: str, default):
+        """取条目的某个参数（空值回落默认）——条目参数优先，缺省用内置默认。"""
+        _v = (entry or {}).get(key)
+        if _v is None or (isinstance(_v, str) and not _v.strip()):
+            return default
+        return _v
 
     @staticmethod
     def _parse_scale_list(raw) -> list[int]:
@@ -8189,41 +8240,117 @@ class ComfyUIDrawPlugin(Star):
             if ((w.get("roles") or {}).get("kind") == "upscale") and w.get("parse_ok")
         ]
 
-    def _resolve_upscale_base(self, spec: str = "") -> dict | None:
-        """决定用哪个放大工作流：指令参数 > 配置绑定 > 库里唯一一个。
+    def _upscale_base_of(self, entry: dict) -> dict | None:
+        """解析某条功能**绑定的放大基础工作流**（v7.7.5）。
 
-        匹配顺序：ID → 名字（忽略大小写/首尾空格）→ 名字/文件名包含匹配。
-        找不到时抛 ValueError（文案直接给用户看）。
+        顺序：base_id（校验它确实是放大类且解析通过）→ base_name / 旧版 workflow 名
+        → 库里唯一一个放大工作流。找不到/绑错类型时抛 ValueError（文案直接给用户看）。
         """
+        store = getattr(self, "workflow_store", None)
+        if store is None:
+            raise ValueError("基础工作流库未初始化（插件启动异常），暂时无法放大")
+        bid = str((entry or {}).get("base_id") or "").strip()
+        if bid:
+            try:
+                rec = store.get(int(bid)) if bid.isdigit() else None
+            except Exception:
+                rec = None
+            if rec:
+                _kind = (rec.get("roles") or {}).get("kind")
+                if _kind != "upscale":
+                    raise ValueError(
+                        f"「更多功能」里「{entry.get('name') or '这条功能'}」绑定的"
+                        f"「{rec.get('name')}」不是放大类工作流（类型：{_kind or '未知'}），"
+                        "请改绑一个放大工作流（或到「基础工作流」页上传）。"
+                    )
+                if not rec.get("parse_ok"):
+                    raise ValueError(
+                        f"绑定的放大工作流「{rec.get('name')}」解析未通过："
+                        f"{rec.get('parse_msg') or '未知原因'}，请重新解析或重新上传。"
+                    )
+                return rec
+            logger.warning(f"【放大】 base_id={bid} 不存在（可能已被删除），回退按名字解析")
         rows = self._upscale_base_rows()
+        want = str((entry or {}).get("base_name") or "").strip()
+        if want:
+            low = want.lower()
+            for w in rows:
+                if str(w.get("name") or "").strip().lower() == low:
+                    return w
+            for w in rows:
+                _nm = str(w.get("name") or "").strip().lower()
+                _fn = str(w.get("file_name") or "").strip().lower()
+                if (_nm and (_nm in low or low in _nm)) or (_fn and low in _fn):
+                    return w
+            raise ValueError(
+                f"绑定的放大工作流「{want}」不存在或未通过解析，请到「更多功能」页改绑一个。"
+            )
         if not rows:
             raise ValueError(
                 "还没有可用的放大工作流哦～ 请先到「基础工作流」页上传一个纯放大工作流"
                 "（如 TE-Speed VOSR2：图 → 放大 → 保存，无提示词、无采样器），解析通过后再试。"
             )
-        want = str(spec or "").strip() or str(self._upscale_cfg().get("workflow") or "").strip()
-        if not want:
-            if len(rows) == 1:
-                return rows[0]
-            _first = str(rows[0].get("name") or rows[0].get("id") or "").strip()
-            raise ValueError(
-                f"库里有 {len(rows)} 个放大工作流，请在「更多功能 → 图片放大」里指定默认的那个，"
-                f"或在指令里写明，例如：/图片放大 {_first}"
-            )
-        low = want.lower()
-        for w in rows:
-            if str(w.get("id")) == want:
-                return w
-        for w in rows:
-            if str(w.get("name") or "").strip().lower() == low:
-                return w
-        for w in rows:
-            _nm = str(w.get("name") or "").strip().lower()
-            _fn = str(w.get("file_name") or "").strip().lower()
-            if (_nm and (_nm in low or low in _nm)) or (_fn and low in _fn):
-                return w
+        if len(rows) == 1:
+            return rows[0]
         _names = "、".join(str(w.get("name") or w.get("id")) for w in rows[:5])
-        raise ValueError(f"没找到叫「{want}」的放大工作流哦～ 现在可用的有：{_names}")
+        raise ValueError(
+            f"这条功能没有绑定放大工作流，而库里可用 {len(rows)} 个（{_names}）："
+            "请到「更多功能」页给它选一个。"
+        )
+
+    def _resolve_upscale_entry(self, spec: str = "") -> dict | None:
+        """决定用哪条图片放大功能：指令参数点名 > 第一个启用的条目（v7.7.5）。
+
+        点名支持：功能名（如 vosr2）、条目 key、绑定的基础工作流名/ID。
+        没有任何启用的条目时抛 ValueError（文案直接给用户看）。
+        """
+        rows = self._upscale_entries()
+        if not rows:
+            raise ValueError(
+                "「更多功能」里还没有添加图片放大哦～ 请到 WebUI「更多功能」页"
+                "添加一条（绑定放大工作流）后再试。"
+            )
+        want = str(spec or "").strip()
+        if want:
+            low = want.lower()
+            try:
+                _by_id = {str(w.get("id")): w for w in self._upscale_base_rows()}
+            except Exception:
+                _by_id = {}
+
+            def _named(e: dict) -> bool:
+                """点名命中：功能名 / 条目 key / 绑定的基础工作流 ID·名字·文件名。"""
+                if str(e.get("__template_key") or "") == want:
+                    return True
+                if str(e.get("name") or "").strip().lower() == low:
+                    return True
+                if str(e.get("base_id") or "").strip() == want:
+                    return True
+                _bn = str(e.get("base_name") or "").strip().lower()
+                if _bn and (_bn == low or low in _bn or _bn in low):
+                    return True
+                _b = _by_id.get(str(e.get("base_id") or "").strip()) or {}
+                for _f in ("name", "file_name"):
+                    _v = str(_b.get(_f) or "").strip().lower()
+                    if _v and (_v == low or low in _v or _v in low):
+                        return True
+                return False
+
+            for e in rows:
+                if _named(e) and self._upscale_entry_enabled(e):
+                    return e
+            for e in rows:          # 名字对上了但这条被停用了 → 明确提示（而不是"找不到"）
+                if _named(e):
+                    raise ValueError(
+                        f"图片放大功能「{e.get('name') or want}」已停用，"
+                        "请到「更多功能」页启用后再试。"
+                    )
+            _names = "、".join(str(e.get("name") or e.get("base_id") or "?") for e in rows[:5])
+            raise ValueError(f"没找到叫「{want}」的图片放大功能哦～ 现在有：{_names}")
+        for e in rows:
+            if self._upscale_entry_enabled(e):
+                return e
+        raise ValueError("图片放大功能都被停用了，请到「更多功能」页启用一条后再试。")
 
     @staticmethod
     def _load_upscale_base(rec: dict) -> tuple[dict, dict]:
@@ -8308,7 +8435,6 @@ class ComfyUIDrawPlugin(Star):
         「输入图 + 倍率 + 种子」，其余交给工作流自己。
         """
         _t0 = time.time()
-        ucfg = self._upscale_cfg()
         _uid = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
         _sid = str(getattr(event, "session_id", "") or "")
         # 权限总闸（与出图同一套：白名单优先，未启用则走黑名单）+ 生图限额
@@ -8338,22 +8464,33 @@ class ComfyUIDrawPlugin(Star):
         src = images[0]
         if len(images) > 1:
             logger.info(f"【放大】 收到 {len(images)} 张图，只放大第一张: {src}")
-        # 2) 定放大工作流
+        # 2) 定用哪条「图片放大」功能（指令点名 > 第一个启用的条目）
         try:
-            rec = self._resolve_upscale_base(wf_spec)
+            entry = self._resolve_upscale_entry(wf_spec)
+        except ValueError as e:
+            await self._send(event, str(e))
+            return
+        _ename = str((entry or {}).get("name") or "").strip() or "图片放大"
+        # 3) 定放大工作流（条目绑定的基础工作流）
+        try:
+            rec = self._upscale_base_of(entry)
         except ValueError as e:
             await self._send(event, str(e))
             return
         _wfname = str(rec.get("name") or "").strip() or f"放大工作流 #{rec.get('id')}"
-        # 3) 定倍率（不在允许列表 → 回落默认）
-        _allowed = self._parse_scale_list(ucfg.get("allowed_scales", ""))
+        # 4) 定倍率（条目配置：不在允许列表 → 回落默认）
+        _allowed = self._parse_scale_list(self._upscale_param(entry, "allowed_scales", ""))
         try:
-            _dft = int(ucfg.get("default_scale", 3) or 3)
+            _dft = int(self._upscale_param(entry, "default_scale", 3) or 3)
         except (TypeError, ValueError):
             _dft = 3
         scale, _why = self._resolve_upscale_scale(asked_scale, _allowed, _dft)
         if _why:
             logger.info(f"【放大】 倍率 {scale}×（{_why}）")
+        logger.info(
+            f"【放大】 功能「{_ename}」→ 工作流「{_wfname}」｜允许倍率 {_allowed or '不限'}｜"
+            f"默认 {_dft}×｜种子 {self._upscale_param(entry, 'seed_mode', 'random')}"
+        )
         # 4) 组装 prompt：写倍率 + 种子
         try:
             _wf, prompt = self._load_upscale_base(rec)
@@ -8374,9 +8511,12 @@ class ComfyUIDrawPlugin(Star):
         applied = self._apply_upscale_scale(prompt, roles, scale)
         if applied is None:
             logger.info(f"【放大】 工作流未暴露可写倍率，沿用其内置倍率（本次请求 {scale}×）")
-        seeds = self._apply_upscale_seed(prompt, roles, ucfg)
+        seeds = self._apply_upscale_seed(prompt, roles, entry)
         if seeds:
-            logger.info(f"【放大】 种子 {seeds[0]}（策略 {ucfg.get('seed_mode') or 'random'}）")
+            logger.info(
+                f"【放大】 种子 {seeds[0]}"
+                f"（策略 {self._upscale_param(entry, 'seed_mode', 'random')}）"
+            )
         # 5) 服务器 + 客户端
         try:
             server = self._resolve_server(None)
@@ -8424,7 +8564,11 @@ class ComfyUIDrawPlugin(Star):
                     pass
             await self._send(event, f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～")
             # 7) 提交 + 等待（本功能自带超时，不套出图那套「单张等待硬上限」）
-            timeout = max(30, int(ucfg.get("timeout", 300) or 300))
+            try:
+                _to_cfg = int(self._upscale_param(entry, "timeout", 300) or 300)
+            except (TypeError, ValueError):
+                _to_cfg = 300
+            timeout = max(30, _to_cfg)
             interval = max(1, int(self._cfg("queue_poll_interval", 2)))
             try:
                 result = await client.queue_prompt(prompt)
@@ -8557,8 +8701,11 @@ class ComfyUIDrawPlugin(Star):
                     "right_top": f"{applied or scale}×",
                     "tiles": _tiles[:4],
                     "sections": [{
-                        "label": "放大工作流",
-                        "rows": [(_wfname, f"{applied or scale}× · {_cost:.1f}s", "ok")],
+                        "label": "放大功能",
+                        "rows": [
+                            (_ename, f"{applied or scale}× · {_cost:.1f}s", "ok"),
+                            (_wfname, f"{applied or scale}×", ""),
+                        ],
                     }],
                 }
                 if not await self._send_report_card(event, _rep, foot_left="口径：输入图直接超分，不重绘"):
@@ -8598,22 +8745,24 @@ class ComfyUIDrawPlugin(Star):
 
     @filter.command("图片放大", alias={"放大图片", "图片超分", "超分"})
     async def cmd_image_upscale(self, event: AstrMessageEvent):
-        """图片放大（超分）。用法：/图片放大 [放大工作流] [倍率]
+        """图片放大（超分）。用法：/图片放大 [功能名] [倍率]
 
         把消息里（或引用的）图片送进纯放大工作流超分，例如：
         /图片放大、/图片放大 vosr2、/图片放大 3x、/图片放大 vosr2 --倍率 4"""
-        ucfg = self._upscale_cfg()
-        if not ucfg.get("enabled", False):
-            await self._send(event, "图片放大功能未开启哦～ 让管理员到「更多功能 → 图片放大」里打开。")
-            event.stop_event()
-            return
         args = self._strip_command(
             (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
             "图片放大",
             ("放大图片", "图片超分", "超分"),
         )
         wf_spec, scale = self._parse_upscale_args(args or "")
-        logger.info(f"【放大】 指令解析：工作流={wf_spec!r} 倍率={scale}")
+        logger.info(f"【放大】 指令解析：功能={wf_spec!r} 倍率={scale}")
+        # 早失败：没配置条目 / 条目不匹配 / 全部停用 → 直接说明，省掉取图与上传
+        try:
+            self._resolve_upscale_entry(wf_spec)
+        except ValueError as e:
+            await self._send(event, str(e))
+            event.stop_event()
+            return
         await self._do_upscale(event, wf_spec, scale)
         event.stop_event()
 
