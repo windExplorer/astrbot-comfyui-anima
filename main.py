@@ -10793,32 +10793,27 @@ class ComfyUIDrawPlugin(Star):
             host = dev.get("host") or {}
             if isinstance(host, dict):
                 logger.debug(f"【绘图状态】 /device host 顶层键: {list(host.keys())}")
-            # -- 系统（首位）：系统版本 / 已运行时长（不显示主机名） --
+            # -- 系统（首位）：系统名 / 版本号 分行展示（不显示主机名） --
             if host:
                 _os = host.get("os") or {}
                 if isinstance(_os, dict):
-                    # 版本号多候选：caption（Windows 11 专业工作站版）+ display_version（25H2），
-                    # 都没有再用 version / build 兜底
-                    _parts = [str(x).strip() for x in (
-                        _os.get("caption") or "", _os.get("display_version") or ""
-                    ) if str(x or "").strip()]
-                    if not _parts:
-                        for k in ("version", "edition", "build"):
-                            v = str(_os.get(k) or "").strip()
-                            if v:
-                                _parts.append(v)
-                    osn = " ".join(_parts).strip() or str(host.get("system") or "").strip()
+                    _cap = str(_os.get("caption") or "").strip()
+                    _dv = str(_os.get("display_version") or "").strip()
+                    _ver = str(_os.get("version") or "").strip()
+                    if _cap:
+                        _sys_rows.append(("系统", _cap[:28], ""))
+                    if _dv:
+                        _sys_rows.append(("版本", _dv, ""))
+                    elif _ver:
+                        _sys_rows.append(("版本", _ver[:28], ""))
                 else:
                     osn = str(_os or host.get("system") or host.get("platform") or "").strip()
+                    if osn:
+                        _sys_rows.append(("系统", osn[:28], ""))
                 up = host.get("uptime_s") or host.get("uptime") or host.get("boot_elapsed_s")
                 if isinstance(up, (int, float)) and up > 0:
                     _d, _h = int(up // 86400), int(up % 86400 // 3600)
                     _up_txt = (f"{_d} 天 {_h} 小时" if _d else f"{_h} 小时")
-                else:
-                    _up_txt = ""
-                if osn:
-                    _sys_rows.append(("系统", osn[:28], ""))
-                if _up_txt:
                     _sys_rows.append(("已运行", _up_txt, ""))
             # -- CPU：型号/占用/温度（字段名多候选容错，中转站没给就不显示该行） --
             try:

@@ -2,6 +2,14 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.33（绘图状态：系统名与版本号分行展示）
+
+系统节拆行：`系统`（caption，如 Windows 11 专业工作站版）、`版本`（display_version，
+如 25H2；没有时用完整 version）、`已运行`——之前挤一行超长被截断。
+
+CPU 温度说明：字段是 `host.thermal.cpu_package_c`，Windows 上需要中转站装
+LibreHardwareMonitor 才有数值（纯 WMI 拿不到，接口返回 null 时行自动隐藏）。
+
 ## v7.7.32（绘图状态：风扇节回归 + 内存 /monitor 兜底 + 系统版本多候选）
 
 1. **风扇节回归**：读 `host.fans.system`（机箱风扇 RPM，文档 3.2.1）与 GPU 风扇候选，
