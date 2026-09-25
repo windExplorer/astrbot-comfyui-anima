@@ -775,6 +775,14 @@ _QUEUE_HINTS_QUEUED = [
 _WAIT_SEND_RESERVE = 8
 _WAIT_FLOOR = 5
 
+# 强制出图·兜底补画时先说的那句话（v7.7.0）：不让图"凭空冒出来"。
+_FORCE_DRAW_FALLBACK_HINTS = [
+    "它顾着聊，我先替你画好啦～",
+    "不等它了，我直接给你画。",
+    "它嘴上答应没动手，我来画。",
+    "这次我亲自上，稍等一下～",
+]
+
 # 提示词丰富化（v7.6.0）：用户明确要求「改外观」时，跳过外观冲突剥除。
 # 例：「把头发染成粉色」「换件白裙子」「眼睛改成红色」——这是用户意图，不是模型臆造。
 # 两种语序都要认：动词在前（换成红裙子）与名词在前（眼睛改成红色）。
@@ -797,6 +805,44 @@ def _default_prompt_boost_cfg() -> dict:
         "enhance_only_tag_family": True,  # 只对 Danbooru 标签系底模扩写
         "guard_appearance": True,        # 外观冲突剥除（与角色卡锚点冲突的标签）
     }
+
+
+# 强制出图（v7.7.0）：消息以「标记前缀」开头（默认 t）时，保证这条消息一定画出来。
+# 目的：模型不支持工具调用 / 只说不画时也能出图；但流程**仍然是 LLM 画**——
+#   ① 前缀语义写进 comfyui_draw 的说明，LLM 看到就该自己调用工具（正常路径）；
+#   ② 事前可再给这次 LLM 请求追加一句「必须调用 comfyui_draw」的强指令；
+#   ③ 本轮结束若仍没出图 → 插件兜底补画（提示词仍走 LLM 加工链路）。
+# 为什么不做成「正则直连指令」：那样会绕过 LLM（丢人格化回复与理解），不是用户要的语义。
+_FORCE_DRAW_DEFAULT_PREFIX = "t"
+
+
+def _default_force_draw_cfg() -> dict:
+    """强制出图配置默认值（配置项缺失/类型异常时的兜底）。"""
+    return {
+        "enabled": True,
+        "prefix": _FORCE_DRAW_DEFAULT_PREFIX,   # 标记前缀（可多字符，如 tt / 画t）
+        "require_at_in_group": True,            # 群聊必须 @机器人（防路人误触）
+        "inject_hint": True,                    # 事前给 LLM 请求追加「必须调用工具」强指令
+        "fallback_draw": True,                  # 本轮仍未出图 → 插件兜底补画
+        "notify_fallback": True,                # 兜底补画时先说一句（不让图凭空冒出来）
+    }
+
+
+def _hook_register(hook_name: str):
+    """按名字安全注册 AstrBot 钩子。
+
+    老版本 AstrBot 没有某个钩子时，`@filter.on_xxx()` 会在 import 期抛 AttributeError
+    把整个插件带崩；这里取不到钩子就退化成普通方法（不注册），保证向后兼容。
+    """
+    def _deco(fn):
+        h = getattr(filter, hook_name, None)
+        if h is None:
+            return fn
+        try:
+            return h()(fn)
+        except Exception:
+            return fn
+    return _deco
 
 # 面向用户的可爱错误话术：真实报错只写进日志，用户只看到经过包装的萌系提示。
 # 按错误类别分池，每类多条随机取一，避免每次都一样。
@@ -5888,6 +5934,8 @@ class ComfyUIDrawPlugin(Star):
         # 固定提示词标记：提示词来自工作流配置（default_positive/negative），
         # 视为作者精心写好的内容，跳过翻译 / LLM 改写 / LoRA 预设与触发词注入，
         # 避免动态改写破坏固定配方。
+        # v7.7.0：顺手剥掉 LLM 可能一起写进来的「强制出图」前缀标记（t 发张照片 → 发张照片）
+        positive = self._strip_force_marker(positive)
         _fixed_prompt = False
         _require_prompt = bool(wf.get("require_prompt", True))
         _default_pos = (wf.get("default_positive") or "").strip()
@@ -9409,6 +9457,154 @@ class ComfyUIDrawPlugin(Star):
         "用户要的是新画的图，画不出来就如实告诉用户、请他稍后再试。"
     )
 
+    # ------------------------------------------------------------------ #
+    # 强制出图（v7.7.0）：t 前缀 = 这条消息必须画出来
+    # ------------------------------------------------------------------ #
+
+    def _force_draw_cfg(self) -> dict:
+        """读强制出图配置（容错：非 dict/异常都退回默认）。"""
+        cfg = _default_force_draw_cfg()
+        try:
+            raw = self._cfg("force_draw", {}) or {}
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if v is None or v == "":
+                        continue
+                    cfg[k] = v
+        except Exception:
+            pass
+        return cfg
+
+    def _force_draw_prefix(self, cfg: dict | None = None) -> str:
+        _c = cfg if isinstance(cfg, dict) else self._force_draw_cfg()
+        return str(_c.get("prefix") or _FORCE_DRAW_DEFAULT_PREFIX).strip() or _FORCE_DRAW_DEFAULT_PREFIX
+
+    def _force_draw_at_bot(self, event) -> bool:
+        """消息链里是否 @ 了机器人自己（只认 At，不认引用）。"""
+        try:
+            chain = getattr(getattr(event, "message_obj", None), "message", None) or []
+        except Exception:
+            chain = []
+        try:
+            self_id = str(getattr(event, "get_self_id", lambda: "")() or "")
+        except Exception:
+            self_id = ""
+        if not self_id:
+            return False
+        for comp in chain:
+            if comp is None:
+                continue
+            if type(comp).__name__ == "At" and str(getattr(comp, "qq", "") or "") == self_id:
+                return True
+        return False
+
+    def _force_draw_scan(self, event, text: str | None = None) -> tuple[bool, str]:
+        """检测行首的「强制出图」标记，返回 (是否命中, 去掉标记后的文本)。
+
+        规则（关键是**别误伤英文句子**）：
+          · 必须行首；
+          · 前缀后面紧跟的**不能是英文字母**——中文/数字/空格/标点/emoji 都算命中：
+            `t发张照片` ✅、`t 一个女孩` ✅；`thanks` ❌、`the cat` ❌（照常聊天）；
+          · 前缀后面没内容（只发了个 `t`）→ 不算命中，交给 LLM 正常询问；
+          · 群聊默认必须 @机器人（私聊 @ 不到，不要求）；
+          · 前缀本身可配置（默认 `t`）。
+        """
+        cfg = self._force_draw_cfg()
+        if not cfg.get("enabled", True):
+            return False, ""
+        raw = text if text is not None else (getattr(event, "message_str", "") or "")
+        s = (raw or "").strip()
+        if not s:
+            return False, ""
+        prefix = self._force_draw_prefix(cfg)
+        m = re.match(r"^" + re.escape(prefix) + r"(?=[^A-Za-z]|$)", s, re.I)
+        if not m:
+            return False, ""
+        rest = s[m.end():].lstrip(" 　.,，。:：;；!！~～-—、")
+        if not rest.strip():
+            return False, ""
+        if (not self._is_private_event(event)) and cfg.get("require_at_in_group", True):
+            if not self._force_draw_at_bot(event):
+                return False, ""
+        return True, rest.strip()
+
+    def _strip_force_marker(self, text: str) -> str:
+        """去掉提示词行首残留的强制标记（LLM 常把 `t` 一起写进 prompt）。"""
+        cfg = self._force_draw_cfg()
+        if not cfg.get("enabled", True):
+            return text
+        s = (text or "").strip()
+        if not s:
+            return text
+        prefix = self._force_draw_prefix(cfg)
+        m = re.match(r"^" + re.escape(prefix) + r"(?=[^A-Za-z]|$)", s, re.I)
+        if not m:
+            return text
+        rest = s[m.end():].lstrip(" 　.,，。:：;；!！~～-—、")
+        if not rest.strip():
+            return text
+        logger.info(f"【强制出图】 提示词行首标记已剥离: {rest[:80]}")
+        return rest.strip()
+
+    def _remember_force_draw(self, event, clean_text: str) -> None:
+        """记下「本会话这条消息要求强制出图」（按消息指纹，供本轮结束时校验）。"""
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            if not sid:
+                return
+            # ★注意：存储属性名不能叫 _force_draw_pending —— 那会与方法同名，
+            # 实例属性会把方法覆盖成 dict（setattr 后 self._force_draw_pending(...) 就炸了）。
+            bucket = getattr(self, "_force_draw_marks", None)
+            if bucket is None:
+                bucket = {}
+                self._force_draw_marks = bucket
+            _now = time.time()
+            # 顺手清理过期项，避免长跑堆积
+            for _k in [k for k, v in bucket.items()
+                       if (_now - float((v or {}).get("ts", 0.0) or 0.0)) > self._DRAW_RUN_TTL]:
+                bucket.pop(_k, None)
+            bucket[sid] = {
+                "fp": self._draw_run_msg_fp(event),
+                "text": (clean_text or "").strip(),
+                "ts": _now,
+            }
+        except Exception as e:
+            logger.debug(f"【强制出图】 记录标记失败（忽略）: {e}")
+
+    def _force_draw_pending(self, event, *, match_msg: bool = True) -> dict | None:
+        """取本会话的强制标记（match_msg=True 时要求指纹与当前消息一致）。"""
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            bucket = getattr(self, "_force_draw_marks", None) or {}
+            item = bucket.get(sid)
+            if not isinstance(item, dict):
+                return None
+            if (time.time() - float(item.get("ts", 0.0) or 0.0)) > self._DRAW_RUN_TTL:
+                bucket.pop(sid, None)
+                return None
+            if match_msg and item.get("fp") != self._draw_run_msg_fp(event):
+                return None
+            return item
+        except Exception:
+            return None
+
+    def _clear_force_draw(self, event) -> None:
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            bucket = getattr(self, "_force_draw_marks", None)
+            if sid and isinstance(bucket, dict):
+                bucket.pop(sid, None)
+        except Exception:
+            pass
+
+    def _take_force_draw(self, event) -> tuple[str, bool]:
+        """取出并清除本会话的强制标记（只消费一次）。返回 (提示词, 是否命中)。"""
+        item = self._force_draw_pending(event)
+        if not item:
+            return "", False
+        self._clear_force_draw(event)
+        return str(item.get("text") or "").strip(), True
+
     def _draw_run_msg_fp(self, event) -> str:
         """生成「触发本轮 agent run 的用户消息」指纹，用于判定是否为同一次请求。"""
         try:
@@ -10843,7 +11039,16 @@ class ComfyUIDrawPlugin(Star):
         常规出图按本说明操作即可，**无需读取任何技能文件**；多人/合照规则已内嵌在下方，直接遵守即可；
         仅「NAI 法典精确 tag」等特殊场景才按需读对应技能（省时）。
         ★直接调用，不要只说不动：用户让我画图/生成图时，**必须立即调用本工具**，并同时把画面描述完整填进 prompt 参数。绝不允许只回复"好/马上/快了"而不调用工具——不调用工具=没有真的画。
-        
+
+        ★★强制出图标记（用户给消息加的前缀，插件默认前缀是 t）：
+        - 用户消息**行首**带该标记（例：「t发张照片」「t 一个女孩」「t 猫耳少女」）时，语义是
+          **这条必须画出来**。请把标记去掉，把剩下的内容当画面描述，**立即调用本工具**。
+        - 只回复文字而不调用本工具 = 失败：插件会替你补画（用去掉标记的原话），
+          但你的理解更准确、参数（工作流/LoRA/尺寸/多张）也更合适，所以**优先你自己画**。
+        - 判断规则：标记必须在**行首**，且后面紧跟的**不能是英文字母**——`thanks`、`the cat`
+          这类普通英文句子**不算**标记，别把它们当强制出图（也别把那个字母当画面内容）。
+        - 标记之后的内容才是真正要画的东西；若标记后没内容，按普通对话询问用户想画什么。
+
         什么时候调用：
         - 用户说了任何画图意图（画/生成/来张图/画个/出张图/拍照/再来一张/换个姿势重画等），一律调用。
         - 用户在催"你咋不画/图呢/怎么没看到图"同理，立即调用。
@@ -12236,6 +12441,30 @@ class ComfyUIDrawPlugin(Star):
     # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时也捕获一次图片，
     # 写入 g_recent_user_images（按会话滚动），供 LLM 工具兜底使用。
     # 保留 on_agent_begin 版本以覆盖 AI 对话（非纯指令）场景。
+    # 消息入口：识别「强制出图」前缀标记（v7.7.0）。
+    # ★只打标记，**绝不 stop_event** —— 消息照常进 LLM，让它自己正常调用 comfyui_draw；
+    #   只有本轮它真没画出来，才由 on_agent_done 兜底补画。
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=21)
+    async def _scan_force_draw_marker(self, event: AstrMessageEvent):
+        try:
+            cfg = self._force_draw_cfg()
+            if not cfg.get("enabled", True):
+                return
+            sender = getattr(event, "get_sender_id", lambda: "")()
+            if not sender:
+                return       # 机器人自己/系统消息：不处理
+            hit, clean = self._force_draw_scan(event)
+            if not hit:
+                return
+            self._remember_force_draw(event, clean)
+            logger.info(
+                f"【强制出图】 命中标记「{self._force_draw_prefix(cfg)}」"
+                f"sid={getattr(event, 'session_id', '') or '空'}，"
+                f"本轮必须出图：{clean[:80]}"
+            )
+        except Exception as e:
+            logger.debug(f"【强制出图】 标记识别失败（忽略）: {e}")
+
     @filter.on_agent_begin()
     async def _capture_user_images(self, event: AstrMessageEvent, run_context):
         try:
@@ -13023,6 +13252,11 @@ class ComfyUIDrawPlugin(Star):
     # 画图 agent run 结束，清除会话标记，避免后续普通对话被误计入 token 统计。
     @filter.on_agent_done()
     async def _clear_draw_agent_mark(self, event: AstrMessageEvent, run_context=None, response=None) -> None:
+        # ★强制出图兜底（v7.7.0）：必须在重置本轮出图计数**之前**判断「本轮到底画了没」。
+        try:
+            await self._force_draw_enforce(event)
+        except Exception as e:
+            logger.warning(f"【强制出图】 兜底检查异常（忽略）: {e}")
         try:
             sid = getattr(event, "session_id", "") or ""
             if sid:
@@ -13032,6 +13266,100 @@ class ComfyUIDrawPlugin(Star):
                 self._draw_run_reset(sid)
         except Exception:
             pass
+
+    # 强制出图·事前加强（v7.7.0）：本轮打了标记时给这次 LLM 请求追加一句硬指令。
+    # 框架的 ProviderRequest 里**没有 tool_choice**（无法强制选中某个工具），所以这里
+    # 只能靠提示强度换成功率；真没画出来再由 on_agent_done 兜底。
+    @_hook_register("on_llm_request")
+    async def _inject_force_draw_hint(self, event: AstrMessageEvent, req=None) -> None:
+        try:
+            cfg = self._force_draw_cfg()
+            if not cfg.get("enabled", True) or not cfg.get("inject_hint", True):
+                return
+            if req is None or not self._force_draw_pending(event):
+                return
+            note = (
+                "\n\n【强制出图】用户本条消息带了强制出图标记，语义是：**必须真的画出来**。"
+                "请把标记前缀去掉，剩下的内容作为画面描述，"
+                "立即调用 comfyui_draw（消息带参考图则用 comfyui_img2img）出图。"
+                "只回复文字而不调用绘图工具算失败（插件会替你补画，但你的理解更准确）。"
+            )
+            try:
+                req.system_prompt = (getattr(req, "system_prompt", "") or "") + note
+                logger.info("【强制出图】 已向本次 LLM 请求注入「必须调用绘图工具」强指令")
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"【强制出图】 注入强指令失败（忽略）: {e}")
+
+    async def _force_draw_enforce(self, event) -> None:
+        """本轮结束校验：打了强制标记却没成功出图 → 由插件兜底补画。"""
+        cfg = self._force_draw_cfg()
+        if not cfg.get("enabled", True):
+            return
+        item = self._force_draw_pending(event)     # 指纹不符=不是这条消息的标记
+        if not item:
+            return
+        try:
+            ok = int((self._draw_run_state_of(event) or {}).get("ok") or 0)
+        except Exception:
+            ok = 0
+        if ok > 0:
+            self._clear_force_draw(event)
+            logger.info(f"【强制出图】 本轮已成功出图 {ok} 次，标记已消费（无需兜底）")
+            return
+        text, hit = self._take_force_draw(event)
+        if not hit or not text:
+            return
+        if not cfg.get("fallback_draw", True):
+            logger.info("【强制出图】 本轮未出图，但兜底开关已关闭（交给用户重试）")
+            return
+        logger.warning(f"【强制出图】 本轮未出图 → 插件兜底补画: {text[:80]}")
+        await self._force_draw_execute(event, text, cfg)
+
+    async def _force_draw_execute(self, event, text: str, cfg: dict) -> None:
+        """兜底补画：复用 /画 指令的调用形态。
+
+        提示词仍然走 `_do_draw` 的完整链路（Anima 翻译 / LLM 扩写 / 角色卡锚点 / 外观护栏 /
+        画质前缀），权限与限额也与其它入口完全一致（白名单、黑名单、生图限额、NSFW、卡片、撤回）。
+        """
+        try:
+            prompt, lora_map, lora_presets, width, height, wf_name, seed, denoise = \
+                self._parse_draw_args(text)
+            _final = (prompt or "").strip() or (text or "").strip()
+            if not _final:
+                return
+            images = await self._extract_images(event)
+            if cfg.get("notify_fallback", True):
+                await self._send(event, random.choice(_FORCE_DRAW_FALLBACK_HINTS))
+            _sent = 0
+            async for node, p in self._do_draw(
+                event, wf_name, _final, "", width, height, lora_map, lora_presets, seed,
+                init_images=images,
+                is_img2img=bool(images),
+                denoise=denoise,
+                notify_pending=False,
+                explicit_default=(wf_name is None),
+            ):
+                if node is not None:
+                    try:
+                        await self._send_image_with_recall(
+                            event,
+                            node if isinstance(node, MessageChain) else MessageChain([node]),
+                        )
+                        _sent += 1
+                        self._draw_run_hit(event)
+                    except Exception as _e:
+                        logger.warning(f"【强制出图】 兜底图发送失败: {_e}")
+            logger.info(f"【强制出图】 兜底补画结束，已发送 {_sent} 条图消息")
+            if _sent == 0:
+                await self._send(event, "这次没能画出来，稍后再试一次吧～")
+        except Exception as e:
+            logger.warning(f"【强制出图】 兜底补画失败: {type(e).__name__}: {e}")
+            try:
+                await self._send(event, "这次没能画出来，稍后再试一次吧～")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # LLM 工具：comfyui_gallery（图库检索与语义标签召回）
@@ -14105,6 +14433,9 @@ class ComfyUIDrawPlugin(Star):
 
         caption 配文（可选但推荐）：想和图片发在同一条消息里的那句话（如"给你改好啦～"），建议 20 字内、别复述画面。
         ★配文随图发出后**绝不要**在回复里再说一遍；多张时只加在第一张上；不想配文就留空。
+        ★强制出图标记：用户消息行首带标记（插件默认 `t`，如「t把这张图变成水彩」）时，
+          语义是**必须画出来**：把标记去掉，剩下的内容作为变换描述，立即调用本工具；
+          只回文字不调用 = 失败（插件会替你补画）。标记后紧跟英文字母的不算（`thanks` 之类）。
         提示词语言：
         - 真人/写实工作流（is_anima=false）：prompt 用中文（用户明确要英文才用英文）。
         - 动漫工作流（is_anima=true）：prompt 必须是英文 Danbooru 标签（禁中文原样透传）。
