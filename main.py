@@ -8490,6 +8490,10 @@ class ComfyUIDrawPlugin(Star):
             _names = "、".join(str(e.get("name") or e.get("base_id") or "?") for e in rows[:5])
             raise ValueError(f"没找到叫「{want}」的图片放大功能哦～ 现在有：{_names}")
         for e in rows:
+            # 不点名 → 先用「设为默认」的那条（v7.7.18，启用中），否则第一条启用的
+            if e.get("is_default") and self._upscale_entry_enabled(e):
+                return e
+        for e in rows:
             if self._upscale_entry_enabled(e):
                 return e
         raise ValueError("图片放大功能都被停用了，请到「更多功能」页启用一条后再试。")

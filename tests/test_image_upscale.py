@@ -381,6 +381,30 @@ def test_entries_and_pick():
 
     # 不写名字 → 第一个启用的（sharp 停用，故选 vosr2）
     assert _resolve_upscale_entry(me, "")["name"] == "vosr2"
+    # v7.7.18：「设为默认」的条目优先于「第一个启用的」（默认条目停用则回落）
+    me_d = _FakePlugin(_ROWS, {"features": [
+        {"kind": "upscale", "name": "vosr2", "enabled": True, "base_id": "3",
+         "__template_key": "k_vosr"},
+        {"kind": "upscale", "name": "sharp", "enabled": True, "base_id": "5",
+         "__template_key": "k_sharp", "is_default": True},
+    ]})
+    assert _resolve_upscale_entry(me_d, "")["name"] == "sharp"
+    me_d2 = _FakePlugin(_ROWS, {"features": [
+        {"kind": "upscale", "name": "vosr2", "enabled": True, "base_id": "3",
+         "__template_key": "k_vosr", "is_default": True},
+        {"kind": "upscale", "name": "sharp", "enabled": True, "base_id": "5",
+         "__template_key": "k_sharp"},
+    ]})
+    assert _resolve_upscale_entry(me_d2, "")["name"] == "vosr2"
+    me_d3 = _FakePlugin(_ROWS, {"features": [
+        {"kind": "upscale", "name": "vosr2", "enabled": False, "base_id": "3",
+         "__template_key": "k_vosr", "is_default": True},
+        {"kind": "upscale", "name": "sharp", "enabled": True, "base_id": "5",
+         "__template_key": "k_sharp"},
+    ]})
+    assert _resolve_upscale_entry(me_d3, "")["name"] == "sharp"   # 默认那条停用 → 回落
+    # 点名仍然最优先（即使不是默认）
+    assert _resolve_upscale_entry(me_d, "vosr2")["name"] == "vosr2"
     # 点名：功能名 / 条目标识 / 绑定的基础工作流 ID 或名字（含文件名包含）
     assert _resolve_upscale_entry(me, "vosr2")["name"] == "vosr2"
     assert _resolve_upscale_entry(me, "k_vosr")["name"] == "vosr2"

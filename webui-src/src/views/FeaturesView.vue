@@ -104,6 +104,7 @@
               <span class="feat-icon">{{ kindIcon(e) }}</span>
               <span class="feat-title">{{ e.name || "(未命名)" }}</span>
               <n-tag size="tiny" :bordered="false">{{ kindName(e) }}</n-tag>
+              <n-tag v-if="e.is_default && !isMatting(e)" size="tiny" type="success" :bordered="false">默认</n-tag>
               <n-tag size="tiny" :bordered="false" :type="baseTagType(e)">
                 {{ baseLabel(e) }}
               </n-tag>
@@ -144,7 +145,7 @@
         <div class="usage">
           <div class="usage-title">指令用法</div>
           <ul>
-            <li><b>图片放大</b>：<code>/放大</code>（同 <code>/图片放大</code>，另有 <code>/超分</code>）— 用**第一个启用**的放大功能 + 它的默认倍率；<code>/放大 3x</code>、<code>/放大 {{ entries.find((x: any) => !isMatting(x))?.name || "功能名" }} 2x</code></li>
+            <li><b>图片放大</b>：<code>/放大</code>（同 <code>/图片放大</code>，另有 <code>/超分</code>）— 用**设为默认**的那条放大功能 + 它的默认倍率（没设默认就用第一个启用的）；<code>/放大 3x</code>、<code>/放大 {{ entries.find((x: any) => !isMatting(x))?.name || "功能名" }} 2x</code></li>
             <li><b>抠图</b>：<code>/抠图</code>（另有 <code>/抠像</code>、<code>/去背景</code>、<code>/去背</code>）— 用第一个启用的抠图功能，**不用传参数**；图片跟指令一起发，或引用一条带图的消息</li>
           </ul>
           <div class="usage-note">
@@ -183,14 +184,18 @@
 
       <n-form label-placement="top" size="small" :show-feedback="false">
         <div class="sec-title">基本</div>
-        <n-grid cols="1 640:3" :x-gap="16">
+        <n-grid cols="1 640:4" :x-gap="16">
           <n-form-item-gi :span="2" :label="meta('name', '功能名称（引用键）').label">
-            <n-input v-model:value="form.name" :placeholder="form.kind === 'matting' ? '抠图' : 'vosr2'" />
+            <n-input v-model:value="form.name" :placeholder="form.kind === 'matting' ? '抠图' : '图片放大'" />
             <div class="hint">{{ meta("name", "").hint }}</div>
           </n-form-item-gi>
           <n-form-item-gi label="启用">
             <n-switch v-model:value="form.enabled" />
             <div class="hint">停用后不参与默认选择，也不能被点名。</div>
+          </n-form-item-gi>
+          <n-form-item-gi v-if="!isMatting(form)" label="设为默认放大功能">
+            <n-switch v-model:value="form.is_default" />
+            <div class="hint">发 /放大 不点名时优先用这条；所有「图片放大」功能里只能有一个默认。</div>
           </n-form-item-gi>
         </n-grid>
 
@@ -276,7 +281,10 @@
           <n-grid cols="1 640:3" :x-gap="16">
             <n-form-item-gi :label="meta('default_scale', '默认放大倍率').label">
               <n-input-number v-model:value="form.default_scale" :min="1" :max="8" style="width: 100%" />
-              <div class="hint">{{ meta('default_scale', "").hint }}</div>
+              <div class="hint">
+                {{ meta('default_scale', "").hint }}
+                <template v-if="formBaseScale != null">工作流内置：{{ formBaseScale }}×。</template>
+              </div>
             </n-form-item-gi>
             <n-form-item-gi :label="meta('allowed_scales', '允许的放大倍率').label">
               <n-input v-model:value="form.allowed_scales" placeholder="2,3,4" />
@@ -337,7 +345,7 @@ const legacyName = ref("");
 // 两种功能类型共用的字段集合（编辑已有条目时会按这些键拷贝，故必须都列全）
 const DEFAULTS: Record<string, any> = {
   kind: "upscale",
-  name: "vosr2",
+  name: "图片放大",
   enabled: true,
   base_id: "",
   // —— 图片放大专属 ——
@@ -345,6 +353,7 @@ const DEFAULTS: Record<string, any> = {
   allowed_scales: "2,3,4",
   seed_mode: "random",
   seed_value: 6666,
+  is_default: false,
   // —— 抠图专属 ——
   steps: 0,
   prompt: "",
@@ -354,7 +363,7 @@ const DEFAULTS: Record<string, any> = {
 };
 /** 新建条目时的「按类型」默认值 */
 const KIND_DEFAULTS: Record<string, Record<string, any>> = {
-  upscale: { kind: "upscale", name: "vosr2" },
+  upscale: { kind: "upscale", name: "图片放大" },
   matting: { kind: "matting", name: "抠图", steps: 0, prompt: "", no_upscale: true },
 };
 
@@ -525,12 +534,29 @@ const formBaseOptions = computed(() => [
 const formBaseOk = computed<boolean>(() => isBaseOk(form, formBase.value));
 /** 抠图用：工作流里的默认步数 / 提示词 / 预处理缩放 */
 const formBaseSteps = computed<number | null>(() => baseStepsOf(formBase.value));
+const formBaseScale = computed<number | null>(() => baseScaleOf(formBase.value));
 const formBasePrompt = computed<string>(() => basePromptOf(formBase.value));
 const formPreScale = computed<any>(() => formBase.value?.roles?.pre_scale || null);
 const formPreScaleText = computed<string>(() => basePreScaleText(formBase.value));
-/** 换绑工作流时刷新「自动绑定」的默认值（抠图：把工作流的步数/提示词填进表单） */
+/** 工作流「内置倍率」：优先取可写倍率字段的当前值（SeedVR2 的 2× 等），
+ *  其次从放大模型名里识别（如 4x-UltraSharp.pth → 4×）。 */
+function baseScaleOf(w: any): number | null {
+  if (!w?.roles) return null;
+  const s = w.roles?.scale?.default;
+  if (typeof s === "number" && s > 0) return s;
+  const m = String(w.roles?.upscale?.model_name || "").match(/(\d+(?:\.\d+)?)\s*[x×]/i);
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+/** 换绑工作流时刷新「自动绑定」的默认值：
+ *  抠图 → 把工作流的步数/提示词填进表单；放大 → 把工作流内置倍率填进默认倍率 */
 function onFormBaseChange() {
-  if (isMatting(form)) fillMattingForm();
+  if (isMatting(form)) {
+    fillMattingForm();
+    return;
+  }
+  const s = formBaseScale.value;
+  if (s != null) form.default_scale = s;
 }
 function fillMattingForm() {
   if (!formBase.value) return;
@@ -616,6 +642,14 @@ async function saveForm() {
     v.no_upscale = v.no_upscale !== false;
   }
   v.timeout = Number(v.timeout) > 0 ? Number(v.timeout) : 300;
+  // 「设为默认」唯一性：一条设为默认 → 其它图片放大条目自动取消默认
+  if (!isMatting(v) && v.is_default) {
+    const cur = formIndex.value >= 0 ? entries.value[formIndex.value] : null;
+    entries.value.forEach((x: any) => {
+      if (x !== cur && !isMatting(x)) x.is_default = false;
+    });
+    message.info(`已把「${v.name}」设为默认放大功能（其它条目的默认已取消）`);
+  }
   if (formIndex.value >= 0 && entries.value[formIndex.value]) {
     v.__template_key = entries.value[formIndex.value].__template_key || genTemplateKey();
     entries.value[formIndex.value] = { ...entries.value[formIndex.value], ...v };
