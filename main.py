@@ -5084,10 +5084,18 @@ class ComfyUIDrawPlugin(Star):
                 try:
                     with _PILImage.open(str(_p)) as _im:
                         return int(_im.width), int(_im.height)
-                except Exception:
+                except Exception as _e:
+                    logger.warning(f"【宽高】 读取参考图尺寸失败（跳过，试下一张）: {str(_p)[:80]} | {_e}")
                     continue
         except Exception as _e:
             logger.debug(f"【宽高】 读取参考图尺寸失败（忽略）: {_e}")
+        # v7.7.26：一张都没读到时必须留痕——此前静默返回 None，卡片会退回显示
+        # 工作流配置尺寸，用户完全看不出原因
+        if (paths or []) and _PILImage is not None:
+            logger.warning(
+                f"【宽高】 参考图尺寸全部读取失败（{len(paths)} 张，回退显示工作流配置尺寸）: "
+                + "; ".join(str(p)[:60] for p in paths[:3])
+            )
         return None, None
 
     def _local_queue_ahead(self, key: str) -> int:
@@ -7563,6 +7571,12 @@ class ComfyUIDrawPlugin(Star):
                             "today": self._card_today(),
                             "loras": [],
                             "params": self._card_chips([
+                                # v7.7.26：图生图时把「输入（参考图）」与「尺寸（实际输出）」
+                                # 分开显示——工作流内部有缩放时两者不同，之前只有一个「尺寸」
+                                # 让人误以为尺寸显示错了
+                                ("输入", (f"{locals().get('_in_w')}×{locals().get('_in_h')}"
+                                          if is_img2img and locals().get("_in_w")
+                                          and locals().get("_in_h") else None)),
                                 ("尺寸", f"{locals().get('_real_w') or w}×"
                                          f"{locals().get('_real_h') or h}"),
                                 ("大小", locals().get("_fs_fmt")),
