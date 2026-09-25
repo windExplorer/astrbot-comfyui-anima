@@ -10699,6 +10699,43 @@ class ComfyUIDrawPlugin(Star):
             pass
         return out
 
+    # ------------------------------------------------------------------ #
+    # /绘图状态 · 硬件名精简与字段容错（v7.7.30）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _short_hw_name(text: str, kind: str = "cpu") -> str:
+        """精简硬件型号：去厂商/ trademark 前缀与垃圾尾巴，只留关键型号。
+
+        · CPU：`12th Gen Intel(R) Core(TM) i7-12700F` → `i7-12700F`；
+          `AMD Ryzen 9 7950X 16-Core Processor` → `Ryzen 9 7950X`。
+        · GPU：`NVIDIA GeForce RTX 4090D` → `RTX 4090D`；`AMD Radeon RX 7900 XTX` → `RX 7900 XTX`。
+        """
+        s = str(text or "").strip()
+        if not s:
+            return ""
+        s = re.sub(r"\((?:R|TM|C)\)", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s+", " ", s).strip()
+        if kind == "gpu":
+            s = re.sub(r"^(?:NVIDIA|AMD|Intel)\s+(?:GeForce|Radeon|Arc)\s+", "", s,
+                       flags=re.IGNORECASE)
+            s = re.sub(r"^(?:NVIDIA|AMD|Intel)\s+", "", s, flags=re.IGNORECASE)
+            return s.strip()
+        # CPU
+        s = re.sub(r"^\d+(?:th|st|nd|rd)\s+Gen\s+", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"^(?:Intel|AMD)\s+", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s+\d+\s*[-~]?\s*Core\s+(?:Processor|CPU)$", "", s, flags=re.IGNORECASE)
+        if "ryzen" in s.lower():
+            m = re.search(r"Ryzen[^\s]*(?:\s+\d)?(?:\s+\d{4}[A-Z]{0,2})?", s, flags=re.IGNORECASE)
+            if m:
+                return m.group(0).strip()
+        m = re.search(r"(?:i[3579][\s-]?\d{4,5}[A-Z]{0,3}(?:KF|KS|KF)?|Xeon\s+\S+|Celeron\s+\S+|Pentium\s+\S+)",
+                      s, flags=re.IGNORECASE)
+        if m:
+            return m.group(0).strip().replace("i7 12700", "i7-12700")
+        # 兜底：取最后一个含数字的 token（型号几乎总带数字）
+        toks = [t for t in s.split() if re.search(r"\d", t)]
+        return (toks[-1] if toks else s)[:40]
+
     @filter.command("绘图状态", alias={"drawstatus", "画图状态"})
     async def cmd_draw_status(self, event: AstrMessageEvent):
         """查询绘图服务器状态、延迟、设备与生图统计（v7.7.29 改版）。
@@ -10736,56 +10773,95 @@ class ComfyUIDrawPlugin(Star):
             lines.append(f"· 当前服务器：🟢 正常（HTTP 往返 {latency}ms）")
         else:
             lines.append(f"· 当前服务器：🔴 不可达（{p.get('error', '')}）")
-        # ---- 2) 中转站辅助接口（/device）：设备五块 + 上游 + 调度 + 自检 ----
+        # ---- 2) 中转站辅助接口（/device）：系统/CPU/显卡/内存/硬盘 + 上游 + 调度 + 自检 ----
         dev = await self._fetch_json(url.rstrip("/") + "/device", timeout=8) if reachable else None
         _sec = self._taskhub_sections(dev) if isinstance(dev, dict) else {}
-        _dev_map: dict[str, list] = {"cpu": [], "gpu": [], "ram": [], "fan": [], "disk": []}
+        _sys_rows: list[tuple] = []
+        _dev_map: dict[str, list] = {"cpu": [], "gpu": [], "ram": [], "disk": []}
         _comfy_rows: list[tuple] = []
         _sched_rows: list[tuple] = []
         _check_rows: list[tuple] = []
-        if _sec:
+        if isinstance(dev, dict):
+            # v7.7.30：/device 字段名各版本可能不同——原始响应落盘一份（覆盖写），
+            # 字段猜不中时把它发维护者即可精准适配
             try:
-                host = dev.get("host") or {}
+                Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+                (Path(self.data_dir) / "device_sample.json").write_text(
+                    json.dumps(dev, ensure_ascii=False, indent=1), encoding="utf-8")
+            except Exception:
+                pass
+            host = dev.get("host") or {}
+            if isinstance(host, dict):
+                logger.debug(f"【绘图状态】 /device host 顶层键: {list(host.keys())}")
+            # -- 系统（首位）：主机名 / 系统 / 开机时长 --
+            if host:
+                hn = str(host.get("hostname") or host.get("host_name") or "").strip()
+                osn = str(host.get("os") or host.get("system") or host.get("platform") or "").strip()
+                up = host.get("uptime_s") or host.get("uptime") or host.get("boot_elapsed_s")
+                if isinstance(up, (int, float)) and up > 0:
+                    _d, _h = int(up // 86400), int(up % 86400 // 3600)
+                    _up_txt = (f"{_d} 天 {_h} 小时" if _d else f"{_h} 小时")
+                else:
+                    _up_txt = ""
+                if hn:
+                    _sys_rows.append(("主机", hn[:28], ""))
+                if osn:
+                    _sys_rows.append(("系统", osn[:28], ""))
+                if _up_txt:
+                    _sys_rows.append(("已运行", _up_txt, ""))
+            # -- CPU：型号/占用/温度（字段名多候选容错，中转站没给就不显示该行） --
+            try:
+                cpu = host.get("cpu") if isinstance(host.get("cpu"), dict) else {}
+                _cname = (cpu.get("name") or cpu.get("model") or cpu.get("brand")
+                          or host.get("cpu_name") or host.get("cpu_model")
+                          or host.get("processor") or "")
+                if str(_cname).strip():
+                    _dev_map["cpu"].append(("型号", self._short_hw_name(str(_cname), "cpu"), ""))
+                _cp = (cpu.get("percent") or cpu.get("usage") or cpu.get("util")
+                       or host.get("cpu_percent") or host.get("cpu_usage"))
+                if isinstance(_cp, (int, float)):
+                    _dev_map["cpu"].append(("占用", f"{_cp}%", ""))
+                _ct = (cpu.get("temp") or cpu.get("temperature") or cpu.get("temp_c")
+                       or host.get("cpu_temp") or host.get("cpu_temperature")
+                       or host.get("cpu_temp_c"))
+                if isinstance(_ct, (int, float)) and _ct > 0:
+                    _dev_map["cpu"].append(("温度", f"{_ct}°C", ""))
+                _cores = cpu.get("cores") or cpu.get("count") or host.get("cpu_cores")
+                if isinstance(_cores, (int, float)) and _cores > 0:
+                    _dev_map["cpu"].append(("核数", f"{int(_cores)}", ""))
+            except Exception:
+                pass
+            # -- 显卡：型号/利用率/显存/温度 各自一行 --
+            try:
                 gpus = host.get("gpus") or []
                 g = (gpus or [{}])[0] or {}
                 if g.get("name"):
-                    _dev_map["gpu"].append(("型号", str(g.get("name")), ""))
-                if g.get("util_percent") is not None or g.get("mem_total_gb"):
-                    _parts = []
-                    if g.get("util_percent") is not None:
-                        _parts.append(f"{g.get('util_percent')}%")
-                    if g.get("mem_total_gb"):
-                        _free = g.get("mem_free_gb")
-                        _parts.append(f"{'?' if _free is None else _free}/{g.get('mem_total_gb')}GB")
-                    if g.get("temperature_c") is not None:
-                        _parts.append(f"{g.get('temperature_c')}°C")
-                    if _parts:
-                        _dev_map["gpu"].append(("状态", " · ".join(str(x) for x in _parts), ""))
-                fanv = g.get("fan_speed_rpm") or g.get("fan_rpm") or g.get("fan")
-                if isinstance(fanv, (int, float)) and fanv > 0:
-                    _dev_map["fan"].append(("转速", f"{int(fanv)} RPM", ""))
-                elif isinstance(fanv, str) and fanv.strip():
-                    _dev_map["fan"].append(("转速", fanv.strip(), ""))
-                if len(gpus) > 1:
-                    _dev_map["fan"].append(("多卡", f"共 {len(gpus)} 张", ""))
-                cpu = host.get("cpu") or {}
-                if isinstance(cpu, dict):
-                    if cpu.get("name"):
-                        _dev_map["cpu"].append(("型号", str(cpu.get("name")), ""))
-                    if cpu.get("percent") is not None:
-                        _dev_map["cpu"].append(("占用", f"{cpu.get('percent')}%", ""))
-                if host.get("cpu_percent") is not None:
-                    _dev_map["cpu"].append(("占用", f"{host.get('cpu_percent')}%", ""))
-                cpu_t = host.get("cpu_temp") or host.get("cpu_temperature")
-                if isinstance(cpu_t, (int, float)):
-                    _dev_map["cpu"].append(("温度", f"{cpu_t}°C", ""))
+                    _dev_map["gpu"].append(("型号", self._short_hw_name(str(g.get("name")), "gpu"), ""))
+                if g.get("util_percent") is not None:
+                    _dev_map["gpu"].append(("利用率", f"{g.get('util_percent')}%", ""))
+                if g.get("mem_total_gb"):
+                    _free = g.get("mem_free_gb")
+                    _dev_map["gpu"].append(
+                        ("显存", f"{'?' if _free is None else _free} / {g.get('mem_total_gb')} GB", ""))
+                if g.get("temperature_c") is not None:
+                    _dev_map["gpu"].append(("温度", f"{g.get('temperature_c')}°C", ""))
+            except Exception:
+                pass
+            # -- 内存 --
+            try:
                 if host.get("ram_total_gb"):
                     _dev_map["ram"].append(("总量", f"{host.get('ram_total_gb')} GB", ""))
                     if host.get("ram_used_gb") is not None:
                         _dev_map["ram"].append(("已用", f"{host.get('ram_used_gb')} GB", ""))
+            except Exception:
+                pass
+            # -- 硬盘（服务所在磁盘） --
+            try:
                 disk = host.get("disk") or host.get("disk_usage") or {}
-                if isinstance(disk, dict) and disk.get("total_gb"):
-                    _dev_map["disk"].append(("容量", f"{disk.get('used_gb') or '?'}/{disk.get('total_gb')} GB", ""))
+                if isinstance(disk, dict) and (disk.get("total_gb") or disk.get("total")):
+                    _dev_map["disk"].append(
+                        ("容量", f"{disk.get('used_gb') or disk.get('used') or '?'}/"
+                                f"{disk.get('total_gb') or disk.get('total')} GB", ""))
                 elif isinstance(disk, (int, float)):
                     _dev_map["disk"].append(("占用", f"{disk}%", ""))
             except Exception:
@@ -10797,9 +10873,9 @@ class ComfyUIDrawPlugin(Star):
             if _sec.get("check"):
                 _check_rows = list(_sec["check"])
             # 文字版摘要
-            if _dev_map.get("gpu"):
+            if _dev_map["gpu"]:
                 lines.append(f"  ├ 显卡：{' · '.join(r[1] for r in _dev_map['gpu'][:2])}")
-            if _dev_map.get("cpu"):
+            if _dev_map["cpu"]:
                 lines.append(f"  ├ CPU：{' · '.join(r[1] for r in _dev_map['cpu'][:2])}")
             _cu = next((r[1] for r in _comfy_rows if r[0] == "状态"), "")
             if _cu:
@@ -10852,14 +10928,14 @@ class ComfyUIDrawPlugin(Star):
                 pass
         # ---- 4) 组 sections（span：4 列网格；缺省通栏） ----
         _sections: list[dict] = []
+        if _sys_rows:
+            _sections.append({"label": "系统", "icon": "server", "span": 1, "rows": _sys_rows})
         if _dev_map["cpu"]:
             _sections.append({"label": "CPU", "icon": "chip", "span": 1, "rows": _dev_map["cpu"]})
         if _dev_map["gpu"]:
             _sections.append({"label": "显卡", "icon": "gpu", "span": 1, "rows": _dev_map["gpu"]})
         if _dev_map["ram"]:
             _sections.append({"label": "内存", "icon": "ram", "span": 1, "rows": _dev_map["ram"]})
-        if _dev_map["fan"]:
-            _sections.append({"label": "风扇", "icon": "fan", "span": 1, "rows": _dev_map["fan"]})
         if _dev_map["disk"]:
             _sections.append({"label": "硬盘", "icon": "disk", "span": 1, "rows": _dev_map["disk"]})
         if _comfy_rows:

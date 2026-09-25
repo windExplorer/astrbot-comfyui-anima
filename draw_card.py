@@ -638,9 +638,9 @@ def render_report(info: dict, *, theme: str = "", cfg: dict | None = None,
     text_muted = (152, 158, 180, 255) if dark else (126, 133, 152, 255)
     tile_bg = (38, 41, 50, 255) if dark else c["soft"] + (255,)
     tile_border = (66, 76, 82, 255) if dark else c["border"] + (255,)
-    # 节卡底（v7.7.29）
+    # 节卡底（v7.7.29）；描边用主题强调色混底色（v7.7.30：之前是固定灰，不跟主题）
     sec_bg = (44, 48, 58, 255) if dark else c["soft"] + (255,)
-    sec_border = (66, 76, 82, 255) if dark else c["border"] + (150,)
+    sec_border = _mix(c["accent"], (26, 28, 34) if dark else (255, 255, 255), 0.62)
     _bad = (224, 82, 82)
     _warn = (230, 150, 30)
 
