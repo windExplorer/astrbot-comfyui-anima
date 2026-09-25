@@ -288,7 +288,7 @@ class WebUIApi:
                 try:
                     from astrbot.api import logger as _api_logger
                 except Exception:
-                    _api_logger = _log
+                    _api_logger = _logging.getLogger("comfyui_anima.webui")
                 _api_logger.info(f"[WebUI] 读取采样器参数: workflow_name={_ws_name!r}")
                 return await self._read_workflow_sampler_file(_ws_name)
             cfg = self.plugin.config
@@ -440,7 +440,7 @@ class WebUIApi:
                 try:
                     from astrbot.api import logger as _api_logger
                 except Exception:
-                    _api_logger = _log
+                    _api_logger = _logging.getLogger("comfyui_anima.webui")
                 _api_logger.info(f"[WebUI] 读取采样器参数(POST): workflow_name={_wn!r}")
                 return await self._read_workflow_sampler_file(_wn)
             new_cfg = body.get("config")
@@ -833,7 +833,7 @@ class WebUIApi:
             g = getattr(self.plugin, "gallery", None)
             if g is None:
                 return error_response("图库未启用")
-            body = await _read_json_body()
+            body = await request.json(default={}) or {}
             tok = (body.get("token") or "").strip()
             if not tok:
                 return error_response("缺少 token")

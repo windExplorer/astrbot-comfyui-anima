@@ -2281,8 +2281,11 @@ class ComfyUIDrawPlugin(Star):
         except (TypeError, ValueError):
             return default
 
-    def _serialize_loras_text(loras: list[dict]) -> str:
-        """将 LoRA 列表序列化回 名称|权重|0/1|底模 文本（用于 loraon/loraoff 持久化）。"""
+    def _serialize_loras_text(self, loras: list[dict]) -> str:
+        """将 LoRA 列表序列化回 名称|权重|0/1|底模 文本（用于 loraon/loraoff 持久化）。
+
+        （v7.7.20 修复：此前漏了 self，调用即 TypeError，loraon/loraoff 的持久化必炸。）
+        """
         lines = []
         for l in loras:
             name = (l.get("name") or "").strip()
@@ -6240,7 +6243,7 @@ class ComfyUIDrawPlugin(Star):
                 await self._card_or_text(
                     event, self._friendly_error(e, "上传参考图"),
                     info=self._card_fail_info(wf=wf, prompt=positive, is_img2img=True,
-                                              size=_size, cost=time.time() - _draw_start),
+                                              cost=time.time() - _draw_start),
                 )
                 return
             logger.info(f"图生图：已注入 {len(init_images)} 张参考图")
@@ -8610,6 +8613,9 @@ class ComfyUIDrawPlugin(Star):
         src = images[0]
         if len(images) > 1:
             logger.info(f"【放大】 收到 {len(images)} 张图，只放大第一张: {src}")
+        # GIF 先取首帧（与图生图同一处理，避免把动图直接扔给 ComfyUI / 归档）
+        if src.lower().endswith(".gif"):
+            src = await _gif_to_first_frame(src)
         # 1.5) 读输入尺寸（尺寸护栏与自适应倍率都要用；无 Pillow / 读失败就跳过检查，不阻断）
         in_w = in_h = 0
         if _PILImage is not None:
@@ -9358,9 +9364,12 @@ class ComfyUIDrawPlugin(Star):
         src = images[0]
         if len(images) > 1:
             logger.info(f"【抠图】 收到 {len(images)} 张图，只处理第一张: {src}")
+        # GIF 先取首帧（与图生图同一处理，避免把动图直接扔给 ComfyUI / 归档）
+        if src.lower().endswith(".gif"):
+            src = await _gif_to_first_frame(src)
         # 3) 定用哪条「抠图」功能（指令点名 > 第一个启用的条目，与图片放大同一套）
         try:
-            entry = self._resolve_matting_entry(wf_spec)
+            entry = self._resolve_matting_entry(spec)
         except ValueError as e:
             await self._send(event, str(e))
             return
@@ -12053,6 +12062,7 @@ class ComfyUIDrawPlugin(Star):
                             await self._send(event, f"没找到含「{kw}」的图。")
                             return
                         _head = "全库检索" if all_view else "检索"
+                        is_admin = self._is_admin(event)
                         lines = [f"{_head}「{kw}」（第 {page}/{total_pages} 页，共 {total} 张）："]
                         for i, r in enumerate(rows, 1):
                             _gno = r.get("gidx", i)  # 图库唯一编号，可直接取图
