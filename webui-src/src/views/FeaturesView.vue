@@ -196,7 +196,7 @@
 
       <n-form label-placement="top" size="small" :show-feedback="false">
         <div class="sec-title">基本</div>
-        <n-grid cols="1 640:4" :x-gap="16">
+        <n-grid cols="1 640:4" :x-gap="16" :y-gap="14">
           <n-form-item-gi :span="2" :label="meta('name', '功能名称（引用键）').label">
             <n-input v-model:value="form.name" :placeholder="form.kind === 'matting' ? '抠图' : '图片放大'" />
             <div class="hint">{{ meta("name", "").hint }}</div>
@@ -245,7 +245,7 @@
             <div class="hint">{{ meta("no_upscale", "").hint }}</div>
           </n-form-item>
 
-          <n-grid cols="1 640:2" :x-gap="16">
+          <n-grid cols="1 640:2" :x-gap="16" :y-gap="14">
             <n-form-item-gi :label="meta('steps', '采样步数').label">
               <n-input-number
                 v-model:value="form.steps"
@@ -290,7 +290,7 @@
 
         <!-- ── 图片放大专属字段 ── -->
         <template v-else>
-          <n-grid cols="1 640:3" :x-gap="16">
+          <n-grid cols="1 640:3" :x-gap="16" :y-gap="14">
             <n-form-item-gi :label="meta('default_scale', '默认放大倍率').label">
               <n-input-number v-model:value="form.default_scale" :min="1" :max="8" style="width: 100%" />
               <div class="hint">
@@ -312,7 +312,7 @@
             </n-form-item-gi>
           </n-grid>
 
-          <n-grid cols="1 640:2" :x-gap="16">
+          <n-grid cols="1 640:2" :x-gap="16" :y-gap="14">
             <n-form-item-gi :label="meta('seed_mode', '种子策略').label">
               <n-select v-model:value="form.seed_mode" :options="[
                 { label: 'random（每次随机，推荐）', value: 'random' },
@@ -943,6 +943,15 @@ onMounted(load);
   display: flex !important;
   flex-direction: column;
   align-items: stretch;
+}
+/* 字段间距（v7.7.23）：弹窗表单是 :show-feedback="false"——naive 靠 feedback 占位区
+   撑字段间距，关掉后 form-item 自身没有 margin，字段全贴在一起。
+   普通字段给 margin-bottom；栅格内改用 n-grid 的 y-gap，避免两者叠加。 */
+.feat-form :deep(.n-form-item) {
+  margin-bottom: 18px;
+}
+.feat-form :deep(.n-grid .n-form-item) {
+  margin-bottom: 0;
 }
 .kind-line {
   display: flex;
