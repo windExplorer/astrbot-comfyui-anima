@@ -828,6 +828,50 @@
     },
     "default": []
   },
+  "upscale_limits": {
+    "type": "object",
+    "description": "图片放大 · 尺寸护栏（全局，防爆显存）",
+    "hint": "**全局生效**（显存是机器级别的，不该每条放大功能都配一遍）。两件事：① 传入图片太大直接拦住；② 按传入尺寸自动把倍率压到安全范围（你请求 4× 但输入已经很大时会自动降档，而不是直接爆显存）。选「档位」即可，不用算像素；详细数值见档位说明与 WebUI「更多功能」页的对照表。",
+    "items": {
+      "preset": {
+        "type": "string",
+        "description": "护栏档位",
+        "options": [
+          "strict",
+          "standard",
+          "loose",
+          "off",
+          "custom"
+        ],
+        "hint": "standard（默认，8~12G 显存）：输入 ≤ 长边 3072 / 9MP，输出 ≤ 长边 4096 / 12MP；strict（8G 以下）：输入 ≤2048 / 4MP，输出 ≤3072 / 8MP；loose（16G 以上）：输入 ≤4096 / 16MP，输出 ≤6144 / 24MP；off：不限制（自行承担爆显存风险）；custom：用下面四个自定义数值。",
+        "default": "standard"
+      },
+      "custom_max_input_side": {
+        "type": "int",
+        "description": "自定义 · 输入长边上限（px）",
+        "hint": "仅档位=自定义时生效。0 = 不限制长边。",
+        "default": 3072
+      },
+      "custom_max_input_mp": {
+        "type": "float",
+        "description": "自定义 · 输入总像素上限（MP）",
+        "hint": "仅档位=自定义时生效。0 = 不限制总像素。（总像素比长边更能反映扩散式放大的显存占用）",
+        "default": 9
+      },
+      "custom_max_output_side": {
+        "type": "int",
+        "description": "自定义 · 输出长边上限（px）",
+        "hint": "仅档位=自定义时生效。0 = 不限制；自适应倍率会按它降档。",
+        "default": 4096
+      },
+      "custom_max_output_mp": {
+        "type": "float",
+        "description": "自定义 · 输出总像素上限（MP）",
+        "hint": "仅档位=自定义时生效。0 = 不限制；自适应倍率会按它降档。",
+        "default": 12
+      }
+    }
+  },
   "danbooru": {
     "type": "object",
     "description": "Danbooru 标签服务器",

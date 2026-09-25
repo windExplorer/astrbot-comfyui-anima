@@ -30,6 +30,63 @@
         无采样器、无提示词），解析通过后它的类型会显示为「放大」。
       </n-alert>
 
+      <!-- 尺寸护栏（全局）：防「图太大」与「放大后爆显存」 -->
+      <n-card class="feat-card guard-card" size="small">
+        <template #header>
+          <div class="card-head">
+            <span class="feat-icon">🛡️</span>
+            <span class="feat-title">尺寸护栏（全局 · 防爆显存）</span>
+            <span class="feat-desc">对所有放大功能生效：输入太大直接拦，倍率按输入尺寸自动降档</span>
+          </div>
+        </template>
+        <template #header-extra>
+          <n-button size="tiny" type="primary" ghost :loading="savingLimits" :disabled="!limitsDirty" @click="saveLimits">
+            保存
+          </n-button>
+        </template>
+
+        <n-form label-placement="top" size="small">
+          <n-form-item label="档位">
+            <n-select v-model:value="limits.preset" :options="presetOptions" style="max-width: 340px" />
+            <div class="hint">{{ limitMeta("preset") }}</div>
+          </n-form-item>
+          <n-grid v-if="limits.preset === 'custom'" cols="1 640:2" :x-gap="16">
+            <n-form-item-gi label="自定义 · 输入长边上限（px）">
+              <n-input-number v-model:value="limits.custom_max_input_side" :min="0" :max="20000" :step="256" style="width: 100%" />
+            </n-form-item-gi>
+            <n-form-item-gi label="自定义 · 输入总像素上限（MP）">
+              <n-input-number v-model:value="limits.custom_max_input_mp" :min="0" :max="500" :step="0.5" style="width: 100%" />
+            </n-form-item-gi>
+            <n-form-item-gi label="自定义 · 输出长边上限（px）">
+              <n-input-number v-model:value="limits.custom_max_output_side" :min="0" :max="20000" :step="256" style="width: 100%" />
+            </n-form-item-gi>
+            <n-form-item-gi label="自定义 · 输出总像素上限（MP）">
+              <n-input-number v-model:value="limits.custom_max_output_mp" :min="0" :max="500" :step="0.5" style="width: 100%" />
+            </n-form-item-gi>
+          </n-grid>
+          <div v-if="limits.preset === 'custom'" class="hint">
+            0 = 该项不限制；总像素比长边更能反映扩散式放大（VOSR2 / SeedVR2）的显存占用。
+          </div>
+        </n-form>
+
+        <table class="guard-table">
+          <thead>
+            <tr><th>档位</th><th>输入上限（超过直接拒绝）</th><th>输出上限（决定自适应倍率）</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in PRESET_TABLE" :key="p.key" :class="{ cur: limits.preset === p.key }">
+              <td>{{ p.label }}</td>
+              <td>{{ p.inTxt }}</td>
+              <td>{{ p.outTxt }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="hint">
+          命中「输入上限」会发失败卡说明原因与当前档位；倍率命中「输出上限」会自动降档并在
+          处理中卡片 / 结果卡上写明（例如输入 1024×1536 请求 3× → 自动用 2×）。
+        </div>
+      </n-card>
+
       <n-spin :show="loading">
         <div v-if="!entries.length" class="empty">
           还没有添加功能。点右上角「＋ 添加功能」新增一条「图片放大」，绑定放大工作流即可使用
@@ -175,7 +232,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 
@@ -201,6 +258,58 @@ const DEFAULTS: Record<string, any> = {
   seed_value: 6666,
   timeout: 300,
 };
+
+// ---- 尺寸护栏（全局，防爆显存）----
+// 对照表数值需与后端 main.py 的 _UPSCALE_LIMIT_PRESETS 保持一致（这里仅用于展示/选择）
+const LIMIT_DEFAULTS: Record<string, any> = {
+  preset: "standard",
+  custom_max_input_side: 3072,
+  custom_max_input_mp: 9,
+  custom_max_output_side: 4096,
+  custom_max_output_mp: 12,
+};
+const limits = reactive({ ...LIMIT_DEFAULTS });
+const limitsDirty = ref(false);
+const savingLimits = ref(false);
+const PRESET_TABLE = [
+  { key: "strict", label: "严格（8G 以下）", inTxt: "长边 ≤2048px、≤4MP", outTxt: "长边 ≤3072px、≤8MP" },
+  { key: "standard", label: "标准（8~12G，默认）", inTxt: "长边 ≤3072px、≤9MP", outTxt: "长边 ≤4096px、≤12MP" },
+  { key: "loose", label: "宽松（16G 以上）", inTxt: "长边 ≤4096px、≤16MP", outTxt: "长边 ≤6144px、≤24MP" },
+  { key: "off", label: "不限制", inTxt: "不限", outTxt: "不限（自行承担爆显存风险）" },
+  { key: "custom", label: "自定义", inTxt: "见上方四个数值", outTxt: "见上方四个数值" },
+];
+const presetOptions = [
+  { label: "严格（8G 显存以下）", value: "strict" },
+  { label: "标准（8~12G 显存，默认）", value: "standard" },
+  { label: "宽松（16G 显存以上）", value: "loose" },
+  { label: "不限制（自行承担爆显存风险）", value: "off" },
+  { label: "自定义", value: "custom" },
+];
+watch(limits, () => { limitsDirty.value = true; }, { deep: true });
+
+function limitMeta(key: string) {
+  return schema.value?.upscale_limits?.items?.[key]?.hint || "";
+}
+
+async function saveLimits() {
+  savingLimits.value = true;
+  msg.value = "";
+  try {
+    const payload: Record<string, any> = {};
+    Object.keys(LIMIT_DEFAULTS).forEach((k) => (payload[k] = (limits as any)[k]));
+    await apiPost("config", { config: { upscale_limits: payload } });
+    limitsDirty.value = false;
+    msgType.value = "success";
+    msg.value = `尺寸护栏已保存（${presetOptions.find((p) => p.value === limits.preset)?.label || limits.preset}）`;
+    message.success("尺寸护栏已保存");
+  } catch (e: any) {
+    msgType.value = "error";
+    msg.value = e?.message || "保存失败";
+    message.error(msg.value);
+  } finally {
+    savingLimits.value = false;
+  }
+}
 
 // 只有解析通过、类型为「放大」的基础工作流才能绑定
 const upscaleBases = computed<any[]>(() =>
@@ -395,6 +504,14 @@ async function load() {
     ]);
     schema.value = sch || null;
     bases.value = Array.isArray(bw?.items) ? bw.items : [];
+    // 尺寸护栏（全局）
+    const _lim: any = cfg?.upscale_limits;
+    if (_lim && typeof _lim === "object") {
+      Object.keys(LIMIT_DEFAULTS).forEach((k) => {
+        (limits as any)[k] = _lim[k] ?? LIMIT_DEFAULTS[k];
+      });
+    }
+    limitsDirty.value = false;
     const list = Array.isArray(cfg?.features) ? cfg.features : [];
     entries.value = list
       .filter((x: any) => x && typeof x === "object")
@@ -471,6 +588,29 @@ onMounted(load);
 }
 .feat-card.off {
   opacity: 0.72;
+}
+.guard-card {
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.22));
+}
+.guard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 4px 0 2px;
+}
+.guard-table th,
+.guard-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.16);
+}
+.guard-table th {
+  color: var(--text-sub);
+  font-weight: 500;
+}
+.guard-table tr.cur td {
+  background: rgba(32, 128, 240, 0.08);
+  font-weight: 600;
 }
 .card-head {
   display: flex;

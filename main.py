@@ -365,6 +365,116 @@ _UPSCALE_SCALE_ARG_RE = re.compile(r"^(?:[xX]\s*(\d{1,2})|(\d{1,2})\s*[xX倍])$"
 # 倍率 flag 写法：`--倍率 3` / `--倍数 3` / `--倍 3` / `--scale 3`
 _UPSCALE_SCALE_FLAGS = ("--倍率", "--倍数", "--倍", "--scale", "--放大倍率")
 
+# ---- 图片放大：尺寸护栏（v7.7.9）------------------------------------------ #
+# 目的：① 拦住过大的输入图；② 按输入尺寸把倍率压进安全范围，避免「大图 × 高倍率」爆显存。
+# 口径：长边(px) + 总像素(MP)——扩散式放大（VOSR2 / SeedVR2）的显存占用与**输出总像素**最相关。
+# 0 = 该项不限制。档位面向「显存档」，用户只选档位，不用自己算像素。
+_UPSCALE_LIMIT_PRESETS: dict[str, dict] = {
+    "strict": {"label": "严格（8G 显存以下）", "in_side": 2048, "in_mp": 4,
+               "out_side": 3072, "out_mp": 8},
+    "standard": {"label": "标准（8~12G 显存，默认）", "in_side": 3072, "in_mp": 9,
+                 "out_side": 4096, "out_mp": 12},
+    "loose": {"label": "宽松（16G 显存以上）", "in_side": 4096, "in_mp": 16,
+              "out_side": 6144, "out_mp": 24},
+    "off": {"label": "不限制（自行承担爆显存风险）", "in_side": 0, "in_mp": 0,
+            "out_side": 0, "out_mp": 0},
+    "custom": {"label": "自定义", "in_side": 0, "in_mp": 0, "out_side": 0, "out_mp": 0},
+}
+
+
+def _upscale_limits_of(cfg: dict) -> dict:
+    """把 `upscale_limits` 配置解析成生效数值（纯函数，便于测试）。
+
+    返回 {"preset","label","in_side","in_mp","out_side","out_mp","unlimited"}。
+    档位非法/缺省按 standard；custom 时读四个自定义值（0 = 不限制该项）。
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    preset = str(cfg.get("preset") or "standard").strip().lower()
+    if preset not in _UPSCALE_LIMIT_PRESETS:
+        preset = "standard"
+    out = dict(_UPSCALE_LIMIT_PRESETS[preset])
+
+    def _num(key, default, as_int):
+        try:
+            v = float(cfg.get(key, default))
+        except (TypeError, ValueError):
+            v = float(default)
+        if v < 0:
+            v = 0.0
+        return int(v) if as_int else v
+
+    if preset == "custom":
+        out["in_side"] = _num("custom_max_input_side", 3072, True)
+        out["in_mp"] = _num("custom_max_input_mp", 9, False)
+        out["out_side"] = _num("custom_max_output_side", 4096, True)
+        out["out_mp"] = _num("custom_max_output_mp", 12, False)
+    out["preset"] = preset
+    out["unlimited"] = not any(
+        [out["in_side"], out["in_mp"], out["out_side"], out["out_mp"]]
+    )
+    return out
+
+
+def _upscale_limits_desc(limits: dict, which: str = "in") -> str:
+    """护栏上限的可读文案（卡片/日志用），如「长边 ≤3072px、总像素 ≤9MP」；不限时给「不限」。"""
+    _side = int((limits or {}).get(f"{which}_side") or 0)
+    _mp = float((limits or {}).get(f"{which}_mp") or 0)
+    parts = []
+    if _side:
+        parts.append(f"长边 ≤{_side}px")
+    if _mp:
+        parts.append(f"总像素 ≤{_mp:g}MP")
+    return "、".join(parts) or "不限"
+
+
+def _upscale_input_verdict(w: int, h: int, limits: dict) -> tuple[bool, str]:
+    """输入尺寸是否放行，返回 (是否放行, 拒绝原因)。长边与总像素任一超限即拒绝。"""
+    if not w or not h:
+        return True, ""
+    side = max(int(w), int(h))
+    mp = (int(w) * int(h)) / 1_000_000
+    _side_lim = int((limits or {}).get("in_side") or 0)
+    _mp_lim = float((limits or {}).get("in_mp") or 0)
+    if _side_lim and side > _side_lim:
+        return False, f"长边 {side}px 超过上限 {_side_lim}px"
+    if _mp_lim and mp > _mp_lim + 1e-9:
+        return False, f"总像素 {mp:.1f}MP 超过上限 {_mp_lim:g}MP"
+    return True, ""
+
+
+def _upscale_fit_scale(w: int, h: int, want: int, limits: dict) -> tuple[int | None, str]:
+    """按输出上限把倍率「压到放得下」，返回 (可用倍率 或 None, 说明)。
+
+    从 want 往下一档一档试（want, want-1, …, 1），取第一个同时满足输出长边与输出总像素的：
+    - 说明非空 ⇒ **发生了降档**，调用方要在卡片里写明；
+    - 返回 None ⇒ 连 1× 都超上限（拒绝）；
+    - 尺寸未知 / 未设上限 ⇒ 原样返回 want、说明为空。
+    """
+    try:
+        want = int(want)
+    except (TypeError, ValueError):
+        return None, "倍率无法识别"
+    if want < 1 or not w or not h:
+        return want, ""
+    _side_lim = int((limits or {}).get("out_side") or 0)
+    _mp_lim = float((limits or {}).get("out_mp") or 0)
+    if not _side_lim and not _mp_lim:
+        return want, ""
+    _lim_txt = _upscale_limits_desc(limits, "out")
+    for s in range(want, 0, -1):
+        ow, oh = int(w) * s, int(h) * s
+        if _side_lim and max(ow, oh) > _side_lim:
+            continue
+        if _mp_lim and (ow * oh) / 1_000_000 > _mp_lim + 1e-9:
+            continue
+        if s == want:
+            return want, ""
+        return s, (
+            f"输入 {w}×{h} 用 {want}× 会到 {int(w) * want}×{int(h) * want}，"
+            f"超过输出上限（{_lim_txt}）→ 已自动降为 {s}×"
+        )
+    return None, f"输入 {w}×{h} 即使 1× 也超过输出上限（{_lim_txt}）"
+
 
 def _size_tier_table(ratio_items: list | None) -> dict:
     """档位 × 比例对照表（供 WebUI 展示与文档）。
@@ -8149,6 +8259,10 @@ class ComfyUIDrawPlugin(Star):
             return default
         return _v
 
+    def _upscale_limits(self) -> dict:
+        """图片放大 · 尺寸护栏（全局配置 `upscale_limits` 解析后的生效值）。"""
+        return _upscale_limits_of(self._cfg("upscale_limits", {}) or {})
+
     @staticmethod
     def _parse_scale_list(raw) -> list[int]:
         """把「允许的放大倍率」解析成整数列表（逗号/顿号/分号/空格分隔，只收 1~8）。"""
@@ -8481,6 +8595,15 @@ class ComfyUIDrawPlugin(Star):
         src = images[0]
         if len(images) > 1:
             logger.info(f"【放大】 收到 {len(images)} 张图，只放大第一张: {src}")
+        # 1.5) 读输入尺寸（尺寸护栏与自适应倍率都要用；无 Pillow / 读失败就跳过检查，不阻断）
+        in_w = in_h = 0
+        if _PILImage is not None:
+            try:
+                with _PILImage.open(src) as _im:
+                    in_w, in_h = int(_im.width), int(_im.height)
+            except Exception as _e:
+                logger.debug(f"【放大】 读取输入尺寸失败（跳过尺寸护栏）: {_e}")
+        _size_txt = f"{in_w}×{in_h}" if (in_w and in_h) else ""
         # 2) 定用哪条「图片放大」功能（指令点名 > 第一个启用的条目）
         try:
             entry = self._resolve_upscale_entry(wf_spec)
@@ -8508,6 +8631,53 @@ class ComfyUIDrawPlugin(Star):
             f"【放大】 功能「{_ename}」→ 工作流「{_wfname}」｜允许倍率 {_allowed or '不限'}｜"
             f"默认 {_dft}×｜种子 {self._upscale_param(entry, 'seed_mode', 'random')}"
         )
+        # 3.5) 尺寸护栏（v7.7.9，全局配置）：① 输入图太大直接拦；② 按输入尺寸自适应降倍率，
+        #      避免「大图 × 高倍率」把显存打爆。都在**上传之前**判断，省掉无谓的读盘与上传。
+        _limits = self._upscale_limits()
+        _want_scale = scale
+        _fit_note = ""
+        if in_w and in_h and not _limits.get("unlimited"):
+            _ok_in, _why_in = _upscale_input_verdict(in_w, in_h, _limits)
+            if not _ok_in:
+                _in_desc = _upscale_limits_desc(_limits, "in")
+                logger.info(
+                    f"【放大】 输入图超限被拦：{_size_txt}（{_why_in}｜档位 {_limits.get('preset')}）"
+                )
+                await self._card_or_text(
+                    event,
+                    f"这张图太大了（{_size_txt}，{_why_in}），超过当前的「尺寸护栏」"
+                    f"（{_limits.get('label')}：{_in_desc}）。"
+                    "请先把图片缩小，或让管理员把「更多功能 → 尺寸护栏」调到更高的档位～",
+                    info=self._card_fail_info(
+                        wf={"name": _ename}, prompt="图片放大", is_img2img=True,
+                        size=_size_txt, cost=time.time() - _t0,
+                        extra=[("护栏档位", str(_limits.get("label") or "")),
+                               ("输入上限", _in_desc)],
+                    ),
+                )
+                return
+            _fit_scale, _fit_note = _upscale_fit_scale(in_w, in_h, scale, _limits)
+            if _fit_scale is None:
+                logger.info(f"【放大】 输出尺寸超限被拦：{_fit_note}")
+                await self._card_or_text(
+                    event,
+                    f"{_fit_note}，请先把图片缩小后再试～",
+                    info=self._card_fail_info(
+                        wf={"name": _ename}, prompt="图片放大", is_img2img=True,
+                        size=_size_txt, cost=time.time() - _t0,
+                        extra=[("护栏档位", str(_limits.get("label") or "")),
+                               ("输出上限", _upscale_limits_desc(_limits, "out"))],
+                    ),
+                )
+                return
+            if _fit_note:
+                logger.info(f"【放大】 尺寸护栏降档：{_fit_note}")
+                scale = _fit_scale
+            logger.info(
+                f"【放大】 尺寸护栏：输入 {_size_txt}｜档位 {_limits.get('label')}"
+                f"（输入 {_upscale_limits_desc(_limits, 'in')}／"
+                f"输出 {_upscale_limits_desc(_limits, 'out')}）｜倍率 {_want_scale}×→{scale}×"
+            )
         # 4) 组装 prompt：写倍率 + 种子
         try:
             _wf, prompt = self._load_upscale_base(rec)
@@ -8617,7 +8787,10 @@ class ComfyUIDrawPlugin(Star):
             self._local_queue_add(srv_key, prompt_id)
             # 8) 处理中卡片（v7.7.7）：与出图链路同一套卡片/同一套开关（enabled、作用域、
             #    撤回都适用）；卡片不可发或渲染失败时，退回原来那行文字。
-            _start_txt = f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～"
+            _start_txt = (
+                f"正在放大（{applied or scale}×）…这步比较慢，稍等一下～"
+                + (f"（尺寸护栏已把 {_want_scale}× 降为 {scale}×）" if _fit_note else "")
+            )
             _start_sent = False
             try:
                 _start_sent = await self._send_draw_card(event, {
@@ -8629,6 +8802,9 @@ class ComfyUIDrawPlugin(Star):
                     "params": self._card_chips([
                         ("输入", f"{in_w}×{in_h}" if (in_w and in_h) else None),
                         ("倍率", f"{applied or scale}×"),
+                        # 尺寸护栏降档时在卡片上写明（没降档就不显示，避免噪音）
+                        ("护栏降档", (f"{_want_scale}×→{scale}×" if _fit_note else None)),
+                        ("输出上限", (_upscale_limits_desc(_limits, "out") if _fit_note else None)),
                         ("种子", (seeds[0] if seeds else None)),
                         ("工作流", _wfname),
                     ]),
@@ -8760,7 +8936,13 @@ class ComfyUIDrawPlugin(Star):
                             (_ename, f"{applied or scale}× · {_cost:.1f}s", "ok"),
                             (_wfname, f"{applied or scale}×", ""),
                         ],
-                    }],
+                    }] + ([{
+                        "label": "尺寸护栏",
+                        "rows": [
+                            ("自动降档", f"{_want_scale}× → {scale}×", "ok"),
+                            ("输出上限", _upscale_limits_desc(_limits, "out"), ""),
+                        ],
+                    }] if _fit_note else []),
                 }
                 # 结果卡同样受卡片配置约束（总开关 / 结果卡开关 / 发送范围）；不可发或画不出来
                 # 就退回一行文字小结，保证信息一定送达。
@@ -8776,7 +8958,8 @@ class ComfyUIDrawPlugin(Star):
                         event,
                         f"放大完成：{applied or scale}×"
                         + (f"，{out_w}×{out_h}" if out_w and out_h else "")
-                        + f"，耗时 {_cost:.1f}s",
+                        + f"，耗时 {_cost:.1f}s"
+                        + (f"（尺寸护栏已把 {_want_scale}× 降为 {scale}×）" if _fit_note else ""),
                     )
                 # 计数：配额 + 今日已出图（与出图同一口径）
                 self._record_draw_used(event)
