@@ -60,6 +60,7 @@ $includeList = @(
     "option_store.py",
     "draw_card.py",
     "character.py",
+    "prompt_guard.py",
     "story_store.py",
     "quota_store.py",
     "oplog_store.py",
@@ -125,6 +126,22 @@ foreach ($name in $includeList) {
         Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
         exit 1
     }
+}
+
+# 防漏校验（v7.6.1）：上面是**显式清单**，新增模块忘了加就静默丢包——
+# v7.6.0 的 prompt_guard.py 就这么没进包（插件 import 直接失败）。
+# 这里兜一道：仓库根下所有 *.py（排除下划线开头的临时脚本）都必须在清单里，
+# 少一个就报错并删掉半成品 zip，绝不发出去。
+$strayPy = @()
+Get-ChildItem -Path $root -Filter "*.py" -File | Where-Object { $_.Name -notlike "_*" } | ForEach-Object {
+    if ($includeList -notcontains $_.Name) { $strayPy += $_.Name }
+}
+if ($strayPy.Count -gt 0) {
+    Write-Host ("Packaging aborted: these .py files are missing from includeList -> " + ($strayPy -join ", ")) -ForegroundColor Red
+    Write-Host "Add them to build_zip.ps1 includeList (otherwise the plugin will fail to import them)." -ForegroundColor Red
+    $zip.Dispose()
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    exit 1
 }
 $zip.Dispose()
 if (Test-Path $zipPath) {
