@@ -417,6 +417,12 @@
             "obvious_hint": true,
             "default": ""
           },
+          "max_refs": {
+            "type": "int",
+            "description": "参考图上限（多参图生图，0=沿用全局）",
+            "hint": "本工作流单次图生图最多取几张参考图（多参图生图按顺序对应 image_1~N）。0 或留空 = 沿用全局「出图行为 → 图生图参考图上限」（默认 3）。",
+            "default": 0
+          },
           "resolution_width_field": {
             "type": "string",
             "description": "宽度输入框名",

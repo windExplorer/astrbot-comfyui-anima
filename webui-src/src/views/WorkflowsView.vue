@@ -272,6 +272,11 @@
             <n-form-item label="参考图节点"><n-input v-model:value="editForm.image_node" placeholder="图生图 LoadImage（可选）" /></n-form-item>
             <n-form-item label="主模节点（lora_anchor）"><n-input v-model:value="editForm.lora_anchor" placeholder="CheckpointLoader/UNETLoader 键名，留空自动探测" /></n-form-item>
           </div>
+          <n-form-item label="参考图上限（多参图生图）">
+            <n-input-number v-model:value="editForm.max_refs" :min="0" :max="8" style="width:100%"
+                            placeholder="0 = 沿用全局（默认 3）" />
+            <span class="form-hint">多参图生图工作流单次最多取几张参考图（按顺序对应 image_1~N）。0 或留空 = 沿用全局「出图行为 → 图生图参考图上限」。仅多参工作流生效，单图工作流恒为 1。</span>
+          </n-form-item>
           <div class="form-grid">
             <n-form-item label="放大模型节点"><n-input v-model:value="editForm.upscale_node_id" placeholder="放大模型加载节点键名（如 14）" /></n-form-item>
             <n-form-item label="放大模型名称"><n-input v-model:value="editForm.upscale_model_name" placeholder="替换成的放大模型文件名（如 4x-UltraSharp.pth）" /></n-form-item>
@@ -1450,6 +1455,7 @@ function openForm(idx: number, prefill?: any) {
     max_size_tier: w.max_size_tier || "2k",
     lock_size: !!w.lock_size,
     image_node: w.image_node || "",
+    max_refs: Number(w.max_refs) > 0 ? Number(w.max_refs) : 0,
     lora_anchor: w.lora_anchor || "",
     lora_clip: w.lora_clip || "",
     upscale_node_id: w.upscale_node_id || "",

@@ -6253,8 +6253,8 @@ class ComfyUIDrawPlugin(Star):
                     _init_images.append(_raw)
                 init_images = _init_images
 
-                # 参考图数量上限（img2img_max_refs，默认 3）：超出取前 N 并提示
-                _max_refs = self._img2img_max_refs()
+                # 参考图数量上限（条目 max_refs 优先，缺省用全局 img2img_max_refs，默认 3）
+                _max_refs = self._img2img_max_refs(wf)
                 if len(init_images) > _max_refs:
                     logger.info(
                         f"【图生图】 参考图 {len(init_images)} 张超过上限 {_max_refs}，取前 {_max_refs} 张"
@@ -10853,8 +10853,16 @@ class ComfyUIDrawPlugin(Star):
                 out.append(p_)
         return out or images
 
-    def _img2img_max_refs(self) -> int:
-        """单次图生图参考图上限（img2img_max_refs，默认 3，夹紧 1~8）。"""
+    def _img2img_max_refs(self, wf: dict | None = None) -> int:
+        """单次图生图参考图上限：工作流条目配了 max_refs（>0）用条目的，
+        否则用全局 img2img_max_refs（默认 3，夹紧 1~8）。"""
+        if wf:
+            try:
+                _wf_v = int(float(wf.get("max_refs") or 0))
+                if _wf_v > 0:
+                    return max(1, min(8, _wf_v))
+            except (TypeError, ValueError):
+                pass
         try:
             v = int(self._cfg("img2img_max_refs", 3))
         except (TypeError, ValueError):
