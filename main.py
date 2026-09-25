@@ -4106,6 +4106,7 @@ class ComfyUIDrawPlugin(Star):
         "show_prompt": True,       # 卡片里是否展示提示词
         "today_count": True,       # 右上角是否展示「今日已出图 N 张」
         "result_enabled": True,    # 出图完成发结果卡（替代原来的文字小报告）
+        "result_text": True,       # 结果卡关闭时发一行文字小结（出图/放大/抠图共用，v7.7.25）
         "fail_enabled": True,      # 绘制失败发失败卡（替代原来的文字报错）
         "brand": "ComfyUI萌绘",     # 右下角品牌名
     }
@@ -7570,7 +7571,9 @@ class ComfyUIDrawPlugin(Star):
                             ]),
                             "prompt": "",
                         }
-                        if not await self._send_draw_card(event, _done_info, "done") and _rpt_text:
+                        # v7.7.25：文字兜底也受 result_text 开关管——有人连文字都不想要
+                        if not await self._send_draw_card(event, _done_info, "done") and _rpt_text \
+                                and self._card_cfg().get("result_text", True):
                             try:
                                 await self._send(event, _rpt_text)
                             except Exception as _e:
@@ -8984,7 +8987,8 @@ class ComfyUIDrawPlugin(Star):
                     )
                 else:
                     logger.info("【放大】 结果卡未发送：卡片总开关/结果卡开关关闭，或发送范围不含当前会话")
-                if not _done_ok:
+                # v7.7.25：文字小结受 result_text 开关管（结果卡与文字都关 = 完成后只发图）
+                if not _done_ok and self._card_cfg().get("result_text", True):
                     await self._send(
                         event,
                         f"放大完成：{applied or scale}×"
@@ -9661,7 +9665,8 @@ class ComfyUIDrawPlugin(Star):
                 _done_ok = False
                 if self._card_would_send(event, "done"):
                     _done_ok = await self._send_report_card(event, _rep, foot_left="口径：按提示词抠图/去背景，透明通道保留")
-                if not _done_ok:
+                # v7.7.25：文字小结受 result_text 开关管（结果卡与文字都关 = 完成后只发图）
+                if not _done_ok and self._card_cfg().get("result_text", True):
                     await self._send(
                         event,
                         "抠图完成"
