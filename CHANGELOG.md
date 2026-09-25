@@ -2,6 +2,37 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.3（修复：模型被识别成 ModelSamplingAuraFlow / 底模关联不上）
+
+**现象**：基础工作流解析出来的「模型」是 `ModelSamplingAuraFlow`（采样偏移节点），不是真正的
+底模；卡片显示「模型未识别」，底模自动关联也匹配不上。
+
+**根因**：`workflow_parser._walk_up_model` 是「沿 model 链上溯，遇到第一个**非 LoRA** 节点就停」。
+在 `UNETLoader → ModelSamplingAuraFlow → KSampler` 这类工作流里，采样器的 `model` 输入直接
+来自修饰节点，于是它被当成了主模：
+
+- `model_class` 记成 `ModelSamplingAuraFlow`、`model_file` 为空（它没有 unet_name/ckpt_name
+  这类字段）→ 底模按文件名匹配自然匹配不上；
+- 顺带**该修饰节点上游的 LoRA 全被漏收**，`builtin_loras`（内置 LoRA 保护：不可删、可禁用）
+  也随之失效。
+
+**修法**：改为「只要节点还带着 `model` 上游连线就继续穿透」，直到
+① 真正的加载器（`_is_base_model_loader`：Checkpoint / UNET 系），或
+② 再往上没有 `model` 连线 —— 那它就是链路源头（兼容类名不含 unet/checkpoint 的自定义加载器）。
+途经的非 LoRA 节点记进 `roles["model_patch_nodes"]` / `model_patch_class` 留档；出图时会打一行
+日志便于核对：`【底模】 工作流「x」途经模型修饰节点 ['11']（ModelSamplingAuraFlow）→ 主模回溯为
+UNETLoader（flux1-dev.safetensors）`。自环 / 断链依旧安全（有 seen 集合 + 明确报错，不会死循环）。
+
+**存量记录怎么修**：roles 是按旧解析结果存库的，所以改完解析器还要**在「基础工作流」页对那条
+记录点一次「重解析」**——重解析成功后，若它还没关联底模，handler 会顺手补一次底模自动关联，
+提示「已自动关联底模 xxx」（关联失败也可以手动选，v7.7.2 已修好保存）。
+
+验证：新增 `tests/test_model_walk.py` 5 组 —— auraflow 场景（本次事故形态）/ 修饰节点与上游
+LoRA 双穿透 / 直连加载器与仅 LoRA 链行为不变 / 自定义加载器兜底与自环不死循环 / **存量记录
+重解析后恢复正确模型**。全套回归通过（workflow_v7 13 组、image_upscale 7 组、
+baseworkflow_meta 2 组、character 99 项、draw_card、lora_base_filter、wait_for_result、
+prompt_boost、prompt_guard、force_draw、session_isolation、nai_params、size_helpers 等）。
+
 ## v7.7.2（修复：基础工作流「底模」选了保存却仍显示未关联）
 
 **现象**：在「基础工作流」页的编辑弹窗里选好底模 → 保存（提示「已保存」）→ 列表卡片仍然

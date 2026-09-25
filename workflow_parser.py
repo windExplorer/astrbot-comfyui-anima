@@ -142,23 +142,37 @@ def _is_cleanup(node: dict) -> bool:
     return _CLEANUP_HINT in _ct(node)
 
 
-def _walk_up_model(prompt: dict, start: str) -> tuple[str | None, list[str]]:
-    """从采样器 model 输入沿 LoRA 链向上回溯到主模源。返回 (主模节点ID, 途经LoRA节点列表)。"""
+def _walk_up_model(prompt: dict, start: str) -> tuple[str | None, list[str], list[str]]:
+    """从采样器的 model 输入沿 MODEL 连线向上回溯到主模源。
+
+    返回 (主模节点ID, 途经 LoRA 节点列表, 途经「模型修饰节点」列表)。
+
+    v7.7.3：此前是「遇到第一个非 LoRA 节点就停」，于是
+    `UNETLoader → ModelSamplingAuraFlow → KSampler` 这类工作流会把
+    ModelSamplingAuraFlow（采样偏移 / 模型补丁节点）当成主模 —— 表现为
+    「模型识别错、显示 ModelSamplingAuraFlow、底模关联不上」，而且该修饰节点
+    **上游的 LoRA 也全被漏收**（内置 LoRA 保护随之失效）。
+    现在改为：只要节点还带着 `model` 上游连线就继续穿透，直到真正的加载器，
+    或再往上没有 `model` 连线（那它就是链路源头）。
+    """
     loras: list[str] = []
+    patches: list[str] = []
     cur = start
     seen = set()
     while cur and cur not in seen:
         seen.add(cur)
         node = prompt.get(cur)
         if not isinstance(node, dict):
-            return None, loras
-        if _is_lora(node):
-            loras.append(cur)
-            nxt = _link((node.get("inputs") or {}).get("model"))
-            cur = nxt[0] if nxt else None
-            continue
-        return cur, loras
-    return None, loras
+            return None, loras, patches
+        if _is_base_model_loader(node):
+            return cur, loras, patches
+        nxt = _link((node.get("inputs") or {}).get("model"))
+        if not nxt:
+            # 链路源头：自定义加载器类名可能不含 unet / checkpoint（识别不到就以此兜底）
+            return cur, loras, patches
+        (loras if _is_lora(node) else patches).append(cur)
+        cur = nxt[0]
+    return None, loras, patches
 
 
 def list_nodes(prompt: dict) -> list[dict]:
@@ -476,11 +490,11 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
             "output_ext": s_in.get("output_ext") if isinstance(s_in.get("output_ext"), str) else None,
         }
 
-    # ---- 主模源：沿 model 链上溯（穿透 LoRA），全图主模加载节点必须 ≤1 ----
+    # ---- 主模源：沿 model 链上溯（穿透 LoRA 与模型修饰节点），全图主模加载节点必须 ≤1 ----
     model_link = _link(s_inputs.get("model"))
-    base_id, lora_chain = (None, [])
+    base_id, lora_chain, patch_chain = (None, [], [])
     if model_link:
-        base_id, lora_chain = _walk_up_model(nodes, model_link[0])
+        base_id, lora_chain, patch_chain = _walk_up_model(nodes, model_link[0])
     if not base_id or base_id not in nodes:
         errors.append("无法从采样器的 model 输入回溯到底模加载节点（UNETLoader/CheckpointLoader 等）。")
     else:
@@ -500,6 +514,12 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     base_loaders = [nid for nid, n in nodes.items() if _is_base_model_loader(n)]
     if len(base_loaders) > 1:
         errors.append(f"检测到 {len(base_loaders)} 个主模加载节点（{base_loaders}）。要求单主模，多阶段/多管线工作流暂不支持。")
+    # 途经的「模型修饰节点」（ModelSampling* / 模型补丁等，v7.7.3）：主模已**穿透**它们
+    # 回溯到真正的加载器，这里留档供展示与排查（出图时【底模】日志会打印）
+    roles["model_patch_nodes"] = patch_chain
+    roles["model_patch_class"] = (
+        (nodes.get(patch_chain[0]) or {}).get("class_type") if patch_chain else None
+    )
     roles["lora_nodes"] = lora_chain
     roles["extra_lora_nodes"] = [nid for nid, n in nodes.items() if _is_lora(n) and nid not in lora_chain]
     # 内置 LoRA 明细（节点 + 当前模型名）：供前端展示与运行时保护（不可删、可禁用）

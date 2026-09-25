@@ -5627,6 +5627,15 @@ class ComfyUIDrawPlugin(Star):
         wf["_base_sampler_defaults"] = sd
         # 底模信息（供日志/摘要）
         wf["_base_name"] = rec.get("name", "")
+        # v7.7.3：模型识别注记——主模已穿透「模型修饰节点」（ModelSamplingAuraFlow 等）
+        # 回溯到真正的加载器；这里打一行日志，方便核对识别到的模型与途经节点。
+        if roles.get("model_patch_nodes"):
+            logger.info(
+                f"【底模】 工作流「{rec.get('name')}」途经模型修饰节点 "
+                f"{roles.get('model_patch_nodes')}"
+                f"（{roles.get('model_patch_class') or '?'}）→ 主模回溯为 "
+                f"{roles.get('model_class') or '?'}（{roles.get('model_file') or '未命名'}）"
+            )
         # 底模（模型族）配置驱动提示词行为：v7.0.5 起 anima/标签系不再由工作流上的
         # 写死开关决定，而是读基础工作流关联底模的「提示词风格 / danbooru 适配」。
         try:
