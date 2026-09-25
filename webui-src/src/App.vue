@@ -411,12 +411,17 @@ body {
 .bw-modal { width: 680px; max-width: 92vw; }
 /* 详情/旧目录导入这类表格弹窗需要更宽 */
 .bw-modal.wide { width: 920px; }
+/* 「更多功能」页：配置表单弹窗 + 添加时的功能选择面板（窄一些）
+   v7.7.6：此前只在 scoped 样式里写了宽度 → 因 teleport 根本不生效，弹窗占满全屏 */
+.feat-modal { width: 640px; max-width: 92vw; }
+.feat-modal.pick { width: 560px; }
 
 /* 弹窗内表单过高时内部滚动（同样因为 teleport，scoped 样式不生效，统一在此兜底） */
 .lora-modal .edit-form,
 .wf-modal .edit-form,
 .bm-modal .edit-form,
-.bw-modal .n-form {
+.bw-modal .n-form,
+.feat-modal .n-form {
   max-height: 62vh;
   overflow: auto;
   padding-right: 4px;
@@ -428,11 +433,14 @@ body {
   .wf-modal,
   .bm-modal,
   .bw-modal,
-  .bw-modal.wide { width: 92vw; }
+  .bw-modal.wide,
+  .feat-modal,
+  .feat-modal.pick { width: 92vw; }
   .lora-modal .edit-form,
   .wf-modal .edit-form,
   .bm-modal .edit-form,
-  .bw-modal .n-form {
+  .bw-modal .n-form,
+  .feat-modal .n-form {
     max-height: 56vh;
   }
 }

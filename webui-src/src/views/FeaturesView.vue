@@ -10,7 +10,7 @@
       </div>
       <div class="view-actions">
         <n-button :loading="loading" @click="load">刷新</n-button>
-        <n-button type="primary" :loading="saving" @click="openForm(-1)">＋ 添加功能</n-button>
+        <n-button type="primary" @click="openAdd">＋ 添加功能</n-button>
       </div>
     </div>
 
@@ -92,6 +92,21 @@
         </div>
       </n-spin>
     </div>
+
+    <!-- 添加功能：功能选择面板（目前只有一项，图片放大） -->
+    <n-modal v-model:show="pickShow" preset="card" title="添加功能" class="feat-modal pick" :bordered="false">
+      <div class="pick-list">
+        <div v-for="f in FEATURE_KINDS" :key="f.kind" class="pick-item" @click="pickKind(f.kind)">
+          <span class="pick-icon">{{ f.icon }}</span>
+          <div class="pick-body">
+            <div class="pick-name">{{ f.name }}</div>
+            <div class="pick-desc">{{ f.desc }}</div>
+          </div>
+          <span class="pick-go">选择 →</span>
+        </div>
+      </div>
+      <div class="hint">选定后进入配置弹窗：绑定放大工作流、设置倍率与种子。后续新增的功能类型也会出现在这里。</div>
+    </n-modal>
 
     <!-- 编辑弹窗 -->
     <n-modal v-model:show="formShow" preset="card" class="feat-modal" :bordered="false"
@@ -266,14 +281,39 @@ function genTemplateKey(): string {
   return `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function openForm(idx: number) {
+function openForm(idx: number, kind = "upscale") {
   formIndex.value = idx;
   if (idx >= 0 && entries.value[idx]) {
     Object.keys(DEFAULTS).forEach((k) => (form[k] = (entries.value[idx] as any)[k] ?? DEFAULTS[k]));
   } else {
-    Object.assign(form, DEFAULTS);
+    Object.assign(form, DEFAULTS, { kind });
+    // 省事一点：库里只有一个放大工作流时，新条目默认就绑它
+    if (!form.base_id && upscaleBases.value.length === 1) form.base_id = String(upscaleBases.value[0].id);
   }
   formShow.value = true;
+}
+
+// ---- 添加功能：先选功能类型（目前只有「图片放大」）----
+const pickShow = ref(false);
+const FEATURE_KINDS = [
+  {
+    kind: "upscale",
+    name: "图片放大（超分）",
+    icon: "🔍",
+    desc: "用户带图 + /图片放大 [功能名] [倍率]，把图送进纯放大工作流超分（如 TE-Speed VOSR2）",
+  },
+];
+
+function openAdd() {
+  if (!upscaleBases.value.length) {
+    message.warning("基础工作流库里还没有「放大类」工作流，先到「基础工作流」页上传一个（也可以先添加、稍后再绑定）");
+  }
+  pickShow.value = true;
+}
+
+function pickKind(kind: string) {
+  pickShow.value = false;
+  openForm(-1, kind);
 }
 
 async function saveForm() {
@@ -507,7 +547,49 @@ onMounted(load);
   font-size: 12px;
   line-height: 1.6;
 }
-.feat-modal {
-  width: min(680px, 92vw);
+/* 功能选择面板：整行可点 */
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pick-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.24));
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.pick-item:hover {
+  border-color: var(--primary, #2080f0);
+  background: rgba(32, 128, 240, 0.06);
+}
+.pick-icon {
+  font-size: 22px;
+}
+.pick-body {
+  flex: 1;
+  min-width: 0;
+}
+.pick-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.pick-desc {
+  color: var(--text-sub);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pick-go {
+  color: var(--text-sub);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.pick-item:hover .pick-go {
+  color: var(--primary, #2080f0);
 }
 </style>
