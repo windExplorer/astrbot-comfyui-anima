@@ -4231,15 +4231,19 @@ class ComfyUIDrawPlugin(Star):
                         is_img2img: bool = False, srv_key: str = "",
                         platform_name: str = "", model: str = "", size: str = "",
                         seed=None, sampler: dict | None = None, cost: float | None = None,
-                        extra: list | None = None) -> dict:
-        """失败卡的信息：能取到多少填多少，取不到的字段渲染端会自动跳过。"""
+                        extra: list | None = None, flow: str = "") -> dict:
+        """失败卡的信息：能取到多少填多少，取不到的字段渲染端会自动跳过。
+
+        `flow`（v7.7.11）可覆盖副标题里的流程名——图片放大这类**非出图链路**的失败，
+        传「功能名 · 图片放大」，免得复用时被写成「图生图」。
+        """
         _sd = sampler or {}
         if platform_name:
             _flow = f"{platform_name} · 文生图"
             _loras: list[str] = []
         else:
-            _flow = (f"{((wf or {}).get('name') or '(未命名)')} · "
-                     f"{'图生图' if is_img2img else '文生图'}")
+            _flow = flow or (f"{((wf or {}).get('name') or '(未命名)')} · "
+                             f"{'图生图' if is_img2img else '文生图'}")
             _loras = self._card_loras_of(wf)
         return {
             "kicker": self._card_kicker(wf, platform_name, model),
@@ -8660,6 +8664,7 @@ class ComfyUIDrawPlugin(Star):
                         size=_size_txt, cost=time.time() - _t0,
                         extra=[("护栏档位", str(_limits.get("label") or "")),
                                ("输入上限", _in_desc)],
+                        flow=f"{_ename} · 图片放大",
                     ),
                 )
                 return
@@ -8674,6 +8679,7 @@ class ComfyUIDrawPlugin(Star):
                         size=_size_txt, cost=time.time() - _t0,
                         extra=[("护栏档位", str(_limits.get("label") or "")),
                                ("输出上限", _upscale_limits_desc(_limits, "out"))],
+                        flow=f"{_ename} · 图片放大",
                     ),
                 )
                 return
@@ -8738,6 +8744,8 @@ class ComfyUIDrawPlugin(Star):
                     wf={"name": _wfname}, prompt=f"图片放大 {scale}×", is_img2img=True,
                     srv_key=srv_key, seed=(seeds[0] if seeds else None),
                     cost=time.time() - _t0, extra=extra,
+                    # 副标题写成「功能名 · 图片放大」，别沿用出图那套「图生图」
+                    flow=f"{_ename} · 图片放大",
                 ),
             )
             self._record_failed(
