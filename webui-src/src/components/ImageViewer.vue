@@ -13,7 +13,7 @@
               <img v-if="refSrc" :src="refSrc" alt="参考图" @click="swapPair" />
               <div v-else class="iv-loading">加载参考图…</div>
             </div>
-            <figcaption class="iv-cap ref">参考图</figcaption>
+            <figcaption class="iv-cap ref">参考图{{ refDim ? ` ${refDim}` : "" }}</figcaption>
           </figure>
           <!-- 结果图 -->
           <figure class="iv-fig">
@@ -232,6 +232,12 @@ const emit = defineEmits<{
 
 const mainSrc = ref("");
 const refSrc = ref("");
+// 参考图的图库记录（v7.7.22）：meta 里带 w/h，用于在「参考图」标签旁显示尺寸
+const refMeta = ref<any>(null);
+const refDim = computed(() => {
+  const m = refMeta.value;
+  return m && m.w && m.h ? `${m.w}×${m.h}` : "";
+});
 const item = ref<ViewerImage | null>(null);
 // 生成详情弹窗（触发词/提示词/负面词）：独立 teleport 到 body，z-index 高于大图(9999)避免被遮挡
 const showDetail = ref(false);
@@ -433,17 +439,23 @@ async function onDownload() {
 
 async function loadRef(rs: string) {
   refSrc.value = "";
+  refMeta.value = null;
   try {
-    // 独立模式：用直链 URL
+    // 独立模式：用直链 URL（拿不到 meta，尺寸标签留空）
     if (isStandaloneMode()) {
       refSrc.value = standaloneImgUrl(rs, 900);
       return;
     }
-    // 内嵌页：参考图展示尺寸较小，用更小的 size 进一步减小体积
+    // 内嵌页：参考图展示尺寸较小，用更小的 size 进一步减小体积；
+    // meta 里带参考图的图库记录（w/h），顺手存下来显示尺寸（v7.7.22）
     const data = await apiGet("gallery/image", { sha: rs, meta: 1, size: 900 });
-    if (data && data.data_url) refSrc.value = data.data_url;
+    if (data && data.data_url) {
+      refSrc.value = data.data_url;
+      refMeta.value = data.meta || null;
+    }
   } catch (e) {
     refSrc.value = "";
+    refMeta.value = null;
   }
 }
 
@@ -469,6 +481,15 @@ function swapPair() {
   const m = mainSrc.value;
   mainSrc.value = refSrc.value;
   refSrc.value = m;
+  // 尺寸跟着图走（v7.7.22）：交换后两边的尺寸标签也对调，避免张冠李戴
+  const rw = Number(refMeta.value?.w) || 0, rh = Number(refMeta.value?.h) || 0;
+  const mw = Number(item.value?.w) || 0, mh = Number(item.value?.h) || 0;
+  if (rw && rh && mw && mh) {
+    refMeta.value = { ...(refMeta.value || {}), w: mw, h: mh };
+    item.value = { ...(item.value || {}), w: rw, h: rh };
+  } else {
+    refMeta.value = null; // 一边缺尺寸就不显示，宁缺勿错
+  }
 }
 
 // ---- 标签（展示 + 增删） ----

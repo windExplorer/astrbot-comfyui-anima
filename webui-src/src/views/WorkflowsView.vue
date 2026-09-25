@@ -101,7 +101,7 @@
             <span class="card-title">{{ w.name || "(未命名)" }}</span>
             <n-tag v-if="w.enabled === false" size="small" type="error" :bordered="false">已停用</n-tag>
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
-            <n-tag v-if="(w.image_node || '').trim()" size="small" type="success" :bordered="false">图生图</n-tag>
+            <n-tag v-if="wfIsImg2Img(w)" size="small" type="success" :bordered="false">图生图</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
             <n-tag v-if="(w.base_id || '').trim()" size="small" type="warning" :bordered="false">v7</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">旧版</n-tag>
@@ -716,6 +716,13 @@ function baseOf(w: any) {
   if (!id) return null;
   return baseWfs.value.find((b: any) => String(b.id) === id) || null;
 }
+
+/** 是否图生图（v7.7.22 修复：新版条目没有 image_node 字段，之前全被标成「文生图」）。
+ * 旧版：节点配置里配了「参考图节点」；新版：看绑定的基础工作流解析出的 kind。 */
+function wfIsImg2Img(w: any): boolean {
+  if (String(w?.image_node || "").trim()) return true;
+  return baseOf(w)?.roles?.kind === "img2img";
+}
 const loading = ref(false);
 const saving = ref(false);
 const workflows = ref<any[]>([]);
@@ -1313,7 +1320,7 @@ function buildCover(w: any): { fname: string; title: string; fields: ItemViewerF
   const size = (w.default_width && w.default_height)
     ? `${w.default_width} × ${w.default_height}` : "—";
   const fields: ItemViewerField[] = isNew ? [
-    { key: "类型", value: (w.image_node || "").trim() ? "图生图" : "文生图" },
+    { key: "类型", value: wfIsImg2Img(w) ? "图生图" : "文生图" },
     { key: "基础工作流", value: base?.name || `#${w.base_id}` },
     { key: "底模", value: base?.basemodel_name || "未关联底模" },
     { key: "服务器", value: serverLabel(w) },

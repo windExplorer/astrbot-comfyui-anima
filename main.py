@@ -6974,8 +6974,12 @@ class ComfyUIDrawPlugin(Star):
         # v7.4.7：尺寸**永远显示具体数值**，不再出现「(默认)」这种含糊文案——
         # 上面的四层决策必定把 w/h 解析成数字（未配置时兜底 512，那也是真实会用的值）；
         # 万一还是拿不到（图生图等极端情况），用实际输入尺寸（参考图 / 工作流 JSON）兜底。
+        # v7.7.22：图生图的输出尺寸由参考图决定（插件不改宽高），所以卡片**直接显示
+        # 输入图尺寸**——工作流里配的默认宽高对图生图没有意义，显示它只会误导。
         _disp_w, _disp_h = w, h
-        if not (_disp_w and _disp_h) and locals().get("_in_w") and locals().get("_in_h"):
+        if is_img2img and locals().get("_in_w") and locals().get("_in_h"):
+            _disp_w, _disp_h = _in_w, _in_h
+        elif not (_disp_w and _disp_h) and locals().get("_in_w") and locals().get("_in_h"):
             _disp_w, _disp_h = _in_w, _in_h
         try:
             _size = f"{int(_disp_w)}x{int(_disp_h)}"
