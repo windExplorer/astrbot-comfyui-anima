@@ -2,6 +2,11 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.34（绘图状态：系统 caption 拆两行）
+
+`Windows 11 专业工作站版` 这类 caption 拆成两行：`系统 Windows 11` + `版型 专业工作站版`，
+避免长 caption 在窄格里被截断；`版本`（display_version 25H2）行不变。
+
 ## v7.7.33（绘图状态：系统名与版本号分行展示）
 
 系统节拆行：`系统`（caption，如 Windows 11 专业工作站版）、`版本`（display_version，

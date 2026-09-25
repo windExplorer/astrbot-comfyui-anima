@@ -10800,7 +10800,14 @@ class ComfyUIDrawPlugin(Star):
                     _cap = str(_os.get("caption") or "").strip()
                     _dv = str(_os.get("display_version") or "").strip()
                     _ver = str(_os.get("version") or "").strip()
-                    if _cap:
+                    # caption 拆两行：「Windows 11 专业工作站版」→ 系统 Windows 11 + 版型 专业工作站版
+                    _cm = re.match(r"^(Windows\s+(?:XP|Vista|[78](?:\.1)?|10|11))(?:\s+(.+))?$",
+                                   _cap, flags=re.IGNORECASE)
+                    if _cm:
+                        _sys_rows.append(("系统", _cm.group(1), ""))
+                        if _cm.group(2):
+                            _sys_rows.append(("版型", _cm.group(2)[:28], ""))
+                    elif _cap:
                         _sys_rows.append(("系统", _cap[:28], ""))
                     if _dv:
                         _sys_rows.append(("版本", _dv, ""))
