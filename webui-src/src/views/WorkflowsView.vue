@@ -103,6 +103,8 @@
             <n-tag v-if="w.is_anima" size="small" type="info" :bordered="false">Anima</n-tag>
             <n-tag v-if="wfIsImg2Img(w)" size="small" type="success" :bordered="false">图生图</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
+            <n-tag v-if="wfIsImg2Img(w) && baseOf(w)?.roles?.multi_image" size="small" type="success"
+                   :bordered="false" round>多参</n-tag>
             <n-tag v-if="(w.base_id || '').trim()" size="small" type="warning" :bordered="false">v7</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">旧版</n-tag>
           </div>
