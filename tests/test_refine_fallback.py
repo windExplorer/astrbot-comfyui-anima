@@ -46,23 +46,37 @@ def _load_refine():
 
 class FakeSelf:
     def __init__(self, *, refine_on=True, rewrite_ok=True, translate_result="anima tags EN",
-                 qwen=False, qwen_ok=True, qwen_result="The image is a square photorealistic close-up of a cat."):
+                 qwen=False, qwen_ok=True, qwen_result="The image is a square photorealistic close-up of a cat.",
+                 sheet=False, sheet_ok=True, sheet_result="白底 CG 少女设定板 · 左侧主视觉大全身立绘……"):
         self.refine_on = refine_on
         self.rewrite_ok = rewrite_ok
         self.translate_result = translate_result
         self.qwen = qwen
         self.qwen_ok = qwen_ok
         self.qwen_result = qwen_result
+        self.sheet = sheet
+        self.sheet_ok = sheet_ok
+        self.sheet_result = sheet_result
         self.translate_called = 0
         self.rewrite_calls = 0
         self.qwen_calls = 0
         self.qwen_edit_flag = None
+        self.sheet_calls = 0
 
     def _cfg(self, key, default=None):
         return self.refine_on if key == "third_party_llm_refine" else default
 
     def _is_qwen_image(self, wf):
         return self.qwen
+
+    def _is_char_sheet_mode(self, wf, text):
+        return bool(self.sheet and self._is_qwen_image(wf))
+
+    async def _rewrite_to_char_sheet_llm(self, text):
+        self.sheet_calls += 1
+        if not self.sheet_ok:
+            raise RuntimeError("设定板改写未配置可用模型")
+        return self.sheet_result
 
     @staticmethod
     def _has_chinese(text):
@@ -190,6 +204,86 @@ def test_refine_fallback():
     print("== 提示词回退链（14 组：改写/回退翻译/关闭整理/标签系/Qwen 文生图/Qwen 编辑/原生） OK")
 
 
+def test_char_sheet():
+    """角色设定板（三视图/四视图）分支（v7.7.43）。"""
+    fn = _load_refine()
+    real = {"is_anima": False}
+    zh = "画一个白底 CG 少女设定板，三视图"
+
+    # ⑮ Qwen 底模 + 设定板意图 + 第三方调用 → 按设定板规范改写（不走通用 Qwen / 翻译）
+    s = FakeSelf(qwen=True, sheet=True)
+    got = _run(fn, s, real, zh, "partner")
+    assert got.startswith("白底 CG 少女设定板"), got
+    assert s.sheet_calls == 1 and s.qwen_calls == 0 and s.translate_called == 0
+    assert "t-1" in s._sheet_ok_traces, "应打标以便后续跳过英文锚点注入"
+
+    # ⑯ 设定板改写失败 + 中文 → 原样（纯中文规范，绝不翻译成英文）
+    s = FakeSelf(qwen=True, sheet=True, sheet_ok=False)
+    got = _run(fn, s, real, zh, "partner")
+    assert got == zh, got
+    assert s.translate_called == 0 and s.qwen_calls == 0
+
+    # ⑰ 关闭 LLM 整理 + 第三方 → 尊重配置：不改写、也不翻译
+    s = FakeSelf(qwen=True, sheet=True, refine_on=False)
+    got = _run(fn, s, real, zh, "partner")
+    assert got == zh and s.sheet_calls == 0 and s.translate_called == 0
+
+    # ⑱ 非 Qwen 底模 + 设定板意图 → 不走设定板规范（回落原有分支：写实清理）
+    s = FakeSelf(qwen=False, sheet=True)
+    got = _run(fn, s, real, zh, "partner")
+    assert got == "写实中文清理结果", got
+    assert s.sheet_calls == 0 and s.rewrite_calls == 1
+
+    # ⑲ 设定板 + 原生调用 + 纯英文（无中文）→ 仍按规范改写
+    s = FakeSelf(qwen=True, sheet=True)
+    got = _run(fn, s, real, "character sheet for a white-haired girl, turn-around", "")
+    assert got.startswith("白底 CG 少女设定板") and s.sheet_calls == 1
+
+    print("== 角色设定板分支（5 组：规范改写/失败保留中文/关闭整理/非Qwen不启用/原生英文） OK")
+
+
+def test_char_sheet_doc_and_context():
+    """规范文档读取 + 用户点名的角色卡资料会带进设定板改写输入。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    fn_doc = next(n for n in cls.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_char_sheet_skill_text")
+    fn_ctx = next(n for n in cls.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_char_sheet_context")
+    ns = {"logger": _Log(), "Path": Path, "__file__": str(ROOT / "main.py")}
+    exec(compile(ast.get_source_segment(src, fn_doc), "<x>", "exec"), ns)  # noqa: S102
+    exec(compile(ast.get_source_segment(src, fn_ctx), "<x>", "exec"), ns)  # noqa: S102
+    read_doc, build_ctx = ns["_char_sheet_skill_text"], ns["_char_sheet_context"]
+
+    class DocSelf:
+        _SHEET_SKILL_DIR = "skills/character-sheet"
+        _SHEET_SKILL_FILE = "character-design-sheet.md"
+        _SHEET_RULE = "内置精简规则（不该被用到）"
+
+    doc = read_doc(DocSelf())
+    assert "角色设定板生成器 v5.4" in doc, doc[:160]
+    assert "内置精简规则" not in doc, "应读到 skills/character-sheet/ 下的规范文档"
+
+    class FakeStore:
+        def list_characters(self):
+            return [{"id": 1, "name": "白芷", "aliases": ["baizhi"],
+                     "work": "《测试》", "note": "银发红瞳的少女剑士"}]
+
+        def get_anchor(self, cid):
+            return {"positive": "1girl, silver hair, red eyes", "negative": "lowres"}
+
+    class CtxSelf:
+        character = FakeStore()
+
+    ctx = build_ctx(CtxSelf(), "给白芷画一张三视图设定板")
+    assert "银发红瞳的少女剑士" in ctx, ctx
+    assert "silver hair" in ctx and "禁止出现在输出里" in ctx, ctx
+    # 没点名的角色不进上下文
+    assert build_ctx(CtxSelf(), "画一张三视图设定板") == ""
+    print("== 设定板规范文档 + 角色资料上下文（点名才带、英文标签转写要求） OK")
+
+
 def test_qwen_skill_doc():
     """Qwen 规范文档必须真的能被读到（否则悄悄退回内置精简规则，用户以为在用 skill）。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
@@ -226,4 +320,6 @@ def test_qwen_skill_doc():
 if __name__ == "__main__":
     test_refine_fallback()
     test_qwen_skill_doc()
-    print("提示词回退链 + Qwen 规范接入全部通过")
+    test_char_sheet()
+    test_char_sheet_doc_and_context()
+    print("提示词回退链 + Qwen 规范 + 角色设定板全部通过")

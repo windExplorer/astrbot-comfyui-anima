@@ -2939,6 +2939,140 @@ class ComfyUIDrawPlugin(Star):
         # 文生图规范：必须一整段、不含换行
         return " ".join(out.split())
 
+    # ---- 角色设定板（三视图 / 四视图等，v7.7.43） ---------------------------- #
+    # 规范文档随包发布在 skills/character-sheet/（用户可直接改文件替换规范）。
+    # 触发：底模为 Qwen-Image 家族（该规范输出纯中文，Qwen 系底模吃中文）+ 提示词里有设定板意图。
+    _SHEET_SKILL_DIR = "skills/character-sheet"
+    _SHEET_SKILL_FILE = "character-design-sheet.md"
+    # 设定板意图词（用户说「画个角色设定板 / 三视图 / 四视图 / 设定图」都算）
+    _SHEET_INTENT_RE = re.compile(
+        r"设定板|设定图|设定卡|角色设定|人物设定|角色设计|人设图|三维图|"
+        r"三视图|四视图|五视图|多视图|正侧背|转面图|"
+        r"character\s*sheet|model\s*sheet|design\s*sheet|turnaround",
+        re.IGNORECASE,
+    )
+    _SHEET_RULE = (
+        "你是专业级角色设定板视觉设计师 / 概念艺术总监。根据用户提供的角色描述（可含参考角色卡"
+        "资料）生成一张专业游戏美术、动画、影视前期设计流程感的**角色设定板**提示词。\n"
+        "输出格式（最高优先级）：只输出设定板的中文提示词正文——不写开场白/收尾/创作思路，"
+        "无标题、无代码围栏、无 Markdown 包装、不分块不编号、不反问不出图；**通篇中文**，"
+        "不出现任何英文单词或英文标签（英文关键词仅供你内部理解，必须转写成中文表达）；"
+        "排除项用中文否定句自然融进正文。\n"
+        "排版（两模板共用）：左侧主视觉大全身立绘 + 竖排书法大标题 + 小印章 + 人物档案 + "
+        "设计说明 + 配色色卡；右上三视图并排（正面/侧面/背面，标准站姿无特效，各标注「正视图/"
+        "侧视图/背视图」）；右中面部大特写 + 头部细节；右下 4–6 个等大细节小图横排（妆容/发饰/"
+        "耳饰/服饰纹样/鞋）；底部横条：武器展示（完整+局部+武器名）→ 服饰纹理 → 装备细节 → "
+        "技能特效。模板：白底（校园/日常/现代/科幻/机甲/战斗）或东方玄幻（古风/修仙/武侠/神话/"
+        "妖族/灵兽，深色墨色背景 + 金铜纹样 + 东方装饰）。视觉模式：CG（默认 2.5D 精致 CG）、"
+        "3D（游戏高模）、真人（摄影写实）——模式只改视觉表现，不改排版。\n"
+        "角色 DNA 锁定（≥20 项：性别/年龄感/身高比例/体型/脸型/发型/发色/瞳色/眼型/眉/肤色/"
+        "服装/鞋/饰品/武器/装备/标志/主题色/身份/模式），一旦确定，三视图、表情、细节特写、"
+        "武器、灵兽全部继承——禁止正侧面换发型/换服装。画幅不写死：用户给了比例就照用并写进正文，"
+        "没给就按内容与排版密度选合适的横版/竖版并在正文写明。"
+    )
+
+    def _is_char_sheet_request(self, text: str) -> bool:
+        """提示词里是否有「角色设定板（三视图/四视图/设定图…）」意图。"""
+        return bool(self._SHEET_INTENT_RE.search(text or ""))
+
+    def _is_char_sheet_mode(self, wf: dict | None, text: str) -> bool:
+        """本次是否是「用 Qwen-Image 家族底模画角色设定板」——是则按设定板规范改写提示词。"""
+        try:
+            return bool(self._is_qwen_image(wf) and self._is_char_sheet_request(text))
+        except Exception:
+            return False
+
+    def _char_sheet_skill_text(self) -> str:
+        """取角色设定板规范全文（优先 skills/character-sheet/ 下的文档，带 mtime 缓存）。"""
+        try:
+            p = Path(__file__).resolve().parent / self._SHEET_SKILL_DIR / self._SHEET_SKILL_FILE
+            if p.is_file():
+                mt = p.stat().st_mtime
+                cache = self.__dict__.setdefault("_sheet_skill_cache", None)
+                if cache and cache[0] == mt:
+                    return cache[1]
+                txt = p.read_text(encoding="utf-8")
+                self._sheet_skill_cache = (mt, txt)
+                return txt
+        except Exception as e:
+            logger.warning(f"【设定板】 读取规范文档失败（改用内置规则）: {e}")
+        return self._SHEET_RULE
+
+    def _char_sheet_context(self, text: str) -> str:
+        """设定板模式下，把用户点名的角色卡资料整理成上下文（外观标签需由 LLM 转写成中文）。
+
+        角色卡的外观锚点多为英文标签，设定板规范要求输出纯中文——所以这里把锚点作为
+        「仅供理解、必须转写」的素材交给 LLM，而不是事后把英文标签追加进提示词。
+        """
+        store = getattr(self, "character", None)
+        if store is None or not (text or "").strip():
+            return ""
+        low = (text or "").lower()
+        blocks: list[str] = []
+        try:
+            chars = store.list_characters() or []
+        except Exception as e:
+            logger.debug(f"【设定板】 读取角色卡失败（忽略）: {e}")
+            return ""
+        for c in chars[:80]:
+            try:
+                names = [str(c.get("name") or "")] + [str(a) for a in (c.get("aliases") or [])]
+                if not any(n and (n in text or n.lower() in low) for n in names):
+                    continue
+                lines = [f"- 角色：{c.get('name')}"]
+                if str(c.get("work") or "").strip():
+                    lines.append(f"  作品：{str(c.get('work')).strip()}")
+                if str(c.get("note") or "").strip():
+                    lines.append(f"  设定说明（中文）：{str(c.get('note')).strip()[:400]}")
+                _a = store.get_anchor(c.get("id"))
+                if _a and str(_a.get("positive") or "").strip():
+                    lines.append(
+                        "  已确认外观标签（英文，仅供你理解外观，"
+                        "必须转写成中文描述、禁止出现在输出里）："
+                        f"{str(_a.get('positive')).strip()[:400]}"
+                    )
+                if _a and str(_a.get("negative") or "").strip():
+                    lines.append(f"  排除项：{str(_a.get('negative')).strip()[:200]}")
+                blocks.append("\n".join(lines))
+            except Exception:
+                continue
+        return "\n".join(blocks)
+
+    async def _rewrite_to_char_sheet_llm(self, text: str) -> str:
+        """按角色设定板规范改写提示词（纯中文设定板提示词）。失败抛异常，由调用方保留原文。"""
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("设定板改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        skill = self._char_sheet_skill_text()
+        ctx = self._char_sheet_context(text)
+        prompt = (
+            f"{skill}\n\n---\n\n"
+            "【本次任务】用户想要一张角色设定板（三视图/四视图等）。请按上面的规范，"
+            "生成这张设定板的中文提示词正文。只输出提示词正文，不要任何解释、标题或代码块。\n\n"
+            f"用户需求：\n{text}\n"
+        )
+        if ctx:
+            prompt += (
+                "\n该角色在本插件里有已确认的角色卡资料，外观必须以此为准（英文标签仅供你理解，"
+                f"输出里不得出现任何英文，全部转写成中文）：\n{ctx}\n"
+            )
+        prompt += "\n角色设定板中文提示词："
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("rewrite_sheet", provider_id, llm_resp)
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"设定板改写超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"设定板改写失败: {e}") from e
+        out = out.strip().strip("`").strip()
+        # 设定板提示词允许分段（排版分区），保留换行结构，去掉空行
+        return "\n".join(ln.strip() for ln in out.splitlines() if ln.strip())
+
     @staticmethod
     def _split_prompt_segments(text: str) -> list[str]:
         """把提示词按逗号拆成「片段 + 分隔符」交错的列表，便于只翻译含中文的片段、
@@ -3158,12 +3292,16 @@ class ComfyUIDrawPlugin(Star):
           ③ 非必须英文（写实/自然语言系，含 Qwen **图像编辑**）工作流：关了就原样。
         v7.7.42：Qwen-Image 家族接入——文生图按官方格式（英文长叙述、一整段、不写比例与
         画质套话），图像编辑按编辑规范（正文语言随指令、<image1> 引用、只改点名属性）。
+        v7.7.43：Qwen-Image 家族 + 设定板意图（三视图/四视图/设定板…）→ 按角色设定板规范改写
+        （纯中文设定板提示词）——这是该规范的明确诉求，所以设定板场景不做英文翻译兜底。
         翻译失败（未配置翻译模式等）仍保留原提示词，绝不阻断出图。
         """
         _must_en = bool(wf.get("is_anima"))
         _qwen = self._is_qwen_image(wf)
-        # Qwen 文生图正文必须英文；图像编辑的正文语言随用户指令（中文指令 → 中文正文）
-        _need_en = _must_en or (_qwen and not has_input_image)
+        _sheet = self._is_char_sheet_mode(wf, positive)
+        # Qwen 文生图正文必须英文；图像编辑的正文语言随用户指令（中文指令 → 中文正文）；
+        # 角色设定板规范要求输出纯中文 → 不做英文翻译兜底
+        _need_en = (_must_en or (_qwen and not has_input_image)) and not _sheet
         _refine_on = bool(self._cfg("third_party_llm_refine", True))
 
         async def _try_translate(_why: str) -> str:
@@ -3192,6 +3330,26 @@ class ComfyUIDrawPlugin(Star):
                 return _r
             return ""
 
+        async def _try_sheet(_why: str) -> str:
+            logger.info(f"【绘图·LLM⑤】trace={trace_id} 阶段=按角色设定板规范改写（{_why}）")
+            try:
+                _r = await self._rewrite_to_char_sheet_llm(positive)
+            except Exception as _e:
+                logger.warning(f"【绘图·LLM⑤】 设定板改写失败（保留原文）: {_e}")
+                return ""
+            if _r and _r.strip():
+                logger.info(f"【设定板】 {_why}，改写结果: {_r[:160]}")
+                # 打标：本次设定板提示词已由 LLM 融入角色资料 → 后续跳过英文锚点标签注入
+                try:
+                    _flags = getattr(self, "_sheet_ok_traces", None)
+                    if _flags is None:
+                        _flags = self._sheet_ok_traces = set()
+                    _flags.add(trace_id)
+                except Exception:
+                    pass
+                return _r
+            return ""
+
         try:
             if source and not _refine_on:
                 logger.info(
@@ -3205,7 +3363,11 @@ class ComfyUIDrawPlugin(Star):
                         return _got
                 return positive
             if source:
-                if _qwen:
+                if _sheet:
+                    _got = await _try_sheet("第三方插件调用")
+                    if _got:
+                        return _got
+                elif _qwen:
                     _got = await _try_qwen("第三方插件调用")
                     if _got:
                         return _got
@@ -3232,6 +3394,11 @@ class ComfyUIDrawPlugin(Star):
                         logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {rewritten}")
                         return rewritten
                 # 第三方调用落到这里 = 整理失败/返回空，继续走翻译兜底
+            elif _sheet:
+                # 原生调用 + 设定板意图（Qwen 底模）：按角色设定板规范改写（纯中文设定板）
+                _got = await _try_sheet("原生调用设定板意图")
+                if _got:
+                    return _got
             elif _qwen and self._has_chinese(positive):
                 # 原生调用 + Qwen 工作流含中文：同样按官方规范改写（中文 brief → 规范提示词）
                 _got = await _try_qwen("原生调用含中文")
@@ -6433,12 +6600,16 @@ class ComfyUIDrawPlugin(Star):
         if not _fixed_prompt:
             _zh_now = self._has_chinese(positive)
             _qwen_now = self._is_qwen_image(wf)
+            # v7.7.43：设定板意图（Qwen 底模）无论中英文都要进去（按规范改写）
+            _sheet_now = _qwen_now and self._is_char_sheet_request(positive)
             _must_en_now = bool(wf.get("is_anima")) or (_qwen_now and not init_images)
             if source:
                 _need_refine = bool(self._cfg("third_party_llm_refine", True)
+                                    or _sheet_now
                                     or ((_must_en_now or _qwen_now) and _zh_now))
             else:
-                _need_refine = bool((wf.get("is_anima") or _qwen_now) and _zh_now)
+                _need_refine = bool(_sheet_now
+                                    or ((wf.get("is_anima") or _qwen_now) and _zh_now))
         if _need_refine:
             _llm_task = asyncio.create_task(
                 self._llm_refine_prompt(
@@ -6619,7 +6790,18 @@ class ComfyUIDrawPlugin(Star):
             ):
                 _u_text = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
                 _hits = await character.resolve_hits(self, event, _u_text, positive)
-                if _hits and _cc_cfg.get("auto_inject", True):
+                # v7.7.43：角色设定板（三视图/四视图）模式下，提示词是 LLM 按设定板规范写的
+                # 纯中文长文，且角色资料已在改写时融进去——此时**不追加英文锚点标签**，
+                # 否则会破坏中文设定板（规范明确要求通篇中文）。
+                _sheet_flags = getattr(self, "_sheet_ok_traces", None) or set()
+                _sheet_done = _trace_id in _sheet_flags
+                if _sheet_done:
+                    _sheet_flags.discard(_trace_id)   # 用过即清，避免标志堆积
+                    logger.info(
+                        "【角色卡·注入】 本次为角色设定板（角色资料已按设定板规范融入中文提示词）"
+                        "→ 跳过锚点标签注入"
+                    )
+                elif _hits and _cc_cfg.get("auto_inject", True):
                     _cres = character.inject(self, positive, _hits, _cc_cfg, negative=negative)
                     # v7.6.0 外观护栏：锚点是权威，把模型/用户写的**冲突外观标签**剥掉。
                     # docstring 里那句「不要手写与卡片冲突的外观描述（会被插件剥掉）」
@@ -16832,7 +17014,9 @@ class ComfyUIDrawPlugin(Star):
                 if _ps == "danbooru" or _bm_rec.get("danbooru_ready"):
                     _style = "Danbooru 标签"
                 elif _ps == "qwen":
-                    _style = "Qwen-Image 官方格式长描述（文生图：约 20 句英文长段、不写比例/画质词；编辑：正文随指令语言、多图用 <image1>）"
+                    _style = ("Qwen-Image 官方格式长描述（文生图：约 20 句英文长段、不写比例/画质词；"
+                              "编辑：正文随指令语言、多图用 <image1>；"
+                              "画角色设定板/三视图/四视图时按插件内的角色设定板规范写纯中文提示词）")
                 else:
                     _style = "自然语言（可掺杂标签）"
                 _lang = (_bm_rec.get("priority_lang") or "").strip() or "中文"
