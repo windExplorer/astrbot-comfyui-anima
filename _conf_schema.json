@@ -267,6 +267,13 @@
             "hint": "若为 true，提交前会把中文提示词翻译为英文标签（翻译模式见本工作流 translator_mode，或全局 translator_mode）。",
             "default": false
           },
+          "prompt_skill": {
+            "type": "string",
+            "description": "关联的提示词 skill",
+            "hint": "本工作流写提示词时用哪套规范（规范文档随包发布在 skills/ 下，可直接改文件替换）。auto=按底模与提示词自动判定（Qwen 系底模走 Qwen-Image 官方格式，说到三视图/四视图/设定板就走角色设定板规范）；off=不用规范（走原有的翻译/标签逻辑）；qwen-t2i=Qwen-Image 文生图官方格式（约 20 句英文长段）；qwen-edit=Qwen-Image 图像编辑规范（正文随指令语言、多图用 <image1>）；character-sheet=角色设定板规范（纯中文三视图/四视图设定板）。显式指定时不看底模也会生效（例如给非 Qwen 底模挂设定板规范）。注意：「第三方插件调用时用 LLM 整理」关闭时，仍以该开关为准（原样使用调用方提示词）。",
+            "default": "auto",
+            "options": ["auto", "off", "qwen-t2i", "qwen-edit", "character-sheet"]
+          },
           "require_prompt": {
             "type": "bool",
             "description": "是否要求用户传提示词（false=锁定提示词，用户无需传词）",

@@ -2982,6 +2982,46 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             return False
 
+    # 工作流可关联的提示词 skill（v7.7.44）：显式配置优先于「按底模/意图自动判定」
+    _PROMPT_SKILLS = ("auto", "off", "qwen-t2i", "qwen-edit", "character-sheet")
+
+    def _prompt_skill_of(self, wf: dict | None) -> str:
+        """本工作流「关联的 skill」（工作流配置里的 prompt_skill）。
+
+        auto（默认）= 按底模与提示词意图自动判定；off = 不用 skill 规范（走原有翻译/标签逻辑）；
+        其余为显式指定规范：qwen-t2i / qwen-edit（Qwen-Image 官方格式）、character-sheet（角色设定板）。
+        """
+        v = str((wf or {}).get("prompt_skill") or "auto").strip().lower()
+        return v if v in self._PROMPT_SKILLS else "auto"
+
+    def _resolve_prompt_plan(self, wf: dict | None, text: str,
+                             has_input_image: bool = False) -> tuple[str, bool]:
+        """决定本次用哪套提示词规范，返回 (plan, qwen 编辑模式)。
+
+        plan：`sheet`（角色设定板规范）/ `qwen`（Qwen-Image 官方格式）/ `legacy`（原有逻辑：
+        标签系改写 / 写实清理 / 翻译）。
+        显式关联 skill 时**不看底模也能生效**（例如给非 Qwen 底模的工作流挂设定板规范）；
+        `off` 则一律回到 legacy。
+        """
+        skill = self._prompt_skill_of(wf)
+        if skill == "off":
+            return "legacy", False
+        if skill == "character-sheet":
+            return "sheet", False
+        if skill == "qwen-t2i":
+            return "qwen", False
+        if skill == "qwen-edit":
+            return "qwen", True
+        # auto：按底模识别 + 提示词里的设定板意图
+        try:
+            if self._is_char_sheet_mode(wf, text):
+                return "sheet", False
+            if self._is_qwen_image(wf):
+                return "qwen", bool(has_input_image)
+        except Exception:
+            pass
+        return "legacy", False
+
     def _char_sheet_skill_text(self) -> str:
         """取角色设定板规范全文（优先 skills/character-sheet/ 下的文档，带 mtime 缓存）。"""
         try:
@@ -3296,12 +3336,13 @@ class ComfyUIDrawPlugin(Star):
         （纯中文设定板提示词）——这是该规范的明确诉求，所以设定板场景不做英文翻译兜底。
         翻译失败（未配置翻译模式等）仍保留原提示词，绝不阻断出图。
         """
-        _must_en = bool(wf.get("is_anima"))
-        _qwen = self._is_qwen_image(wf)
-        _sheet = self._is_char_sheet_mode(wf, positive)
-        # Qwen 文生图正文必须英文；图像编辑的正文语言随用户指令（中文指令 → 中文正文）；
-        # 角色设定板规范要求输出纯中文 → 不做英文翻译兜底
-        _need_en = (_must_en or (_qwen and not has_input_image)) and not _sheet
+        # v7.7.44：工作流可显式「关联 skill」（prompt_skill），显式配置优先于自动判定
+        _plan, _qwen_edit = self._resolve_prompt_plan(wf, positive, has_input_image)
+        _qwen = _plan == "qwen"
+        _sheet = _plan == "sheet"
+        _must_en = bool(wf.get("is_anima")) or (_qwen and not _qwen_edit)
+        # Qwen 文生图正文必须英文；图像编辑正文随指令；角色设定板规范要求通篇中文 → 不翻译
+        _need_en = _must_en and not _sheet
         _refine_on = bool(self._cfg("third_party_llm_refine", True))
 
         async def _try_translate(_why: str) -> str:
@@ -3318,10 +3359,10 @@ class ComfyUIDrawPlugin(Star):
         async def _try_qwen(_why: str) -> str:
             logger.info(
                 f"【绘图·LLM④】trace={trace_id} 阶段=按 Qwen-Image 规范改写"
-                f"（{_why}｜{'图像编辑' if has_input_image else '文生图'}）"
+                f"（{_why}｜{'图像编辑' if _qwen_edit else '文生图'}）"
             )
             try:
-                _r = await self._rewrite_to_qwen_llm(positive, edit_mode=has_input_image)
+                _r = await self._rewrite_to_qwen_llm(positive, edit_mode=_qwen_edit)
             except Exception as _e:
                 logger.warning(f"【绘图·LLM④】 Qwen 改写失败（走后续兜底）: {_e}")
                 return ""
@@ -3395,13 +3436,15 @@ class ComfyUIDrawPlugin(Star):
                         return rewritten
                 # 第三方调用落到这里 = 整理失败/返回空，继续走翻译兜底
             elif _sheet:
-                # 原生调用 + 设定板意图（Qwen 底模）：按角色设定板规范改写（纯中文设定板）
+                # 原生调用 + 设定板意图（或工作流显式关联了设定板规范）：按规范改写
                 _got = await _try_sheet("原生调用设定板意图")
                 if _got:
                     return _got
-            elif _qwen and self._has_chinese(positive):
-                # 原生调用 + Qwen 工作流含中文：同样按官方规范改写（中文 brief → 规范提示词）
-                _got = await _try_qwen("原生调用含中文")
+            elif _qwen and (self._has_chinese(positive)
+                            or self._prompt_skill_of(wf) in ("qwen-t2i", "qwen-edit")):
+                # 原生调用 + Qwen 工作流含中文：同样按官方规范改写（中文 brief → 规范提示词）；
+                # 工作流**显式关联**了 Qwen 规范时，纯英文也照规范走一遍
+                _got = await _try_qwen("原生调用（含中文或显式关联 Qwen 规范）")
                 if _got:
                     return _got
             # 统一兜底（原生调用 / 第三方整理失败 / 第三方关闭整理但必须英文）
@@ -6599,17 +6642,20 @@ class ComfyUIDrawPlugin(Star):
         _need_refine = False
         if not _fixed_prompt:
             _zh_now = self._has_chinese(positive)
-            _qwen_now = self._is_qwen_image(wf)
-            # v7.7.43：设定板意图（Qwen 底模）无论中英文都要进去（按规范改写）
-            _sheet_now = _qwen_now and self._is_char_sheet_request(positive)
-            _must_en_now = bool(wf.get("is_anima")) or (_qwen_now and not init_images)
+            # v7.7.44：先解析本次规范（工作流可显式关联 skill，优先于自动判定）
+            _plan_now, _qwen_edit_now = self._resolve_prompt_plan(wf, positive, bool(init_images))
+            _explicit_skill = self._prompt_skill_of(wf) not in ("auto", "off")
+            _must_en_now = bool(wf.get("is_anima")) or (_plan_now == "qwen" and not _qwen_edit_now)
             if source:
+                # 第三方调用：整理开着就进去；关了只在「设定板意图 / 必须英文+中文」时进去
                 _need_refine = bool(self._cfg("third_party_llm_refine", True)
-                                    or _sheet_now
-                                    or ((_must_en_now or _qwen_now) and _zh_now))
+                                    or _plan_now == "sheet"
+                                    or (_must_en_now and _zh_now))
             else:
-                _need_refine = bool(_sheet_now
-                                    or ((wf.get("is_anima") or _qwen_now) and _zh_now))
+                # 原生调用：显式关联的 skill 一律生效；自动判定沿用「设定板意图 or 含中文」口径
+                _need_refine = bool(_explicit_skill
+                                    or _plan_now == "sheet"
+                                    or (_zh_now and (_plan_now == "qwen" or _must_en_now)))
         if _need_refine:
             _llm_task = asyncio.create_task(
                 self._llm_refine_prompt(

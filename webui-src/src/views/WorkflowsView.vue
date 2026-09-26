@@ -105,6 +105,9 @@
             <n-tag v-else size="small" type="default" :bordered="false">文生图</n-tag>
             <n-tag v-if="wfIsImg2Img(w) && baseOf(w)?.roles?.multi_image" size="small" type="success"
                    :bordered="false" round>多参</n-tag>
+            <n-tag v-if="promptSkillLabel(w.prompt_skill)" size="small" type="primary" :bordered="false">
+              skill：{{ promptSkillLabel(w.prompt_skill) }}
+            </n-tag>
             <n-tag v-if="(w.base_id || '').trim()" size="small" type="warning" :bordered="false">v7</n-tag>
             <n-tag v-else size="small" type="default" :bordered="false">旧版</n-tag>
           </div>
@@ -204,6 +207,13 @@
           <n-form-item label="Anima 工作流">
             <n-switch v-model:value="editForm.is_anima" />
             <span class="form-hint">开启后中文提示词会先翻译为 Danbooru 标签</span>
+          </n-form-item>
+          <n-form-item label="关联的提示词 skill">
+            <n-select v-model:value="editForm.prompt_skill" :options="promptSkillOptions" style="width: 100%" />
+            <span class="form-hint">
+              auto=按底模与提示词自动判定（Qwen 系底模走 Qwen 规范，说「三视图/设定板」走角色设定板规范）；
+              off=不用规范；其余为显式指定——指定后不看底模也会生效。规范文档在 skills/ 下，可直接改文件替换。
+            </span>
           </n-form-item>
           <n-form-item label="工作流类型">
             <span class="form-hint">普通生图 / 图生图（旧版表情包/漫画功能已在 v7.0.0 移除）</span>
@@ -1389,6 +1399,18 @@ const resolutionModeOptions = [
   { label: "none：完全不改，沿用工作流 JSON 原尺寸", value: "none" },
 ];
 
+// v7.7.44：工作流可关联一套提示词规范（skill）；auto = 按底模与提示词意图自动判定
+const promptSkillOptions = [
+  { label: "auto（自动：Qwen 系底模走 Qwen 规范 / 说三视图走设定板规范）", value: "auto" },
+  { label: "off（不用规范，走原有翻译/标签逻辑）", value: "off" },
+  { label: "Qwen-Image 文生图规范", value: "qwen-t2i" },
+  { label: "Qwen-Image 图像编辑规范", value: "qwen-edit" },
+  { label: "角色设定板规范（纯中文三视图/四视图）", value: "character-sheet" },
+];
+const promptSkillLabel = (v?: string) =>
+  ({ off: "不用规范", "qwen-t2i": "Qwen 文生图", "qwen-edit": "Qwen 图像编辑",
+     "character-sheet": "角色设定板" } as Record<string, string>)[String(v || "auto")] || "";
+
 const editForm = reactive<Record<string, any>>({});
 
 function openForm(idx: number, prefill?: any) {
@@ -1419,6 +1441,8 @@ function openForm(idx: number, prefill?: any) {
     server_name: w.server_name || "",
     workflow_name: w.workflow_name || "",
     is_anima: !!w.is_anima,
+    // v7.7.44：关联的提示词 skill（auto=按底模与意图自动判定）
+    prompt_skill: w.prompt_skill || "auto",
     kind: "draw",
     civitai_url: w.civitai_url || "",
     image: w.image || "",

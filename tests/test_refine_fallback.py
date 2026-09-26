@@ -70,7 +70,8 @@ class FakeSelf:
         return self.qwen
 
     def _is_char_sheet_mode(self, wf, text):
-        return bool(self.sheet and self._is_qwen_image(wf))
+        # 真逻辑 = 「底模是 Qwen 家族」+「提示词里有设定板意图」；意图判定用真身的正则
+        return bool(self.qwen and self._is_char_sheet_request(text))
 
     async def _rewrite_to_char_sheet_llm(self, text):
         self.sheet_calls += 1
@@ -108,6 +109,41 @@ class FakeSelf:
 
 def _run(fn, self_, wf, positive, source, has_input_image=False):
     return asyncio.run(fn(self_, wf, positive, source, "t-1", has_input_image))
+
+
+# 把 main.py 里真实的「工作流关联 skill → 用哪套规范」解析逻辑挂到 FakeSelf（测真逻辑）
+# 注意：必须在 _load_class_members 定义之后执行
+_REAL_MEMBERS: dict = {}
+
+
+def _load_class_members(names: tuple[str, ...], literals: tuple[str, ...] = ()) -> dict:
+    """摘取 main.py 里某个类的若干方法 + 类级常量（测试用真实逻辑，不复制一份）。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    ns = {"logger": _Log(), "re": re, "Path": Path, "__file__": str(ROOT / "main.py")}
+    out: dict = {}
+    for node in cls.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            exec(compile(ast.get_source_segment(src, node), "<x>", "exec"), ns)  # noqa: S102
+            out[node.name] = ns[node.name]
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in literals:
+            try:
+                out[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                # 非字面量（如 re.compile(...)）→ 在当前 ns 里求值
+                out[node.targets[0].id] = eval(  # noqa: S307
+                    compile(ast.Expression(node.value), "<x>", "eval"), ns)
+    return out
+
+
+# 把真逻辑挂上（放在 _load_class_members 定义之后才可用）
+for _k, _v in _load_class_members(
+        ("_prompt_skill_of", "_resolve_prompt_plan", "_is_char_sheet_request"),
+        ("_PROMPT_SKILLS", "_SHEET_INTENT_RE")).items():
+    setattr(FakeSelf, _k, _v)
+assert hasattr(FakeSelf, "_resolve_prompt_plan"), "未挂上真实解析逻辑"
 
 
 def test_refine_fallback():
@@ -317,9 +353,46 @@ def test_qwen_skill_doc():
     print("== Qwen-Image 规范文档读取（文生图 / 图像编辑两套均命中 skills/qwen-image/） OK")
 
 
+def test_prompt_skill_binding():
+    """工作流「关联 skill」（prompt_skill）优先级：显式指定 > 自动判定（v7.7.44）。"""
+    fn = _load_refine()
+    real = {"is_anima": False}
+    zh = "一个少女站在樱花树下"
+
+    def plan(wf, text="", img=False, qwen=False, sheet=False):
+        return FakeSelf(qwen=qwen, sheet=sheet)._resolve_prompt_plan(wf, text, img)
+
+    # 显式指定：**不吃底模**（非 Qwen 底模挂设定板规范也生效）
+    assert plan({**real, "prompt_skill": "character-sheet"}) == ("sheet", False)
+    assert plan({**real, "prompt_skill": "qwen-t2i"}, img=True) == ("qwen", False)
+    assert plan({**real, "prompt_skill": "qwen-edit"}, img=False) == ("qwen", True)
+    assert plan({**real, "prompt_skill": "off"}, qwen=True) == ("legacy", False)
+    # auto：按底模识别 + 提示词意图
+    assert plan(real, qwen=True) == ("qwen", False)
+    assert plan(real, img=True, qwen=True) == ("qwen", True)
+    assert plan(real, text="画个三视图设定板", qwen=True) == ("sheet", False)
+    assert plan(real, text="画个三视图设定板", qwen=False) == ("legacy", False)
+    # 非法值 → 按 auto 处理
+    assert plan({**real, "prompt_skill": "???"}, qwen=True) == ("qwen", False)
+
+    # 端到端：显式 off + Qwen 底模 + 第三方调用 → 走原有写实清理（完全不碰 Qwen/设定板规范）
+    s = FakeSelf(qwen=True, sheet=True)
+    got = _run(fn, s, {**real, "prompt_skill": "off"}, zh, "partner")
+    assert got == "写实中文清理结果", got
+    assert s.qwen_calls == 0 and s.sheet_calls == 0
+
+    # 端到端：显式 qwen-t2i + 有输入图 → 仍按「文生图」规范（edit_mode=False）
+    s = FakeSelf(qwen=False, sheet=False)
+    _run(fn, s, {**real, "prompt_skill": "qwen-t2i"}, zh, "partner", has_input_image=True)
+    assert s.qwen_calls == 1 and s.qwen_edit_flag is False
+
+    print("== 工作流关联 skill（显式优先/off 回退/auto 判定/端到端） OK")
+
+
 if __name__ == "__main__":
     test_refine_fallback()
     test_qwen_skill_doc()
     test_char_sheet()
     test_char_sheet_doc_and_context()
-    print("提示词回退链 + Qwen 规范 + 角色设定板全部通过")
+    test_prompt_skill_binding()
+    print("提示词回退链 + Qwen 规范 + 角色设定板 + 关联 skill 全部通过")
