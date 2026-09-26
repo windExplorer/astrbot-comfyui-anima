@@ -258,3 +258,6 @@ fonts/
 docs/astrbot_plugin_private_companion_config.json
 # 卡片设计实验室（样张生成脚本与输出，仅本地使用，不入库）
 design_lab/
+
+# 运行期数据（卡片渲染临时图等，随运行生成，不入库）
+data/
