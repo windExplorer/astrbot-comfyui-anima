@@ -3031,6 +3031,14 @@ class ComfyUIDrawPlugin(Star):
         任何失败都保留原提示词，绝不阻断出图。
         """
         try:
+            # v7.7.40：第三方插件调用可关闭 LLM 整理（third_party_llm_refine=false）——
+            # 调用方自己写好提示词时，原样使用、不调 LLM、不改写不清理。
+            if source and not self._cfg("third_party_llm_refine", True):
+                logger.info(
+                    f"【绘图·LLM】trace={trace_id} 第三方插件调用，"
+                    "已按配置「third_party_llm_refine=false」跳过 LLM 整理（原样使用提示词）"
+                )
+                return positive
             if source:
                 if wf.get("is_anima"):
                     logger.info(f"【绘图·LLM①】trace={trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
@@ -5411,7 +5419,9 @@ class ComfyUIDrawPlugin(Star):
         # 原样进平台，出图崩坏。NAI 为动漫底模 → 改写为 Anima/Danbooru 英文标签；
         # 其它平台（openai 兼容 / 自定义）→ 清理结构标记、统一为写实中文描述。
         # 原生调用（source 为空）不加工；整理失败保留原提示词，不阻断出图。
-        if source and (positive or "").strip():
+        # v7.7.40：third_party_llm_refine=false 时第三方调用同样跳过整理（原样使用）。
+        if source and (positive or "").strip() \
+                and self._cfg("third_party_llm_refine", True):
             try:
                 if ptype == "nai":
                     _rewritten = await self._rewrite_to_anima_llm(positive)

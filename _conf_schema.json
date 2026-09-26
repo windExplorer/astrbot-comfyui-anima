@@ -1038,6 +1038,12 @@
     "default": "off",
     "options": ["off", "danbooru", "llm", "api"]
   },
+  "third_party_llm_refine": {
+    "type": "bool",
+    "description": "第三方插件调用时用 LLM 整理提示词",
+    "hint": "第三方插件（如伴侣插件）调用本插件画图时，是否先把传来的提示词交给 LLM 整理：Anima 工作流改写为 Danbooru 英文标签、其它工作流清理为写实中文。**关闭后原样使用调用方传来的提示词**（不调 LLM、不改写、不清理），适合调用方自己已经写好提示词的情况。原生调用（/draw 等指令）不受此项影响。",
+    "default": true
+  },
   "llm_rewrite_timeout": {
     "type": "int",
     "description": "LLM 改写/翻译超时（秒）",

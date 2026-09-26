@@ -107,7 +107,7 @@ const GROUP_META = [
   { name: "角色卡片", description: "角色锚点库：绑定人格、自动注入与多人分组", icon: "🎭", keys: ["character_card"] },
   { name: "提示词丰富化", description: "画质前缀、短描述扩写与外观防漂移（角色保真）", icon: "✨", keys: ["prompt_boost"] },
   { name: "强制出图", description: "消息前缀标记（默认 t）：必须画出来，AI 没画时插件兜底补画", icon: "⚡", keys: ["force_draw"] },
-  { name: "出图行为", description: "出图等待、轮询、已读回执、图文消息、webp 转换与小报告等行为", icon: "🖼️", keys: ["draw_timeout", "platform_gen_timeout", "queue_extra_timeout", "draw_wait_hard_cap", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "queue_hint_only_when_queued", "draw_ack_enabled", "draw_ack_emoji", "draw_ack_emoji_id", "draw_ack_emoji_type", "image_caption", "convert_webp_to_png", "show_draw_report", "log_workflow_json"] },
+  { name: "出图行为", description: "出图等待、轮询、已读回执、图文消息、webp 转换与小报告等行为", icon: "🖼️", keys: ["draw_timeout", "platform_gen_timeout", "queue_extra_timeout", "draw_wait_hard_cap", "max_draw_timeout", "queue_poll_interval", "return_queue_position", "queue_hint_only_when_queued", "img2img_max_refs", "third_party_llm_refine", "draw_ack_enabled", "draw_ack_emoji", "draw_ack_emoji_id", "draw_ack_emoji_type", "image_caption", "convert_webp_to_png", "show_draw_report", "log_workflow_json"] },
   { name: "出图信息卡片", description: "生图前发送的渐变信息卡：服务器/设备、队列、工作流、LoRA、尺寸、放大、采样参数（v7.2.0）", icon: "🎴", keys: ["pre_draw_card"] },
   { name: "AI 对话自动出图", description: "AI 对话自动出图控制（防连发）", icon: "📮", keys: ["draw_auto"] },
   { name: "网络与代理", description: "外部网络访问（如 C 站抓取）的代理设置", icon: "🌍", keys: ["http_proxy", "civitai_api_key"] },
