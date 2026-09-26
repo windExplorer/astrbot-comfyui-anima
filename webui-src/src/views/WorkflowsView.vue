@@ -414,6 +414,14 @@
             </n-tab-pane>
 
             <n-tab-pane name="prompt" tab="提示词">
+              <n-form-item label="关联的提示词 skill">
+                <n-select v-model:value="editForm.prompt_skill" :options="promptSkillOptions" style="width: 100%" />
+                <span class="form-hint">
+                  auto=按底模与提示词自动判定（Qwen 系底模走 Qwen 规范，说「三视图/设定板」走角色设定板规范）；
+                  off=不用规范（走原有翻译/标签逻辑）；其余为显式指定——**指定后不看底模也会生效**。
+                  规范文档随包发布在 skills/ 下（qwen-image / character-sheet），可直接改文件替换。
+                </span>
+              </n-form-item>
               <n-form-item label="锁定提示词（无需用户传词）">
                 <n-switch
                   v-model:value="editForm.require_prompt"
