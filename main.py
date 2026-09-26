@@ -2820,6 +2820,125 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
+    # ---- Qwen-Image 官方格式提示词（v7.7.42） -------------------------------- #
+    # 规范文档随包发布在 skills/qwen-image/（用户可直接改文件替换规范），缺文件时用内置精简规则。
+    _QWEN_SKILL_DIR = "skills/qwen-image"
+    _QWEN_T2I_FILE = "qwen-image-t2i.md"
+    _QWEN_EDIT_FILE = "qwen-image-edit.md"
+    _QWEN_RULE_T2I = (
+        "你是把用户的图像需求改写成 Qwen-Image-2.1 官方格式**文生图**提示词的转换器。"
+        "适用：没有任何输入图、从零生成。你是在报告画面里有什么，不是在下指令。\n"
+        "铁律：① 长度不随输入缩水，恒定约 20 句 / 400–500 词；② 比例与分辨率永不写进正文"
+        "（会真被渲染成字）；③ 观察而非指挥——现在时、第三人称、陈述句，不出现 make sure / "
+        "8K / masterpiece / highly detailed。\n"
+        "结构：一个自然段、不含换行；开篇句 `The image is a ⟨方向⟩ ⟨风格⟩ ⟨媒介⟩ of ⟨主体⟩, "
+        "⟨背景与色调⟩.`（媒介名词不可省略）；背景与承载面紧接开篇句；方位短语 8–14 个且触达"
+        "四角四边中心；约 1/3 句子以方位短语开头；光照单独成句；结尾只有一句 "
+        "`The overall composition …`。\n"
+        "语感：颜色带修饰词（deep navy / muted olive）、给材质不只给名词、元素逐个枚举"
+        "（禁 several / various）、人物写可观察表面且年龄写人生阶段、物理自洽；被遮挡的写明"
+        "被遮挡。画面内文字用直双引号包裹、保留其原文字系统、单语、给出位置与外观；读不清的"
+        "写 blurred / too small to read，绝不编造字母。正文永远英文（画面内文字除外）。"
+        "用户给的作业要求（如「4K、不要噪点」）静默遵守，绝不写进描述。只输出提示词本身："
+        "无说明、无标题、无代码围栏、无换行。"
+    )
+    _QWEN_RULE_EDIT = (
+        "你是把用户的编辑指令改写成 Qwen-Image-2.1 官方格式**图像编辑**提示词的转换器。"
+        "适用：输入图永远存在，这是编辑任务，不是从零文生图。\n"
+        "治理原则：只改用户点名的属性、把改动推到强烈明确的程度，其余一切按输入图保真"
+        "（保留的是内容，不是改动强度）。\n"
+        "语言（两条分开判断）：① 描述正文——用户指令是中文则正文中文，英文则英文，其它语言"
+        "一律英文；② 渲染进图的文字（双引号内）——用户给了确切文字/语言就用它，否则沿用输入图"
+        "已有文字的主语言，再否则用用户指令自身的语言，引号内必须单语。\n"
+        "图像引用：N ≥ 2 时强制用 <image1>、<image2>…（按上传顺序）逐张说清每张图各提供什么，"
+        "禁止「图1 / the first image」；N = 1 时自然说「图像 / the image」。\n"
+        "七条准则：锚定画面不凭空发挥（不确定的细节不写）；说清什么不变但不重画一遍（越具体"
+        "描述想保留的东西它越容易漂）；身份（人脸与可辨认配饰、商品设计、渲染媒介）每次编辑"
+        "都要存活，身份来自参考图时直接指那张图；含糊意图先消歧再拍板，用户给的备选选最合理"
+        "一种写成决定，物理上不可能的要求保留不纠正；只做被要求的事，不清理没提到的瑕疵，"
+        "移除/移动/揭开某物要交代新露出区域；画面文字是字面量，敲不定就不加；以操作动词开头"
+        "写成指令，不写成成品描述。只输出提示词正文，无说明、无标题、无代码围栏。"
+    )
+
+    def _is_qwen_image(self, wf: dict | None) -> bool:
+        """本工作流的底模是否属于 Qwen-Image 家族（用 Qwen 官方格式规范改写提示词）。
+
+        判定：底模库里显式把「提示词风格」配成 qwen（或 qwen-image 等写法）→ 是；
+        显式配成 danbooru 标签系 → 否（用户明确要标签写法，别自作主张）；
+        其余情况按底模名/文件名/工作流名/底模名里的 `qwen` 关键字自动识别。
+        """
+        wf = wf or {}
+        try:
+            base = self._basemodel_of_workflow(wf) or {}
+        except Exception:
+            base = {}
+        ps = str(base.get("prompt_style") or "").strip().lower()
+        if ps in ("qwen", "qwen-image", "qwen image", "qwenimage", "qwen_image"):
+            return True
+        if ps in ("danbooru", "danbooru tags", "tags", "标签"):
+            return False
+        blob = " ".join([
+            str(base.get("name") or ""), str(base.get("file_name") or ""),
+            str(wf.get("name") or ""), str(wf.get("base_model") or ""),
+        ]).lower()
+        return "qwen" in blob
+
+    def _qwen_skill_text(self, edit_mode: bool) -> str:
+        """取 Qwen-Image 规范全文（优先随包发布的 skills/qwen-image/*.md，带 mtime 缓存）。
+
+        文件缺失/读取失败 → 用内置精简规则。用户直接改那两个 md 即可换规范，无需改代码。
+        """
+        fname = self._QWEN_EDIT_FILE if edit_mode else self._QWEN_T2I_FILE
+        try:
+            p = Path(__file__).resolve().parent / self._QWEN_SKILL_DIR / fname
+            if p.is_file():
+                mt = p.stat().st_mtime
+                cache = self.__dict__.setdefault("_qwen_skill_cache", {})
+                hit = cache.get(fname)
+                if hit and hit[0] == mt:
+                    return hit[1]
+                txt = p.read_text(encoding="utf-8")
+                cache[fname] = (mt, txt)
+                return txt
+        except Exception as e:
+            logger.warning(f"【Qwen】 读取规范文档失败（改用内置规则）: {e}")
+        return self._QWEN_RULE_EDIT if edit_mode else self._QWEN_RULE_T2I
+
+    async def _rewrite_to_qwen_llm(self, text: str, *, edit_mode: bool = False) -> str:
+        """按 Qwen-Image-2.1 官方格式改写提示词（edit_mode=图像编辑，否则文生图）。
+
+        规范文本取自 `skills/qwen-image/`（那份文档本身写明「可直接作为系统提示词」）。
+        失败抛异常，由调用方决定回退（文生图回退翻译、图像编辑保留原文）。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("Qwen 提示词改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        skill = self._qwen_skill_text(edit_mode)
+        prompt = (
+            f"{skill}\n\n---\n\n"
+            "【本次任务】下面是用户 / 调用方给出的画面需求，请严格按上面的规范改写成可以直接"
+            "送进 Qwen-Image-2.1 的提示词。只输出提示词正文，不要任何解释、标题或代码块。\n\n"
+            f"用户需求：\n{text}\n\n提示词："
+        )
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("rewrite_qwen", provider_id, llm_resp)
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Qwen 提示词改写超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"Qwen 提示词改写失败: {e}") from e
+        out = out.strip().strip("`").strip()
+        if edit_mode:
+            # 编辑规范允许多参考图逐条成句，保留换行结构（只去首尾空白）
+            return "\n".join(ln.strip() for ln in out.splitlines() if ln.strip())
+        # 文生图规范：必须一整段、不含换行
+        return " ".join(out.split())
+
     @staticmethod
     def _split_prompt_segments(text: str) -> list[str]:
         """把提示词按逗号拆成「片段 + 分隔符」交错的列表，便于只翻译含中文的片段、
@@ -3022,42 +3141,75 @@ class ComfyUIDrawPlugin(Star):
             return positive or ""
 
     async def _llm_refine_prompt(
-        self, wf: dict, positive: str, source: str, trace_id: str = ""
+        self, wf: dict, positive: str, source: str, trace_id: str = "",
+        has_input_image: bool = False,
     ) -> str:
         """出图前的 LLM 提示词整理（原内联逻辑抽成方法，便于与参考图上传并行调度）。
 
-        - source 非空（第三方插件调用）：动漫工作流改写为 Anima/Danbooru 提示词，其它清理为写实中文；
-        - source 为空且动漫工作流含中文：按翻译模式翻译中文片段。
+        - source 非空（第三方插件调用）：标签系改写为 Anima/Danbooru 提示词、
+          Qwen-Image 家族按官方格式改写、其它清理为写实中文；
+        - source 为空且需要处理（标签系含中文 / Qwen 含中文）：翻译或按 Qwen 规范改写。
         任何失败都保留原提示词，绝不阻断出图。
 
-        v7.7.41 回退链细化（「必须英文」= wf.is_anima，即标签系底模）：
-          ① 第三方调用 + 标签系：LLM 整理失败/无模型 → **回退翻译**（含中文时）；
-          ② 第三方调用 + 标签系 + 关闭 LLM 整理（third_party_llm_refine=false）→ 含中文时
-             仍走翻译（标签系底模吃中文必然崩，这条不能省）；纯英文则原样；
-          ③ 非标签系（写实/自然语言系）工作流：关了就原样，中文可直接用，不翻译。
+        v7.7.41 回退链细化（「必须英文」= 标签系底模 wf.is_anima，或 Qwen 文生图）：
+          ① 第三方调用 + 必须英文：LLM 整理失败/无模型 → **回退翻译**（含中文时）；
+          ② 第三方调用 + 必须英文 + 关闭 LLM 整理（third_party_llm_refine=false）→ 含中文时
+             仍走翻译（喂中文给标签系/Qwen 文生图必然崩，这条不能省）；纯英文则原样；
+          ③ 非必须英文（写实/自然语言系，含 Qwen **图像编辑**）工作流：关了就原样。
+        v7.7.42：Qwen-Image 家族接入——文生图按官方格式（英文长叙述、一整段、不写比例与
+        画质套话），图像编辑按编辑规范（正文语言随指令、<image1> 引用、只改点名属性）。
         翻译失败（未配置翻译模式等）仍保留原提示词，绝不阻断出图。
         """
         _must_en = bool(wf.get("is_anima"))
+        _qwen = self._is_qwen_image(wf)
+        # Qwen 文生图正文必须英文；图像编辑的正文语言随用户指令（中文指令 → 中文正文）
+        _need_en = _must_en or (_qwen and not has_input_image)
         _refine_on = bool(self._cfg("third_party_llm_refine", True))
+
+        async def _try_translate(_why: str) -> str:
+            logger.info(f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词（{_why}）")
+            try:
+                _t = await self._translate_prompt(wf, positive)
+            except Exception as _e:
+                logger.warning(f"【提示词】 翻译失败，保留原提示词: {_e}")
+                return ""
+            if _t:
+                logger.info(f"提示词翻译结果: {_t}")
+            return _t or ""
+
+        async def _try_qwen(_why: str) -> str:
+            logger.info(
+                f"【绘图·LLM④】trace={trace_id} 阶段=按 Qwen-Image 规范改写"
+                f"（{_why}｜{'图像编辑' if has_input_image else '文生图'}）"
+            )
+            try:
+                _r = await self._rewrite_to_qwen_llm(positive, edit_mode=has_input_image)
+            except Exception as _e:
+                logger.warning(f"【绘图·LLM④】 Qwen 改写失败（走后续兜底）: {_e}")
+                return ""
+            if _r and _r.strip():
+                logger.info(f"【Qwen】 {_why}，改写结果: {_r[:160]}")
+                return _r
+            return ""
+
         try:
             if source and not _refine_on:
                 logger.info(
                     f"【绘图·LLM】trace={trace_id} 第三方插件调用，"
                     "已按配置「third_party_llm_refine=false」跳过 LLM 整理"
                 )
-                # 关闭整理 ≠ 可以喂中文给标签系底模：必须英文的工作流仍要翻译兜底
-                if _must_en and self._has_chinese(positive):
-                    logger.info(
-                        f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词"
-                        "（标签系底模必须英文，LLM 整理关闭时仍走翻译）"
-                    )
-                    translated = await self._translate_prompt(wf, positive)
-                    if translated:
-                        logger.info(f"Anima 提示词翻译结果: {translated}")
-                        return translated
+                # 关闭整理 ≠ 可以喂中文给必须英文的底模：仍要翻译兜底
+                if _need_en and self._has_chinese(positive):
+                    _got = await _try_translate("必须英文的底模，LLM 整理关闭时仍走翻译")
+                    if _got:
+                        return _got
                 return positive
             if source:
-                if _must_en:
+                if _qwen:
+                    _got = await _try_qwen("第三方插件调用")
+                    if _got:
+                        return _got
+                elif _must_en:
                     logger.info(f"【绘图·LLM①】trace={trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
                     rewritten = ""
                     try:
@@ -3065,9 +3217,7 @@ class ComfyUIDrawPlugin(Star):
                     except Exception as _e:
                         # v7.7.41：整理失败（无可用模型/超时/异常）→ 回退翻译，别把
                         # 中文直接喂给标签系底模
-                        logger.warning(
-                            f"【绘图·LLM①】 Anima 改写失败，回退翻译: {_e}"
-                        )
+                        logger.warning(f"【绘图·LLM①】 Anima 改写失败，回退翻译: {_e}")
                     if rewritten and rewritten.strip():
                         logger.info(f"【Anima】 第三方插件调用，LLM 改写为 Anima 提示词: {rewritten}")
                         return rewritten
@@ -3081,17 +3231,17 @@ class ComfyUIDrawPlugin(Star):
                     if rewritten and rewritten.strip():
                         logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {rewritten}")
                         return rewritten
-                # 第三方调用落到这里 = 整理失败/返回空；标签系再走一次翻译兜底
-            # 统一兜底（原生调用 / 第三方整理失败 / 第三方关闭整理但需要英文）
-            if _must_en and self._has_chinese(positive):
-                logger.info(
-                    f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词"
-                    f"（{'第三方调用回退' if source else '原生调用'}含中文）"
-                )
-                translated = await self._translate_prompt(wf, positive)
-                if translated:
-                    logger.info(f"Anima 提示词翻译结果: {translated}")
-                    return translated
+                # 第三方调用落到这里 = 整理失败/返回空，继续走翻译兜底
+            elif _qwen and self._has_chinese(positive):
+                # 原生调用 + Qwen 工作流含中文：同样按官方规范改写（中文 brief → 规范提示词）
+                _got = await _try_qwen("原生调用含中文")
+                if _got:
+                    return _got
+            # 统一兜底（原生调用 / 第三方整理失败 / 第三方关闭整理但必须英文）
+            if _need_en and self._has_chinese(positive):
+                _got = await _try_translate("第三方调用回退" if source else "原生调用含中文")
+                if _got:
+                    return _got
         except Exception as e:
             logger.warning(f"【提示词】 LLM 改写/翻译失败，保留原提示词: {e}")
         return positive
@@ -6276,19 +6426,25 @@ class ComfyUIDrawPlugin(Star):
             if _pos_cleaned != (positive or "").strip():
                 logger.info(f"【提示词清理】 剔除跨后端语法垃圾后: {_pos_cleaned}")
                 positive = _pos_cleaned
-        # v7.7.41：调度条件按回退链细化——第三方调用且**关闭**LLM 整理时，只有
-        # 「必须英文（标签系）+ 含中文」才需要进去翻译兜底；否则不必空转一次 task。
+        # v7.7.41/v7.7.42：调度条件按回退链细化——第三方调用且**关闭**LLM 整理时，只有
+        # 「必须英文（标签系 / Qwen 文生图）+ 含中文」才需要进去翻译兜底；Qwen-Image 家族的
+        # 原生调用含中文也要进去（按官方格式改写）；其余情况不必空转一次 task。
         _need_refine = False
         if not _fixed_prompt:
             _zh_now = self._has_chinese(positive)
+            _qwen_now = self._is_qwen_image(wf)
+            _must_en_now = bool(wf.get("is_anima")) or (_qwen_now and not init_images)
             if source:
                 _need_refine = bool(self._cfg("third_party_llm_refine", True)
-                                    or (wf.get("is_anima") and _zh_now))
+                                    or ((_must_en_now or _qwen_now) and _zh_now))
             else:
-                _need_refine = bool(wf.get("is_anima") and _zh_now)
+                _need_refine = bool((wf.get("is_anima") or _qwen_now) and _zh_now)
         if _need_refine:
             _llm_task = asyncio.create_task(
-                self._llm_refine_prompt(wf, positive, source, _trace_id)
+                self._llm_refine_prompt(
+                    wf, positive, source, _trace_id,
+                    has_input_image=bool(init_images),
+                )
             )
 
         # 图生图：把参考图注入到工作流的 LoadImage 节点
@@ -16672,10 +16828,13 @@ class ComfyUIDrawPlugin(Star):
             # 否则模型只会按家族名硬猜（实测：配了自然语言+中文，LLM 照旧写英文标签）
             _bm_rec = self._basemodel_of_workflow(w)
             if _bm_rec:
-                _style = "Danbooru 标签" if (
-                    (_bm_rec.get("prompt_style") or "") == "danbooru"
-                    or _bm_rec.get("danbooru_ready")
-                ) else "自然语言（可掺杂标签）"
+                _ps = (_bm_rec.get("prompt_style") or "").strip().lower()
+                if _ps == "danbooru" or _bm_rec.get("danbooru_ready"):
+                    _style = "Danbooru 标签"
+                elif _ps == "qwen":
+                    _style = "Qwen-Image 官方格式长描述（文生图：约 20 句英文长段、不写比例/画质词；编辑：正文随指令语言、多图用 <image1>）"
+                else:
+                    _style = "自然语言（可掺杂标签）"
                 _lang = (_bm_rec.get("priority_lang") or "").strip() or "中文"
                 lines.append(
                     f"  · 提示词风格：{_style}｜优先语种：{_lang}"

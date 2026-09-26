@@ -42,8 +42,8 @@
           <div class="card-body">
             <div class="card-title">{{ m.name || "(未命名)" }}</div>
             <div class="card-meta">
-              <n-tag size="tiny" :type="m.prompt_style === 'danbooru' ? 'warning' : 'info'" :bordered="false">
-                {{ m.prompt_style === "danbooru" ? "danbooru 标签" : "自然语言" }}
+              <n-tag size="tiny" :type="styleTagType(m.prompt_style)" :bordered="false">
+                {{ styleLabel(m.prompt_style) }}
               </n-tag>
               <n-tag v-if="m.danbooru_ready" size="tiny" type="success" :bordered="false">danbooru 适配</n-tag>
             </div>
@@ -174,8 +174,21 @@ async function reseed() {
 
 const styleOptions = [
   { label: "自然语言（可掺杂标签）", value: "natural" },
+  { label: "Qwen-Image（官方格式长描述）", value: "qwen" },
   { label: "danbooru 标签", value: "danbooru" },
 ];
+
+// 底模卡片上的提示词风格标签（v7.7.42：新增 Qwen-Image 一档）
+function styleLabel(v?: string) {
+  if (v === "danbooru") return "danbooru 标签";
+  if (v === "qwen") return "Qwen-Image 规范";
+  return "自然语言";
+}
+function styleTagType(v?: string) {
+  if (v === "danbooru") return "warning" as const;
+  if (v === "qwen") return "success" as const;
+  return "info" as const;
+}
 const langOptions = ["中文", "英文"].map((l) => ({ label: l, value: l }));
 const priorityOptions = computed(() =>
   (editForm.languages || []).map((l: string) => ({ label: l, value: l }))

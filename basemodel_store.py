@@ -21,7 +21,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # 提示词风格枚举：natural=自然语言（可掺杂标签）；danbooru=danbooru 标签
-PROMPT_STYLES = ("natural", "danbooru")
+PROMPT_STYLES = ("natural", "qwen", "danbooru")
 # 支持语言枚举（v7.0.0 暂只做中英）
 LANGUAGES = ("中文", "英文")
 
@@ -73,9 +73,11 @@ DEFAULT_BASEMODELS = (
     },
     {
         "name": "Qwen Image 2.1", "keywords": "qwen、qwen_image、qwenimage",
-        "prompt_style": "natural", "languages": ["中文", "英文"], "priority_lang": "中文",
+        "prompt_style": "qwen", "languages": ["中文", "英文"], "priority_lang": "中文",
         "danbooru_ready": False,
-        "description": "Qwen-Image 2.1：自然语言整句（中文/英文皆可，中文更省事），不写标签与质量词。",
+        "description": "Qwen-Image 2.1：**官方格式长描述**（文生图约 20 句英文长段、不写比例与画质套话；"
+                       "图像编辑正文语言随指令、多图用 <image1> 引用）。选此项后第三方插件调用/含中文的"
+                       "原生调用会按 skills/qwen-image/ 里的规范改写提示词。",
     },
     {
         "name": "boogu（编辑/加字）", "keywords": "boogu",
