@@ -3029,31 +3029,65 @@ class ComfyUIDrawPlugin(Star):
         - source 非空（第三方插件调用）：动漫工作流改写为 Anima/Danbooru 提示词，其它清理为写实中文；
         - source 为空且动漫工作流含中文：按翻译模式翻译中文片段。
         任何失败都保留原提示词，绝不阻断出图。
+
+        v7.7.41 回退链细化（「必须英文」= wf.is_anima，即标签系底模）：
+          ① 第三方调用 + 标签系：LLM 整理失败/无模型 → **回退翻译**（含中文时）；
+          ② 第三方调用 + 标签系 + 关闭 LLM 整理（third_party_llm_refine=false）→ 含中文时
+             仍走翻译（标签系底模吃中文必然崩，这条不能省）；纯英文则原样；
+          ③ 非标签系（写实/自然语言系）工作流：关了就原样，中文可直接用，不翻译。
+        翻译失败（未配置翻译模式等）仍保留原提示词，绝不阻断出图。
         """
+        _must_en = bool(wf.get("is_anima"))
+        _refine_on = bool(self._cfg("third_party_llm_refine", True))
         try:
-            # v7.7.40：第三方插件调用可关闭 LLM 整理（third_party_llm_refine=false）——
-            # 调用方自己写好提示词时，原样使用、不调 LLM、不改写不清理。
-            if source and not self._cfg("third_party_llm_refine", True):
+            if source and not _refine_on:
                 logger.info(
                     f"【绘图·LLM】trace={trace_id} 第三方插件调用，"
-                    "已按配置「third_party_llm_refine=false」跳过 LLM 整理（原样使用提示词）"
+                    "已按配置「third_party_llm_refine=false」跳过 LLM 整理"
                 )
+                # 关闭整理 ≠ 可以喂中文给标签系底模：必须英文的工作流仍要翻译兜底
+                if _must_en and self._has_chinese(positive):
+                    logger.info(
+                        f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词"
+                        "（标签系底模必须英文，LLM 整理关闭时仍走翻译）"
+                    )
+                    translated = await self._translate_prompt(wf, positive)
+                    if translated:
+                        logger.info(f"Anima 提示词翻译结果: {translated}")
+                        return translated
                 return positive
             if source:
-                if wf.get("is_anima"):
+                if _must_en:
                     logger.info(f"【绘图·LLM①】trace={trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
-                    rewritten = await self._rewrite_to_anima_llm(positive)
+                    rewritten = ""
+                    try:
+                        rewritten = await self._rewrite_to_anima_llm(positive)
+                    except Exception as _e:
+                        # v7.7.41：整理失败（无可用模型/超时/异常）→ 回退翻译，别把
+                        # 中文直接喂给标签系底模
+                        logger.warning(
+                            f"【绘图·LLM①】 Anima 改写失败，回退翻译: {_e}"
+                        )
                     if rewritten and rewritten.strip():
                         logger.info(f"【Anima】 第三方插件调用，LLM 改写为 Anima 提示词: {rewritten}")
                         return rewritten
                 else:
                     logger.info(f"【绘图·LLM②】trace={trace_id} 阶段=清理为写实提示词 第三方插件调用进入LLM")
-                    rewritten = await self._rewrite_to_real_llm(positive)
+                    rewritten = ""
+                    try:
+                        rewritten = await self._rewrite_to_real_llm(positive)
+                    except Exception as _e:
+                        logger.warning(f"【绘图·LLM②】 写实清理失败，保留原提示词: {_e}")
                     if rewritten and rewritten.strip():
                         logger.info(f"【写实】 第三方插件调用，LLM 清理为写实提示词: {rewritten}")
                         return rewritten
-            elif wf.get("is_anima") and self._has_chinese(positive):
-                logger.info(f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词 原生调用含中文进入LLM")
+                # 第三方调用落到这里 = 整理失败/返回空；标签系再走一次翻译兜底
+            # 统一兜底（原生调用 / 第三方整理失败 / 第三方关闭整理但需要英文）
+            if _must_en and self._has_chinese(positive):
+                logger.info(
+                    f"【绘图·LLM③】trace={trace_id} 阶段=翻译中文提示词"
+                    f"（{'第三方调用回退' if source else '原生调用'}含中文）"
+                )
                 translated = await self._translate_prompt(wf, positive)
                 if translated:
                     logger.info(f"Anima 提示词翻译结果: {translated}")
@@ -5419,19 +5453,38 @@ class ComfyUIDrawPlugin(Star):
         # 原样进平台，出图崩坏。NAI 为动漫底模 → 改写为 Anima/Danbooru 英文标签；
         # 其它平台（openai 兼容 / 自定义）→ 清理结构标记、统一为写实中文描述。
         # 原生调用（source 为空）不加工；整理失败保留原提示词，不阻断出图。
-        # v7.7.40：third_party_llm_refine=false 时第三方调用同样跳过整理（原样使用）。
-        if source and (positive or "").strip() \
-                and self._cfg("third_party_llm_refine", True):
-            try:
-                if ptype == "nai":
-                    _rewritten = await self._rewrite_to_anima_llm(positive)
-                else:
-                    _rewritten = await self._rewrite_to_real_llm(positive)
-                if _rewritten and _rewritten.strip():
-                    logger.info(f"【平台】 第三方插件调用，提示词已经 LLM 整理（{ptype}）: {_rewritten[:80]}")
-                    positive = _rewritten.strip()
-            except Exception as e:
-                logger.warning(f"【平台】 LLM 整理失败，保留原提示词: {e}")
+        # v7.7.40：third_party_llm_refine=false 时第三方调用跳过整理（原样使用）。
+        # v7.7.41：平台链路同样有「必须英文」的翻译兜底——NAI 为标签系底模，整理关闭
+        # 或整理失败时，含中文仍走翻译；其它平台（自然语言系）中文可直接用、不翻译。
+        _plat_must_en = (ptype == "nai")
+        if source and (positive or "").strip():
+            _refined = ""
+            if self._cfg("third_party_llm_refine", True):
+                try:
+                    if _plat_must_en:
+                        _refined = await self._rewrite_to_anima_llm(positive)
+                    else:
+                        _refined = await self._rewrite_to_real_llm(positive)
+                    if _refined and _refined.strip():
+                        logger.info(f"【平台】 第三方插件调用，提示词已经 LLM 整理（{ptype}）: {_refined[:80]}")
+                        positive = _refined.strip()
+                except Exception as e:
+                    logger.warning(
+                        f"【平台】 LLM 整理失败"
+                        f"{'，回退翻译' if _plat_must_en else '，保留原提示词'}: {e}"
+                    )
+            else:
+                logger.info("【平台】 第三方插件调用，已按配置「third_party_llm_refine=false」跳过 LLM 整理")
+            # 兜底：标签系平台 + 含中文（整理关闭 / 整理失败 / 返回空）→ 翻译
+            if _plat_must_en and self._has_chinese(positive) \
+                    and not (_refined and _refined.strip()):
+                try:
+                    _tr = await self._translate_prompt(None, positive)
+                    if _tr:
+                        logger.info(f"【平台】 回退翻译结果（标签系必须英文）: {_tr[:80]}")
+                        positive = _tr
+                except Exception as e:
+                    logger.warning(f"【平台】 回退翻译失败，保留原提示词: {e}")
 
         # ── 提示词丰富化 + 角色保真（v7.6.0 补齐平台链路缺口）─────────────
         # 此前平台链路（NAI / OpenAI 兼容 / 自定义）完全跳过画质前缀与角色卡锚点注入，
@@ -6223,7 +6276,17 @@ class ComfyUIDrawPlugin(Star):
             if _pos_cleaned != (positive or "").strip():
                 logger.info(f"【提示词清理】 剔除跨后端语法垃圾后: {_pos_cleaned}")
                 positive = _pos_cleaned
-        if not _fixed_prompt and (source or (wf.get("is_anima") and self._has_chinese(positive))):
+        # v7.7.41：调度条件按回退链细化——第三方调用且**关闭**LLM 整理时，只有
+        # 「必须英文（标签系）+ 含中文」才需要进去翻译兜底；否则不必空转一次 task。
+        _need_refine = False
+        if not _fixed_prompt:
+            _zh_now = self._has_chinese(positive)
+            if source:
+                _need_refine = bool(self._cfg("third_party_llm_refine", True)
+                                    or (wf.get("is_anima") and _zh_now))
+            else:
+                _need_refine = bool(wf.get("is_anima") and _zh_now)
+        if _need_refine:
             _llm_task = asyncio.create_task(
                 self._llm_refine_prompt(wf, positive, source, _trace_id)
             )
