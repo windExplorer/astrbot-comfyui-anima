@@ -12087,30 +12087,83 @@ class ComfyUIDrawPlugin(Star):
         await self._send(event, text)
         event.stop_event()
 
+    # /绘图帮助（简单版）内容源：帮助卡与文字兜底共用这一份数据，两处永不漂移
+    _SIMPLE_HELP_SECTIONS = [
+        ("AI 对话画图", "chat", [
+            ("画一张… / 用 xx 风格画…", "直接说就行，AI 自动调用绘图（如「画一只猫」「画一张星空」）"),
+        ]),
+        ("指令画图", "brush", [
+            ("/画 [平台名] [工作流名] 提示词", "用默认或指定引擎画（如 /画 真人 一个女孩、/画 nai 1girl）"),
+            ("/绘图 /绘画 /生图 /画图 /作画 /画画", "触发词后首个 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）"),
+        ]),
+        ("NAI 专属", "sparkle", [
+            ("/画 nai --画师串1 提示词", "用「画师串1」预设作画"),
+            ("/画 nai -- 提示词（或不带 --）", "不用默认画师串"),
+        ]),
+        ("图生图", "image", [
+            ("/图生图 描述 + 参考图", "上传参考图后生成（英文 /img2img 亦可）"),
+            ("", "无提示词工作流：可只传图/引用图 + 工作流名（无需提示词；图生图类必须附图）"),
+        ]),
+        ("LoRA 与工作流", "box", [
+            ("/绘图lora [角色|风格|工具]", "查看可用 LoRA（英文 /loralist 亦可）"),
+            ("/绘图工作流lora 工作流名", "查看某工作流可用的 LoRA，如 /绘图工作流lora 动漫"),
+            ("/绘图工作流", "查看 / 设置默认工作流，可 enable/disable 启用停用（英文 /workflows 亦可）"),
+        ]),
+        ("实用工具", "gear", [
+            ("/绘图队列", "查看排队状态（英文 /queuestatus 亦可）"),
+            ("/绘图统计 [今天|昨天|周|月|全部]", "出图统计"),
+            ("/绘图排行 [今天|昨天|周|月|全部]", "绘图排行前五"),
+            ("/绘图状态", "服务器状态与生图限额"),
+            ("/涩图检测（引用图片）", "检测图片是否为涩涩内容"),
+        ]),
+        ("图库与角色", "image", [
+            ("/图库 列表|搜索|收藏…", "图库管理（详见 /图库帮助）"),
+            ("/角色 列表|看|记住|锚点|参考图…", "角色卡片：把「某角色长什么样」落库，让同一角色每张图长得一致"),
+        ]),
+    ]
+
+    @classmethod
+    def _simple_help_text(cls) -> str:
+        """由 _SIMPLE_HELP_SECTIONS 生成文字版（帮助卡的兜底，内容同源）。"""
+        lines = ["🎨 中文画图指令（简单版）："]
+        for label, _icon, rows in cls._SIMPLE_HELP_SECTIONS:
+            lines.append(f"◆ {label}")
+            for cmd, desc in rows:
+                lines.append(f"· {cmd}　{desc}".rstrip())
+        lines.append("· 想查看详细参数，回复「画画帮助」即可")
+        return "\n".join(lines)
+
     @filter.command("绘图帮助", alias={"画图帮助", "作图帮助", "绘图说明", "画图说明"})
     async def cmd_help_simple(self, event: AstrMessageEvent):
         """简单的中文绘图指令帮助。"""
-        text = (
-            "🎨 中文画图指令（简单版）：\n"
-            "· 画图：直接说「画一张…」或「画…」，如「画一只猫」；也可说「用 xxx 风格画…」\n"
-            "· /画 [平台名] [工作流名] 提示词   用默认或指定引擎画（如 /画 真人 一个女孩、/画 nai 1girl）\n"
-            "· NAI 画师串：/画 nai --画师串1 提示词 = 用「画师串1」；/画 nai -- 提示词 = 不用画师串\n"
-            "· /绘图 /绘画 /生图 /画图 /作画 /画画 [工作流名] 提示词   首 token 命中已知工作流即用作工作流名（如 /绘图 动漫转真人）\n"
-            "· 无提示词工作流：可只传图/引用图 + 工作流名（无需提示词；图生图类必须附图）\n"
-            "· /图生图 描述 + 参考图   图生图（英文 /img2img 亦可）\n"
-            "· /绘图lora [角色|风格|工具]   查看可用 LoRA（英文 /loralist 亦可）\n"
-            "· /绘图工作流lora 工作流名   查看某工作流可用的 LoRA，如 /绘图工作流lora 动漫\n"
-            "· /绘图工作流   查看 / 设置默认工作流，可 enable/disable 启用停用（英文 /workflows 亦可）\n"
-            "· /绘图队列   查看排队状态（英文 /queuestatus 亦可）\n"
-            "· /绘图统计 [今天|昨天|周|月|全部]   出图统计\n"
-            "· /绘图排行 [今天|昨天|周|月|全部]   绘图排行前五\n"
-            "· /绘图状态   服务器状态与生图限额\n"
-            "· /图库 列表|搜索|收藏…   图库管理\n"
-            "· /角色 列表|看|记住|锚点|参考图…   角色卡片（让同一角色每张图长得一致）\n"
-            "· /涩图检测（引用图片）   检测图片是否为涩涩内容\n"
-            "· 想查看详细参数，回复「画画帮助」即可"
-        )
-        # 优先发静态帮助图（随插件打包，零渲染开销），失败回退文字
+        # ① 运行时渲染帮助卡（v7.7.49：与指令文案同源，永不陈旧；失败往下走）
+        try:
+            mod = self._card_module()
+            path = mod.save_help(
+                {
+                    "kicker": "ComfyUI萌绘 · 绘图模块",
+                    "title": "绘图使用指南",
+                    "right_top": "输入 /绘图帮助 随时查看",
+                    "sections": [
+                        {"label": label, "icon": icon, "rows": rows}
+                        for label, icon, rows in self._SIMPLE_HELP_SECTIONS
+                    ],
+                },
+                theme=str(self._card_cfg().get("theme") or ""),
+                cfg=self._card_cfg(),
+                data_dir=self.data_dir,
+                foot_left="想查看详细参数，回复「画画帮助」即可",
+            )
+            if path:
+                await event.send(MessageChain([Image.fromFileSystem(path)]))
+                event.stop_event()
+                return
+        except Exception as _e:
+            try:
+                self.logger.warning(f"【绘图·解析】 帮助卡渲染失败，回退静态图: {_e}")
+            except Exception:
+                pass
+        # ② 渲染失败（缺字体等）→ 随包静态帮助图（内容为旧版快照）
         try:
             _help_img = Path(__file__).resolve().parent / "assets" / "draw_help.png"
             if _help_img.is_file():
@@ -12122,7 +12175,8 @@ class ComfyUIDrawPlugin(Star):
                 self.logger.warning(f"【绘图·解析】 静态帮助图发送失败，回退文字: {_e}")
             except Exception:
                 pass
-        await self._send(event, text)
+        # ③ 文字兜底
+        await self._send(event, self._simple_help_text())
         event.stop_event()
 
     # ------------------------------------------------------------------ #
