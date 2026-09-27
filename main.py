@@ -688,6 +688,12 @@ g_draw_agent_sessions: dict[str, str] = {}
 # 用户最终只看到一条：「@某人 + （配文）+ 图」。
 g_draw_sent: dict[str, float] = {}
 
+# 「等待与 AI 配文合并发出的图片」队列（v7.7.49）：session_id -> (时间戳, [本地路径, ...])
+# AI 对话出图时图片先攒在这里，等 on_decorating_result（发送消息前）把 AI 这次的配文与图片、
+# @触发者 组成**一条**消息发出 —— 群里形态就是「@某人 + AI 配文 + 图」，而不是「图 + 另一条文字」。
+# on_agent_done 后延迟兜底补发，绝不丢图。
+g_pending_images: dict[str, tuple] = {}
+
 
 # 懒加载「所长 NovelAI 法典」检索模块（skills/nai-codex/search.py）。
 # 用 importlib 按绝对路径加载，避免依赖 skills/ 成为 python 包；
@@ -967,9 +973,11 @@ _FORCE_DRAW_FALLBACK_HINTS = [
     "这次我亲自上，稍等一下～",
 ]
 
-# 出图默认配文（v7.7.48）：AI 没填 caption 时用这句兜底，让「@ + 文字 + 图」是一条完整消息；
-# 多句用 `|` 分隔可随机挑一句；配置里留空 = 不加配文（图片消息只有 @ + 图）。
-_DEFAULT_FALLBACK_CAPTION = "给你画好啦～"
+# 出图兜底配文（v7.7.48 引入，v7.7.49 起默认留空）：
+# 配文优先用 **AI 自己写的那句**（合并模式下由 on_decorating_result 并进图片消息），
+# 这里的兜底只在「AI 没写配文」且确实需要一句话时才有用——默认留空（不加固定话术）。
+# 想用固定话术可在配置里填，多句用 `|` 分隔随机挑一句。
+_DEFAULT_FALLBACK_CAPTION = ""
 
 # 提示词丰富化（v7.6.0）：用户明确要求「改外观」时，跳过外观冲突剥除。
 # 例：「把头发染成粉色」「换件白裙子」「眼睛改成红色」——这是用户意图，不是模型臆造。
@@ -4918,6 +4926,107 @@ class ComfyUIDrawPlugin(Star):
                 g_draw_sent[sid] = time.time()
         except Exception:
             pass
+
+    # ---- AI 配文与图片合并成一条（v7.7.49） ---------------------------------- #
+    def _merge_reply_enabled(self) -> bool:
+        """是否开启「把 AI 的配文与图片合并成一条消息」（image_caption.merge_ai_reply）。"""
+        try:
+            _cfg = self._cfg_image_caption()
+            if not isinstance(_cfg, dict):
+                return True
+            return bool(_cfg.get("merge_ai_reply", True) and _cfg.get("enabled", True))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _image_paths_of(node) -> list[str]:
+        """从出图产出的消息链里取出图片本地路径（Image 组件的 path / file）。"""
+        out: list[str] = []
+        for comp in list(getattr(node, "chain", None) or []):
+            if not isinstance(comp, Image):
+                continue
+            p = str(getattr(comp, "path", "") or getattr(comp, "file", "") or "").strip()
+            if p.startswith("file://"):
+                try:
+                    from urllib.parse import unquote, urlparse
+                    p = unquote(urlparse(p).path)
+                except Exception:
+                    pass
+            if p and os.path.exists(p):
+                out.append(p)
+        return out
+
+    def _defer_draw_images(self, event, node, source: str = "") -> bool:
+        """把本次出图的图片先攒着，等 AI 的配文生成后一起发（v7.7.49）。返回是否已接管发送。
+
+        仅用于 **AI 对话路径**（LLM 工具调用）——那里之后必然有一条 AI 响应可以合并。
+        - 第三方插件调用（带 source）：它们自己发图 / 只取路径，不掺和；
+        - 静默生图（silent）：调用方要的就是干净出图，不合并。
+        攒下的图由 `_merge_ai_reply_with_images`（发送前钩子）合并发出；
+        万一钩子没走到，`_flush_pending_later` 会延迟补发，绝不丢图。
+        """
+        try:
+            if not self._merge_reply_enabled():
+                return False
+            if str(source or "").strip():
+                return False
+            if self._is_silent_call(event):
+                return False
+            sid = str(getattr(event, "session_id", "") or "")
+            if not sid:
+                return False
+            paths = self._image_paths_of(node)
+            if not paths:
+                return False
+            _old = g_pending_images.get(sid)
+            if _old and _old[1]:
+                if sid in g_draw_agent_sessions:
+                    # 同一轮的多张（prompts 多条）：追加进同一批，最终一条消息一起发
+                    paths = list(_old[1]) + paths
+                else:
+                    # 上一轮遗留（异常路径）→ 先补发，绝不丢图
+                    try:
+                        asyncio.create_task(
+                            self._flush_pending_images(event, sid, "上一轮遗留图片补发")
+                        )
+                    except Exception:
+                        pass
+            g_pending_images[sid] = (time.time(), paths)
+            # 图还没发出去 → 不能触发「抑制 AI 收尾回复」（那句正是要合并进图片消息的配文）
+            g_draw_sent.pop(sid, None)
+            logger.info(
+                f"【出图·合并】 图片暂存 {len(paths)} 张，等 AI 配文生成后合成一条消息发出"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"【出图·合并】 暂存失败（改为立即发送）: {e}")
+            return False
+
+    async def _flush_pending_images(self, event, sid: str, reason: str = "") -> list[str]:
+        """把暂存的图片立刻发出去（兜底，绝不丢图）；返回已发出的路径。"""
+        item = g_pending_images.pop(sid, None)
+        paths = list((item[1] if item else []) or [])
+        if not paths:
+            return []
+        logger.info(f"【出图·合并】 改为直接发送暂存图片 {len(paths)} 张（{reason}）")
+        for p in paths:
+            try:
+                await self._send_image_with_recall(
+                    event,
+                    MessageChain(self._maybe_at_prefix(event, [Image.fromFileSystem(p)])),
+                )
+            except Exception as e:
+                logger.warning(f"【出图·合并】 补发图片失败: {e}")
+        return paths
+
+    async def _flush_pending_later(self, event, sid: str, delay: float = 3.0) -> None:
+        """延迟兜底：本轮结束后若图片仍未被合并发出，就直发（不丢图）。"""
+        try:
+            await asyncio.sleep(float(delay))
+            if sid and sid in g_pending_images:
+                await self._flush_pending_images(event, sid, "本轮结束仍未合并（兜底补发）")
+        except Exception as e:
+            logger.debug(f"【出图·合并】 延迟兜底检查失败（忽略）: {e}")
 
     def _fallback_caption(self) -> tuple[str, str]:
         """AI 没填 caption 时的默认配文（配置 `image_caption.fallback_caption`）。
@@ -15100,13 +15209,21 @@ class ComfyUIDrawPlugin(Star):
                     # （实测：群聊说一句「再来」后无限自动出图）。发送成败只决定
                     # 【返回给模型的文案】（如实告知，不谎报成功），不影响闸门计数。
                     plugin._draw_run_hit(event)
+                    # v7.7.49：AI 对话出图 → 图片先攒着，等 AI 配文生成后合成一条发出
+                    # （群里就是「@某人 + AI 配文 + 图」）；不满足条件时照旧立即发送。
+                    _deferred = False
                     try:
-                        await plugin._send_image_with_recall(
-                            event, node if isinstance(node, MessageChain) else MessageChain([node])
-                        )
+                        _deferred = plugin._defer_draw_images(event, node, source=source)
                     except Exception as _e:
-                        _send_fail += 1
-                        logger.warning(f"【出图·发送失败】 图片已生成但 event.send 失败: {_e}")
+                        logger.debug(f"【出图·合并】 暂存判断异常（改为立即发送）: {_e}")
+                    if not _deferred:
+                        try:
+                            await plugin._send_image_with_recall(
+                                event, node if isinstance(node, MessageChain) else MessageChain([node])
+                            )
+                        except Exception as _e:
+                            _send_fail += 1
+                            logger.warning(f"【出图·发送失败】 图片已生成但 event.send 失败: {_e}")
 
         # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
         _nsfw_blocked_n = int(_draw_stats.get("nsfw_blocked", 0) or 0)
@@ -16357,6 +16474,72 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【统计·token】 记录画图主对话用量失败: {e}")
 
+    # 用 _hook_register 安全注册：老版本 AstrBot 没有 on_decorating_result 时退化为普通方法，
+    # 不会在 import 期炸掉整个插件（此时合并功能自动失效，图片仍会立即发出）。
+    @_hook_register("on_decorating_result")
+    async def _merge_ai_reply_with_images(self, event: AstrMessageEvent) -> None:
+        """发送消息前：把暂存的出图图片与 AI 这次的回复合成**一条**（v7.7.49）。
+
+        群里最终形态就是用户要的「@某人 + AI 配文 + 图」（AI 没配文时退化为「@ + 图」）。
+        只取原回复里的文本组件作为配文，其余组件不搬；合并后强制关闭 t2i，
+        以免配文被渲染成图、把真图挤掉。
+        """
+        sid = str(getattr(event, "session_id", "") or "")
+        if not sid:
+            return
+        item = g_pending_images.pop(sid, None)
+        if not item or not item[1]:
+            return
+        paths = list(item[1])
+        try:
+            result = event.get_result()
+            # 流式输出：AI 的文本已被框架分批发出去，再合并会造成文本重复 →
+            # 这种情况改为直接发图（AstrBot 的流式场景不保证本钩子可用，属框架限制）。
+            _rct = getattr(result, "result_content_type", None) if result is not None else None
+            if str(getattr(_rct, "name", "") or "").startswith("STREAMING"):
+                logger.info("【出图·合并】 检测到流式输出，跳过合并 → 直接发图")
+                for p in paths:
+                    try:
+                        await self._send_image_with_recall(
+                            event,
+                            MessageChain(self._maybe_at_prefix(event, [Image.fromFileSystem(p)])),
+                        )
+                    except Exception as _e:
+                        logger.warning(f"【出图·合并】 流式场景补发图片失败: {_e}")
+                return
+            comps = list(getattr(result, "chain", None) or []) if result is not None else []
+            keep = [c for c in comps if isinstance(c, Plain)]
+            merged = self._maybe_at_prefix(
+                event, keep + [Image.fromFileSystem(p) for p in paths]
+            )
+            if result is None:
+                result = event.chain_result(merged)
+            else:
+                result.chain = merged
+            try:
+                result.use_t2i_ = False
+            except Exception:
+                pass
+            try:
+                event.set_result(result)
+            except Exception:
+                pass
+            _txt = "".join(str(getattr(c, "text", "") or "") for c in keep).strip()
+            logger.info(
+                f"【出图·合并】 已把 {len(paths)} 张图与 AI 配文合成一条消息发出"
+                f"（配文 {len(_txt)} 字：{_txt[:40] or '（AI 未配文）'}）"
+            )
+        except Exception as e:
+            logger.warning(f"【出图·合并】 合并失败，改为直接发图: {e}")
+            for p in paths:
+                try:
+                    await self._send_image_with_recall(
+                        event,
+                        MessageChain(self._maybe_at_prefix(event, [Image.fromFileSystem(p)])),
+                    )
+                except Exception as _e:
+                    logger.warning(f"【出图·合并】 合并失败后补发图片也失败: {_e}")
+
     @filter.on_llm_response()
     async def _suppress_draw_reply(self, event: AstrMessageEvent, response=None) -> None:
         """出图已带配文时，压掉 AI 那句重复的收尾回复（v7.7.47，可关）。
@@ -16432,6 +16615,13 @@ class ComfyUIDrawPlugin(Star):
                 # v7.7.47/48：「本轮图已发出」标记同样在本轮结束时清掉，
                 # 避免下一轮普通对话被误抑制回复。
                 g_draw_sent.pop(sid, None)
+                # v7.7.49：本轮结束时若仍有暂存图片（on_decorating_result 没赶上，
+                # 例如 AI 这次压根没产生回复），延迟几秒兜底补发，绝不丢图。
+                if sid in g_pending_images:
+                    try:
+                        asyncio.create_task(self._flush_pending_later(event, sid))
+                    except Exception:
+                        pass
                 # 一轮 agent run 结束：清除单轮出图闸门状态，确保用户下一条新消息
                 # 可以正常继续画图（不会被上一轮的计数/同参记录误拦）。
                 self._draw_run_reset(sid)
@@ -17968,13 +18158,20 @@ class ComfyUIDrawPlugin(Star):
                     # 避免群聊 send 失败时闸门不计数导致模型无限重画；
                     # 发送失败累加 _send_fail2，只影响返回给模型的文案。
                     plugin._draw_run_hit(event)
+                    # v7.7.49：同 llm_draw —— AI 对话出图先把图攒着，等 AI 配文后合成一条
+                    _deferred2 = False
                     try:
-                        await plugin._send_image_with_recall(
-                            event, node if isinstance(node, MessageChain) else MessageChain([node])
-                        )
+                        _deferred2 = plugin._defer_draw_images(event, node, source=source)
                     except Exception as _e:
-                        _send_fail2 += 1
-                        logger.warning(f"【出图·发送失败】 comfyui_img2img 图已生成但 event.send 失败: {_e}")
+                        logger.debug(f"【出图·合并】 暂存判断异常（改为立即发送）: {_e}")
+                    if not _deferred2:
+                        try:
+                            await plugin._send_image_with_recall(
+                                event, node if isinstance(node, MessageChain) else MessageChain([node])
+                            )
+                        except Exception as _e:
+                            _send_fail2 += 1
+                            logger.warning(f"【出图·发送失败】 comfyui_img2img 图已生成但 event.send 失败: {_e}")
 
         # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
         _nsfw_blocked_n2 = int(_draw_stats2.get("nsfw_blocked", 0) or 0)
