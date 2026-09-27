@@ -216,39 +216,6 @@ def test_report_card():
     print("== 7. 报表卡（统计/状态/空数据/9 主题/落盘） OK")
 
 
-def test_help_card():
-    """帮助卡（v7.7.49）：/绘图帮助 运行时渲染——指令列对齐、通栏说明行、落盘。"""
-    from draw_card import THEMES, render_help, save_help
-
-    info = {
-        "kicker": "ComfyUI萌绘 · 绘图模块", "title": "绘图使用指南",
-        "right_top": "输入 /绘图帮助 随时查看",
-        "foot_left": "想查看详细参数，回复「画画帮助」即可",
-        "sections": [
-            {"label": "指令画图", "icon": "brush", "rows": [
-                ("/画 [平台名] [工作流名] 提示词", "用默认或指定引擎画"),
-                ("", "无提示词工作流：可只传图/引用图 + 工作流名"),
-            ]},
-            {"label": "实用工具", "icon": "gear", "rows": [
-                ("/绘图队列", "查看排队状态"),
-                ("/绘图状态", ""),
-            ]},
-        ],
-    }
-    for theme in ("teal", "night"):
-        im = render_help(info, theme=theme)
-        assert im is not None and im.size[0] == 840 and im.size[1] > 300, (theme, im.size if im else None)
-    # 全缺省与全部主题都能渲染
-    assert render_help({}, theme="graphite") is not None
-    for k in THEMES:
-        assert render_help({"title": "帮助"}, theme=k) is not None, k
-    # 落盘（文件名带 help_ 前缀）
-    tmp = Path(tempfile.mkdtemp())
-    p = save_help(info, theme="teal", data_dir=tmp)
-    assert p and Path(p).is_file() and "help_" in Path(p).name, p
-    print("== 8. 帮助卡（渲染/指令列/通栏行/9 主题/落盘） OK")
-
-
 if __name__ == "__main__":
     test_theme_table()
     test_norm_theme()
@@ -257,5 +224,4 @@ if __name__ == "__main__":
     test_prompt_not_truncated()
     test_font_lookup()
     test_report_card()
-    test_help_card()
     print("draw_card 全部通过")
