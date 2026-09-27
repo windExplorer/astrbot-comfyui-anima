@@ -681,11 +681,12 @@ DRAW_LLM_TOOLS = {"comfyui_draw", "comfyui_img2img", "comfyui_gallery"}
 # LLM 调用（画图收尾总结）也一并计入；on_agent_done 时清除，避免污染后续普通对话的统计。
 g_draw_agent_sessions: dict[str, str] = {}
 
-# 「本轮配文已随图发出」的会话标记（v7.7.47）：出图时把配文并进图片消息（图文消息）发出后
-# 记一笔，供 on_llm_response 判断——这种情形下 AI 再单独回一句「给你画好啦～」属于重复内容，
-# 按配置（image_caption.suppress_reply，默认开）把那次收尾回复压掉，
-# 用户最终只看到「@某人 + 配文 + 图」一条消息（群里）。
-g_caption_sent: dict[str, float] = {}
+# 「本轮出图消息已发出」的会话标记（v7.7.47；v7.7.48 起语义放宽为「图已发出」）：
+# 只要本轮的成品图消息已经发出（不论有没有配文），AI 在工具返回后再单独回一句
+# 「给你画好啦～」（群里带 @）都是同一次出图的第二条消息 → 按配置
+# （image_caption.suppress_reply，默认开）把那次收尾回复压掉，
+# 用户最终只看到一条：「@某人 + （配文）+ 图」。
+g_draw_sent: dict[str, float] = {}
 
 
 # 懒加载「所长 NovelAI 法典」检索模块（skills/nai-codex/search.py）。
@@ -965,6 +966,10 @@ _FORCE_DRAW_FALLBACK_HINTS = [
     "它嘴上答应没动手，我来画。",
     "这次我亲自上，稍等一下～",
 ]
+
+# 出图默认配文（v7.7.48）：AI 没填 caption 时用这句兜底，让「@ + 文字 + 图」是一条完整消息；
+# 多句用 `|` 分隔可随机挑一句；配置里留空 = 不加配文（图片消息只有 @ + 图）。
+_DEFAULT_FALLBACK_CAPTION = "给你画好啦～"
 
 # 提示词丰富化（v7.6.0）：用户明确要求「改外观」时，跳过外观冲突剥除。
 # 例：「把头发染成粉色」「换件白裙子」「眼睛改成红色」——这是用户意图，不是模型臆造。
@@ -4900,18 +4905,56 @@ class ComfyUIDrawPlugin(Star):
             logger.debug(f"【出图·@】 图片消息加 @ 失败（忽略，按原样发送）: {e}")
             return comps
 
-    def _mark_caption_sent(self, event) -> None:
-        """记一笔「本轮配文已随图发出」（v7.7.47）。
+    def _mark_draw_sent(self, event) -> None:
+        """记一笔「本轮成品图消息已发出」（v7.7.47；v7.7.48 起不论有无配文都打标）。
 
-        on_llm_response 据此判断：图文消息已经把话说了 → AI 收尾再回一句就是重复，
-        按配置（image_caption.suppress_reply，默认开）压掉那条文本。
+        on_llm_response 据此判断：图片已经发出去了，AI 收尾再回一句「给你画好啦～」
+        （群里带 @）就是同一次出图的第二条消息 → 按配置（image_caption.suppress_reply，
+        默认开）压掉那条文本，让群里只留一条。
         """
         try:
             sid = str(getattr(event, "session_id", "") or "")
             if sid:
-                g_caption_sent[sid] = time.time()
+                g_draw_sent[sid] = time.time()
         except Exception:
             pass
+
+    def _fallback_caption(self) -> tuple[str, str]:
+        """AI 没填 caption 时的默认配文（配置 `image_caption.fallback_caption`）。
+
+        多句用 `|` 分隔即随机挑一句；配置留空 = 不加配文（图片消息只有 @ + 图）。
+        返回 (文本, 来源说明)。
+        """
+        try:
+            _cfg = self._cfg_image_caption()
+            raw = ""
+            if isinstance(_cfg, dict):
+                raw = str(_cfg.get("fallback_caption", _DEFAULT_FALLBACK_CAPTION) or "").strip()
+            else:
+                raw = _DEFAULT_FALLBACK_CAPTION
+        except Exception:
+            raw = _DEFAULT_FALLBACK_CAPTION
+        if not raw:
+            return "", ""
+        try:
+            _opts = [x.strip() for x in raw.split("|") if x.strip()]
+            return (random.choice(_opts) if _opts else ""), "默认配文"
+        except Exception:
+            return raw, "默认配文"
+
+    def _log_draw_send(self, event, *, has_text: bool, src: str = "", text: str = "") -> None:
+        """打印本次出图消息的发送形态（排查「群里为什么是两条消息」用）。"""
+        try:
+            _private = self._is_private_event(event)
+            _at = "是" if (not _private and At is not None) else "否"
+            logger.info(
+                f"【出图·发送】 {'私聊' if _private else '群聊'}｜@触发者={_at}｜"
+                f"{('配文（' + src + '）：' + text[:40]) if has_text else '无配文'}"
+                "｜本条即完整的出图消息（@ + 文字 + 图）。"
+                "若随后群里又出现一条文本，那属于 AI 的收尾回复（由 suppress_reply 决定是否抑制）"
+            )
+        except Exception as e:
+            logger.debug(f"【出图·发送】 日志输出失败（忽略）: {e}")
 
     async def _send_image_with_recall(self, event, chain) -> None:
         """出图发送统一入口：不需要自动撤回时等价于 event.send；需要时登记定时撤回。"""
@@ -6220,7 +6263,13 @@ class ComfyUIDrawPlugin(Star):
                 continue
 
             # 发送（图文消息 caption 与 ComfyUI 链路同构）
-            _cap_text = self._build_image_caption(caption, "") if caption else ""
+            _cap_text = ""
+            _cap_src = ""
+            if self._cfg_image_caption().get("enabled", True):
+                _cap_text = self._build_image_caption(caption, "") if caption else ""
+                _cap_src = "AI 配文" if _cap_text else ""
+                if not _cap_text:
+                    _cap_text, _cap_src = self._fallback_caption()
             if _cap_text:
                 _cap_result = event.chain_result(
                     self._maybe_at_prefix(
@@ -6231,10 +6280,13 @@ class ComfyUIDrawPlugin(Star):
                     _cap_result.use_t2i_ = False
                 except Exception:
                     pass
-                # v7.7.47：配文已随图发出 → 供抑制重复的 AI 收尾回复
-                self._mark_caption_sent(event)
+                # v7.7.47/48：本轮图已发出 → 供抑制重复的 AI 收尾回复
+                self._mark_draw_sent(event)
+                self._log_draw_send(event, has_text=True, src=_cap_src, text=_cap_text)
                 yield _cap_result, _send_img_path
             else:
+                self._mark_draw_sent(event)
+                self._log_draw_send(event, has_text=False)
                 yield event.chain_result(
                     self._maybe_at_prefix(event, [Image.fromFileSystem(_send_img_path)])
                 ), _send_img_path
@@ -8113,6 +8165,7 @@ class ComfyUIDrawPlugin(Star):
                     # 必须在发图前算好（旧逻辑是发图后单独发一条）。报告并入后不再重复发送。
                     _report_merged = False
                     _cap_text = ""
+                    _cap_src = ""
                     if not _nsfw_blocked and (self._cfg_image_caption().get("enabled", True)):
                         _rpt = ""
                         # v7.3.0：结果信息改由卡片承担时，就别再并进配文（否则同一信息出现两次）
@@ -8123,6 +8176,12 @@ class ComfyUIDrawPlugin(Star):
                             if _rpt:
                                 _report_merged = True
                         _cap_text = self._build_image_caption(caption, _rpt)
+                        if _cap_text:
+                            _cap_src = "AI 配文" if (caption or "").strip() else "出图小报告"
+                        else:
+                            # v7.7.48：AI 没填 caption（很常见）→ 用配置的默认配文兜底，
+                            # 否则图片消息里一个字都没有，用户看到的仍像「图 + 另一条文字」。
+                            _cap_text, _cap_src = self._fallback_caption()
                     if not _nsfw_blocked:
                         if _cap_text:
                             _cap_result = event.chain_result(
@@ -8140,10 +8199,13 @@ class ComfyUIDrawPlugin(Star):
                                 _cap_result.use_t2i_ = False
                             except Exception:
                                 pass
-                            # v7.7.47：配文已随图发出 → 记一笔，供抑制重复的 AI 收尾回复
-                            self._mark_caption_sent(event)
+                            # v7.7.47/48：本轮图已发出 → 记一笔，供抑制重复的 AI 收尾回复
+                            self._mark_draw_sent(event)
+                            self._log_draw_send(event, has_text=True, src=_cap_src, text=_cap_text)
                             yield _cap_result, _send_img_path
                         else:
+                            self._mark_draw_sent(event)
+                            self._log_draw_send(event, has_text=False)
                             yield event.chain_result(
                                 self._maybe_at_prefix(event, [Image.fromFileSystem(_send_img_path)])
                             ), _send_img_path
@@ -14028,8 +14090,8 @@ class ComfyUIDrawPlugin(Star):
         
         caption 配文（图文消息，**强烈建议填**）：
         - caption 是你想和图片**发在同一条消息里**的那句话（如「给你画好啦～」「这只猫有点嚣张」）。
-          填了它，插件会把「这段文字 + 图片」合成【一条】消息发出（群里还会自动 @ 触发者），
-          比「先一句话、再一张图」自然得多；不填的话群里会变成「图一条 + 你的回复一条」两条。
+          填了它，插件会把「这段文字 + 图片」合成【一条】消息发出（群里还会自动 @ 触发者）。
+          不填也能出图：插件会用配置里的「默认配文」兜底，但你自己写的那句更贴画面、更有人味。
         - 只写一句简短的配文（建议 20 字以内），用你自己的口吻；不要写长篇大论，
           也不要把画面描述 / prompt 复述进来（画面内容由 prompt 负责）。
         - ★★最重要：配文会随图一起发出，工具返回后【绝对不要】在回复里再说一遍同样的话——
@@ -16249,7 +16311,7 @@ class ComfyUIDrawPlugin(Star):
         往往还会再回一句「给你画好啦～」（群里带 @）→ 用户看到两条。这里在 agent 收尾那次
         响应上把文本清空；仅当三个条件同时成立才动手：
           ① 本会话正处于「画图 run」（g_draw_agent_sessions —— 由画图工具调用打标）；
-          ② 配文确实已随图发出（g_caption_sent —— 图文消息成功发送时打的）；
+          ② 本轮图片消息**确实已发出**（g_draw_sent —— 不论有无配文，图发出时即打标）；
           ③ 本次响应没有工具调用（带工具调用的是画图请求本身，绝不能动）。
         受配置 `image_caption.suppress_reply`（默认开）控制；任何异常都放行原文，绝不吞正常回复。
         """
@@ -16260,18 +16322,31 @@ class ComfyUIDrawPlugin(Star):
             if response is None:
                 return
             sid = str(getattr(event, "session_id", "") or "")
-            if not sid or sid not in g_draw_agent_sessions or sid not in g_caption_sent:
-                return
+            if not sid or sid not in g_draw_agent_sessions:
+                return   # 不在画图流程里：普通对话，绝不干预
             if getattr(response, "tools_call_name", None):
-                return
+                return   # 带工具调用的是「画图请求那次」，那时图还没出，不能动
             text = str(getattr(response, "completion_text", "") or "").strip()
             if not text:
                 return
+            if sid not in g_draw_sent:
+                logger.info(
+                    "【出图·回复】 未抑制：本轮没有成功发出图片消息（被 NSFW 拦截 / 出图失败？）"
+                    f"→ 保留 AI 回复: {text[:40]}"
+                )
+                return
             logger.info(
-                f"【出图·回复】 配文已随图发出，抑制本次收尾回复（{len(text)} 字）: {text[:60]}"
+                f"【出图·回复】 本轮图已发出（含 @/配文为同一条）→ 抑制 AI 收尾回复"
+                f"（{len(text)} 字）: {text[:60]}"
             )
             try:
                 response.completion_text = ""
+            except Exception:
+                pass
+            try:
+                # 流式输出时文本可能挂在 result_chain 上，一并清掉，否则照样发得出去
+                if getattr(response, "result_chain", None) is not None:
+                    response.result_chain = None
             except Exception:
                 pass
         except Exception as e:
@@ -16300,9 +16375,9 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if sid:
                 g_draw_agent_sessions.pop(sid, None)
-                # v7.7.47：「配文已随图发出」标记同样在本轮结束时清掉，
+                # v7.7.47/48：「本轮图已发出」标记同样在本轮结束时清掉，
                 # 避免下一轮普通对话被误抑制回复。
-                g_caption_sent.pop(sid, None)
+                g_draw_sent.pop(sid, None)
                 # 一轮 agent run 结束：清除单轮出图闸门状态，确保用户下一条新消息
                 # 可以正常继续画图（不会被上一轮的计数/同参记录误拦）。
                 self._draw_run_reset(sid)
@@ -17483,7 +17558,7 @@ class ComfyUIDrawPlugin(Star):
         caption 配文（**强烈建议填**）：想和图片发在同一条消息里的那句话（如"给你改好啦～"），建议 20 字内、别复述画面。
         ★群里还会自动 @ 触发者，所以填了 caption 就是「@某人 + 配文 + 图」一条消息；
         ★配文随图发出后**绝不要**在回复里再说一遍——插件会压掉你重复的收尾回复（等于白说）；
-        多张时只加在第一张上；不想配文就留空。
+        多张时只加在第一张上；留空则用配置里的「默认配文」兜底（不如你自己写的那句贴画面）。
         ★强制出图标记：用户消息行首带标记（插件默认 `t`，如「t把这张图变成水彩」）时，
           语义是**必须画出来**：把标记去掉，剩下的内容作为变换描述，立即调用本工具；
           只回文字不调用 = 失败（插件会替你补画）。标记后紧跟英文字母的不算（`thanks` 之类）。

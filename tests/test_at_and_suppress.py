@@ -3,9 +3,10 @@
 覆盖：
   ① `_maybe_at_prefix`：群聊加 `At`（链首）、私聊不加、配置关不加、已有 At 不重复、
      取不到用户 id 不加、At 组件不可用（旧版 AstrBot）原样返回；
-  ② `_mark_caption_sent`：只按 session 打标；
-  ③ `_suppress_draw_reply`：三个条件（画图 run + 配文已发 + 本次无工具调用）同时成立才清空
-     收尾文本；配置关、非画图 run、配文未发、带工具调用都放行。
+  ② `_mark_draw_sent`：只按 session 打标；
+  ③ `_suppress_draw_reply`：三个条件（画图 run + **本轮图已发出** + 本次无工具调用）同时成立才
+     清空收尾文本（含流式 result_chain）；配置关、非画图 run、图未发出、带工具调用都放行；
+  ④ `_fallback_caption`：AI 没填 caption 时的默认配文（内置默认 / 多句随机 / 留空不加）。
 
 跑法：python tests/test_at_and_suppress.py
 """
@@ -55,7 +56,8 @@ def _load_methods(names: tuple[str, ...], ns_extra: dict | None = None) -> dict:
     tree = ast.parse(src)
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     ns = {"logger": _Log(), "At": _FakeAt, "filter": _FakeFilter(),
-          "time": __import__("time"), "AstrMessageEvent": object}
+          "time": __import__("time"), "random": __import__("random"),
+          "AstrMessageEvent": object}
     if ns_extra:
         ns.update(ns_extra)
     out: dict = {}
@@ -128,12 +130,12 @@ def test_at_prefix():
 # ------------------------------------- ②③ 打标 + 抑制重复收尾回复
 def _load_suppress():
     g_sessions: dict = {}
-    g_caption: dict = {}
+    g_sent: dict = {}
     members = _load_methods(
-        ("_suppress_draw_reply", "_mark_caption_sent"),
-        {"g_draw_agent_sessions": g_sessions, "g_caption_sent": g_caption},
+        ("_suppress_draw_reply", "_mark_draw_sent"),
+        {"g_draw_agent_sessions": g_sessions, "g_draw_sent": g_sent},
     )
-    return members, g_sessions, g_caption
+    return members, g_sessions, g_sent
 
 
 class _Resp:
@@ -143,7 +145,7 @@ class _Resp:
 
 
 def test_suppress_reply():
-    members, g_sessions, g_caption = _load_suppress()
+    members, g_sessions, g_sent = _load_suppress()
 
     class S:
         cfg = {"suppress_reply": True}
@@ -151,8 +153,8 @@ def test_suppress_reply():
         def _cfg_image_caption(self):
             return self.cfg
 
-        def _mark_caption_sent(self, event):
-            return members["_mark_caption_sent"](self, event)
+        def _mark_draw_sent(self, event):
+            return members["_mark_draw_sent"](self, event)
 
         async def _suppress_draw_reply(self, event, response=None):
             return await members["_suppress_draw_reply"](self, event, response)
@@ -161,29 +163,35 @@ def test_suppress_reply():
     ev = _Ev(sid="s1")
 
     async def run():
-        # 三条件齐全 → 清空
+        # 图已发出 + 画图 run + 无工具调用 → 清空（v7.7.48 起不再要求"有配文"）
         g_sessions.clear()
-        g_caption.clear()
+        g_sent.clear()
         g_sessions["s1"] = "model"
-        s._mark_caption_sent(ev)
-        assert "s1" in g_caption
+        s._mark_draw_sent(ev)
+        assert "s1" in g_sent
         r = _Resp("给你画好啦～")
         await s._suppress_draw_reply(ev, r)
-        assert r.completion_text == "", "配文已发 + 画图 run + 无工具调用 → 应清空收尾文本"
+        assert r.completion_text == "", "图已发出 + 画图 run + 无工具调用 → 应清空收尾文本"
+
+        # 流式：result_chain 也要清（否则照样发得出去）
+        r = _Resp("画好啦")
+        r.result_chain = ["x"]
+        await s._suppress_draw_reply(ev, r)
+        assert r.completion_text == "" and r.result_chain is None
 
         # 带工具调用（画图请求本身）→ 不动
         r = _Resp("正在画", tools=["comfyui_draw"])
         await s._suppress_draw_reply(ev, r)
         assert r.completion_text == "正在画"
 
-        # 配文没发过 → 不动
-        g_caption.clear()
+        # 本轮图没发出去（被 NSFW 拦 / 失败）→ 保留 AI 回复
+        g_sent.clear()
         r = _Resp("说明一下")
         await s._suppress_draw_reply(ev, r)
         assert r.completion_text == "说明一下"
 
         # 不是画图 run（普通对话）→ 不动
-        g_caption["s1"] = 1.0
+        g_sent["s1"] = 1.0
         g_sessions.clear()
         r = _Resp("普通回复")
         await s._suppress_draw_reply(ev, r)
@@ -204,10 +212,45 @@ def test_suppress_reply():
         assert r.completion_text == ""
 
     asyncio.run(run())
-    print("== 抑制重复收尾回复（三条件/带工具/未发配文/非画图run/配置关闭） OK")
+    print("== 抑制重复收尾回复（图已发/流式清理/带工具/图未发/非画图run/配置关闭） OK")
+
+
+def test_fallback_caption():
+    """AI 没填 caption 时的默认配文（v7.7.48）。"""
+    fn = _load_methods(("_fallback_caption",),
+                       {"_DEFAULT_FALLBACK_CAPTION": "给你画好啦～"})["_fallback_caption"]
+
+    class S:
+        cfg = {}
+
+        def _cfg_image_caption(self):
+            return self.cfg
+
+    s = S()
+
+    # 配置缺项 → 用内置默认
+    text, src = fn(s)
+    assert text == "给你画好啦～" and src == "默认配文", (text, src)
+
+    # 多句随机挑一
+    s.cfg = {"fallback_caption": "画好啦～|出图咯～|看看喜不喜欢"}
+    got = set()
+    for _ in range(30):
+        t, _s = fn(s)
+        assert t in ("画好啦～", "出图咯～", "看看喜不喜欢")
+        got.add(t)
+    assert got, "至少取到一句"
+    s.cfg = {"fallback_caption": "只有一句"}
+    assert fn(s) == ("只有一句", "默认配文")
+
+    # 留空 → 不加配文
+    s.cfg = {"fallback_caption": ""}
+    assert fn(s) == ("", "")
+    print("== 默认配文兜底（内置默认/多句随机/留空不加） OK")
 
 
 if __name__ == "__main__":
     test_at_prefix()
     test_suppress_reply()
-    print("群聊出图：@ 触发者 + 抑制重复回复 全部通过")
+    test_fallback_caption()
+    print("群聊出图：@ 触发者 + 抑制重复回复 + 默认配文 全部通过")
