@@ -28,8 +28,8 @@
 
 | 工具名 | 用途 | 核心参数 |
 | --- | --- | --- |
-| `comfyui_draw` | 文生图（消息带图时自动图生图） | `prompt`(必填), `negative_prompt`, `workflow`, `img2img_workflow`, `width`, `height`, `loras`, `seed`, `image`, `denoise`, `source` |
-| `comfyui_img2img` | 基于参考图变换 / 重绘 | `prompt`(必填), `image`, `img2img_workflow`, ... |
+| `comfyui_draw` | 文生图（消息带图时自动图生图） | `prompt`(必填), `negative_prompt`, `workflow`, `img2img_workflow`, `width`, `height`, `loras`, `seed`, `image`, `denoise`, `source`, `silent`, `raw_prompt` |
+| `comfyui_img2img` | 基于参考图变换 / 重绘 | `prompt`(必填), `image`, `img2img_workflow`, `source`, `silent`, `raw_prompt`, ... |
 | `comfyui_workflows` | 查询工作流列表 | 无参数 |
 | `comfyui_gallery` | 发旧图 / 收藏图 / 检索 | `mode` |
 
@@ -62,6 +62,34 @@ result = await handler(event, prompt="一只猫", source="<你的插件标识>")
 
 ---
 
+## 3.1 两个可选参数：`silent`（静默生图）与 `raw_prompt`（跳过 LLM 处理）
+
+第三方插件调用时可用（v7.7.46 起，`comfyui_draw` 与 `comfyui_img2img` 都支持）：
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `silent` | **带 `source` 即默认静默** | 静默生图：不发**处理中卡 / 排队提示 / 失败卡 / 结果卡 / 结果文字**，调用方只会拿到图片（图片发送仍按 `source` 规则——命中伴侣值即返回路径、其余照常发图）。想让用户看到这些提示时显式传 `silent=false`。 |
+| `raw_prompt` | `false` | 提示词已由**调用方自己的 LLM 润色 + 翻译完成**：本次调用跳过本插件的 LLM 处理（Anima/Qwen 规范改写、翻译兜底、短描述扩写），直接使用传入的 `prompt`。画质前缀等本地规则仍会执行。 |
+
+传参示例（方式 A 直接调 handler，或方式 B 写进 `extra_params`）：
+
+```python
+result = await handler(event, prompt="<已润色好的提示词>", source="<你的插件标识>",
+                       silent=True, raw_prompt=True)
+```
+
+```json
+{"source": "我会永远陪着你", "silent": true, "raw_prompt": true,
+ "width": 768, "height": 768}
+```
+
+> 说明：
+> - 两个参数容忍字符串写法（`"true"` / `"false"` / `"1"` / `"0"` / `"是"` / `"否"` 都能识别）；
+> - `raw_prompt` 与「本插件配置项 → 第三方插件调用时用 LLM 整理提示词」是两个层级：全局配置管默认行为，`raw_prompt` 按**本次调用**覆盖；
+> - 静默开关不影响日志：本插件仍会记录正向提示词、取图、工作流等完整日志，便于排查。
+
+---
+
 ## 4. 以「伴侣插件（astrbot_plugin_private_companion）」为例
 
 伴侣插件 `photo_generation_backend = "tool_call"` 时，按以下配置即可统一走本插件：
@@ -77,8 +105,10 @@ result = await handler(event, prompt="一只猫", source="<你的插件标识>")
 
 可选 `extra_params` 补充（按需）：
 ```json
-{"source": "我会永远陪着你", "width": 768, "height": 768}
+{"source": "我会永远陪着你", "width": 768, "height": 768,
+ "silent": true, "raw_prompt": true}
 ```
+- `silent` / `raw_prompt`：见第 3.1 节——静默生图（不带 source 时才会用到的提示一律不发）与跳过本插件 LLM 处理（提示词已由伴侣插件润色 + 翻译时用它）。
 - `workflow`：若要指定真实工作流名，必须在 `extra_params` 里写**真实工作流名**（用 `comfyui_workflows` 查询），不能写 `text2img/selfie` 这类语义值。
 - `seed` / `denoise` / `negative_prompt`：按需传入。
 
@@ -93,6 +123,8 @@ result = await handler(event, prompt="一只猫", source="<你的插件标识>")
 5. **工作流**：除非明确要特定画风，否则不传 `workflow` 用默认；要传就必须先 `comfyui_workflows` 查询真实名称。
 6. **结果解析**：`source` 命中时返回 `{"image_path": ..., "status": "ok"}`，从 `image_path` 取本地图片路径。
 7. **超时**：本插件出图受 ComfyUI 速度影响，建议宿主插件 `tool_call_timeout` 设到 120s 以上。
+8. **静默与跳过润色**（可选，v7.7.46）：不想让用户看到处理中/失败/结果卡片 → `silent=true`（带 `source` 时本就是默认）；
+   提示词已由你的插件润色 + 翻译完成、不想被二次加工 → `raw_prompt=true`。
 
 ---
 

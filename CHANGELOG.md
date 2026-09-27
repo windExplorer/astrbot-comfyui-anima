@@ -2,6 +2,28 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.46（第三方插件调用新增两个参数：`silent` 静默生图 / `raw_prompt` 跳过 LLM 处理）
+
+`comfyui_draw` 与 `comfyui_img2img` 都支持，专为其它插件接入设计（AI 自己调用不受影响）：
+
+| 参数 | 默认 | 效果 |
+| --- | --- | --- |
+| `silent` | **带 `source` 即默认静默** | 静默生图：不发处理中卡 / 排队提示 / 失败卡 / 结果卡 / 结果文字小结，**图片仍按 source 规则发送或返回路径**。显式 `silent=false` 可恢复提示。 |
+| `raw_prompt` | `false` | 提示词已由调用方自己的 LLM 润色 + 翻译完成 → 本次跳过本插件的 LLM 处理：Anima/Qwen 规范改写、**翻译兜底**、短描述扩写全部不做，直接用传入的 `prompt`（画质前缀等本地规则保留）。 |
+
+实现要点：
+
+- 静默用「event 上的 trace 标记 + `_wrap_silent` 异步作用域」实现：在发卡（`_send_draw_card`）与发文字（`_send`）
+  两个公共出口短路，迭代结束 / 异常 / 生成器关闭都会清理标记，不污染同一 event 的后续流程；
+  后台续画（`_draw_continue`）同样带静默与 raw_prompt（连「正在生成剩下的 N 张」「已经画好」两句也不发）；
+- `raw_prompt` 贯穿三条链路：ComfyUI 主链路（不调度 `_llm_refine_prompt`）、平台链路（NAI/OpenAI 兼容同样跳过）、
+  提示词丰富化的 **LLM 扩写**（`_boost_positive(skip_llm=True)`，画质前缀保留）；
+- 新增 `_coerce_bool_flag`：第三方经工具机制 / JSON `extra_params` 传参时布尔常是字符串，
+  `"false"` 直接 `bool()` 会变成 True —— 统一解析 `true/false/1/0/是/否`，无法识别时用默认值；
+- 文档 `docs/cross-plugin-draw-guide.md` 新增「3.1 两个可选参数」小节 + 工具参数表 + `extra_params` 示例；
+- 新增 `tests/test_third_party_flags.py`（5 组）：布尔解析、静默时 `_send` 不发文字、`_wrap_silent`
+  作用域与清理、`skip_llm` 跳过扩写、签名与接线（`_do_draw` / 平台 / 续画 / boost 全覆盖）。
+
 ## v7.7.45（修：v7.7.44 的「关联 skill」下拉只出现在旧版工作流表单里）
 
 工作流编辑弹窗对**新版**（引用基础工作流）与**旧版**是两套表单：

@@ -786,6 +786,30 @@ _LLM_TOOL_KW_ALIASES = {
 _NAI_ARTIST_NONE = "__no_artist__"
 
 
+def _coerce_bool_flag(value, default: bool = False) -> bool:
+    """宽容解析布尔开关（v7.7.46）。
+
+    第三方插件经 AstrBot 工具机制 / JSON 配置（extra_params）传参时，布尔常以字符串
+    形式到达（"true" / "false" / "1" / "0"）。直接 bool("false") 会得到 True —— 这里统一解析，
+    无法识别时用 default。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    try:
+        if isinstance(value, (int, float)):
+            return bool(value)
+    except Exception:
+        pass
+    s = str(value).strip().lower()
+    if s in ("1", "true", "yes", "y", "on", "是", "开", "真"):
+        return True
+    if s in ("0", "false", "no", "n", "off", "否", "关", "假", ""):
+        return False
+    return default
+
+
 def _coerce_llm_tool_value(ann, v):
     """按参数注解粗略矫正 LLM 传参类型：数字传成字符串、数组/对象传成 JSON 字符串等。"""
     if v is None:
@@ -3656,7 +3680,8 @@ class ComfyUIDrawPlugin(Star):
                               style: str = "unknown", cfg: dict | None = None,
                               known_names: tuple[str, ...] = (),
                               draw_start: float = 0.0, trace_id: str = "",
-                              platform_style: str = "") -> str:
+                              platform_style: str = "",
+                              skip_llm: bool = False) -> str:
         """提示词丰富化总入口：① LLM 扩写（只补自由维度）② 画质前缀（缺失才加）。
 
         任何一步失败都保留原提示词；扩写结果必须保留原文全部标签，且新增/改写的
@@ -3668,8 +3693,10 @@ class ComfyUIDrawPlugin(Star):
             return positive
         _style = platform_style or style or "unknown"
 
-        # ① 扩写
-        if _cfg.get("enhance_llm", True):
+        # ① 扩写（v7.7.46：raw_prompt 时调用方已自行润色 → 跳过 LLM 扩写，画质前缀仍按本地规则补）
+        if skip_llm:
+            logger.info("【提示词丰富化】 raw_prompt=true：跳过 LLM 扩写（画质前缀保留）")
+        elif _cfg.get("enhance_llm", True):
             _ok, _why = self._should_enhance(out, _style, _cfg, known_names=known_names,
                                              draw_start=draw_start)
             if _ok:
@@ -4363,6 +4390,44 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     # 核心：提交并等待出图（异步生成器，yield 消息）
     # ------------------------------------------------------------------ #
+    # ---- 静默生图（v7.7.46） -------------------------------------------------- #
+    # 第三方插件调用（带 source）默认**静默**：不发任何信息卡片与文字提示（处理中卡 /
+    # 排队提示 / 失败卡 / 结果卡 / 结果文字），图片仍按既有 source 规则发送。
+    # 实现：_do_draw 在本次调用期把 trace_id 挂到 event 上，发卡 / 发文字的公共出口查这个标记。
+    _SILENT_ATTR = "_anima_silent_trace"
+
+    def _is_silent_call(self, event) -> bool:
+        """本次调用是否处于「静默生图」状态（第三方插件调用默认静默）。"""
+        try:
+            return bool(getattr(event, self._SILENT_ATTR, ""))
+        except Exception:
+            return False
+
+    async def _wrap_silent(self, agen, event, silent: bool):
+        """按需给 `_do_draw` 的产出包一层「静默生图」作用域。
+
+        silent=True 时挂上标记（发卡 / 发文字的公共出口据此短路），
+        并在迭代结束（含调用方提前 break、异常）时清理，避免污染同一 event 的后续流程。
+        """
+        if not silent:
+            async for _item in agen:
+                yield _item
+            return
+        try:
+            setattr(event, self._SILENT_ATTR, "1")
+            logger.info("【静默生图】 本次调用已开启静默：不发任何卡片与文字提示（图片照常）")
+        except Exception:
+            pass
+        try:
+            async for _item in agen:
+                yield _item
+        finally:
+            try:
+                delattr(event, self._SILENT_ATTR)
+            except Exception:
+                pass
+            logger.info("【静默生图】 本次调用结束，静默标记已清理")
+
     async def _send(self, event: AstrMessageEvent, text: str) -> None:
         """主动发送一条文本消息（不占用 yield，避免命令 pipeline 在首个
         yield 后中断；同时标记 _has_send_oper，防止触发后续 LLM 阶段）。
@@ -4370,7 +4435,12 @@ class ComfyUIDrawPlugin(Star):
         容错：发送失败（如底层 API 暂时不可用、协议端掉线/风控）只记日志，
         不向上抛异常——否则会中断 _do_draw 等调用方的后续流程（如等待出图、
         发送图片），导致「提示没发出去，图也没出来」。
+
+        v7.7.46：静默生图（silent）时直接跳过——调用方只要图片，不要任何附加消息。
         """
+        if self._is_silent_call(event):
+            logger.info(f"【静默生图】 跳过文字消息: {str(text or '')[:60]}")
+            return
         try:
             await event.send(MessageChain([Plain(str(text))]))
         except Exception as _e:
@@ -4703,8 +4773,13 @@ class ComfyUIDrawPlugin(Star):
         """发送出图卡片（提交前 / 出图完成 / 绘制失败共用）。返回是否发送成功。
 
         渲染或发送失败一律只记日志并返回 False，由调用方决定是否降级成文字。
+
+        v7.7.46：静默生图（silent）时不发任何卡片（含处理中 / 失败 / 结果卡）。
         """
         try:
+            if self._is_silent_call(event):
+                logger.info(f"【出图卡片】 未发送：本次为静默生图（silent，state={state}）")
+                return False
             cfg = self._card_cfg()
             # v7.4.1：每个「不发」的分支都留日志——此前用户开了结果卡却没发，
             # 日志里一点痕迹都没有，只能靠猜（真实原因就是下面这类门槛）。
@@ -5674,6 +5749,7 @@ class ComfyUIDrawPlugin(Star):
         *,
         notify_pending: bool = True,
         source: str = "",
+        raw_prompt: bool = False,
         caption: str = "",
         draw_start: float | None = None,
         user_id: str = "",
@@ -5817,7 +5893,10 @@ class ComfyUIDrawPlugin(Star):
         # v7.7.41：平台链路同样有「必须英文」的翻译兜底——NAI 为标签系底模，整理关闭
         # 或整理失败时，含中文仍走翻译；其它平台（自然语言系）中文可直接用、不翻译。
         _plat_must_en = (ptype == "nai")
-        if source and (positive or "").strip():
+        # v7.7.46：raw_prompt=true（调用方已自行润色+翻译）→ 平台链路同样完全跳过整理与翻译兜底
+        if raw_prompt and (positive or "").strip():
+            logger.info("【平台】 raw_prompt=true：跳过 LLM 整理与翻译兜底，直接用调用方提示词")
+        if source and (positive or "").strip() and not raw_prompt:
             _refined = ""
             if self._cfg("third_party_llm_refine", True):
                 try:
@@ -6391,7 +6470,16 @@ class ComfyUIDrawPlugin(Star):
         sampler: str | None = None,
         noise_schedule: str | None = None,
         stats: dict | None = None,
+        raw_prompt: bool = False,
     ):
+        # raw_prompt（v7.7.46）：调用方声明「提示词已由它自己的 LLM 润色 + 翻译完成」时，
+        # 本次出图完全跳过本插件的 LLM 处理（Anima/Qwen 改写、翻译兜底、短描述扩写），
+        # 只用调用方给的原文——避免二次加工把已经写好的提示词改坏。
+        if raw_prompt:
+            logger.info(
+                "【提示词】 raw_prompt=true：本次跳过本插件的 LLM 处理"
+                "（改写 / 翻译 / 扩写），直接使用调用方提示词"
+            )
         # stats：可选的可变字典，供调用方统计本次出图结果。当前用于上报
         # 「被 NSFW 拦截的图数」——让工具层能把「图已生成、只是被策略拦下」与
         # 「真的出图失败」区分开，避免模型以为失败而反复重试/换提示词重画。
@@ -6484,6 +6572,7 @@ class ComfyUIDrawPlugin(Star):
             async for _pn, _pp in self._do_draw_nai_style(
                 event, _plat, positive, negative, width, height, seed,
                 notify_pending=notify_pending, source=source,
+                raw_prompt=raw_prompt,
                 caption=caption, draw_start=_draw_start,
                 user_id=user_id, user_name=user_name,
                 cfg=cfg, steps=steps, sampler=sampler, noise_schedule=noise_schedule,
@@ -6640,7 +6729,7 @@ class ComfyUIDrawPlugin(Star):
         # 「必须英文（标签系 / Qwen 文生图）+ 含中文」才需要进去翻译兜底；Qwen-Image 家族的
         # 原生调用含中文也要进去（按官方格式改写）；其余情况不必空转一次 task。
         _need_refine = False
-        if not _fixed_prompt:
+        if not _fixed_prompt and not raw_prompt:
             _zh_now = self._has_chinese(positive)
             # v7.7.44：先解析本次规范（工作流可显式关联 skill，优先于自动判定）
             _plan_now, _qwen_edit_now = self._resolve_prompt_plan(wf, positive, bool(init_images))
@@ -6815,6 +6904,7 @@ class ComfyUIDrawPlugin(Star):
                     cfg=self._prompt_boost_cfg(),
                     known_names=self._known_character_names(),
                     draw_start=_draw_start, trace_id=_trace_id,
+                    skip_llm=raw_prompt,
                 )
             except Exception as _be:
                 logger.warning(f"【提示词丰富化】 异常（保留原提示词）: {_be}")
@@ -13802,6 +13892,8 @@ class ComfyUIDrawPlugin(Star):
         steps: int = 0,
         sampler: str = "",
         noise_schedule: str = "",
+        silent: bool | None = None,
+        raw_prompt: bool = False,
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
@@ -14086,6 +14178,14 @@ class ComfyUIDrawPlugin(Star):
                 （仅当管理员在该平台条目上打开了「自动补画师串」开关时，不传才会自动套平台默认画师串。）
                 ★以上平台参数未传时回落平台配置默认值，不要无脑传；负向未传时 NAI 会自动套用插件已启用的负向模板。
 
+        ★第三方插件调用（带 source）专属两个参数（AI 自己不要传，传了也只对带 source 的调用有效）：
+        - silent：静默生图——不发处理中卡 / 排队提示 / 失败卡 / 结果卡 / 任何文字提示，
+          只出图（图片仍按 source 规则发送或返回路径）。**不传时「带 source 即默认静默」**，
+          想让用户看到提示就显式传 silent=false。
+        - raw_prompt：提示词已由调用方自己的 LLM 润色 + 翻译完成 → 本次完全跳过本插件的
+          LLM 处理（Anima/Qwen 规范改写、翻译兜底、短描述扩写），直接使用传入的 prompt
+          （画质前缀等本地规则仍保留）。默认 false。
+
         补充说明：
         - 用户未明确要求宽高/lora/seed/denoise 时这些参数可不传，插件自动用工作流或配置默认值。
         - 图生图参考图（★最容易出错）必须是**用户自己发的那张原图**；你（AI）上次生成的结果图**不算**参考图，
@@ -14097,6 +14197,15 @@ class ComfyUIDrawPlugin(Star):
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
             plugin = self
+        # v7.7.46：第三方插件调用的两个可选参数
+        #   silent     —— 静默生图：不发任何卡片与文字（图片照旧）；**不传时「带 source 即默认静默」**
+        #   raw_prompt —— 提示词已由调用方润色 + 翻译完成：本次跳过本插件的 LLM 处理（改写/翻译/扩写）
+        _raw_prompt = _coerce_bool_flag(raw_prompt, False)
+        _silent = _coerce_bool_flag(silent, bool(str(source or "").strip()))
+        if _silent or _raw_prompt:
+            logger.info(
+                f"【第三方调用】 silent={_silent} raw_prompt={_raw_prompt} source={source or '(空)'}"
+            )
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
@@ -14749,38 +14858,43 @@ class ComfyUIDrawPlugin(Star):
             _item_w = _item["width"] or width
             _item_h = _item["height"] or height
             _item_denoise = _item["denoise"] if _item["denoise"] >= 0 else denoise
-            async for node, p in plugin._do_draw(
-                event,
-                _item["wf"],
-                _positive,
-                negative,
-                _item_w or None,
-                _item_h or None,
-                _item_lora_map,
-                None,
-                _seed_i or None,
-                init_images=init_images or None,
-                is_img2img=is_img2img,
-                denoise=_item_denoise if _item_denoise >= 0 else None,
-                # LLM 筛选后的触发词（None=未传走自动全量追加；""=不追加；非空=只追加这些）
-                trigger_words=trigger_words,
-                # 生图平台（""=用默认平台 active_platform；nai/openai/custom=临时指定）
-                platform=platform,
-                # NAI 画师串（仅 nai 平台生效；可传画师串预设名或直接内容）
-                artist=artist or None,
-                # NAI / OpenAI 类平台生图参数（LLM 可自主决定；0/空=用平台默认值）
-                cfg=cfg or None,
-                steps=steps if steps else None,
-                sampler=sampler or None,
-                noise_schedule=noise_schedule or None,
-                # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
-                # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
-                notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
-                source=source,
-                # 图文消息：配文只加在【第一张】图上（还没出过图 = 这是第一张），
-                # 多张时避免同一句话被重复 N 遍。
-                caption=(caption if not img_paths else ""),
-                stats=_draw_stats,
+            async for node, p in plugin._wrap_silent(
+                plugin._do_draw(
+                    event,
+                    _item["wf"],
+                    _positive,
+                    negative,
+                    _item_w or None,
+                    _item_h or None,
+                    _item_lora_map,
+                    None,
+                    _seed_i or None,
+                    init_images=init_images or None,
+                    is_img2img=is_img2img,
+                    denoise=_item_denoise if _item_denoise >= 0 else None,
+                    # LLM 筛选后的触发词（None=未传走自动全量追加；""=不追加；非空=只追加这些）
+                    trigger_words=trigger_words,
+                    # 生图平台（""=用默认平台 active_platform；nai/openai/custom=临时指定）
+                    platform=platform,
+                    # NAI 画师串（仅 nai 平台生效；可传画师串预设名或直接内容）
+                    artist=artist or None,
+                    # NAI / OpenAI 类平台生图参数（LLM 可自主决定；0/空=用平台默认值）
+                    cfg=cfg or None,
+                    steps=steps if steps else None,
+                    sampler=sampler or None,
+                    noise_schedule=noise_schedule or None,
+                    # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
+                    # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
+                    notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
+                    source=source,
+                    # v7.7.46：提示词已由调用方润色+翻译时跳过本插件的 LLM 处理
+                    raw_prompt=_raw_prompt,
+                    # 图文消息：配文只加在【第一张】图上（还没出过图 = 这是第一张），
+                    # 多张时避免同一句话被重复 N 遍。
+                    caption=(caption if not img_paths else ""),
+                    stats=_draw_stats,
+                ),
+                event, _silent,
             ):
                 if p:
                     img_paths.append(p)
@@ -14840,6 +14954,7 @@ class ComfyUIDrawPlugin(Star):
                         event, _remain_items, negative,
                         init_images, is_img2img, source,
                         seq_start=len(img_paths),
+                        silent=_silent, raw_prompt=_raw_prompt,
                     ))
                 except Exception as _e:
                     logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
@@ -14893,6 +15008,7 @@ class ComfyUIDrawPlugin(Star):
                     event, _remain_items, negative,
                     init_images, is_img2img, source,
                     seq_start=0,
+                    silent=_silent, raw_prompt=_raw_prompt,
                 ))
             except Exception as _e:
                 logger.warning(f"【续画】 启动后台续画任务失败: {_e}")
@@ -14906,6 +15022,8 @@ class ComfyUIDrawPlugin(Star):
         self, event, remaining: list[dict], negative,
         init_images, is_img2img, source,
         seq_start: int = 0,
+        silent: bool = False,
+        raw_prompt: bool = False,
     ):
         """后台续画：工具调用按单批上限（max_images_per_batch）先发完前几张并正常 return
         后，由本独立任务把剩余张数继续生成并主动发给用户。
@@ -14921,10 +15039,12 @@ class ComfyUIDrawPlugin(Star):
             return
         logger.info(f"【续画·开始】 会话 {sid} 后台补画 {total} 张（seq_start={seq_start}）")
         try:
-            try:
-                await event.send(MessageChain([Plain(text=f"🎨 正在生成剩下的 {total} 张，稍后自动发来～")]))
-            except Exception:
-                pass
+            # v7.7.46：静默生图（silent）时后台续画同样不发任何文字提示
+            if not silent:
+                try:
+                    await event.send(MessageChain([Plain(text=f"🎨 正在生成剩下的 {total} 张，稍后自动发来～")]))
+                except Exception:
+                    pass
             _seq = seq_start
             for _item in remaining:
                 _positive = (_item["prompt"] or "").strip()
@@ -14938,13 +15058,17 @@ class ComfyUIDrawPlugin(Star):
                 _item_w = _item["width"] or None
                 _item_h = _item["height"] or None
                 _item_denoise = _item["denoise"] if _item["denoise"] >= 0 else None
-                async for node, p in self._do_draw(
-                    event, _item["wf"], _positive, negative,
-                    _item_w, _item_h, _item_lora_map, None,
-                    _seed_i or None,
-                    init_images=init_images or None, is_img2img=is_img2img,
-                    denoise=_item_denoise,
-                    notify_pending=False, source=source,
+                async for node, p in self._wrap_silent(
+                    self._do_draw(
+                        event, _item["wf"], _positive, negative,
+                        _item_w, _item_h, _item_lora_map, None,
+                        _seed_i or None,
+                        init_images=init_images or None, is_img2img=is_img2img,
+                        denoise=_item_denoise,
+                        notify_pending=False, source=source,
+                        raw_prompt=raw_prompt,
+                    ),
+                    event, silent,
                 ):
                     if node is not None:
                         # 同主流程：「本轮已出图」按【图已生成】计（不按发送结果计），
@@ -14957,10 +15081,11 @@ class ComfyUIDrawPlugin(Star):
                             )
                         except Exception as _e:
                             logger.warning(f"【续画·发送】 失败: {_e}")
-            try:
-                await event.send(MessageChain([Plain(text=f"✅ 剩下的 {total} 张已经画好发给你啦～")]))
-            except Exception:
-                pass
+            if not silent:
+                try:
+                    await event.send(MessageChain([Plain(text=f"✅ 剩下的 {total} 张已经画好发给你啦～")]))
+                except Exception:
+                    pass
             logger.info(f"【续画·完成】 会话 {sid} 后台补画 {total} 张完成")
         except asyncio.CancelledError:
             logger.warning(f"【续画·取消】 会话 {sid} 后台续画被取消（剩余图可能未发，用户可重发请求补画）")
@@ -17215,6 +17340,8 @@ class ComfyUIDrawPlugin(Star):
         prompts: list = None,
         source: str = "",
         caption: str = "",
+        silent: bool | None = None,
+        raw_prompt: bool = False,
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
 
@@ -17256,6 +17383,12 @@ class ComfyUIDrawPlugin(Star):
           ★插件侧强制校验：与角色卡锚点冲突的外观标签会被自动剥掉（白写）。
         - negative_prompt 同规则。
 
+        ★第三方插件调用（带 source）专属两个参数（AI 自己不要传）：
+        - silent：静默生图——不发处理中卡 / 失败卡 / 结果卡 / 任何文字提示，只出图；
+          **不传时「带 source 即默认静默」**，想让用户看到提示就显式传 silent=false。
+        - raw_prompt：提示词已由调用方自己的 LLM 润色 + 翻译完成 → 本次跳过本插件的
+          LLM 处理（规范改写 / 翻译兜底 / 短描述扩写），直接用传入的 prompt。
+
         工作流选择：先调 comfyui_workflows 查列表（带 [支持图生图] / [仅文生图] 标记），再按优先级选 img2img_workflow：
         0. 优先名称含「图生图」的（专为图生图设计）→ 1. 只选标了 [支持图生图] 的 →
         2. 按语义匹配（转真人→含"真人"；转动漫→含"动漫/二次元"；用户点名→用其名）→ 3. 都不匹配就留空用默认。
@@ -17287,6 +17420,15 @@ class ComfyUIDrawPlugin(Star):
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
             plugin = self
+        # v7.7.46：与 comfyui_draw 同一套两个第三方参数
+        #   silent     —— 静默生图（不发卡片与文字，图片照旧）；不传时「带 source 即默认静默」
+        #   raw_prompt —— 提示词已由调用方润色 + 翻译完成：跳过本插件的 LLM 处理
+        _raw_prompt = _coerce_bool_flag(raw_prompt, False)
+        _silent = _coerce_bool_flag(silent, bool(str(source or "").strip()))
+        if _silent or _raw_prompt:
+            logger.info(
+                f"【第三方调用】 silent={_silent} raw_prompt={_raw_prompt} source={source or '(空)'}"
+            )
         if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
@@ -17548,23 +17690,28 @@ class ComfyUIDrawPlugin(Star):
             _item_w2 = _item2["width"] or None
             _item_h2 = _item2["height"] or None
             _item_denoise2 = _item2["denoise"] if _item2["denoise"] >= 0 else denoise
-            async for node, p in plugin._do_draw(
-                event,
-                _item2["wf"],
-                _positive2,
-                negative,
-                _item_w2,
-                _item_h2,
-                _item_lora_map2,
-                None,
-                _seed_j or None,
-                init_images=init_images,
-                is_img2img=True,
-                denoise=_item_denoise2 if _item_denoise2 >= 0 else None,
-                source=source,
-                # 图文消息：配文只加在【第一张】图上，多张时避免同一句话重复 N 遍
-                caption=(caption if not img_paths else ""),
-                stats=_draw_stats2,
+            async for node, p in plugin._wrap_silent(
+                plugin._do_draw(
+                    event,
+                    _item2["wf"],
+                    _positive2,
+                    negative,
+                    _item_w2,
+                    _item_h2,
+                    _item_lora_map2,
+                    None,
+                    _seed_j or None,
+                    init_images=init_images,
+                    is_img2img=True,
+                    denoise=_item_denoise2 if _item_denoise2 >= 0 else None,
+                    source=source,
+                    # v7.7.46：提示词已由调用方润色+翻译时跳过本插件的 LLM 处理
+                    raw_prompt=_raw_prompt,
+                    # 图文消息：配文只加在【第一张】图上，多张时避免同一句话重复 N 遍
+                    caption=(caption if not img_paths else ""),
+                    stats=_draw_stats2,
+                ),
+                event, _silent,
             ):
                 if p:
                     img_paths.append(p)
