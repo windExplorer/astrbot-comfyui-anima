@@ -1,4 +1,4 @@
-# Middle Station 对接说明（AstrBot 插件方）
+# TaskHub 对接说明（AstrBot 插件方）
 
 > 面向：AstrBot 插件（CosyVoice 语音 / ComfyUI 绘图）的开发者或维护者。
 > 目的：说明插件如何接入任务调度中转站，以及可选的「排队位置感知」扩展。
@@ -11,7 +11,7 @@
 一个本地任务调度服务，位于 **AstrBot 插件与真实后端（CosyVoice / ComfyUI）之间**：
 
 ```
-AstrBot 插件 ──标准接口──> Middle Station（队列/调度/GPU·显存感知并发）
+AstrBot 插件 ──标准接口──> TaskHub（队列/调度/GPU·显存感知并发）
                                 ├──> CosyVoice 后端
                                 └──> ComfyUI 后端
 ```
@@ -93,22 +93,33 @@ pos = r.headers.get("X-Queue-Position")
 插件读超时（`timeout`，默认 **150s**）必须 ≥ 中转站 `queue_wait + infer_timeout`：
 
 ```
-插件 timeout(150s) ≥ 中转站 queue_wait(10s) + infer_timeout(60s) = 70s   ✓
+插件 timeout(150s) ≥ 中转站 queue_wait + infer_timeout
 ```
 
-- 中转站默认 `queue_wait=10s`、`infer_timeout=60s`，合计 70s < 150s，**无需改动**
+- **请以 `GET /config` 或 `middle-station.yaml` 的实际值为准**。例如仓库里当前配置为
+  `queue_wait=120`、`infer_timeout=120`，最坏 240s **大于**插件 150s 超时：
+  此时若语音任务排在一个几分钟的出图任务后面，**是插件先断连**（随后可能重试，造成重复合成）。
+  两种情况二选一：把插件 `timeout` 调到 ≥ 240s，或把中转站 `queue_wait` 压到 30s 以内（让 429 更快返回、由插件退避重试）。
 - 若中转站排队/推理超时调大，请同步调大插件 `timeout`，否则插件先断连会触发重试验崩
-- ComfyUI 出图跟踪超时（`watch_timeout=180s`）作用于中转站内部，不影响插件
+- ComfyUI 出图跟踪超时（`comfyui.watch_timeout`，默认 900s，按**单个任务**计、不含排队）
+  作用于中转站内部，不影响插件：超时只会让该任务标失败并释放单飞槽位。
+- 中转站「上游自检」判定的 `slow` 异常阈值来自历史耗时基线（同类成功任务 P95 × `inspector.slow_factor`），
+  只是告警、不会杀任务，不需要插件配合。
 
 ## 7. 辅助接口（可选，调试用）
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /health` | 系统状态（GPU 负载、模型加载、队列长度） |
+| `GET /health` | 系统状态（GPU 负载、模型加载、队列长度、`self_check` 摘要） |
 | `GET /monitor` | 实时资源（CPU/RAM/GPU/显存 + 有效并发 + 降级原因） |
-| `GET /queue` | 当前队列与任务状态 |
+| `GET /device` | **当前设备状态**：本机 CPU/内存/磁盘/多卡（利用率·显存·温度·功耗·风扇）+ 上游 ComfyUI/CosyVoice 状态 |
+| `GET /self-check` `POST /self-check/run` | 上游自检异常清单 / 手动触发一次核对 |
+| `GET /queue` | 当前队列与任务状态（含 `progress`、`anomaly`） |
 | `GET /stats?hours=24` | 历史统计（成功率、耗时、按类型分布） |
 | `GET /config` | 当前生效配置 |
+| `WS /ws/monitor` `/ws/tasks` `/ws/logs` | 资源、任务、日志实时推送 |
+
+> 接口字段与语义的完整说明见 `docs/middle-station-api.md`；网页版：`/ui/api.html`。
 
 ---
 
