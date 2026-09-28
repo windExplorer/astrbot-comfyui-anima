@@ -403,7 +403,7 @@ const DEFAULTS: Record<string, any> = {
   kind: "upscale",
   name: "图片放大",
   enabled: true,
-  base_id: "",
+  base_id: null,
   // —— 图片放大专属 ——
   default_scale: 3,
   allowed_scales: "2,3,4",
@@ -589,7 +589,9 @@ const formBase = computed(() => baseById(form.base_id));
 /** 当前这条功能能绑的候选工作流 */
 const formBaseList = computed<any[]>(() => basesFor(form));
 const formBaseOptions = computed(() => [
-  { label: "自动（留空 = 库里只有一个可用时用它）", value: "" },
+  // v7.7.53：可空下拉必须绑 **null** 而不是空串——n-select 绑空串会出现幽灵清空按钮
+  // （v6.1.2 在角色卡页踩过的同一个坑）
+  { label: "自动（留空 = 库里只有一个可用时用它）", value: null },
   ...formBaseList.value.map((w: any) => ({
     label: `${w.name || w.id}${w.roles?.model_file ? ` · ${w.roles.model_file}` : ""}`,
     value: String(w.id),
@@ -651,6 +653,8 @@ function openForm(idx: number, kind = "upscale") {
   if (idx >= 0 && entries.value[idx]) {
     Object.keys(DEFAULTS).forEach((k) => (form[k] = (entries.value[idx] as any)[k] ?? DEFAULTS[k]));
     form.kind = String((entries.value[idx] as any).kind || "upscale");
+    // v7.7.53：旧条目存的空串归一成 null（下拉绑空串会出幽灵清空按钮）
+    form.base_id = String(form.base_id ?? "").trim() || null;
   } else {
     Object.assign(form, DEFAULTS, KIND_DEFAULTS[kind] || { kind });
     // 省事一点：该类型库里只有一个候选工作流时，新条目默认就绑它
@@ -700,6 +704,8 @@ async function saveForm() {
     return;
   }
   const v: any = { ...form, name: String(form.name).trim() };
+  // v7.7.53：base_id 是给后端的字符串键，null（未绑定）落库为空串
+  v.base_id = String(v.base_id ?? "").trim();
   if (isMatting(v)) {
     // 抠图：步数 0 = 用工作流原值；提示词留空 = 用工作流原值；不放大是布尔
     v.steps = Number(v.steps) > 0 ? Number(v.steps) : 0;

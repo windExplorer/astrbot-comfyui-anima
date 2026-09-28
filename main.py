@@ -3095,6 +3095,13 @@ class ComfyUIDrawPlugin(Star):
         store = getattr(self, "character", None)
         if store is None or not (text or "").strip():
             return ""
+        # v7.7.53：总开关关闭 → 设定板改写也不再引用角色卡资料
+        try:
+            _cc = self._cfg("character_card", {}) or {}
+            if not (isinstance(_cc, dict) and _cc.get("enabled", True)):
+                return ""
+        except Exception:
+            pass
         low = (text or "").lower()
         blocks: list[str] = []
         try:
@@ -3526,6 +3533,13 @@ class ComfyUIDrawPlugin(Star):
 
     def _known_character_names(self) -> tuple[str, ...]:
         """已配置的角色卡名 + 别名（用于「文本里是否点了某个角色」的判定，5 秒缓存）。"""
+        # v7.7.53：总开关关闭 → 视为「没有角色」（提示词扩写不再按角色名跳过外观）
+        try:
+            _cc = self._cfg("character_card", {}) or {}
+            if not (isinstance(_cc, dict) and _cc.get("enabled", True)):
+                return ()
+        except Exception:
+            pass
         _now = time.time()
         _cached = getattr(self, "_known_char_names_cache", None)
         if _cached and (_now - float(_cached[1] or 0)) < 5.0:
@@ -8566,6 +8580,14 @@ class ComfyUIDrawPlugin(Star):
         store = getattr(self, "character", None)
         if store is None:
             await self._send(event, "角色卡片功能未启用（存储初始化失败）。")
+            return
+        # v7.7.53：总开关 = 彻底停用——`/角色` 指令（查/改都算）一并拒绝
+        _cc_gate = self._cfg("character_card", {}) or {}
+        if isinstance(_cc_gate, dict) and not _cc_gate.get("enabled", True):
+            await self._send(
+                event,
+                "角色卡片功能已在配置里关闭（character_card.enabled=false），指令暂不可用。",
+            )
             return
         args = self._strip_command(
             (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
@@ -14272,6 +14294,8 @@ class ComfyUIDrawPlugin(Star):
         - 用户**给出或修正**角色设定（「记住X的样子是…」「X换成蓝发」）→ 调 `comfyui_character`
           写入卡片（action=save / update_anchor / add_anchor），这样以后每张图都稳定；
         - 想看某角色现有锚点（如用户指定用「泳装」那套）→ 调 `comfyui_character`（action=get）。
+        - （若角色卡功能已在配置里关闭，上面整段都无效：插件不会注入，`comfyui_character` 也会
+          返回「已关闭」——此时按用户的描述正常写外观即可，不要再尝试角色卡工具。）
 
         ★★★多人/合照规则（2 人及以上必守，违反必然融脸/串味）：
         1) 计数标签紧跟画质前缀：2girls / 1boy 1girl / 3girls…（多人绝不写 solo）。
@@ -17056,6 +17080,17 @@ class ComfyUIDrawPlugin(Star):
         store = getattr(plugin, "character", None)
         if store is None:
             return "角色卡片功能未启用（存储初始化失败），无法操作。"
+        # v7.7.53：总开关 = 彻底停用——AI 也不能再从卡片读/写资料（此前关了注入，
+        # 但本工具仍能 action=get/list 把锚点标签翻出来写进提示词，等于没关干净）
+        try:
+            _cc_gate = plugin._cfg("character_card", {}) or {}
+        except Exception:
+            _cc_gate = {}
+        if not (isinstance(_cc_gate, dict) and _cc_gate.get("enabled", True)):
+            return (
+                "角色卡片功能已在配置里关闭（character_card.enabled=false），无法查询或写入角色卡。"
+                "请直接按用户的描述写外观，不要再调用本工具。"
+            )
         _act = (action or "").strip().lower()
         # 「谁」：工具没有 event 参数，用插件记录的最近事件反推触发者（v6.3.0）。
         # 取不到就只写渠道名——写清「AI 建的」比留空有用得多。

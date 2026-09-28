@@ -612,7 +612,7 @@
       "enabled": {
         "type": "bool",
         "description": "启用角色卡片",
-        "hint": "关闭后不读卡片、不做注入（/角色 指令与 comfyui_character 工具仍可管理数据）。",
+        "hint": "关闭后**彻底停用**：不读卡、不注入，「/角色」指令与 comfyui_character 工具也一并拒绝（AI 无法再从卡片查资料写进提示词），角色设定板与提示词扩写也不再引用卡片。只想「不自动注入、但保留 AI 查询/管理」→ 保持本项开启，改关 auto_inject。",
         "default": true
       },
       "auto_bind_persona": {
@@ -624,7 +624,7 @@
       "auto_inject": {
         "type": "bool",
         "description": "命中卡片时自动注入锚点标签",
-        "hint": "开启：插件直接把锚点标签写进提示词（确定性）；关闭：仅在工具/指令返回里提示模型，由模型自己填。",
+        "hint": "开启：插件直接把锚点标签写进提示词（确定性）；关闭：不注入、只在日志记录命中（模型自己写的外观不做卡片校准）。注意关闭后 AI 仍可主动调 comfyui_character 查卡——要连查询一起禁，请关闭 enabled。",
         "default": true
       },
       "auto_group_multi": {

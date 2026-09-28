@@ -367,7 +367,11 @@ async def main() -> int:
           'createForm.persona_name = "' not in _cv and 'anchorForm.lora_name = "' not in _cv,
           "发现把 n-select 绑成空串的写法（会显示幽灵清空按钮）")
     _fv = (ROOT / "webui-src" / "src" / "views" / "FeaturesView.vue").read_text(encoding="utf-8")
-    check("FeaturesView 工作流下拉同样用 null", "workflow: null as string | null" in _fv)
+    # v7.7.53：FeaturesView 重构成「更多功能」条目式后，可空下拉换成了 base_id（绑定工作流）——
+    # 同一条约定换了个字段继续守：DEFAULTS 用 null、「自动」选项 value 用 null，不绑空串。
+    check("FeaturesView 绑定工作流下拉同样用 null",
+          "base_id: null" in _fv and 'label: "自动（留空 = 库里只有一个可用时用它）", value: null' in _fv,
+          "发现把 n-select 绑成空串的写法（会显示幽灵清空按钮）")
 
     print("\n[16] 原图查看 size=orig（v6.1.3）")
     _raw_png = b"\x89PNG\r\n\x1a\n" + b"o" * 88

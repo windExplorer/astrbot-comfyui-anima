@@ -2,6 +2,35 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.53（角色卡「启用」开关改为彻底停用：关闭后 AI 也查不到卡片了）
+
+现象：把 `character_card.enabled` 关掉后，自动注入确实停了，但 AI 对话出图**还是会用角色卡里
+的外观**——出图时 AI 主动调 `comfyui_character`（action=get/list）把锚点标签翻出来写进提示词，
+等于没关干净。
+
+根因：`enabled` 只挡了「自动注入」一条路（`character.resolve_hits` 在关时返回空），其余三个口子照开：
+
+1. **LLM 工具 `comfyui_character` 没有 enabled 门槛**——读/写都通，AI 随时能把卡片内容查出来；
+2. **`comfyui_draw` 的工具描述仍宣称**「角色卡片是最高优先级来源……想看锚点就调
+   `comfyui_character`（action=get）」——等于在系统提示词里引导模型去查卡；
+3. **角色设定板**（`_char_sheet_context`）与**提示词扩写**（`_known_character_names`）不看开关，照读卡片。
+
+修复（`enabled` 语义改为**总开关 = 彻底停用**）：
+
+- `llm_character`：`enabled=false` 一律拒绝，返回「已关闭」提示并嘱咐模型按用户描述写外观；
+- `/角色` 指令：`enabled=false` 整体拒绝（查/改都算）；
+- `_char_sheet_context` / `_known_character_names`：`enabled=false` 返回空；
+- `comfyui_draw` 工具描述补一句「功能已关闭时本段无效，不要再尝试角色卡工具」；
+- `_conf_schema.json`：`enabled` 的 hint 改写（想「不自动注入、但保留 AI 查询/管理」→ 保持
+  enabled 开、改关 auto_inject）；`auto_inject` 的 hint 修准（关闭 = 不注入只记日志，AI 仍可主动查卡）。
+
+顺带：FeaturesView（更多功能页）「绑定工作流」下拉的空值从 `""` 改为 `null`——n-select 绑空串
+会出现幽灵清空按钮，v6.1.2 在角色卡页踩过的同一个坑；`test_character_webui` 里针对旧版页面写法
+的过时断言同步更新为新形态守卫。
+
+测试：`test_character`（99 例）、`test_character_webui`（109 例）、`test_matting`（9 组）、
+`test_static_lint` 全过。
+
 ## v7.7.52（修：关了「卡片里显示提示词」，抠图卡上还是挂着提示词）
 
 现象：配置 `pre_draw_card.show_prompt`（「卡片里显示提示词」）关掉后，出图卡确实不带提示词了，
