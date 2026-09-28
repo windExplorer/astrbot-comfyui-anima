@@ -2,6 +2,29 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.52（修：关了「卡片里显示提示词」，抠图卡上还是挂着提示词）
+
+现象：配置 `pre_draw_card.show_prompt`（「卡片里显示提示词」）关掉后，出图卡确实不带提示词了，
+但**抠图**发出的卡片照旧有提示词——**处理中卡**的参数胶囊里一行「提示词 xxx」，
+**结果卡**底部还有一个「提示词」节。
+
+根因：这个开关只在 `_send_draw_card` 里生效，且只清了 `info["prompt"]` **一个字段**。
+而提示词在卡片里有**三处载体**：
+
+1. `prompt` —— 出图卡 / 失败卡的正文提示词区（**只有这一处受开关控制**）；
+2. `params` 里的「提示词 xxx」**参数胶囊** —— 抠图处理中卡把提示词塞在这里
+   （`main.py` 抠图分支 `_send_draw_card` 的 params 列表）；
+3. `sections` 里 label 为「提示词」的**节** —— 抠图结果卡走**报表卡渲染器**
+   `save_report` / `render_report`，提示词是独立 section，**此前完全不看开关**。
+
+修复：新增 `ComfyUIDrawPlugin._card_hide_prompt(info)`（静态方法），一次性抹掉上面三处痕迹；
+`_send_draw_card` 与 `_send_report_card` 在 `show_prompt` 关闭时统一调用它
+（返回**浅拷贝**，不改调用方传进来的 info）。纯展示层改动，存档 / 图库 / 操作日志里的提示词不受影响。
+同步把 `_conf_schema.json` 里该开关的 hint 写清楚「作用于所有卡片，含抠图的参数胶囊与结果卡提示词节」。
+
+测试：`tests/test_matting.py` 新增第 9 组（正文 / 参数胶囊 / 报表节全清 + 浅拷贝 + 空值容错）；
+`tests/test_static_lint.py`（pyflakes 11 文件）、`tests/test_draw_card.py` 全过。
+
 ## v7.7.51（撤回 v7.7.49 的「绘图帮助卡重写」）
 
 `/绘图帮助` 恢复为「随包静态图（`assets/draw_help.png`）+ 文字兜底」，不再运行时渲染帮助卡——

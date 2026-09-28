@@ -65,7 +65,7 @@ NAMES = {
     "_matting_entries", "_matting_base_rows", "_resolve_matting_entry",
     "_matting_base_of", "_upscale_entry_enabled",
     "_load_matting_base", "_apply_matting_steps", "_apply_matting_prompt",
-    "_apply_matting_pixel_target", "_strip_command",
+    "_apply_matting_pixel_target", "_strip_command", "_card_hide_prompt",
 }
 NS = _load_helpers(NAMES)
 _strip_command = NS["_strip_command"]
@@ -465,6 +465,34 @@ def test_cmd_alias_and_strip():
     print(f"== 8. 指令别名（抠图/抠像/去背景/去背）+ 参数剥离（{len(cases)} 组） OK")
 
 
+def test_card_hide_prompt():
+    """关掉「卡片里显示提示词」→ 三处载体一次性清干净（v7.7.52）。
+
+    现象：配置里关了提示词，抠图发出的卡片上还挂着提示词。根因是开关只清了
+    `prompt`（出图卡正文），抠图链路的「参数胶囊」与「报表节」两条完全没看开关。
+    """
+    _hide = NS["_card_hide_prompt"]
+    info = {
+        "prompt": "1girl, best quality",
+        "params": ["尺寸 1024 × 1024", "提示词 去背景、纯白底", "步数 20"],
+        "sections": [
+            {"label": "抠图 · Qwen2.1", "rows": [("Qwen2.1", "20步 · 8.1s", "ok")]},
+            {"label": "提示词", "rows": [("去背景、纯白底", "")]},
+        ],
+    }
+    out = _hide(info)
+    assert out["prompt"] == "", out["prompt"]
+    assert out["params"] == ["尺寸 1024 × 1024", "步数 20"], out["params"]
+    assert [s["label"] for s in out["sections"]] == ["抠图 · Qwen2.1"], out["sections"]
+    # 浅拷贝：不动调用方传进来的 info（调用方常拿同一个 dict 复用）
+    assert info["prompt"] == "1girl, best quality" and len(info["params"]) == 3
+    assert len(info["sections"]) == 2
+    # 缺字段 / 空列表不炸（非提示词的项原样保留，不做额外清洗）
+    assert _hide({})["params"] == [] and _hide({})["sections"] == []
+    assert _hide({"params": [None]})["params"] == [None]
+    print("== 9. 卡片隐藏提示词（正文 / 参数胶囊 / 报表节 + 浅拷贝 + 空值容错） OK")
+
+
 if __name__ == "__main__":
     test_parse_matting_workflow()
     test_matting_entries()
@@ -474,4 +502,5 @@ if __name__ == "__main__":
     test_pre_scale_no_upscale()
     test_store_and_pick()
     test_cmd_alias_and_strip()
-    print("抠图（解析 / 条目 / 挑条目 / 绑定 / 注入 / 不放大 / 入库 / 指令）全部通过")
+    test_card_hide_prompt()
+    print("抠图（解析 / 条目 / 挑条目 / 绑定 / 注入 / 不放大 / 入库 / 指令 / 卡片隐藏提示词）全部通过")

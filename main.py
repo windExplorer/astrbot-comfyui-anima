@@ -4650,6 +4650,28 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             return dict(self._CARD_DEFAULTS)
 
+    @staticmethod
+    def _card_hide_prompt(info: dict) -> dict:
+        """「卡片里显示提示词」关闭时，抹掉 info 里**所有**提示词痕迹（v7.7.52）。
+
+        提示词在卡片里有三处载体，只清一处就会漏（真实抱怨：关了开关，抠图卡上还挂着提示词）：
+        1) `prompt`：出图卡 / 失败卡的正文提示词区；
+        2) `params` 里的「提示词 xxx」参数胶囊：抠图**处理中卡**把提示词塞在参数胶囊里；
+        3) `sections` 里 label 以「提示词」开头的节：抠图**结果卡**走报表卡渲染器，提示词是独立节。
+        返回浅拷贝，不改调用方传进来的 info。
+        """
+        out = dict(info or {})
+        out["prompt"] = ""
+        out["params"] = [
+            p for p in (out.get("params") or [])
+            if not str(p or "").strip().startswith("提示词")
+        ]
+        out["sections"] = [
+            s for s in (out.get("sections") or [])
+            if not str((s or {}).get("label") or "").strip().startswith("提示词")
+        ]
+        return out
+
     def _card_module(self):
         """懒加载卡片渲染模块（热重载后自动取到新代码）。"""
         try:
@@ -4822,8 +4844,7 @@ class ComfyUIDrawPlugin(Star):
                 logger.info("【出图卡片】 未发送：发送范围为「仅群聊」，当前是私聊")
                 return False
             if not cfg.get("show_prompt", True):
-                info = dict(info)
-                info["prompt"] = ""
+                info = self._card_hide_prompt(info)
             mod = self._card_module()
             path = mod.save(info, state=state, theme=str(cfg.get("theme") or ""),
                             cfg=cfg, data_dir=self.data_dir)
@@ -4850,6 +4871,8 @@ class ComfyUIDrawPlugin(Star):
         """发送统计/状态类报表卡（v7.5.1）。渲染失败返回 False，调用方退回文字。"""
         try:
             cfg = self._card_cfg()
+            if not cfg.get("show_prompt", True):
+                info = self._card_hide_prompt(info)
             mod = self._card_module()
             path = mod.save_report(info, theme=str(cfg.get("theme") or ""), cfg=cfg,
                                    data_dir=self.data_dir, foot_left=foot_left)
