@@ -75,7 +75,8 @@ DEFAULT_BASEMODELS = (
         "name": "Qwen Image 2.1", "keywords": "qwen、qwen_image、qwenimage",
         "prompt_style": "qwen", "languages": ["中文", "英文"], "priority_lang": "中文",
         "danbooru_ready": False,
-        "description": "Qwen-Image 2.1：**官方格式长描述**（文生图约 20 句英文长段、不写比例与画质套话；"
+        "description": "Qwen-Image 2.1：**官方格式长描述**（文生图约 20 句长段、正文语言按「优先语种」"
+                       "（Qwen 原生支持中文，默认中文）、不写比例与画质套话；"
                        "图像编辑正文语言随指令、多图用 <image1> 引用）。选此项后第三方插件调用/含中文的"
                        "原生调用会按 skills/qwen-image/ 里的规范改写提示词；"
                        "画角色设定板（说「三视图/四视图/设定板」）时改用 skills/character-sheet/ 的"

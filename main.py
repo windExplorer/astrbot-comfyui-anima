@@ -2952,19 +2952,32 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【Qwen】 读取规范文档失败（改用内置规则）: {e}")
         return self._QWEN_RULE_EDIT if edit_mode else self._QWEN_RULE_T2I
 
-    async def _rewrite_to_qwen_llm(self, text: str, *, edit_mode: bool = False) -> str:
+    async def _rewrite_to_qwen_llm(self, text: str, *, edit_mode: bool = False,
+                                   lang: str = "") -> str:
         """按 Qwen-Image-2.1 官方格式改写提示词（edit_mode=图像编辑，否则文生图）。
 
         规范文本取自 `skills/qwen-image/`（那份文档本身写明「可直接作为系统提示词」）。
+        lang=「中文」时（底模库优先语种配置）在任务提示里显式压过规范文档的
+        「语言：英文」要求，让正文按中文输出——规范其余条目不变。
         失败抛异常，由调用方决定回退（文生图回退翻译、图像编辑保留原文）。
         """
         provider_id = self._resolve_translate_provider_id()
         if not provider_id:
             raise RuntimeError("Qwen 提示词改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
         skill = self._qwen_skill_text(edit_mode)
+        _lang_note = ""
+        if (lang or "").strip() == "中文":
+            _lang_note = (
+                "【输出语言覆盖 · 最高优先级】底模库为本模型配置的优先语种是「中文」："
+                "整段提示词正文必须用中文撰写，规范文档里「语言：英文」的要求**被本覆盖作废**。"
+                "长度 / 结构 / 开篇句式 / 方位短语 / 观察式陈述（现在时、第三人称、不指挥）/ "
+                "禁比例与画质词等其余规范全部照旧，只换语言；"
+                "画面内文字仍用直双引号包裹并保留其原文字系统。"
+            )
         prompt = (
             f"{skill}\n\n---\n\n"
-            "【本次任务】下面是用户 / 调用方给出的画面需求，请严格按上面的规范改写成可以直接"
+            + (_lang_note + "\n\n---\n\n" if _lang_note else "")
+            + "【本次任务】下面是用户 / 调用方给出的画面需求，请严格按上面的规范改写成可以直接"
             "送进 Qwen-Image-2.1 的提示词。只输出提示词正文，不要任何解释、标题或代码块。\n\n"
             f"用户需求：\n{text}\n\n提示词："
         )
@@ -3389,14 +3402,29 @@ class ComfyUIDrawPlugin(Star):
         画质套话），图像编辑按编辑规范（正文语言随指令、<image1> 引用、只改点名属性）。
         v7.7.43：Qwen-Image 家族 + 设定板意图（三视图/四视图/设定板…）→ 按角色设定板规范改写
         （纯中文设定板提示词）——这是该规范的明确诉求，所以设定板场景不做英文翻译兜底。
+        v7.7.54：底模库「优先语种」接入——Qwen 文生图 priority_lang=中文 时按中文改写
+        （Qwen-Image 官方原生支持中文），也不再触发中→英兜底翻译；英文/未配维持旧行为。
         翻译失败（未配置翻译模式等）仍保留原提示词，绝不阻断出图。
         """
         # v7.7.44：工作流可显式「关联 skill」（prompt_skill），显式配置优先于自动判定
         _plan, _qwen_edit = self._resolve_prompt_plan(wf, positive, has_input_image)
         _qwen = _plan == "qwen"
         _sheet = _plan == "sheet"
-        _must_en = bool(wf.get("is_anima")) or (_qwen and not _qwen_edit)
-        # Qwen 文生图正文必须英文；图像编辑正文随指令；角色设定板规范要求通篇中文 → 不翻译
+        # v7.7.54：底模库「优先语种」接入——Qwen 文生图不再无条件「必须英文」：
+        # priority_lang=中文 时按中文改写（Qwen-Image 官方原生支持中文），
+        # 兜底翻译（中→英）也不该触发；英文 / 未配（旧数据）维持原行为。
+        _prio_lang = ""
+        if _qwen:
+            try:
+                _prio_lang = str(
+                    (self._basemodel_of_workflow(wf) or {}).get("priority_lang") or ""
+                ).strip()
+            except Exception:
+                _prio_lang = ""
+        _must_en = bool(wf.get("is_anima")) or (
+            _qwen and not _qwen_edit and _prio_lang != "中文"
+        )
+        # Qwen 文生图正文语言按优先语种（默认仍英文）；图像编辑正文随指令；角色设定板规范要求通篇中文 → 不翻译
         _need_en = _must_en and not _sheet
         _refine_on = bool(self._cfg("third_party_llm_refine", True))
 
@@ -3412,12 +3440,16 @@ class ComfyUIDrawPlugin(Star):
             return _t or ""
 
         async def _try_qwen(_why: str) -> str:
+            _lang = _prio_lang if (_qwen and not _qwen_edit) else ""
             logger.info(
                 f"【绘图·LLM④】trace={trace_id} 阶段=按 Qwen-Image 规范改写"
-                f"（{_why}｜{'图像编辑' if _qwen_edit else '文生图'}）"
+                f"（{_why}｜{'图像编辑' if _qwen_edit else '文生图'}"
+                f"｜正文语种={_lang or '随规范（英文）'}）"
             )
             try:
-                _r = await self._rewrite_to_qwen_llm(positive, edit_mode=_qwen_edit)
+                _r = await self._rewrite_to_qwen_llm(
+                    positive, edit_mode=_qwen_edit, lang=_lang
+                )
             except Exception as _e:
                 logger.warning(f"【绘图·LLM④】 Qwen 改写失败（走后续兜底）: {_e}")
                 return ""
@@ -17622,8 +17654,8 @@ class ComfyUIDrawPlugin(Star):
                 if _ps == "danbooru" or _bm_rec.get("danbooru_ready"):
                     _style = "Danbooru 标签"
                 elif _ps == "qwen":
-                    _style = ("Qwen-Image 官方格式长描述（文生图：约 20 句英文长段、不写比例/画质词；"
-                              "编辑：正文随指令语言、多图用 <image1>；"
+                    _style = ("Qwen-Image 官方格式长描述（文生图：约 20 句长段、正文语言按下方优先语种、"
+                              "不写比例/画质词；编辑：正文随指令语言、多图用 <image1>；"
                               "画角色设定板/三视图/四视图时按插件内的角色设定板规范写纯中文提示词）")
                 else:
                     _style = "自然语言（可掺杂标签）"
