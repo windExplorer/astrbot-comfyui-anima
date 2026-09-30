@@ -6537,6 +6537,39 @@ class ComfyUIDrawPlugin(Star):
         _nf = (str((wf or {}).get("negative_field") or "").strip() or "text").lower()
         return _pf == _nf
 
+    @staticmethod
+    def _upscale_replace_plan(wf: dict) -> tuple[str, str, str, bool]:
+        """放大模型替换决策（v7.7.56，纯函数）。返回 (节点ID, 模型名, kind, 是否新版工作流)。
+
+        kind 取值与处理：
+
+        - `replace`：节点 + 模型名都齐备 → 去替换该节点的 `model_name`；
+        - `hint`   ：**新版**工作流在「跟随」模式下填了放大模型，但基础图里没有可替换的
+          放大节点（未内置放大链）→ 给「改选注入放大链」的提示；
+        - `legacy` ：**旧版**工作流只填了其中一项 → 告警「配置不完整」（历史行为）；
+        - `none`   ：什么都不做。
+
+        为什么必须区分新旧：新版工作流的 `upscale_node_id` 不是用户填的，而是
+        `_load_from_base` 从基础工作流解析注记里自动注入的（新版表单根本没有这个输入框）。
+        若拿它去套旧版那句「只填一项 = 配置不完整」，用户在**什么都没配**（跟随基础工作流）
+        的默认状态下每次出图都会收到告警 —— v7.7.56 修的就是这个误报。
+        """
+        _is_base = bool(str(wf.get("base_id") or "").strip())
+        node = str(wf.get("upscale_node_id") or "").strip()
+        model = str(wf.get("upscale_model_name") or "").strip()
+        if node and model:
+            return node, model, "replace", _is_base
+        if _is_base:
+            # 只对「跟随」模式给提示：bypass 是故意不用放大；inject 若没注入成功，
+            # `_apply_base_overrides` 已经报过原因，这里再说「请选注入」会自相矛盾。
+            if model and not wf.get("_upscale_apply") \
+                    and str(wf.get("upscale_mode") or "").strip() == "":
+                return "", model, "hint", True
+            return "", model, "none", True
+        if node or model:
+            return node, model, "legacy", False
+        return node, model, "none", False
+
     def _load_from_base(self, wf: dict) -> tuple[dict, dict]:
         """按 base_id 从基础工作流库取底图（json.loads 即全新副本）。
 
@@ -7872,23 +7905,26 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"本次采样器参数: steps={_set_steps}, cfg={_set_cfg}")
 
         # 注入放大模型（替换工作流里【已存在】的放大模型节点模型名）
-        # - 不填 upscale_node_id / upscale_model_name → 沿用工作流默认放大模型
-        # - 两者都填 → 把该节点原本的模型名替换为指定的（仅替换，不注入新节点）
-        _up_node = (wf.get("upscale_node_id") or "").strip()
-        _up_model = (wf.get("upscale_model_name") or "").strip()
-        if _up_node and _up_model:
+        # 决策见 `_upscale_replace_plan`——旧版/新版（base_id）语义不同，不能混判。
+        _up_node, _up_model, _up_kind, _is_base_wf = self._upscale_replace_plan(wf)
+        if _up_kind == "replace":
             _old = workflow_builder.set_upscale_model(prompt, _up_node, _up_model)
             if _old is not None:
                 logger.info(
                     f"【放大模型】 已替换节点 {_up_node} 的放大模型: "
                     f"{_old} → {_up_model}"
                 )
-            else:
+            elif not _is_base_wf:
                 logger.warning(
                     f"【放大模型】 配置节点 {_up_node} 不存在，或其 inputs 里没有"
                     f"可替换的模型名字段（model_name）。请检查工作流节点 ID 是否正确。"
                 )
-        elif _up_node or _up_model:
+        elif _up_kind == "hint":
+            logger.info(
+                f"【放大】 基础工作流未内置放大链，放大模型 {_up_model} 本次未生效"
+                f"（需把「放大模式」选为「注入放大链」）"
+            )
+        elif _up_kind == "legacy":
             logger.warning(
                 "【放大模型】 配置不完整：需同时填写「放大模型节点」和「放大模型名称」"
                 "才会生效，当前仅填了其中一项，已忽略。"
