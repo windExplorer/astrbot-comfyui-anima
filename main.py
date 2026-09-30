@@ -687,6 +687,9 @@ g_draw_agent_sessions: dict[str, str] = {}
 # （image_caption.suppress_reply，默认开）把那次收尾回复压掉，
 # 用户最终只看到一条：「@某人 + （配文）+ 图」。
 g_draw_sent: dict[str, float] = {}
+# 「图已发出」标记的有效窗口（v7.7.57）：收尾回复紧跟出图（秒级），超过该窗口仍存在的
+# 标记视为残留（指令出图等不走 Agent run 的路径没人清理），抑制逻辑不得采信。
+_DRAW_SENT_FRESH_SEC = 300.0
 
 # 「等待与 AI 配文合并发出的图片」队列（v7.7.49）：session_id -> (时间戳, [本地路径, ...])
 # AI 对话出图时图片先攒在这里，等 on_decorating_result（发送消息前）把 AI 这次的配文与图片、
@@ -16617,6 +16620,27 @@ class ComfyUIDrawPlugin(Star):
                 except Exception as _e:
                     logger.warning(f"【出图·合并】 合并失败后补发图片也失败: {_e}")
 
+    # v7.7.57：轮次隔离——每轮 Agent 开始（用户消息进 LLM 前）清掉上一轮残留的
+    # 「画图会话 / 图已发出」标记。根因：指令出图（/画、/img2img、NAI 指令）、
+    # story 循环等路径不走 Agent run，on_agent_done 不会触发，标记永久残留，
+    # 之后同会话的普通对话会被 _suppress_draw_reply 误判为「本轮图已发出」而吞掉
+    # AI 收尾回复（用户什么都收不到）。标记只应在打标的那一轮内生效：
+    # 轮开始即清；本轮若真出图，画图入口/工具调用会重新打标，正常抑制不受影响。
+    @filter.on_agent_begin()
+    async def _reset_draw_marks_on_agent_begin(self, event: AstrMessageEvent, run_context) -> None:
+        try:
+            sid = str(getattr(event, "session_id", "") or "")
+            if not sid:
+                return
+            if sid in g_draw_agent_sessions or sid in g_draw_sent:
+                g_draw_agent_sessions.pop(sid, None)
+                g_draw_sent.pop(sid, None)
+                logger.info(
+                    "【出图·回复】 新一轮对话开始，清除上一轮残留的画图标记（防误吞收尾回复）"
+                )
+        except Exception as e:
+            logger.debug(f"【出图·回复】 轮首清理画图标记失败（忽略）: {e}")
+
     @filter.on_llm_response()
     async def _suppress_draw_reply(self, event: AstrMessageEvent, response=None) -> None:
         """出图已带配文时，压掉 AI 那句重复的收尾回复（v7.7.47，可关）。
@@ -16648,6 +16672,20 @@ class ComfyUIDrawPlugin(Star):
                     "【出图·回复】 未抑制：本轮没有成功发出图片消息（被 NSFW 拦截 / 出图失败？）"
                     f"→ 保留 AI 回复: {text[:40]}"
                 )
+                return
+            # v7.7.57：新鲜度兜底——g_draw_sent 记录的是图片发出的时间戳，
+            # 收尾回复必然紧跟在图后（秒级）。残留标记（指令出图等不走 Agent 的路径
+            # 没机会被 on_agent_done 清理）若时间戳已陈旧，说明图不是本轮发的，
+            # 绝不能吞掉普通对话的回复。
+            _sent_ts = float(g_draw_sent.get(sid, 0) or 0)
+            _age = time.time() - _sent_ts
+            if _sent_ts <= 0 or _age > _DRAW_SENT_FRESH_SEC:
+                logger.info(
+                    f"【出图·回复】 未抑制：图片发出已是 {_age:.0f} 秒前（非本轮出图，残留标记）"
+                    f"→ 保留 AI 回复: {text[:40]}"
+                )
+                g_draw_sent.pop(sid, None)
+                g_draw_agent_sessions.pop(sid, None)
                 return
             logger.info(
                 f"【出图·回复】 本轮图已发出（含 @/配文为同一条）→ 抑制 AI 收尾回复"
