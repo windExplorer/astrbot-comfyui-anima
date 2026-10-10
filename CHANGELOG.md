@@ -2,6 +2,56 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.58（跨插件协议：取图开关从「中文口令」改为显式 `external` 参数）
+
+现象 / 需求：「这次出图要不要把图片路径交回给调用方」一直由
+`source == "我会永远陪着你"`（`SOURCE_COMPANION_PLUGIN`）这个**字面量**决定。
+于是三个调用方（伴侣插件、萌萌星语、萌萌日程）都得在自己的配置/代码里抄一串与它们
+毫无关系的中文；而 `docs/cross-plugin-draw-guide.md` §3 同时写着「建议用各插件自己的
+标识」——按那条建议做反而拿不到路径。字段名（`source` = 来源）、文档口径、代码行为
+三者互相矛盾，是协议没收敛的直接后果。
+
+根因：`source` 一个字段背了三种职责——①标识（日志 / 榜单审计）、②「第三方调用」开关
+（非空即默认静默、跳闸门 / 白名单 / 已读回执、不掺和图文合并）、③「图由调用方发」
+开关。①②本来就按字段判断，③却退化成字符串相等，而且散落在 12 处。
+
+修改（后端 `main.py`）：
+
+- 新增模块级 `_is_external_call(source, external)` 作为**唯一**判定入口；
+- `comfyui_draw` / `comfyui_img2img` 各新增 `external: bool = False`；两个闸门 helper
+  （`_draw_single_max` / `_draw_run_check`）接受同名参数并由工具层透传；
+- 12 处散落的 `source and source.strip() == SOURCE_COMPANION_PLUGIN` 全部改走 helper；
+  局部变量 `is_companion` 更名 `is_external`（语义从"伴侣插件"回到"外部调用"）；
+- `_silent` 的默认值由「非空 `source`」改为「外部调用判定」——外部调用默认静默，语义更准；
+- **历史值继续兼容**：`source="我会永远陪着你"` 仍等价于 `external=True`（伴侣插件在
+  `_Refs/` 只读参考目录里，没法跟着改），老调用方零感知；
+- `external` 刻意**不写进 docstring 的 `Args:` 段**：那段是 AstrBot 生成 LLM 工具 schema
+  的唯一来源，不写 = 模型看不到这个参数，避免模型幻觉出 `external=true` 造成
+  「图已生成、却谁都没发给用户」的静默失败（这类故障日志 `status=ok`、磁盘有图、群里没图）;
+- 文档 `docs/cross-plugin-draw-guide.md` 的 §2 / §3（含新增 §3.1 历史值兼容）/ §3.2 /
+  §4 / §5 / §6 全部改口径：取图靠 `external=True`，`source` 只填自己的标识。
+
+为什么不用「任何非空 `source` 都返回路径」这种更省事的规则：`source` 是身份字段、谁都会传，
+一旦兼任行为开关，一次误传就是「图躺在磁盘上没人发」；而且会把「第三方待遇 + 由本插件代发图」
+这个组合从契约里删掉——想拿路径就必须放弃第三方待遇。行为开关必须是显式参数。
+
+验证：
+
+- `tests/test_third_party_flags.py` 新增 `test_external_call_helper`（显式开关优先 /
+  只传 source 标识**不**返回路径 / 历史字面量兼容 / 容忍空白），并给
+  `test_signatures_and_wiring` 加两条回归守卫：`external` 必须在两个工具签名里、
+  且**不得出现在 docstring 中**（防模型可见）；body 里不得再出现散落的字面量比较；
+- `tests/test_llm_tool_docstrings.py`：8 个工具的 schema 全过，`comfyui_draw` 仍是 19 项、
+  `comfyui_img2img` 仍是 9 项（证明 `external` / `source` / `silent` / `raw_prompt`
+  都没进模型可见参数表，改动没有扩大模型的权限面）；
+- 顺手修 `tests/test_at_and_suppress.py`：v7.7.57 引入的模块级常量 `_DRAW_SENT_FRESH_SEC`
+  没有注入测试命名空间 → 方法内抛 `NameError` 被自身 `except` 吞掉 → 断言静默失效
+  （表现像"抑制功能坏了"，其实是测试失真）。现在从 `main.py` 原样取值注入；
+- `uv run --no-project --python 3.12 python -m compileall main.py` 通过。
+
+影响面：伴侣插件的行为完全不变；萌萌星语与萌萌日程改用 `source="<自己的名字>" +
+external=True`（各自仓库随版本发出），此后萌绘日志里的 `来源=` 才能正确区分是哪家调的。
+
 ## v7.7.57（修：残留画图标记误吞普通对话的 AI 收尾回复）
 
 现象：私聊里 AI 的正常文字回复整条消失，日志只有

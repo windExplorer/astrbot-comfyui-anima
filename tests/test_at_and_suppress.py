@@ -131,9 +131,16 @@ def test_at_prefix():
 def _load_suppress():
     g_sessions: dict = {}
     g_sent: dict = {}
+    # v7.7.57 起 `_suppress_draw_reply` 还要校验标记新鲜度，用到模块级常量
+    # `_DRAW_SENT_FRESH_SEC`。此前测试没把它放进命名空间 → 方法内抛 NameError，
+    # 被自身的 except 吞掉后静默「放行原文」，断言失效（看起来像功能坏了）。
+    # 从 main.py 原样取值，避免测试再写死第二份。
+    import re as _re
+    _m = _re.search(r"^_DRAW_SENT_FRESH_SEC\s*=\s*([0-9.]+)", _source(), _re.M)
     members = _load_methods(
         ("_suppress_draw_reply", "_mark_draw_sent"),
-        {"g_draw_agent_sessions": g_sessions, "g_draw_sent": g_sent},
+        {"g_draw_agent_sessions": g_sessions, "g_draw_sent": g_sent,
+         "_DRAW_SENT_FRESH_SEC": float(_m.group(1)) if _m else 300.0},
     )
     return members, g_sessions, g_sent
 

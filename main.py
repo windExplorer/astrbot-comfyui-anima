@@ -619,10 +619,25 @@ g_session_i2i_ref: dict[str, list[str]] = {}
 # 「没指定就用默认或之前说过的，图生图不算」）。键为 session_id，值为工作流名。
 g_session_workflow: dict[str, str] = {}
 
-# 「我会永远陪着你」伴侣插件的来源标识：llm_draw 的 source 参数命中此值时，
-# 对整段提示词做专属的格式化与过滤（拆分正/负向、过滤时间/日程/位置/情绪等无关
-# 事实与元指令、清除 [section compacted] 等标记）。
+# 跨插件调用的「外部调用」判定（v7.7.58 起收敛到 _is_external_call 一个入口）：
+#   · external=True —— 调用方的**显式声明**：我是外部插件，请把图片路径用 JSON 返回、
+#     由我自己发送（同时享受第三方待遇：默认静默、跳过单轮闸门 / 发图白名单 / 已读回执）。
+#     推荐写法：source 只承载「我是谁」（标识/审计），行为开关由 external 表达。
+#   · source == SOURCE_COMPANION_PLUGIN —— 历史字面量，仅为兼容已发布的伴侣插件
+#     （它在 _Refs 只读、没法跟着改）而保留；新接入方不要再依赖它。
+# 为什么不把「任何非空 source」直接当成「返回路径」：source 是身份字段，谁都会传；
+# 一旦它兼任行为开关，一次误传/模型幻觉就会变成「图已生成但没人发给用户」的静默黑洞
+# （日志 status=ok、磁盘有图、群里没图，极难排查），而且会把「第三方待遇 + 由萌绘代发」
+# 这个组合从 ABI 里删掉。
 SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
+
+
+def _is_external_call(source: str = "", external: bool = False) -> bool:
+    """本次调用是否为「外部插件调用」：返回图片路径、由调用方自行发送图片。
+
+    显式 external=True 优先；同时兼容伴侣插件的历史字面量 source。
+    """
+    return bool(external) or str(source or "").strip() == SOURCE_COMPANION_PLUGIN
 
 
 def _resolve_emoji_type(emoji_type: str, emoji_id) -> str:
@@ -12651,16 +12666,17 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
 
-    def _draw_single_max(self, count: int, source: str = "", event=None) -> tuple[int, str]:
+    def _draw_single_max(self, count: int, source: str = "", event=None,
+                         external: bool = False) -> tuple[int, str]:
         """单次调用的出图张数上限，返回 (本次允许张数, 截断提示)。
 
         只看「这一次调用要出多少张」，与轮次、与时间窗都无关：
         超过 draw_auto.max 就截断（如上限 9、用户要 10 张 → 只出 9 张），
         截断时返回一句中性的事实说明，由模型自行告诉用户。
-        伴侣插件等第三方主动调用（带 source）不受此限制。
+        外部插件主动调用（external=True，或历史的伴侣插件 source）不受此限制。
         """
         cfg = self._cfg("draw_auto", {}) or {}
-        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+        if _is_external_call(source, external):
             return count, ""
         if cfg.get("unlimited_draw"):
             return count, ""
@@ -12910,13 +12926,15 @@ class ComfyUIDrawPlugin(Star):
         st["ts"] = now
         return st
 
-    def _draw_run_check(self, event, source: str = "", tool_name: str = "") -> tuple[bool, str]:
+    def _draw_run_check(self, event, source: str = "", tool_name: str = "",
+                        external: bool = False) -> tuple[bool, str]:
         """单轮出图闸门，返回 (是否放行, 拦截提示)。
 
         只看本轮「已经成功出图几次 / 已经失败几次」，不看参数、不看时间间隔。
         达到任一上限即本轮关门，模型无论再传什么都出不了图。
+        外部插件调用（external=True，或历史的伴侣插件 source）不受此限制。
         """
-        if source and source.strip() == SOURCE_COMPANION_PLUGIN:
+        if _is_external_call(source, external):
             return True, ""
         cfg = self._cfg("draw_auto", {}) or {}
         if cfg.get("unlimited_draw"):
@@ -14258,6 +14276,10 @@ class ComfyUIDrawPlugin(Star):
         count: int = 0,
         prompts: list = None,
         source: str = "",
+        # v7.7.58 跨插件契约：外部插件显式声明「请把图片路径给我，我自己发图」。
+        # ⚠️ 刻意不写进下面 docstring 的 Args: 段 —— 该段是 AstrBot 生成工具 schema 的
+        # 唯一来源，不写 = LLM 看不到此参数，避免模型幻觉出 external 造成「图不发」。
+        external: bool = False,
         image: str = "",
         denoise: float = -1,
         trigger_words: str | None = None,
@@ -14558,9 +14580,9 @@ class ComfyUIDrawPlugin(Star):
                 （仅当管理员在该平台条目上打开了「自动补画师串」开关时，不传才会自动套平台默认画师串。）
                 ★以上平台参数未传时回落平台配置默认值，不要无脑传；负向未传时 NAI 会自动套用插件已启用的负向模板。
 
-        ★第三方插件调用（带 source）专属两个参数（AI 自己不要传，传了也只对带 source 的调用有效）：
+        ★外部插件调用专属两个参数（由调用方在代码层声明，AI 自己不要传）：
         - silent：静默生图——不发处理中卡 / 排队提示 / 失败卡 / 结果卡 / 任何文字提示，
-          只出图（图片仍按 source 规则发送或返回路径）。**不传时「带 source 即默认静默」**，
+          只出图（图片仍按外部调用规则发送或返回路径）。**不传时「外部插件调用即默认静默」**，
           想让用户看到提示就显式传 silent=false。
         - raw_prompt：提示词已由调用方自己的 LLM 润色 + 翻译完成 → 本次完全跳过本插件的
           LLM 处理（Anima/Qwen 规范改写、翻译兜底、短描述扩写），直接使用传入的 prompt
@@ -14578,20 +14600,22 @@ class ComfyUIDrawPlugin(Star):
         if plugin is None:
             plugin = self
         # v7.7.46：第三方插件调用的两个可选参数
-        #   silent     —— 静默生图：不发任何卡片与文字（图片照旧）；**不传时「带 source 即默认静默」**
+        #   silent     —— 静默生图：不发任何卡片与文字（图片照旧）；**不传时「外部调用即默认静默」**
         #   raw_prompt —— 提示词已由调用方润色 + 翻译完成：本次跳过本插件的 LLM 处理（改写/翻译/扩写）
+        # v7.7.58：外部调用判定统一走 _is_external_call（external=True 或历史伴侣标识）
+        _ext = _is_external_call(source, external)
         _raw_prompt = _coerce_bool_flag(raw_prompt, False)
-        _silent = _coerce_bool_flag(silent, bool(str(source or "").strip()))
+        _silent = _coerce_bool_flag(silent, _ext)
         if _silent or _raw_prompt:
             logger.info(
                 f"【第三方调用】 silent={_silent} raw_prompt={_raw_prompt} source={source or '(空)'}"
             )
-        if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+        if not plugin._cfg("enable_llm_tools", True) and not _ext:
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
         # 已读回执：用户用自然语言触发生图（comfyui_draw）时，给原消息贴表情表示「已读」。
         # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
-        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+        if not _ext:
             # 贴表情是平台网络往返，丢后台执行，不占出图关键路径
             self._react_ack_bg(event)
 
@@ -14621,7 +14645,7 @@ class ComfyUIDrawPlugin(Star):
         # 白名单优先：allow_draw_users 非空时跳过黑名单（与 _do_draw 的判定一致）。
         # 伴侣插件（带 source）走原 _do_draw 路径，这里不拦；且工具上下文不 _send，
         # 直接 return 文本让 LLM 如实转述给用户，避免多出来一条消息。
-        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+        if not _ext:
             if plugin._is_whitelist_active():
                 _wl_ok, _wl_reason = plugin._check_whitelist(event)
                 if not _wl_ok:
@@ -14640,7 +14664,9 @@ class ComfyUIDrawPlugin(Star):
         # ── 单轮出图闸门（v5.0）───────────────────────────────────────
         # 「一次对话出完就关门」的唯一保证：本轮已成功出图 / 已失败重试达到上限就收尾。
         # 不看参数、不看时间间隔，因此不存在被绕过的可能。
-        _gate_ok, _gate_hint = plugin._draw_run_check(event, source=source, tool_name="comfyui_draw")
+        _gate_ok, _gate_hint = plugin._draw_run_check(
+            event, source=source, tool_name="comfyui_draw", external=_ext
+        )
         if not _gate_ok:
             # 硬终止（重复调用超过容忍次数）：STOP_HINT 劝退文本对执拗的模型无效，
             # 直接 return None 熔断 —— 框架对工具返回 None 会直接终止 Agent Loop。
@@ -14666,7 +14692,7 @@ class ComfyUIDrawPlugin(Star):
             [x for x in (prompts or []) if str(x).strip()]
         )
         if not _has_any_prompt:
-            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            if not _ext:
                 plugin._draw_run_fail(event, kind="empty")
                 logger.info("【工具·llm_draw】 空参数调用（prompt 与 prompts 均为空），拒绝兜底提取，要求模型补齐后重试")
                 return (
@@ -14736,7 +14762,7 @@ class ComfyUIDrawPlugin(Star):
             # 要 N 张的正确写法是 prompts 传 N 个不同画面——用「单条 prompt + count=N」
             # 只会得到同一画面的 N 个近亲副本，不是用户想要的「N 张不同的图」。
             # 这里拦一次并教它正确写法；只拦一次，避免和模型僵持不下。
-            if _per > 1 and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            if _per > 1 and not _ext:
                 _st = plugin._draw_run_state_of(event)
                 if not _st.get("count_hint_done"):
                     _st["count_hint_done"] = True
@@ -14755,7 +14781,8 @@ class ComfyUIDrawPlugin(Star):
                 "width": 0, "height": 0, "denoise": -1, "seed": 0,
             }]
             _wanted = _per
-        _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source, event=event)
+        _allowed, _max_hint = plugin._draw_single_max(_wanted, source=source, event=event,
+                                                     external=_ext)
         # 注：_plan（含每项的 per-item 工作流解析）需在下方 resolved_wf 决策完成后构建，
         # 见「工作流决策」段之后。
 
@@ -15171,17 +15198,17 @@ class ComfyUIDrawPlugin(Star):
         # (图片节点, 本地路径) 元组产出。注意：LLM 工具的 return 值只会作为工具
         # 结果文本回传给模型，框架不会自动渲染图片，所以原生对话下必须在这里主动
         # event.send 把图发到聊天里。
-        # - 带 source（伴侣插件 proactive 管道）时，return JSON 文本，由伴侣解析
-        #   image_path 后自己发图，本函数不重复发图；
-        # - 不带 source（原生对话 / 伴侣 Agent 自主 tool_call）时，主动 event.send
+        # - 外部插件调用（external=True，或伴侣插件的历史 source 字面量）时，return
+        #   JSON 文本（image_paths），由调用方解析后自己发图，本函数不重复发图；
+        # - 不带（原生对话 / 伴侣 Agent 自主 tool_call）时，主动 event.send
         #   图片，再 return 简短文本告知模型已处理。
-        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+        is_external = _ext
 
         img_paths: list[str] = []
         # 按出图计划逐张生成：_do_draw 每次调用会完整等待一次出图，串行是「来 N 张」的预期成本。
         # 原生 / AI 对话调用改为「画一张发一张」：每张图出来立即 event.send，
         # 用户先收到第 1 张、再第 2 张、再第 3 张，而不是等全部画完一次性连发。
-        # 伴侣插件（is_companion）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
+        # 伴侣插件（is_external）仍需收集全部路径后统一返回 JSON，由调用方自行发图。
         _total_n = len(_plan)
         # 单批上限 max_images_per_batch：单次工具调用最多连续生成几张就收尾返回，
         # 剩余张数转入「后台续画」任务自动补发。核心目的——确保单批总耗时 < AstrBot
@@ -15263,9 +15290,9 @@ class ComfyUIDrawPlugin(Star):
                     steps=steps if steps else None,
                     sampler=sampler or None,
                     noise_schedule=noise_schedule or None,
-                    # 伴侣插件 proactive（机器人主动生图）不发「正在处理」即时提示，
+                    # 外部插件调用（机器人主动生图）不发「正在处理」即时提示，
                     # 避免打扰；原生 / AI 对话默认发，让用户立刻知道已受理。
-                    notify_pending=not bool(source and source.strip() == SOURCE_COMPANION_PLUGIN),
+                    notify_pending=not _ext,
                     source=source,
                     # v7.7.46：提示词已由调用方润色+翻译时跳过本插件的 LLM 处理
                     raw_prompt=_raw_prompt,
@@ -15281,7 +15308,7 @@ class ComfyUIDrawPlugin(Star):
                 # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
                 # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架并不会
                 # 自动把 MessageChain 渲染成图片发给用户，所以必须主动 event.send。
-                if node is not None and not is_companion:
+                if node is not None and not is_external:
                     # 画一张立刻发一张。★「本轮已出图」必须按【图已生成】计，
                     # 绝不能按「发送是否成功」计——图一旦生成，算力已消耗、图也已入库；
                     # 若只在 send 成功时才 hit，群聊 send 失败（风控/限流/掉线，
@@ -15308,8 +15335,8 @@ class ComfyUIDrawPlugin(Star):
         # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
         _nsfw_blocked_n = int(_draw_stats.get("nsfw_blocked", 0) or 0)
         if img_paths:
-            if is_companion:
-                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析。
+            if is_external:
+                # 外部插件调用：用 JSON 文本返回图片路径，由调用方负责发图与解析。
                 # note 明确告知调用方：图已生成、直接用 image_paths 发，不要再用
                 # astrobot_file_read_tool 去读路径、也不要用 pc_send_current_media 重复发送。
                 return json.dumps({
@@ -17898,6 +17925,8 @@ class ComfyUIDrawPlugin(Star):
         count: int = 0,
         prompts: list = None,
         source: str = "",
+        # v7.7.58 跨插件契约：见 comfyui_draw 同名参数（同样不写进 Args: 段，模型不可见）。
+        external: bool = False,
         caption: str = "",
         silent: bool | None = None,
         raw_prompt: bool = False,
@@ -17944,9 +17973,9 @@ class ComfyUIDrawPlugin(Star):
           ★插件侧强制校验：与角色卡锚点冲突的外观标签会被自动剥掉（白写）。
         - negative_prompt 同规则。
 
-        ★第三方插件调用（带 source）专属两个参数（AI 自己不要传）：
+        ★外部插件调用专属两个参数（由调用方在代码层声明，AI 自己不要传）：
         - silent：静默生图——不发处理中卡 / 失败卡 / 结果卡 / 任何文字提示，只出图；
-          **不传时「带 source 即默认静默」**，想让用户看到提示就显式传 silent=false。
+          **不传时「外部插件调用即默认静默」**，想让用户看到提示就显式传 silent=false。
         - raw_prompt：提示词已由调用方自己的 LLM 润色 + 翻译完成 → 本次跳过本插件的
           LLM 处理（规范改写 / 翻译兜底 / 短描述扩写），直接用传入的 prompt。
 
@@ -17982,20 +18011,22 @@ class ComfyUIDrawPlugin(Star):
         if plugin is None:
             plugin = self
         # v7.7.46：与 comfyui_draw 同一套两个第三方参数
-        #   silent     —— 静默生图（不发卡片与文字，图片照旧）；不传时「带 source 即默认静默」
+        #   silent     —— 静默生图（不发卡片与文字，图片照旧）；不传时「外部调用即默认静默」
         #   raw_prompt —— 提示词已由调用方润色 + 翻译完成：跳过本插件的 LLM 处理
+        # v7.7.58：与 comfyui_draw 同一套 _is_external_call 判定
+        _ext = _is_external_call(source, external)
         _raw_prompt = _coerce_bool_flag(raw_prompt, False)
-        _silent = _coerce_bool_flag(silent, bool(str(source or "").strip()))
+        _silent = _coerce_bool_flag(silent, _ext)
         if _silent or _raw_prompt:
             logger.info(
                 f"【第三方调用】 silent={_silent} raw_prompt={_raw_prompt} source={source or '(空)'}"
             )
-        if not plugin._cfg("enable_llm_tools", True) and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+        if not plugin._cfg("enable_llm_tools", True) and not _ext:
             return "LLM 画图工具已关闭，请使用指令绘图（/draw、/img2img、/画xxx 等）。"
 
         # 已读回执：用户用自然语言触发生图（comfyui_img2img）时，给原消息贴表情表示「已读」。
         # 伴侣插件等第三方主动调用（带 source）无对应用户消息，跳过避免误贴。
-        if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+        if not _ext:
             # 贴表情是平台网络往返，丢后台执行，不占出图关键路径
             self._react_ack_bg(event)
 
@@ -18013,7 +18044,7 @@ class ComfyUIDrawPlugin(Star):
         # 与 comfyui_draw 同一套：本轮已成功出图 / 已失败重试达到上限就收尾。
         # 不看参数、不看时间间隔，因此不存在被绕过的可能。
         _gate_ok2, _gate_hint2 = plugin._draw_run_check(
-            event, source=source, tool_name="comfyui_img2img"
+            event, source=source, tool_name="comfyui_img2img", external=_ext
         )
         if not _gate_ok2:
             # 与 comfyui_draw 同策略：硬终止信号直接 return None 熔断（防空转），
@@ -18030,7 +18061,7 @@ class ComfyUIDrawPlugin(Star):
             [x for x in (prompts or []) if str(x).strip()]
         )
         if not _has_any_prompt2:
-            if not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            if not _ext:
                 plugin._draw_run_fail(event, kind="empty")
                 logger.info("【工具·llm_img2img】 空参数调用（prompt 与 prompts 均为空），拒绝兜底提取，要求模型补齐后重试")
                 return (
@@ -18090,7 +18121,7 @@ class ComfyUIDrawPlugin(Star):
         else:
             # 同 comfyui_draw：要 N 张就该用 prompts 传 N 个不同效果，
             # 「单条 prompt + count=N」只会得到同一效果的 N 个近似副本。拦一次并教正确写法。
-            if _per2 > 1 and not (source and source.strip() == SOURCE_COMPANION_PLUGIN):
+            if _per2 > 1 and not _ext:
                 _st2 = plugin._draw_run_state_of(event)
                 if not _st2.get("count_hint_done"):
                     _st2["count_hint_done"] = True
@@ -18108,7 +18139,8 @@ class ComfyUIDrawPlugin(Star):
                 "width": 0, "height": 0, "denoise": -1, "seed": 0,
             }]
             _wanted2 = _per2
-        _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source, event=event)
+        _allowed2, _max_hint2 = plugin._draw_single_max(_wanted2, source=source, event=event,
+                                                       external=_ext)
         # 注：_plan2（含每项的 per-item 工作流解析）需在下方 resolved_wf 决策完成后构建，
         # 见「决定工作流」段之后。
 
@@ -18224,11 +18256,11 @@ class ComfyUIDrawPlugin(Star):
             + (f"（请求 {_wanted2} 张，已按单次上限截断）" if _max_hint2 else "")
         )
 
-        is_companion = bool(source and source.strip() == SOURCE_COMPANION_PLUGIN)
+        is_external = _ext
 
         img_paths: list[str] = []
         # 按出图计划逐张生成：原生 / AI 对话调用「画一张发一张」，用户逐张收到；
-        # 伴侣插件仍收集全部路径后返回 JSON。
+        # 外部插件调用（is_external）仍收集全部路径后返回 JSON。
         _total_n2 = len(_plan2)
         _seq2 = 0
         # 同 llm_draw：主动发图失败的张数，用于如实回传「图已生成但没发出去」。
@@ -18279,7 +18311,7 @@ class ComfyUIDrawPlugin(Star):
                 # 原生 / Agent 调用：画一张立刻发一张（边画边发）。
                 # LLM 工具的 return 值只会作为工具结果文本回传给模型，框架不会
                 # 自动渲染图片，必须主动 event.send 把图发到聊天里。
-                if node is not None and not is_companion:
+                if node is not None and not is_external:
                     # 同 llm_draw：「本轮已出图」按【图已生成】计，不按发送结果计，
                     # 避免群聊 send 失败时闸门不计数导致模型无限重画；
                     # 发送失败累加 _send_fail2，只影响返回给模型的文案。
@@ -18302,8 +18334,8 @@ class ComfyUIDrawPlugin(Star):
         # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
         _nsfw_blocked_n2 = int(_draw_stats2.get("nsfw_blocked", 0) or 0)
         if img_paths:
-            if is_companion:
-                # 伴侣插件：用 JSON 文本返回图片路径，由调用方负责发图与解析。
+            if is_external:
+                # 外部插件调用：用 JSON 文本返回图片路径，由调用方负责发图与解析。
                 # note 明确告知调用方：图已生成、直接用 image_paths 发，不要再用
                 # astrobot_file_read_tool 去读路径、也不要用 pc_send_current_media 重复发送。
                 return json.dumps({

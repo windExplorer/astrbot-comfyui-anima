@@ -26,12 +26,15 @@
 
 本插件用 `@filter.llm_tool` 注册了四个工具：
 
-| 工具名 | 用途 | 核心参数 |
-| --- | --- | --- |
-| `comfyui_draw` | 文生图（消息带图时自动图生图） | `prompt`(必填), `negative_prompt`, `workflow`, `img2img_workflow`, `width`, `height`, `loras`, `seed`, `image`, `denoise`, `source`, `silent`, `raw_prompt` |
-| `comfyui_img2img` | 基于参考图变换 / 重绘 | `prompt`(必填), `image`, `img2img_workflow`, `source`, `silent`, `raw_prompt`, ... |
-| `comfyui_workflows` | 查询工作流列表 | 无参数 |
-| `comfyui_gallery` | 发旧图 / 收藏图 / 检索 | `mode` |
+| 工具名 | 用途 | 核心参数（LLM 可见） | 代码层专属参数（模型不可见） |
+| --- | --- | --- | --- |
+| `comfyui_draw` | 文生图（消息带图时自动图生图） | `prompt`(必填), `negative_prompt`, `workflow`, `img2img_workflow`, `width`, `height`, `loras`, `seed`, `image`, `denoise` | `source`, `external`, `silent`, `raw_prompt` |
+| `comfyui_img2img` | 基于参考图变换 / 重绘 | `prompt`(必填), `image`, `img2img_workflow`, ... | `source`, `external`, `silent`, `raw_prompt` |
+| `comfyui_workflows` | 查询工作流列表 | 无参数 | — |
+| `comfyui_gallery` | 发旧图 / 收藏图 / 检索 | `mode` | — |
+
+> 「代码层专属参数」**不在 `Args:` 段里**，AstrBot 生成 LLM 工具 schema 时不会带上它们（见第 3 节说明），
+> 所以只有直接调 handler 的第三方插件能传——这是刻意的：模型不该有权决定「图由谁发」。
 
 其它插件可以用 AstrBot 的 LLM 工具管理器拿到 `comfyui_draw` 的 handler 并直接调用：
 
@@ -40,7 +43,8 @@ manager = context.get_llm_tool_manager()
 tool = manager.get_func("comfyui_draw")
 handler = getattr(tool, "handler", None) or tool
 # 传入一个合成/真实 AstrMessageEvent 作为 event
-result = await handler(event, prompt="一只猫", source="<你的插件标识>")
+result = await handler(event, prompt="一只猫",
+                       source="<你的插件标识>", external=True)
 ```
 
 ### 方式 B：通过支持「tool_call 生图后端」的宿主插件配置
@@ -49,37 +53,53 @@ result = await handler(event, prompt="一只猫", source="<你的插件标识>")
 
 ---
 
-## 3. 重要：必须传 `source`，否则拿不到图片路径
+## 3. 怎么拿到图片路径：`external=True`（v7.7.58 起），`source` 只作标识
 
-本插件的 `comfyui_draw` / `comfyui_img2img` 在成功生图后，**根据 `source` 参数决定返回方式**：
+本插件的 `comfyui_draw` / `comfyui_img2img` 有两条发送路径：
 
-- `source` **命中** `"我会永远陪着你"`（`SOURCE_COMPANION_PLUGIN`）时 → 返回 **JSON 文本** `{"image_path": "<本地路径>", "status": "ok"}`，**由调用方负责发图**。
-- `source` 为空或未命中时 → 工具会**自己 `event.send` 把图发给用户**，并只返回一句纯文本（"绘图已完成…"），**不返回图片路径**。
+- **外部插件调用**（`external=True`）→ 返回 **JSON 文本** `{"image_paths": ["<本地路径>", ...], "status": "ok"}`，**本插件不发图**，由调用方自行发送；同时享受第三方待遇：默认静默、跳过单轮出图闸门 / 发图白名单 / 已读回执、不参与图文合并。
+- **原生调用**（不传 `external`）→ 工具**自己 `event.send` 把图发给用户**，只返回一句纯文本，**不返回图片路径**。
 
-> 因此：其它插件要「拿到图片自己处理/转发」，**必须**传 `source`（建议用各插件自己的标识，或统一使用本插件识别的值）。
->
-> 若你想让它返回 JSON 路径，直接传 `source="我会永远陪着你"` 即可——本插件会返回 `{"image_path": ...}`。如果你的宿主插件要求解析其它字段，也以 JSON 返回为准。
+`source` 的职责是**标识「谁在调用」**（写进日志 `来源=...`、图库审计、榜单过滤），填你自己的插件名即可：
+
+```python
+result = await handler(event, prompt="一只猫", source="萌萌星语", external=True)
+```
+
+> ⚠️ `external` 刻意**不写进工具 docstring 的 `Args:` 段**：那段是 AstrBot 生成 LLM 工具 schema 的唯一来源，不写 = 模型看不到这个参数（`silent` / `raw_prompt` 同理），
+> 避免模型幻觉出 `external=true` 造成「图已生成、却谁都没发给用户」的静默失败。
+> 因此它只对**代码层直接调 handler**（方式 A，或方式 B 的 `extra_params`）生效。
+
+### 3.1 历史值兼容（v7.7.57 及以前）
+
+以前用 `source == "我会永远陪着你"`（`SOURCE_COMPANION_PLUGIN`）来判断「返回路径」。该字面量**继续有效**（伴侣插件在只读参考目录里，改不了），但它降级为兼容层：
+
+- 传 `source="我会永远陪着你"` → 仍按外部调用处理（等价 `external=True`）；
+- **新接入方不要再用它**：请写 `source="<你的插件标识>"` + `external=True`。
+
+> 为什么不用「任何非空 `source` 都返回路径」这种更"省事"的规则：`source` 是身份字段、谁都会传，一旦它兼任行为开关，一次误传就会变成「图躺在磁盘上没人发」；
+> 而且会把「第三方待遇 + 由本插件代发图」这个组合从契约里删掉（想拿路径就必须放弃第三方待遇）。行为开关必须是显式参数。
 
 ---
 
-## 3.1 两个可选参数：`silent`（静默生图）与 `raw_prompt`（跳过 LLM 处理）
+## 3.2 两个可选参数：`silent`（静默生图）与 `raw_prompt`（跳过 LLM 处理）
 
-第三方插件调用时可用（v7.7.46 起，`comfyui_draw` 与 `comfyui_img2img` 都支持）：
+外部插件调用时可用（v7.7.46 起，`comfyui_draw` 与 `comfyui_img2img` 都支持）：
 
 | 参数 | 默认 | 作用 |
 | --- | --- | --- |
-| `silent` | **带 `source` 即默认静默** | 静默生图：不发**处理中卡 / 排队提示 / 失败卡 / 结果卡 / 结果文字**，调用方只会拿到图片（图片发送仍按 `source` 规则——命中伴侣值即返回路径、其余照常发图）。想让用户看到这些提示时显式传 `silent=false`。 |
+| `silent` | **外部调用即默认静默** | 静默生图：不发**处理中卡 / 排队提示 / 失败卡 / 结果卡 / 结果文字**，调用方只会拿到图片（图片发送仍按第 3 节规则——`external=True` 返回路径、其余照常发图）。想让用户看到这些提示时显式传 `silent=false`。 |
 | `raw_prompt` | `false` | 提示词已由**调用方自己的 LLM 润色 + 翻译完成**：本次调用跳过本插件的 LLM 处理（Anima/Qwen 规范改写、翻译兜底、短描述扩写），直接使用传入的 `prompt`。画质前缀等本地规则仍会执行。 |
 
 传参示例（方式 A 直接调 handler，或方式 B 写进 `extra_params`）：
 
 ```python
 result = await handler(event, prompt="<已润色好的提示词>", source="<你的插件标识>",
-                       silent=True, raw_prompt=True)
+                       external=True, silent=True, raw_prompt=True)
 ```
 
 ```json
-{"source": "我会永远陪着你", "silent": true, "raw_prompt": true,
+{"source": "萌萌星语", "external": true, "silent": true, "raw_prompt": true,
  "width": 768, "height": 768}
 ```
 
@@ -101,14 +121,14 @@ result = await handler(event, prompt="<已润色好的提示词>", source="<你�
 | `custom_photo_tool_prompt_param` | `prompt`（默认） | 本插件提示词参数名就是 `prompt` |
 | `custom_photo_tool_kind_param` | 留空 | 本插件没有 `kind`（`text2img/selfie/edit`）语义，映射到 `workflow` 会传入假工作流名，**不要填** |
 | `custom_photo_tool_reference_param` | `image` | 参考图走本插件 `image` 参数 |
-| `custom_photo_tool_extra_params` | `{"source": "我会永远陪着你"}` | **必填**，否则拿不到图片路径 |
+| `custom_photo_tool_extra_params` | `{"source": "我会永远陪着你", "external": true}` | `external` **必填**，否则拿不到图片路径；`source` 保留伴侣标识只为兼容历史 |
 
 可选 `extra_params` 补充（按需）：
 ```json
-{"source": "我会永远陪着你", "width": 768, "height": 768,
+{"source": "我会永远陪着你", "external": true, "width": 768, "height": 768,
  "silent": true, "raw_prompt": true}
 ```
-- `silent` / `raw_prompt`：见第 3.1 节——静默生图（不带 source 时才会用到的提示一律不发）与跳过本插件 LLM 处理（提示词已由伴侣插件润色 + 翻译时用它）。
+- `silent` / `raw_prompt`：见第 3.2 节——静默生图（默认就不发过程提示）与跳过本插件 LLM 处理（提示词已由伴侣插件润色 + 翻译时用它）。
 - `workflow`：若要指定真实工作流名，必须在 `extra_params` 里写**真实工作流名**（用 `comfyui_workflows` 查询），不能写 `text2img/selfie` 这类语义值。
 - `seed` / `denoise` / `negative_prompt`：按需传入。
 
@@ -118,12 +138,13 @@ result = await handler(event, prompt="<已润色好的提示词>", source="<你�
 
 1. **工具名**：`comfyui_draw`（文生图/自动图生图）或 `comfyui_img2img`（强制图生图）。
 2. **`prompt`**：必填；按语言规范——真人工作流用中文，动漫工作流用英文标签。
-3. **`source`**：务必传本插件识别的值（或你的插件标识），否则拿不到图片路径。
+3. **`external`**：**要拿图片路径就必须传 `external=True`**（该参数只在代码层可见，见第 3 节）；
+   `source` 填你自己的插件标识（写日志 / 审计用，例如 `source="萌萌星语"`）。
 4. **参考图**：图生图需要把本地路径或 URL 放到 `image` 参数；工具内部会转成本地路径。
 5. **工作流**：除非明确要特定画风，否则不传 `workflow` 用默认；要传就必须先 `comfyui_workflows` 查询真实名称。
-6. **结果解析**：`source` 命中时返回 `{"image_path": ..., "status": "ok"}`，从 `image_path` 取本地图片路径。
+6. **结果解析**：`external=True` 时返回 `{"image_paths": ["<本地路径>", ...], "status": "ok"}`，从复数字段 `image_paths` 取本地图片路径。
 7. **超时**：本插件出图受 ComfyUI 速度影响，建议宿主插件 `tool_call_timeout` 设到 120s 以上。
-8. **静默与跳过润色**（可选，v7.7.46）：不想让用户看到处理中/失败/结果卡片 → `silent=true`（带 `source` 时本就是默认）；
+8. **静默与跳过润色**（可选，v7.7.46）：不想让用户看到处理中/失败/结果卡片 → `silent=true`（外部调用时本就是默认）；
    提示词已由你的插件润色 + 翻译完成、不想被二次加工 → `raw_prompt=true`。
 
 ---
@@ -132,5 +153,6 @@ result = await handler(event, prompt="<已润色好的提示词>", source="<你�
 
 - ❌ 不要绕开本插件，在其它插件里再实现一套 ComfyUI 客户端/接 SDGen/在线 API 出图。
 - ❌ 不要把 `workflow_kind`（`text2img/selfie/edit`）这种语义值直接当成 `workflow` 参数传给本插件。
-- ❌ 不传 `source` 还指望能拿到图片路径。
+- ❌ 只传 `source` 不传 `external` 还指望能拿到图片路径（那是 v7.7.57 以前的旧约定；只有那个历史字面量还兼容）。
+- ❌ 用别的语义去猜行为开关（例如"非空 `source` 就该返回路径"）——行为开关只有 `external=True`。
 - ❌ 图生图忘传参考图，导致工具走纯文生图或报「无图加载节点」。

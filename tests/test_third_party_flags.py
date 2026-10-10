@@ -1,11 +1,13 @@
-"""第三方插件调用参数：silent（静默生图） / raw_prompt（跳过 LLM 处理）（v7.7.46）。
+"""跨插件调用契约：external（取图片路径） / silent（静默生图） / raw_prompt（跳过 LLM 处理）。
 
 覆盖：
   ① `_coerce_bool_flag`：字符串/数字/中文布尔都能解析，不认识时用默认值；
   ② `_is_silent_call` + `_send`：静默时**不发文字**（不静默时照发）；
   ③ `_wrap_silent`：静默作用域挂标记 → 迭代结束（含调用方提前 break）后清理；
   ④ `_boost_positive(skip_llm=True)`：跳过 LLM 扩写（raw_prompt 语义）；
-  ⑤ 工具签名：comfyui_draw / comfyui_img2img 有 silent + raw_prompt，_do_draw 有 raw_prompt。
+  ⑤ 工具签名：comfyui_draw / comfyui_img2img 有 external + silent + raw_prompt，_do_draw 有 raw_prompt；
+  ⑥ `_is_external_call`（v7.7.58）：external=True 才返回图片路径，source 只是标识；
+     历史字面量继续兼容；且「字面量判定」不得再散落回 body（必须收口到 helper）。
 
 跑法：python tests/test_third_party_flags.py
 """
@@ -221,7 +223,22 @@ def test_boost_skip_llm():
     print("== _boost_positive（skip_llm 时跳过 LLM 扩写、原样保留） OK")
 
 
-# --------------------------------------------------- ⑤ 工具签名/接线检查
+# ------------------------- ⑤ external：行为开关，source 只作标识（v7.7.58）
+def test_external_call_helper():
+    fn = _load_module_funcs(
+        ("_is_external_call",), {"SOURCE_COMPANION_PLUGIN": "我会永远陪着你"}
+    )["_is_external_call"]
+    assert fn("", False) is False, "原生调用不能被当成外部调用"
+    assert fn("萌萌星语", False) is False, "只传 source 标识**不该**拿到图片路径"
+    assert fn("萌萌星语", True) is True
+    assert fn("", True) is True, "external 是行为开关，不依赖 source"
+    assert fn("我会永远陪着你", False) is True, "历史字面量必须继续兼容（伴侣插件改不了）"
+    assert fn("  我会永远陪着你  ", False) is True, "容忍空白"
+    assert fn(None, False) is False
+    print("== _is_external_call（external 才是开关 / source 仅标识 / 历史值兼容） OK")
+
+
+# --------------------------------------------------- ⑥ 工具签名/接线检查
 def test_signatures_and_wiring():
     src = _source()
     tree = ast.parse(src)
@@ -233,6 +250,16 @@ def test_signatures_and_wiring():
         args = [a.arg for a in funcs[tool].args.args] + [a.arg for a in funcs[tool].args.kwonlyargs]
         assert "silent" in args, f"{tool} 缺少 silent 参数"
         assert "raw_prompt" in args, f"{tool} 缺少 raw_prompt 参数"
+        assert "external" in args, f"{tool} 缺少 external 参数"
+        # ★ external 必须对模型不可见：AstrBot 用 docstring 的 Args: 段生成工具 schema，
+        #   一旦写进去，模型就可能幻觉 external=true → 图生成却没人发给用户。
+        assert "external" not in (ast.get_docstring(funcs[tool]) or ""), \
+            f"{tool} 的 docstring 泄露了 external，模型会看到并可能误传"
+
+    # 判定必须收口到 helper：body 里不许再出现散落的字面量比较
+    assert "source and source.strip() == SOURCE_COMPANION_PLUGIN" not in src, \
+        "仍有散落的字面量判定，应改走 _is_external_call"
+    assert src.count("_is_external_call(") >= 5, "两处工具入口 + 两个闸门 helper 都要用它"
     assert "raw_prompt" in [a.arg for a in funcs["_do_draw"].args.args] \
         or "raw_prompt" in [a.arg for a in funcs["_do_draw"].args.kwonlyargs], "_do_draw 缺少 raw_prompt"
     assert "raw_prompt" in [a.arg for a in funcs["_do_draw_nai_style"].args.kwonlyargs], \
@@ -252,5 +279,6 @@ if __name__ == "__main__":
     test_send_silenced()
     test_wrap_silent_scope()
     test_boost_skip_llm()
+    test_external_call_helper()
     test_signatures_and_wiring()
-    print("第三方调用参数（silent / raw_prompt）全部通过")
+    print("跨插件调用契约（external / silent / raw_prompt）全部通过")
