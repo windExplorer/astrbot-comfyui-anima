@@ -4355,10 +4355,16 @@ class ComfyUIDrawPlugin(Star):
             else:
                 logger.warning(f"【取图】 失败 [{src}] 无法解析为本地路径")
 
-        # 兜底：消息里带了引用(Reply)、但平台未回填引用内容/引用图解析失败时，
-        # 回退到「本会话用户最近发过的图」。用户引用的通常正是他自己刚发的图，
-        # 用历史缓存兜底是合理且安全的（仅当确实出现 Reply 才启用，纯文生图不受影响）。
-        if not paths and has_reply:
+        # 兜底：消息里带了引用(Reply)、且**引用消息里确实有图**（只是路径解析失败）时，
+        # 回退到「本会话用户最近发过的图」——用户引用的通常正是他自己刚发的那张图。
+        #
+        # v7.7.59 两处收紧（2026-10-10 线上日志实证的误判源头）：
+        #   ① 必须 _ref_cands 非空：只有「引用里真有图、但没解析出来」才兜底。此前只要消息
+        #      带 Reply 就兜底——引用一条**纯文字**消息、而本会话历史里有图，也会捞历史图
+        #      → 文生图被整成图生图（用户完全没提图）。这是"经常莫名变成图生图"的元凶。
+        #   ② 只取最近 1 张：最近那张才是"他刚发、想引用的那张"。此前把会话里最近 5 张
+        #      一股脑塞进去，多图工作流于是把不相干的旧图也当参考图（还混进过 GIF 首帧）。
+        if not paths and has_reply and _ref_cands:
             # v7.6.2：没有会话标识时不猜（空键桶是所有会话共用的，捞了就串味）
             sid = str(getattr(event, "session_id", "") or "").strip()
             for store in (
@@ -4370,10 +4376,14 @@ class ComfyUIDrawPlugin(Star):
                 for p in store:
                     if p and os.path.exists(p) and p not in paths:
                         paths.append(p)
+                        break     # v7.7.59：只取最近 1 张
                 if paths:
                     break
             if paths:
-                logger.info(f"【取图】 引用图解析失败，兜底最近用户发的图: {paths}")
+                logger.info(
+                    f"【取图】 引用消息里的图解析失败，用本会话最近 1 张用户图兜底"
+                    f"（这会判为图生图）: {paths}"
+                )
 
         if paths:
             logger.info(f"【取图】 完成：共取得 {len(paths)} 张图片")
@@ -14952,10 +14962,21 @@ class ComfyUIDrawPlugin(Star):
         # 导致群里没点名却画出私聊刚画的那个角色）。
         last_ev = plugin._last_event_for(event)
         if not got_explicit_image:
-            event_images = await plugin._extract_images(event)
-            if not event_images and last_ev is not None and last_ev is not event:
-                logger.info("【取图】 llm_draw 工具 event 未取到图，回退到本会话 LLM 调用前捕获的原始事件再取一次")
-                event_images = await plugin._extract_images(last_ev)
+            if _ext:
+                # v7.7.59：**外部插件调用不自动取图**。它们的 event 是"自己的触发消息"
+                # （星语/日程抽签的那条命令消息、伴侣的伪事件），与"这次要画什么"无关：
+                # 2026-10-10 日志实证——星语抽签的那条命令恰好带了引用，自动取图命中历史
+                # 图片 → 文生图被判成图生图（用「动漫图生图」工作流 + 注入旧 GIF 首帧），
+                # 用户完全没提图。要参考图请在 `image` 参数里显式给（对接文档 §5）。
+                logger.info(
+                    "【取图】 外部插件调用（source/external）：跳过从事件自动取图；"
+                    "需要参考图请在 image 参数里显式传入"
+                )
+            else:
+                event_images = await plugin._extract_images(event)
+                if not event_images and last_ev is not None and last_ev is not event:
+                    logger.info("【取图】 llm_draw 工具 event 未取到图，回退到本会话 LLM 调用前捕获的原始事件再取一次")
+                    event_images = await plugin._extract_images(last_ev)
         # 去重合并（避免 image 参数 URL 和事件里是同一张图）
         seen = set(init_images)
         for ep in event_images:
@@ -14976,6 +14997,13 @@ class ComfyUIDrawPlugin(Star):
             bool(img2img_workflow and img2img_workflow.strip()) and not strong_img2img
         )
         is_img2img = strong_img2img or weak_img2img
+        # v7.7.59：把判定依据打出来——「怎么突然变图生图了」这类问题必须能一眼定位，
+        # 否则只能靠翻十几种日志倒推（2026-10-10 排查就吃了这个亏）。
+        logger.info(
+            f"【取图】 图生图判定：显式 image={'有' if (image and image.strip()) else '无'}、"
+            f"事件图 {len(event_images)} 张、img2img_workflow={img2img_workflow!r}"
+            f" → is_img2img={is_img2img}（强信号={strong_img2img}、弱信号={weak_img2img}）"
+        )
 
         # ④ 强信号已判定图生图、但参考图还没拿到（图没进 event，如引用图解析失败）时，
         #    才用历史/会话/生成图兜底补一张参考图。纯文生图、以及弱信号
@@ -18165,11 +18193,19 @@ class ComfyUIDrawPlugin(Star):
             #    图生图不需要大模型"看懂"图片，参考图直接喂给 ComfyUI 的 LoadImage 节点；
             #    因此若 image 参数已成功取到图，就绝不再去 event / last_event 里做无谓的
             #    兜底探测（避免把上几次生成的旧图也混进来、也少打噪音日志）。
-            event_images = await plugin._extract_images(event)
-            last_ev = plugin._last_event_for(event)   # v7.6.2：仅同一会话
-            if not event_images and last_ev is not None and last_ev is not event:
-                logger.info("【取图】 llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
-                event_images = await plugin._extract_images(last_ev)
+            if _ext:
+                # v7.7.59：与 comfyui_draw 同一套——外部插件调用不从事件里自动取图
+                # （它们的 event 是自己的触发消息/伪事件，不是"要改的那张图"）。
+                logger.info(
+                    "【取图】 外部插件调用（source/external）：跳过从事件自动取图；"
+                    "需要参考图请在 image 参数里显式传入"
+                )
+            else:
+                event_images = await plugin._extract_images(event)
+                last_ev = plugin._last_event_for(event)   # v7.6.2：仅同一会话
+                if not event_images and last_ev is not None and last_ev is not event:
+                    logger.info("【取图】 llm_img2img 工具 event 未取到图，回退到 LLM 调用前捕获的原始事件再取一次")
+                    event_images = await plugin._extract_images(last_ev)
             # 去重合并
             seen = set(init_images)
             for ep in event_images:
