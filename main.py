@@ -589,21 +589,26 @@ _PLUGIN_INSTANCE = None
 # 键为 session_id（或 "__global__"），值为最近生成的本地图片路径列表（最多 5 张）。
 g_last_generated: dict[str, list[str]] = {}
 
-# 记录每个会话「用户最近发来的图片」本地路径，用于图生图兜底：
-# 在 LLM 工具调用前（图片尚未被平台压缩临时文件清理/剥离）提前缓存，
-# 当用户引用自己发的图做图生图、而工具执行时图片已不可达时回退使用。
+# 记录每个会话「用户最近发来的图片」本地路径，用于图生图兜底。
+# v7.7.61 起不再由预取钩子写入，而是**按需取图成功后的结果缓存**
+# （`_ensure_recent_user_images` 用图源 id 调平台接口拉到图后写这里）：
+# 用户先发图、随后用文字要求改图时，从这些 id 反向取图即可，不必提前解析下载。
 # 键为 session_id，值为最近收到的本地图片路径列表（最多 5 张）。
 g_last_received: dict[str, list[str]] = {}
 
-# 每个会话「用户历史消息里出现过的图片」滚动缓存（按时间倒序，最多保留 12 张），
-# 用于图生图兜底强度升级：
-#   - 覆盖「前一条消息发的图」：用户先发图、AI 回复后用户再说"改这张图"，
-#     LLM 工具触发时的 event 已是后续文本消息，_capture_llm_event 抓不到那条图，
-#     但本缓存在用户**发来图片**时都会记录，因此能回溯到上一条的图。
-#   - v7.7.60 起只记录「消息自带图片/卡片」的路径（引用图不在消息体内，不在预取范围）；
-#     引用图的解析一律推迟到出图时（那时手上有那条消息的 event，解析更准也更省）。
-# 仅在 LLM 工具调用且当前消息/引用/_last_event 全部取不到图时才启用，避免误用旧图。
+# 每个会话「用户历史消息里出现过的图片」滚动缓存（按时间倒序，最多保留 12 张）。
+# v7.7.60 起不再由预取钩子写入；v7.7.61 起改为**按需取图成功后的结果缓存**——
+# 出图时若靠"当前消息/引用"拿不到参考图，就用 g_image_sources 里的图源 id 调平台
+# 接口拉回并下载，命中的路径写在这里，同一会话紧接着再要就不必重复拉。
 g_recent_user_images: dict[str, list[str]] = {}
+
+# v7.7.61「按需取图」的图源登记表：预取阶段**零 IO**（不解析、不下载），
+# 只把"以后可能要用的图源 id"记下来，出图时再按 id 调平台接口取图并下载。
+# 值为 [(kind, id), ...]，最近优先，最多 8 条：
+#   kind="msg"   → 这条用户消息**自己带图片/卡片**，id 是它自己的 message_id；
+#   kind="reply" → 这条消息**引用了**某条消息，id 是 Reply.id（被引用消息的 id）。
+# 键为 session_id（只留最近 40 个会话）。
+g_image_sources: dict[str, list[tuple[str, str]]] = {}
 
 # 每个会话「最近一次图生图实际使用的用户原图」记忆（区别于生成图）：
 # 多轮改图场景（用户先发原图 → AI 生成结果图 → 用户再说「重新改/再改一下」但没再发图）下，
@@ -1140,6 +1145,37 @@ _WF_HINTS = {
 # ------------------------------------------------------------------ #
 # 图生图取图辅助：从多种来源提取图片本地路径并打详细日志
 # ------------------------------------------------------------------ #
+def _onebot_client_for(event):
+    """构造 AstrBot 的 OneBot 客户端（只有支持 call_action 的平台能用，如 aiocqhttp）。
+
+    v7.7.61「按需取图」用：出图时拿登记的图源 id 调 get_msg，把消息内容拉回来。
+    拿不到（非 OneBot 平台 / AstrBot 结构变化）返回 None，调用方静默降级。
+    """
+    try:
+        from astrbot.core.utils.quoted_message.onebot_client import OneBotClient
+    except Exception:
+        return None
+    try:
+        client = OneBotClient(event)
+    except Exception:
+        return None
+    return client if getattr(client, "_call_action", None) else None
+
+
+def _parse_onebot_msg_images(payload) -> list:
+    """从 OneBot get_msg 的 payload 里解析出图片引用（url / file / base64）。"""
+    try:
+        from astrbot.core.utils.quoted_message.chain_parser import OneBotPayloadParser
+    except Exception:
+        return []
+    try:
+        parsed = OneBotPayloadParser().parse_get_msg_payload(payload or {})
+        return [r for r in (parsed.get("image_refs") or []) if r]
+    except Exception as e:
+        logger.debug(f"【取图】 解析 get_msg 图片引用失败（忽略）: {e}")
+        return []
+
+
 async def _extract_quoted_images(event: "AstrMessageEvent", reply_component=None) -> list:
     """尝试用 AstrBot 内置的引用消息解析器获取被引用消息里的图片引用
     （url / base64 / 本地路径）。该 API 在较新版本可用，旧版本静默返回空。
@@ -4295,8 +4331,7 @@ class ComfyUIDrawPlugin(Star):
             return True
         return False
 
-    @staticmethod
-    async def _extract_images(event: AstrMessageEvent) -> list[str]:
+    async def _extract_images(self, event: AstrMessageEvent) -> list[str]:
         """从消息事件中提取所有图片的本地路径，用于图生图。支持多种来源：
         - 消息中直接附带的图片（含「文字 + 图片」混合、纯图片、指令 + 图片）
         - 引用/回复消息里带的图片（Reply.chain 内嵌，或平台 API 回退）
@@ -4371,7 +4406,21 @@ class ComfyUIDrawPlugin(Star):
         #      → 文生图被整成图生图（用户完全没提图）。这是"经常莫名变成图生图"的元凶。
         #   ② 只取最近 1 张：最近那张才是"他刚发、想引用的那张"。此前把会话里最近 5 张
         #      一股脑塞进去，多图工作流于是把不相干的旧图也当参考图（还混进过 GIF 首帧）。
+        if not paths and has_reply:
+            # ① v7.7.61 按需取图：用本会话登记的图源 id（这条消息引用了哪条 / 自己哪条带图）
+            #    调平台接口 get_msg 把消息内容拉回来 → 解析图片引用 → 下载落盘。
+            #    预取阶段一次请求都不打，只有走到"确实要图、当前消息/引用都没解析出来"才走这里。
+            try:
+                fetched = await self._ensure_recent_user_images(event, limit=1)
+            except Exception as _e:
+                fetched = []
+                logger.debug(f"【取图】 按需拉取异常（忽略）: {_e}")
+            for p in fetched:
+                if p and p not in paths:
+                    paths.append(p)
         if not paths and has_reply and _ref_cands:
+            # ② 结果缓存兜底：引用里确实有图、但平台没给可解析的引用（v7.7.59 语义）。
+            #    缓存内容由上面的按需拉取（或历史版本预取）写入，通常为空时直接跳过。
             # v7.6.2：没有会话标识时不猜（空键桶是所有会话共用的，捞了就串味）
             sid = str(getattr(event, "session_id", "") or "").strip()
             for store in (
@@ -9244,6 +9293,13 @@ class ComfyUIDrawPlugin(Star):
         # 不可用时，退回「用户最近发的图」优先，再退「本插件最近生成的图」。注意：此兜底
         # 仅限图生图入口，绝不进入通用 _extract_images，以免污染纯文生图指令。
         if not images:
+            # v7.7.61 按需取图：到这里才用登记的图源 id 调平台接口把图拉回来并下载
+            # （不画图的消息一次请求都不打）。
+            try:
+                images = await self._ensure_recent_user_images(event, limit=1)
+            except Exception as _e:
+                logger.debug(f"【取图】 /img2img 按需拉取异常（忽略）: {_e}")
+        if not images:
             sid = str(getattr(event, "session_id", "") or "").strip()
             # v7.6.2：有会话标识就**只认本会话**的缓存；只有拿不到会话标识时，
             # 才退到全局桶（否则会捞到别的会话——私聊的图被当成群聊的参考图）。
@@ -9671,7 +9727,15 @@ class ComfyUIDrawPlugin(Star):
         """取图兜底：本会话「用户最近发的图 → 本插件最近生成的图」（返回 1 张或空）。
 
         与 /img2img 的兜底同源：有会话标识就只认本会话，避免捞到别的会话的图。
+        v7.7.61：先按需拉取（用登记的图源 id 调平台接口取图并下载），再读结果缓存。
         """
+        try:
+            _fetched = await self._ensure_recent_user_images(event, limit=1)
+        except Exception as _e:
+            _fetched = []
+            logger.debug(f"【取图】 兜底取图异常（忽略）: {_e}")
+        if _fetched:
+            return _fetched[:1]
         sid = str(getattr(event, "session_id", "") or "").strip()
         if sid:
             stores = (
@@ -15017,6 +15081,17 @@ class ComfyUIDrawPlugin(Star):
         #    （仅传 img2img_workflow 无参考图，常见于伴侣文生图顺带带默认图生图工作流）
         #    绝不进入这里——弱信号应直接回退对应风格文生图，避免误中断调用方（如伴侣）。
         if strong_img2img and not init_images:
+            # ⓿ v7.7.61 按需取图：先用本会话登记的图源 id 调平台接口把图拉回来并下载
+            #    （预取阶段零请求；只有走到"要用参考图"这里才发 get_msg + 下载）。
+            try:
+                _fetched = await plugin._ensure_recent_user_images(event, limit=1)
+            except Exception as _e:
+                _fetched = []
+                logger.debug(f"【取图】 按需拉取异常（忽略）: {_e}")
+            for _p in _fetched:
+                if _p and _p not in init_images:
+                    init_images.append(_p)
+        if strong_img2img and not init_images:
             # v7.6.2：没有会话标识就不去历史里捞图（空键桶是所有会话共用，会串味）
             sid = str(getattr(event, "session_id", "") or "").strip()
             # ① 优先用「本会话最近一次图生图实际使用的用户原图」（多轮改图时回到最初原图，
@@ -15542,20 +15617,101 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _e:
             logger.exception(f"【续画·异常】 会话 {sid} 后台续画失败: {_e}")
 
-    # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
-    # 覆盖：消息内图、引用消息内嵌图、引用 API 回退；已过滤不存在路径。
-    async def _collect_user_images(self, event: AstrMessageEvent) -> list[str]:
-        """取本条消息里的图片本地路径（供"最近收到图"缓存）。
+    # ---- v7.7.61 按需取图：预取只登记图源 id（零 IO），出图时才拉取下载 ----------
+    @staticmethod
+    def _reply_id_of(comp) -> str:
+        """组件是引用(Reply)时返回被引用消息 id，否则空串。"""
+        t_raw = getattr(comp, "type", "")
+        ct = getattr(t_raw, "value", None) or getattr(t_raw, "name", None) or str(t_raw)
+        if (Reply is not None and isinstance(comp, Reply)) or ct in (
+            "Reply",
+            "ComponentType.Reply",
+        ):
+            return str(getattr(comp, "id", "") or "").strip()
+        return ""
 
-        v7.7.60：删掉此前"再单独跑一遍 `_extract_quoted_images`"的重复调用——
-        `_extract_images` 内部对引用已经做过同样的 API 回退（含 URL 兜底下载），
-        等于每条消息都打两遍平台 API、把引用图下载两遍。现在只走一次。
+    def _remember_image_sources(self, event: AstrMessageEvent) -> None:
+        """登记"以后可能要用的图源 id"——**零 IO**：不解析图片、不打接口、不下载。
+
+        - 本条消息自带图片/卡片 → 记它自己的 `message_id`（kind="msg"）；
+        - 本条消息带引用(Reply) → 记被引用消息 id（kind="reply"）。
+
+        真正的取图/下载推迟到出图那一刻（`_ensure_recent_user_images`）：用户要图生图时，
+        我们用这些 id 反过来调平台接口把图拿回来——不用再提前解析、也不用提前下载。
         """
-        imgs = await self._extract_images(event)
-        return [p for p in imgs if p and os.path.exists(p)]
+        try:
+            sid = str(getattr(event, "session_id", "") or "").strip()
+            if not sid:
+                return
+            own_mid = str(
+                getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+            ).strip()
+            items: list[tuple[str, str]] = []
+            for comp in event.get_messages():
+                if self._msg_has_image_comp(comp, include_reply=False):
+                    if own_mid:
+                        items.append(("msg", own_mid))
+                else:
+                    rid = self._reply_id_of(comp)
+                    if rid:
+                        items.append(("reply", rid))
+            if not items:
+                return
+            bucket = g_image_sources.setdefault(sid, [])
+            for it in items:
+                if it not in bucket:
+                    bucket.append(it)
+            if len(bucket) > 8:
+                g_image_sources[sid] = bucket[-8:]
+            logger.debug(f"【取图】 已登记图源 id（零 IO、不下载）: {g_image_sources[sid]}")
+            # 只留最近 40 个会话，长跑下不做无界增长
+            if len(g_image_sources) > 40:
+                for _k in list(g_image_sources)[:-40]:
+                    g_image_sources.pop(_k, None)
+        except Exception as e:
+            logger.debug(f"【取图】 登记图源 id 失败（忽略）: {e}")
+
+    async def _ensure_recent_user_images(self, event, *, limit: int = 1) -> list[str]:
+        """按需取图：把本会话登记的图源 id 用平台接口拉回来并下载（最多 limit 张）。
+
+        v7.7.61：只有"确实要用参考图"的地方（画图指令/工具及其兜底链）才调用，
+        预取阶段一次请求都不打。链路：`get_msg(id)` → 解析图片引用 → 下载落盘。
+        命中的路径写回 `g_last_received` / `g_recent_user_images` 作为结果缓存，
+        同一会话紧接着再要（多轮改图）不必重复打接口。失败一律静默返回 []。
+        """
+        sid = str(getattr(event, "session_id", "") or "").strip()
+        if not sid:
+            return []
+        client = _onebot_client_for(event)
+        if client is None:
+            logger.debug("【取图】 按需拉取：当前平台不支持 OneBot call_action，跳过")
+            return []
+        for kind, mid in list(reversed(g_image_sources.get(sid) or [])):
+            if not mid:
+                continue
+            try:
+                payload = await client.get_msg(mid)
+            except Exception as e:
+                logger.debug(f"【取图】 get_msg({mid}) 失败（忽略）: {e}")
+                continue
+            if not payload:
+                continue
+            got: list[str] = []
+            for ref in _parse_onebot_msg_images(payload):
+                p = await _image_to_local_path(ref)
+                if p and os.path.exists(p) and p not in got:
+                    got.append(p)
+                if len(got) >= limit:
+                    break
+            if got:
+                self._record_user_images(sid, got)
+                logger.info(f"【取图】 按需拉取成功（{kind}:{mid}）{len(got)} 张 -> {got}")
+                return got[:limit]
+        logger.debug("【取图】 按需拉取：本会话登记的图源都没取到图")
+        return []
 
     def _record_user_images(self, sid: str, imgs: list[str]) -> None:
-        """把用户最近发的图写进两个缓存，供图生图兜底读取。"""
+        """把已解析出的用户图路径写进两个缓存（v7.7.61 起为"按需拉取的结果缓存"）。"""
         if not sid or not imgs:
             return
         # g_last_received：指令/工具兜底主用（最多 5 张，最近优先）
@@ -15574,37 +15730,20 @@ class ComfyUIDrawPlugin(Star):
             g_recent_user_images[sid] = hb[-12:]
 
     # 每条用户消息（含纯指令，如 /draw /img2img /画）进入 handler 执行前，先用高优先级
-    # 提前缓存消息内/引用图片。这样即使后续指令只拿到纯文本（图片被剥离/引用未回填），
-    # 也能回溯到"用户最近发的图"做图生图兜底。
+    # **登记图源 id**（v7.7.61：零 IO —— 不解析图片、不打平台接口、不下载任何东西）。
+    # 真要出图时再用这些 id 反过来调平台接口把图拉回来并下载
+    # （`_ensure_recent_user_images`），于是"不画图的会话"完全不产生取图开销。
     # 说明：AstrBot 的 on_agent_begin / on_using_llm_tool 只在消息进入 LLM Agent 流程时触发，
     # 纯指令（command/regex 命中并 stop_event）不会进 Agent，所以必须用 event_message_type(ALL)
     # 且给高 priority 保证它在 command handler 之前执行（handlers 按 -priority 降序）。
     @filter.event_message_type(filter.EventMessageType.ALL, priority=20)
     async def _capture_user_images_on_message(self, event: AstrMessageEvent):
         try:
-            sender = getattr(event, "get_sender_id", lambda: "")()
-            if not sender:
+            if not getattr(event, "get_sender_id", lambda: "")():
                 return
-            sid = getattr(event, "session_id", "") or ""
-            if not sid:
-                return
-            # 只有**消息自带图片/卡片**才预取路径（本地文件已在 temp，解析几乎零成本，
-            # 且"用户真发了图"是跨消息改图的可靠来源）。
-            # v7.7.60：仅带引用(Reply)的消息不再在这里解析——那要打平台 API + 可能整张
-            # 下载，而绝大多数消息根本不画图（"每条消息都取图"的主要来源）。
-            # 引用图的解析推迟到出图那一刻：画图指令/工具手里拿的就是这条消息的 event。
-            if not any(
-                self._msg_has_image_comp(c, include_reply=False)
-                for c in event.get_messages()
-            ):
-                logger.debug("【取图】 消息无自带图片（纯文本/仅引用）：跳过预取，出图时再解析")
-                return
-            imgs = await self._collect_user_images(event)
-            self._record_user_images(sid, imgs)
-            if imgs:
-                logger.debug(f"【取图】 消息前置缓存 {len(imgs)} 张: {imgs}")
+            self._remember_image_sources(event)
         except Exception as e:
-            logger.debug(f"【取图】 消息前置捕获图片失败（忽略）: {e}")
+            logger.debug(f"【取图】 登记消息图源失败（忽略）: {e}")
 
     def _own_command_names(self) -> list[str]:
         """本插件注册的所有指令名与别名（含中文，如 绘图状态 / 图库 / 萌绘）。"""
@@ -15817,9 +15956,9 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _e:
             logger.debug(f"【绘图·已读】 指令已读回执失败（可忽略）: {_e}")
 
-    # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时也捕获一次图片，
-    # 写入 g_recent_user_images（按会话滚动），供 LLM 工具兜底使用。
-    # 保留 on_agent_begin 版本以覆盖 AI 对话（非纯指令）场景。
+    # 在 Agent 开始运行（即用户本条消息进入 LLM 前，仅触发一次）时也**登记图源 id**
+    # （v7.7.61：零 IO，不解析不下载）。保留 on_agent_begin 版本以覆盖 AI 对话场景——
+    # 那条路径上 on_using_llm_tool 也会登记一次，两处都只是往同一个去重表里写 id。
     # 消息入口：识别「强制出图」前缀标记（v7.7.0）。
     # ★只打标记，**绝不 stop_event** —— 消息照常进 LLM，让它自己正常调用 comfyui_draw；
     #   只有本轮它真没画出来，才由 on_agent_done 兜底补画。
@@ -15848,29 +15987,15 @@ class ComfyUIDrawPlugin(Star):
     async def _capture_user_images(self, event: AstrMessageEvent, run_context):
         try:
             # 只处理用户消息（避免把 AI 自己/系统消息也算进来污染图源）
-            sender = getattr(event, "get_sender_id", lambda: "")()
-            if not sender:
+            if not getattr(event, "get_sender_id", lambda: "")():
                 return
-            sid = getattr(event, "session_id", "") or ""
-            if not sid:
-                return
-            # v7.7.60：与消息前置钩子同一策略——只预取**消息自带图片/卡片**；
-            # 纯文本与"仅引用"的消息一律跳过（引用图推迟到出图时解析）。
-            if not any(
-                self._msg_has_image_comp(c, include_reply=False)
-                for c in event.get_messages()
-            ):
-                return
-            imgs = await self._collect_user_images(event)
-            self._record_user_images(sid, imgs)
-            if imgs:
-                logger.debug(f"【取图】 Agent 前置缓存 {len(imgs)} 张: {imgs}")
+            self._remember_image_sources(event)
         except Exception as e:
-            logger.debug(f"【取图】 捕获用户消息图片失败（忽略）: {e}")
+            logger.debug(f"【取图】 登记 Agent 消息图源失败（忽略）: {e}")
 
-    # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）。
-    # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，
-    # 这里提前存一份，并趁图片还在时把路径缓存下来，供图生图取图兜底使用。
+    # 在 LLM 工具被调用前捕获「完整」原始事件（含图片组件）——只是**存一份事件引用**，
+    # 因为部分情况下工具回调收到的 event 图片可能已被 LLM 消费/剥离，出图时要能回溯到它。
+    # v7.7.61：这里不再解析/下载任何图片，只登记图源 id（`_remember_image_sources`）。
     @filter.on_using_llm_tool()
     async def _capture_llm_event(
         self, event: AstrMessageEvent, tool=None, tool_args: dict | None = None
@@ -15886,33 +16011,14 @@ class ComfyUIDrawPlugin(Star):
                 g_draw_agent_sessions[sid] = self._current_chat_provider_id()
         except Exception:
             pass
-        # 只有**消息自带图片/卡片**时才预取路径（跨消息改图依赖它；本地文件已在 temp，
-        # 解析几乎零成本）。
-        # v7.7.60：纯文本、以及"仅引用"的消息一律跳过。此前这里是**每次 LLM 工具调用**
-        # （日程/表情包/知识库……任何工具，不限画图工具）都会完整取一遍图，还额外再
-        # 解析一次引用图（含图床 URL 兜底下载）——是"每条消息都取图"的最大来源。
-        # 引用图的解析推迟到出图那一刻：llm_draw / llm_img2img 会用
-        # _last_event_for(event)（本钩子刚记下的那条原始事件）去解析，更省也更准。
+        # v7.7.61：登记图源 id（零 IO）——本条消息自带图片就记它自己的 message_id，
+        # 带引用就记被引用消息 id。真要参考图时再按 id 拉取下载。
+        # 此前这里是**每次 LLM 工具调用**（日程/表情包/知识库……任何工具，不限画图工具）
+        # 都会完整取一遍图，还额外解析一次引用图（含图床 URL 兜底下载）——开销最大的一处。
         try:
-            if not any(
-                self._msg_has_image_comp(c, include_reply=False)
-                for c in event.get_messages()
-            ):
-                logger.debug("【取图】 工具调用前：消息无自带图片（纯文本/仅引用），跳过预取")
-                return
-        except Exception:
-            pass
-        try:
-            sid = getattr(event, "session_id", "") or ""
-            if sid:
-                cached = await self._collect_user_images(event)
-                if cached:
-                    self._record_user_images(sid, cached)
-                    logger.debug(f"【取图】 工具调用前缓存用户图片 {len(cached)} 张: {cached}")
-                else:
-                    logger.debug("【取图】 工具调用前未从消息取到图片")
-        except Exception as e:
-            logger.debug(f"【取图】 缓存会话图片失败（忽略）: {e}")
+            self._remember_image_sources(event)
+        except Exception as _e:
+            logger.debug(f"【取图】 登记工具调用图源失败（忽略）: {_e}")
 
     # 记录「用户通过 LLM 对话触发画图」时，主对话 LLM 调用的 token 消耗。
     # 背景：用户说"画一张小女孩"进入 LLM Agent 流程，那次主对话调用发生在 AstrBot
@@ -18221,8 +18327,19 @@ class ComfyUIDrawPlugin(Star):
                     init_images.append(ep)
 
         if not init_images:
+            # ⓿ v7.7.61 按需取图：用本会话登记的图源 id 调平台接口拉图并下载
+            #    （这是"用户先发图、随后用文字要求改图"最可靠的回溯方式）。
+            try:
+                _fetched = await plugin._ensure_recent_user_images(event, limit=1)
+            except Exception as _e:
+                _fetched = []
+                logger.debug(f"【取图】 按需拉取异常（忽略）: {_e}")
+            for _p in _fetched:
+                if _p and _p not in init_images:
+                    init_images.append(_p)
+        if not init_images:
             # 兜底：本次消息/引用/_last_event 都没取到图时，退回「本会话用户最近发来的图」
-            # （g_last_received，在 LLM 工具调用前趁图还在时已缓存到）。
+            # （g_last_received，v7.7.61 起由按需拉取写入；上面那步就是主要来源）。
             # 典型场景：用户先发一张图，AI 用自己的话总结并调用本工具做图生图，此时工具
             # 收到的 event 是 AI 的纯文本回复、图片消息既未被引用也没被带入 event，
             # 但用户确实刚发过图——这种"用户当前意图的参考图"兜底合理。

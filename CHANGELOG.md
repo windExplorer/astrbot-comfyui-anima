@@ -2,6 +2,47 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.61（取图彻底按需：预取零 IO，只在图生图时用平台接口取图）
+
+需求：v7.7.60 只做到"带图消息才预取"，用户要的是**只有真要图生图时才取图**——
+"不需要每句话都取图，也不是有图的消息取图，而是需要图生图的时候才取图，
+可以用一些接口去下载图片"。这版就是按这个来的。
+
+做法（后端 `main.py`）：
+
+1. **预取阶段零 IO**：三个预取钩子（每条消息 `event_message_type(ALL)` / `on_agent_begin` /
+   `on_using_llm_tool`）统统只调 `_remember_image_sources(event)` —— 纯内存登记
+   "以后可能要用的**图源 id**"，**不解析图片、不打平台接口、不下载任何东西**：
+   - 本条消息**自带图片/卡片** → 记它自己的 `message_obj.message_id`（kind=`msg`）；
+   - 本条消息**带了引用(Reply)** → 记被引用消息的 `Reply.id`（kind=`reply`）。
+   去重、每会话最多 8 条、只留最近 40 个会话（`g_image_sources`）。
+2. **出图时才真取图**：新增 `_ensure_recent_user_images(event, limit)`：
+   `get_msg(id)` → 解析图片引用（复用 AstrBot 的 `OneBotClient` / `OneBotPayloadParser`）
+   → `_image_to_local_path`（含图床 URL 兜底下载）→ 落盘。命中的路径写回
+   `g_last_received` / `g_recent_user_images` 作为**结果缓存**，同一会话多轮改图不必重复拉。
+3. **接入全部兜底链（5 处）**：`_extract_images`（引用解析失败时）、`/img2img` 入口、
+   `_pick_recent_images`（放大 / 抠图）、`llm_draw` 的 ⓿补图、`llm_img2img` 的 ⓿补图。
+   于是"不画图的会话"**一次网络请求都不会产生**。
+4. `_extract_images` 由 `@staticmethod` 改为实例方法（要回调 `self._ensure_recent_user_images`）；
+   删掉旧的预取实现 `_collect_user_images`。
+
+降级与边界（都写进代码注释了）：
+
+- 平台不支持 OneBot `call_action`（非 aiocqhttp 系）、或 AstrBot 内部结构变化时，
+  `_onebot_client_for` 返回 None → 按需拉取直接返回空，退化成"取不到参考图→提示重发"，
+  **不报错、不影响主链路**；全程 try/except。
+- 代价：参考图现在**完全依赖"那条消息在平台上仍可取"**（`get_msg` 要能拉到、图床 URL 未过期）。
+  平台撤回/过期/路径不可达时拿不到图——这是"零预取"的固有取舍，换来的是平时完全没有取图开销。
+- 图源登记表在内存里，重启即清（与既有几个缓存一致）。
+
+验证：
+
+- `tests/test_extract_images.py` 扩到 10 组：新增**图源登记**用例（纯文本不登记 /
+  自带图记 message_id / 引用记 reply id / 重复登记去重）与接线守卫（旧的
+  `_collect_user_images` 不得回归、三个钩子都要登记、按需取图入口 ≥ 6 处）；
+- 回归：`test_third_party_flags` / `test_at_and_suppress` / `test_session_isolation` /
+  `test_multi_ref` / `test_force_draw` 全过；pyflakes 干净；compileall 通过。
+
 ## v7.7.60（取图改「按需」：不再每条消息都去打平台 API + 下载图）
 
 现象 / 需求：消息端是 snowluma（aiocqhttp）时，群里每条**带引用**的消息都会触发取图，
