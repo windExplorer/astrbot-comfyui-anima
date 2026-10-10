@@ -599,9 +599,9 @@ g_last_received: dict[str, list[str]] = {}
 # 用于图生图兜底强度升级：
 #   - 覆盖「前一条消息发的图」：用户先发图、AI 回复后用户再说"改这张图"，
 #     LLM 工具触发时的 event 已是后续文本消息，_capture_llm_event 抓不到那条图，
-#     但本缓存在用户每次发消息时都会记录，因此能回溯到上一条的图。
-#   - 覆盖「引用消息里的图」：当平台未回填 Reply.chain、extract_quoted_message_images
-#     也返回空时，若该引用图曾作为用户消息体/历史消息出现，也能从这里兜底。
+#     但本缓存在用户**发来图片**时都会记录，因此能回溯到上一条的图。
+#   - v7.7.60 起只记录「消息自带图片/卡片」的路径（引用图不在消息体内，不在预取范围）；
+#     引用图的解析一律推迟到出图时（那时手上有那条消息的 event，解析更准也更省）。
 # 仅在 LLM 工具调用且当前消息/引用/_last_event 全部取不到图时才启用，避免误用旧图。
 g_recent_user_images: dict[str, list[str]] = {}
 
@@ -4267,10 +4267,17 @@ class ComfyUIDrawPlugin(Star):
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
 
     @staticmethod
-    def _msg_has_image_comp(comp) -> bool:
-        """判断消息组件是否是图片/卡片/引用（含引用本组件即视为可能含图）。
+    def _msg_has_image_comp(comp, *, include_reply: bool = True) -> bool:
+        """判断消息组件是否是图片/卡片（include_reply=True 时引用也算"可能含图"）。
 
         用于消息前置取图钩子的短路：纯文本消息直接跳过，不浪费提取与日志。
+
+        v7.7.60：新增 `include_reply` 开关，预取钩子一律传 False。理由——引用(Reply)
+        只是"可能含图"，要确认就得调平台 API 拉被引用的原消息、再按图床 URL 下载，
+        而带引用的消息在陪伴/回复式聊天里极其常见，绝大多数根本不画图：
+        每来一条就解析一次等于白打一堆平台请求与下载。现在只在**消息确实自带
+        图片/卡片**（本地文件已在 temp，解析几乎零成本）时才预取路径，
+        引用图的解析推迟到"真要出图"那一刻（画图指令/工具里带的就是那条消息的 event）。
         """
         t_raw = getattr(comp, "type", "")
         ct = getattr(t_raw, "value", None) or getattr(t_raw, "name", None) or str(t_raw)
@@ -4281,9 +4288,9 @@ class ComfyUIDrawPlugin(Star):
             "ComponentType.CardImage",
         ):
             return True
-        if (Reply is not None and isinstance(comp, Reply)) or ct in (
-            "Reply",
-            "ComponentType.Reply",
+        if include_reply and (
+            (Reply is not None and isinstance(comp, Reply))
+            or ct in ("Reply", "ComponentType.Reply")
         ):
             return True
         return False
@@ -15538,18 +15545,13 @@ class ComfyUIDrawPlugin(Star):
     # 提取某条用户消息（含引用/卡片）里的图片本地路径，供缓存到"最近收到图"。
     # 覆盖：消息内图、引用消息内嵌图、引用 API 回退；已过滤不存在路径。
     async def _collect_user_images(self, event: AstrMessageEvent) -> list[str]:
+        """取本条消息里的图片本地路径（供"最近收到图"缓存）。
+
+        v7.7.60：删掉此前"再单独跑一遍 `_extract_quoted_images`"的重复调用——
+        `_extract_images` 内部对引用已经做过同样的 API 回退（含 URL 兜底下载），
+        等于每条消息都打两遍平台 API、把引用图下载两遍。现在只走一次。
+        """
         imgs = await self._extract_images(event)
-        # _extract_images 已覆盖：消息内图、引用消息内嵌图、引用 API 回退。
-        # 这里再尝试补一次引用图（部分平台引用图只在事件里以 Reply.id 形式存在，
-        # 且需在图片未被剥离的「原始消息到达」时机抓取才有效）。
-        try:
-            quoted = await _extract_quoted_images(event)
-            quoted = [await _image_to_local_path(q) for q in quoted]
-            for q in quoted:
-                if q and q not in imgs:
-                    imgs.append(q)
-        except Exception as qe:
-            logger.debug(f"【取图】 原始消息抓引用图失败（忽略）: {qe}")
         return [p for p in imgs if p and os.path.exists(p)]
 
     def _record_user_images(self, sid: str, imgs: list[str]) -> None:
@@ -15586,10 +15588,16 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if not sid:
                 return
-            # 纯文本消息（无图片/卡片/引用组件）不需要取图，提前跳过，
-            # 避免每条聊天消息都跑一遍图片提取、刷屏【取图】日志。
-            # 仅含图片/卡片或引用(Reply)的消息才进入提取，图生图兜底逻辑不受影响。
-            if not any(self._msg_has_image_comp(c) for c in event.get_messages()):
+            # 只有**消息自带图片/卡片**才预取路径（本地文件已在 temp，解析几乎零成本，
+            # 且"用户真发了图"是跨消息改图的可靠来源）。
+            # v7.7.60：仅带引用(Reply)的消息不再在这里解析——那要打平台 API + 可能整张
+            # 下载，而绝大多数消息根本不画图（"每条消息都取图"的主要来源）。
+            # 引用图的解析推迟到出图那一刻：画图指令/工具手里拿的就是这条消息的 event。
+            if not any(
+                self._msg_has_image_comp(c, include_reply=False)
+                for c in event.get_messages()
+            ):
+                logger.debug("【取图】 消息无自带图片（纯文本/仅引用）：跳过预取，出图时再解析")
                 return
             imgs = await self._collect_user_images(event)
             self._record_user_images(sid, imgs)
@@ -15846,9 +15854,12 @@ class ComfyUIDrawPlugin(Star):
             sid = getattr(event, "session_id", "") or ""
             if not sid:
                 return
-            # 纯文本消息（无图片/卡片/引用组件）不需要取图，提前跳过，
-            # 避免 AI 对话里每条文字消息都跑一遍图片提取、刷屏【取图】日志。
-            if not any(self._msg_has_image_comp(c) for c in event.get_messages()):
+            # v7.7.60：与消息前置钩子同一策略——只预取**消息自带图片/卡片**；
+            # 纯文本与"仅引用"的消息一律跳过（引用图推迟到出图时解析）。
+            if not any(
+                self._msg_has_image_comp(c, include_reply=False)
+                for c in event.get_messages()
+            ):
                 return
             imgs = await self._collect_user_images(event)
             self._record_user_images(sid, imgs)
@@ -15875,35 +15886,31 @@ class ComfyUIDrawPlugin(Star):
                 g_draw_agent_sessions[sid] = self._current_chat_provider_id()
         except Exception:
             pass
-        # 趁事件里图片组件尚未被剥离，提前把图片本地路径缓存到「会话最近收到图片」，
-        # 用于图生图兜底：当工具执行时图片已被平台压缩临时文件清理、event 只剩文本时，
-        # 仍可退回使用本次对话用户实际发来的图。
+        # 只有**消息自带图片/卡片**时才预取路径（跨消息改图依赖它；本地文件已在 temp，
+        # 解析几乎零成本）。
+        # v7.7.60：纯文本、以及"仅引用"的消息一律跳过。此前这里是**每次 LLM 工具调用**
+        # （日程/表情包/知识库……任何工具，不限画图工具）都会完整取一遍图，还额外再
+        # 解析一次引用图（含图床 URL 兜底下载）——是"每条消息都取图"的最大来源。
+        # 引用图的解析推迟到出图那一刻：llm_draw / llm_img2img 会用
+        # _last_event_for(event)（本钩子刚记下的那条原始事件）去解析，更省也更准。
+        try:
+            if not any(
+                self._msg_has_image_comp(c, include_reply=False)
+                for c in event.get_messages()
+            ):
+                logger.debug("【取图】 工具调用前：消息无自带图片（纯文本/仅引用），跳过预取")
+                return
+        except Exception:
+            pass
         try:
             sid = getattr(event, "session_id", "") or ""
             if sid:
-                cached = await self._extract_images(event)
-                # 额外：专程解析「引用消息里的图」。工具调用时 event 的图片可能已被剥离，
-                # 但用户「引用一条带图消息」时，该引用图不在当前消息体内、只挂在 Reply 上，
-                # _extract_images 已会尝试回拉；这里再单独跑一次确保不漏（含 URL 兜底下载）。
-                try:
-                    quoted = await self._extract_quoted_images(event)
-                    quoted = [await self._image_to_local_path(q) for q in quoted]
-                    for q in quoted:
-                        if q and q not in cached:
-                            cached.append(q)
-                except Exception as qe:
-                    logger.debug(f"【取图】 缓存时解析引用图失败（忽略）: {qe}")
-                cached = [p for p in cached if p and os.path.exists(p)]
+                cached = await self._collect_user_images(event)
                 if cached:
-                    bucket = g_last_received.setdefault(sid, [])
-                    for p in cached:
-                        if p not in bucket:
-                            bucket.append(p)
-                    if len(bucket) > 5:
-                        g_last_received[sid] = bucket[-5:]
-                    logger.debug(f"【取图】 已缓存会话最近收到图片 {len(bucket)} 张: {bucket}")
+                    self._record_user_images(sid, cached)
+                    logger.debug(f"【取图】 工具调用前缓存用户图片 {len(cached)} 张: {cached}")
                 else:
-                    logger.debug("【取图】 缓存时未从消息/引用取到任何图")
+                    logger.debug("【取图】 工具调用前未从消息取到图片")
         except Exception as e:
             logger.debug(f"【取图】 缓存会话图片失败（忽略）: {e}")
 

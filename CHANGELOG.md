@@ -2,6 +2,56 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.60（取图改「按需」：不再每条消息都去打平台 API + 下载图）
+
+现象 / 需求：消息端是 snowluma（aiocqhttp）时，群里每条**带引用**的消息都会触发取图，
+日志/网络里能看到平台 API 往返与图片下载——哪怕这条消息跟画图毫无关系。用户诉求：
+"需要取图的时候才去下载图片，而不是每句话都取图"。
+
+根因（三处，全在"预取"上）：
+
+1. `_msg_has_image_comp` 把**引用(Reply)**也算作"可能含图"→ 三个预取钩子（每条消息 /
+   `on_agent_begin` / `on_using_llm_tool`）对**任何带引用的消息**都会走完整取图；
+2. 取图里「引用图」要打平台 API（`extract_quoted_message_images`）拉被引用原消息，
+   再按图床 URL `convert_to_file_path` / `_download_url_to_temp` **下载整张图**；
+   而带引用的消息在陪伴/回复式聊天里极其常见，绝大多数根本不画图；
+3. `on_using_llm_tool` 的预取**没有任何"含图"短路**——聊天里任何一次 LLM 工具调用
+   （日程、表情包、知识库……不限画图工具）都会完整取一遍图；`_collect_user_images` 与
+   `_capture_llm_event` 还各自在 `_extract_images` 之外**再单独跑一次引用解析**，
+   等于每条消息两遍平台请求 + 两遍下载尝试。
+
+修复（后端 `main.py`）：
+
+- `_msg_has_image_comp` 新增 `include_reply` 开关，三个预取钩子一律传 `False`：
+  **只有"消息确实自带图片/卡片"才预取路径**（本地文件已在 temp，解析≈零成本，且
+  "用户真发了图"是跨消息改图（先发图→下一条说改）的可靠来源，必须保留）。
+  仅带引用的消息直接跳过，打一条 DEBUG 日志（不刷屏）。
+- 引用图的解析**一律推迟到出图那一刻**：`_extract_images` 内部本来就做引用回退，而画图
+  指令/工具手里拿的就是那条消息的 `event`；LLM 工具路径还有 `_last_event_for(event)`
+  （`on_using_llm_tool` 刚记下的同一条原始事件）兜第二遍。**这时才调平台 API / 下载**。
+- 删掉 `_collect_user_images` 与 `_capture_llm_event` 里那两次多余的
+  `_extract_quoted_images`（重复劳动）；`_capture_llm_event` 改为复用
+  `_collect_user_images` / `_record_user_images`（顺带把 `g_recent_user_images` 也一起
+  维护，与另两个钩子一致）。
+
+边界与取舍（值得记下来）：
+
+- 保留预取的是「消息自带图」——因为跨消息改图（用户先发图、AI 总结后调用工具）**只能**
+  靠那时的缓存，不预取就会丢参考图（v2.2.32 的历史教训）。
+- 放弃预取的是「仅引用」——好处是每消息零请求；代价是"引用一张图 → **下一条**消息才让画"
+  这种玩法不再有兜底（引用图不在后续消息体内），会退化成文生图或提示重发参考图。
+  同一消息里"引用图 + 让它画/改"不受影响（那时才解析，路径也最准）。
+- 出图能力与画质完全不变，改的只是"什么时候去拿图"。
+
+验证：
+
+- `tests/test_extract_images.py` 扩到 9 组断言：新增组件判定（图片/纯文本/引用，
+  以及 `include_reply=False` 时引用**不算**自带图）、三个钩子必须传
+  `include_reply=False`、`_extract_quoted_images(` 只允许剩"1 处调用 + 1 处定义"
+  （防重复解析回归）；
+- 回归：`test_third_party_flags` / `test_at_and_suppress` / `test_session_isolation` /
+  `test_multi_ref` / `test_force_draw` 全过；pyflakes 干净；compileall 通过。
+
 ## v7.7.59（修：明明只让画个塔罗牌，却被判成图生图并注入旧图）
 
 现象（`logs/20261010-1.log` 完整复现）：用户在群里用星语抽签，星语按契约调用

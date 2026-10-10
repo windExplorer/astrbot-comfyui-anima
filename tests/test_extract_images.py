@@ -1,13 +1,14 @@
-"""图生图误判回归：引用取图与历史兜底（v7.7.59）。
+"""取图回归：引用/兜底误判（v7.7.59）与「按需取图」（v7.7.60）。
 
-背景（2026-10-10 线上日志，logs/20261010-1.log）：星语抽签调用 `comfyui_draw` 画塔罗牌，
-结果走了「动漫图生图」工作流、还把用户早先发的 GIF 首帧当参考图注入——用户完全没提图。
-根因是 `_extract_images` 的两条兜底：
-  ① 消息里只要带 `Reply`（哪怕引用的是**纯文字**消息）就回退到「本会话最近发过的图」；
-  ② 回退时把最近 5 张全部塞进去，多图工作流于是把不相干的旧图当参考图。
+背景一（v7.7.59，logs/20261010-1.log）：星语抽签调用 `comfyui_draw` 画塔罗牌，结果走了
+「动漫图生图」工作流、还把用户早先发的 GIF 首帧当参考图注入——用户完全没提图。根因是
+`_extract_images` 的两条兜底：① 消息带 `Reply`（哪怕引用的是纯文字）就回退历史图；
+② 回退时把最近 5 张全塞进去。
 
-本测试锁死修复后的行为：兜底必须「引用里确有图」且**只取最近 1 张**；同时守住
-「外部插件调用不自动取图」这条守卫（两个工具入口都要有）。
+背景二（v7.7.60）：预取钩子把「引用(Reply)」也当成"可能含图"，于是**每条带引用的消息**
+都会去打平台 API 拉被引用消息、再按图床 URL 下载整张图；`on_using_llm_tool` 更是**每次
+LLM 工具调用**（不限画图工具）都完整取一遍图，还额外重复解析一次引用图。改为按需：
+只有「消息自带图片/卡片」才预取，引用图推迟到出图那一刻解析。
 
 跑法：python tests/test_extract_images.py
 """
@@ -70,20 +71,24 @@ class _Event:
         return list(self._comps)
 
 
-def _load_extract_images(ns_extra: dict):
-    """从 main.py 原样抠出 `_extract_images` 定义再 exec —— 测的是磁盘上的真代码。"""
+def _load_method(name: str, ns_extra: dict):
+    """从 main.py 原样抠出插件类里的某个方法/静态方法定义再 exec —— 测磁盘上的真代码。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     node = next(
         n for n in cls.body
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_extract_images"
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
     )
     ns = {"logger": _Log(), "Image": _Image, "Reply": _Reply, "CardImage": None, "os": os,
           "AstrMessageEvent": object}
     ns.update(ns_extra)
     exec(compile(ast.get_source_segment(src, node), "<x>", "exec"), ns)  # noqa: S102
-    return ns["_extract_images"]
+    return ns[name]
+
+
+def _load_extract_images(ns_extra: dict):
+    return _load_method("_extract_images", ns_extra)
 
 
 def main() -> int:
@@ -143,6 +148,21 @@ def main() -> int:
     marker = "外部插件调用（source/external）：跳过从事件自动取图"
     check(src.count(marker) == 2,
           f"comfyui_draw 与 comfyui_img2img 都要有「外部调用不自动取图」守卫，当前 {src.count(marker)} 处")
+
+    # ⑧ 按需取图（v7.7.60）：预取钩子只认「消息自带图片/卡片」，引用不再触发预取
+    guard = _load_method("_msg_has_image_comp", {})
+    check(guard(_Image()) is True, "图片组件应判为「自带图」")
+    check(guard(_Plain()) is False, "纯文本不算")
+    check(guard(_Reply([_Plain()])) is True, "默认含引用：引用组件判为「可能含图」")
+    check(guard(_Reply([_Plain()]), include_reply=False) is False,
+          "预取钩子：仅引用的消息不得算作「自带图」（v7.7.60 按需取图的关键）")
+    check(src.count("include_reply=False") == 3,
+          f"三个预取钩子（每条消息 / Agent 开始 / 工具调用前）都要传 include_reply=False，"
+          f"当前 {src.count('include_reply=False')} 处")
+    # 引用图解析只应保留「定义 + _extract_images 内部那一次」，
+    # 预取钩子里此前各多跑一次（每次消息两份平台请求 + 两次下载尝试），已删
+    check(src.count("_extract_quoted_images(") == 2,
+          f"引用解析调用应只剩 1 处（+1 处定义），当前 {src.count('_extract_quoted_images(')} 处")
 
     if FAILED:
         print(f"\n{len(FAILED)} 项失败")
