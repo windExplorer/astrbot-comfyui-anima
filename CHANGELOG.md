@@ -2,6 +2,59 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.63（治「引用一条纯文字消息也被判成图生图」，按需取图不再回溯历史图源）
+
+现象（用户日志实测，2026-10-13 21:11）：
+
+- 用户发「照片发我看看」并引用了一条**纯文字**消息，明确只要一张新图，插件却判成图生图：
+  `【取图】 图生图判定：显式 image=无、事件图 1 张、img2img_workflow='' → is_img2img=True（强信号=True）`，
+  随后 `【绘图·解析】 未指定工作流，沿用本会话最近显式指定的文生图工作流=oqw21n` →
+  `[图生图] 工作流「oqw21n」没有 LoadImage 类的图加载节点，无法做图生图` → **出图直接失败**，
+  用户侧表现为「明明只让画张雪景，图没出来还说图卡了一下」。
+
+根因（v7.7.61 新开的一条口子）：
+
+- v7.7.61 把取图改成「预取零 IO、出图时按图源 id 拉取」后，`_extract_images` 的兜底①调的是
+  `_ensure_recent_user_images(event, limit=1)` —— **没限定图源**。这个函数会遍历
+  `g_image_sources[session]` 里**本会话最近 8 条登记图源**（老到新都查），于是：
+  当前引用的消息（`Reply.id=1576887032`，链内只有 1 个文本组件）取不到图后，它继续往回捞，
+  命中更早登记的 `reply:-604553423`，把那张**旧图**下载回来当作"本次消息的图"。
+- 铁证：日志 `【取图】 按需拉取成功（reply:-604553423）` 与当前引用 id `1576887032` **根本对不上**
+  —— 拉的不是本次引用的消息，而是会话历史里另一条带图消息。
+- 该图进了 `event_images` → `strong_img2img=True` → `is_img2img=True` → 工作流仍按「文生图」
+  解析（会话最近沿用的 `oqw21n`，Qwen Image 2.1，无 LoadImage 节点）→ 图生图校验直接失败。
+- 这与 v7.7.59 修过的是**同一个坑**（当时闸门是「必须 `_ref_cands` 非空」），v7.7.61 重构时
+  又从「按需取图」这一路漏了回来。
+
+修复（后端 `main.py`）：
+
+1. `_extract_images` 在扫组件时记录**本条消息自己的引用 id**（`_cur_reply_ids`）。
+2. 兜底①的进入条件由「`has_reply`」改为「`_cur_reply_ids` 非空」，并用新增的 `sources=` 参数
+   只查**本条消息引用的那条消息**：
+   `await self._ensure_recent_user_images(event, limit=1, sources=[("reply", rid) ...])`。
+   引用里真有图 → 照旧判图生图；引用是纯文字 → 一步都不往回捞，老老实实走文生图。
+3. `_ensure_recent_user_images(event, *, limit=1, sources=None)`：不传 `sources` 时保持原语义
+   （本会话全部登记图源），仅供**已判定图生图**的链路使用（`comfyui_draw` ⓿ / `/img2img` /
+   放大抠图兜底 —— 那里就是要"把用户先发的那张图找回来"）；`_extract_images` 这种
+   「判断本次到底有没有图」的场合必须显式限定。
+
+边界与取舍：
+
+- 只收紧「判断有没有图」这一路；已判定图生图之后的补图行为不变，多轮改图（用户先发图、
+  后几轮只用文字说「再改改」）仍然照旧能回到最初原图，不受本次改动影响。
+- 若某平台把「真·引用了带图消息」的 Reply.id 报成别的值（本插件无法兜底），现在会退化成
+  文生图而不是拉一张不相干的旧图 —— 宁可少判图生图，也不要拿错参考图。
+
+验证：
+
+- `uv run --no-project --python 3.12 python -m compileall -q main.py` 通过；
+- `tests/test_extract_images.py` 新增回归「③b：引用纯文字 + 会话历史里有更早的带图图源 →
+  只查本条引用 id（`sources == [("reply","1576887032")]`）、不得拉到图」，全过；
+  （顺带修正该测试里 `_ensure_recent_user_images` 桩的签名——它挂在假 self 的实例属性上、
+  不做绑定，原签名多带一个 `self` 会抛 TypeError 被 `except` 吞掉，等于桩从未真正生效。）
+- 既有自检 `test_multi_ref` / `test_session_isolation` / `test_third_party_flags` /
+  `test_at_and_suppress` / `test_merge_ai_reply` / `test_force_draw` 全过。
+
 ## v7.7.62（出图收尾禁止复述开场白：治「同一句在回复里出现两遍」）
 
 现象（用户日志实测两次，2026-10-10 19:27 / 19:40）：

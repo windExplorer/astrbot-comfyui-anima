@@ -4346,6 +4346,8 @@ class ComfyUIDrawPlugin(Star):
 
         candidates: list = []  # (组件/引用, 来源描述)
         has_reply = False  # 消息里是否出现引用(Reply)组件
+        # v7.7.63：**本条消息**引用的消息 id（只认本条，绝不回溯会话历史登记的图源）
+        _cur_reply_ids: list[str] = []
         _own_cands: list = []    # 本条消息自带的图（v7.7.35：排在引用图之后）
         _ref_cands: list = []    # 引用消息里的图（v7.7.35：引用优先，排最前）
         for comp in comps:
@@ -4367,6 +4369,9 @@ class ComfyUIDrawPlugin(Star):
                 "ComponentType.Reply",
             ):
                 has_reply = True
+                _rid = str(getattr(comp, "id", "") or "").strip()
+                if _rid and _rid not in _cur_reply_ids:
+                    _cur_reply_ids.append(_rid)
                 chain = getattr(comp, "chain", None) or []
                 logger.info(
                     f"【取图】 发现引用消息 Reply(id={getattr(comp, 'id', None)})，"
@@ -4406,12 +4411,21 @@ class ComfyUIDrawPlugin(Star):
         #      → 文生图被整成图生图（用户完全没提图）。这是"经常莫名变成图生图"的元凶。
         #   ② 只取最近 1 张：最近那张才是"他刚发、想引用的那张"。此前把会话里最近 5 张
         #      一股脑塞进去，多图工作流于是把不相干的旧图也当参考图（还混进过 GIF 首帧）。
-        if not paths and has_reply:
-            # ① v7.7.61 按需取图：用本会话登记的图源 id（这条消息引用了哪条 / 自己哪条带图）
-            #    调平台接口 get_msg 把消息内容拉回来 → 解析图片引用 → 下载落盘。
+        if not paths and _cur_reply_ids:
+            # ① v7.7.61 按需取图：调平台接口 get_msg 把**本条消息引用的那条消息**拉回来
+            #    → 解析图片引用 → 下载落盘。
             #    预取阶段一次请求都不打，只有走到"确实要图、当前消息/引用都没解析出来"才走这里。
+            # v7.7.63 收紧（2026-10-13 线上日志实证的又一误判源头）：只认**本条消息自己的
+            #    引用 id**（用 `sources=` 明确指定），绝不走「本会话全部登记图源」。那天用户发
+            #    「照片发我看看」+ 引用一条纯文字消息（Reply.id=1576887032），按需拉取却从会话里
+            #    更早登记的图源 reply:-604553423 拉回一张旧图 → 文生图被判成图生图 → 会话沿用的
+            #    文生图工作流没有 LoadImage 节点 → 出图直接失败。图源 id 与当前引用对不上，
+            #    就是"拉回了不相干的旧图"的铁证（v7.7.59 堵过同一个坑，v7.7.61 又开了条更宽的口子）。
             try:
-                fetched = await self._ensure_recent_user_images(event, limit=1)
+                fetched = await self._ensure_recent_user_images(
+                    event, limit=1,
+                    sources=[("reply", _rid) for _rid in _cur_reply_ids],
+                )
             except Exception as _e:
                 fetched = []
                 logger.debug(f"【取图】 按需拉取异常（忽略）: {_e}")
@@ -15674,13 +15688,21 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.debug(f"【取图】 登记图源 id 失败（忽略）: {e}")
 
-    async def _ensure_recent_user_images(self, event, *, limit: int = 1) -> list[str]:
-        """按需取图：把本会话登记的图源 id 用平台接口拉回来并下载（最多 limit 张）。
+    async def _ensure_recent_user_images(
+        self, event, *, limit: int = 1, sources: list[tuple[str, str]] | None = None
+    ) -> list[str]:
+        """按需取图：把图源 id 用平台接口拉回来并下载（最多 limit 张）。
 
         v7.7.61：只有"确实要用参考图"的地方（画图指令/工具及其兜底链）才调用，
         预取阶段一次请求都不打。链路：`get_msg(id)` → 解析图片引用 → 下载落盘。
         命中的路径写回 `g_last_received` / `g_recent_user_images` 作为结果缓存，
         同一会话紧接着再要（多轮改图）不必重复打接口。失败一律静默返回 []。
+
+        sources（v7.7.63）：显式指定要查的图源 id，用于「只认本条消息自己的引用」那一路
+        （`_extract_images` 的兜底①）——不传时才是"本会话最近登记的图源"（默认语义，供
+        已判定图生图的链路使用：comfyui_draw ⓿ / `/img2img` / 放大抠图的兜底）。
+        这两者必须分开：默认语义会**回溯会话历史图源**，用来"把用户先发的那张图找回来"；
+        而判断"本条消息到底有没有图"时只要看本条自己的引用，否则会把旧图当成这次的参考图。
         """
         sid = str(getattr(event, "session_id", "") or "").strip()
         if not sid:
@@ -15689,7 +15711,11 @@ class ComfyUIDrawPlugin(Star):
         if client is None:
             logger.debug("【取图】 按需拉取：当前平台不支持 OneBot call_action，跳过")
             return []
-        for kind, mid in list(reversed(g_image_sources.get(sid) or [])):
+        _srcs = list(g_image_sources.get(sid) or []) if sources is None else list(sources)
+        if not _srcs:
+            logger.debug("【取图】 按需拉取：没有可查的图源 id（未指定且本会话无登记），跳过")
+            return []
+        for kind, mid in list(reversed(_srcs)):
             if not mid:
                 continue
             try:

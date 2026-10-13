@@ -1,4 +1,4 @@
-"""取图回归：引用/兜底误判 与「按需取图」（v7.7.59 / v7.7.60 / v7.7.61）。
+"""取图回归：引用/兜底误判 与「按需取图」（v7.7.59 / v7.7.60 / v7.7.61 / v7.7.63）。
 
 背景一（v7.7.59，logs/20261010-1.log）：星语抽签调用 `comfyui_draw` 画塔罗牌，结果走了
 「动漫图生图」工作流、还把用户早先发的 GIF 首帧当参考图注入——用户完全没提图。根因是
@@ -12,6 +12,12 @@
 背景三（v7.7.61，最终形态）：**预取阶段零 IO** —— 只登记"图源 id"（消息自己的 message_id /
 被引用消息的 Reply.id），不解析、不打接口、不下载；只有真要参考图时（画图指令/工具及其
 兜底链）才用这些 id 调平台接口 `get_msg` 把图拉回来并下载。
+
+背景四（v7.7.63，2026-10-13 用户日志）：用户发「照片发我看看」并**引用一条纯文字消息**
+（Reply.id=1576887032），却仍被判成图生图。根因是 v7.7.61 的兜底①调
+`_ensure_recent_user_images(event, limit=1)` 时没限定图源，它会**回溯本会话最近 8 条登记图源**，
+于是当前引用取不到图后继续往回捞到更早的 `reply:-604553423`，把一张旧图当成本次参考图。
+修复：兜底①改用 `sources=` 只查**本条消息自己的引用 id**（日志里 id 对不上就是铁证）。
 
 跑法：python tests/test_extract_images.py
 """
@@ -97,9 +103,13 @@ def _load_funcs(names: tuple, ns_extra: dict | None = None) -> dict:
     return out
 
 
-async def _no_lazy_fetch(self, event, *, limit: int = 1):
+async def _no_lazy_fetch(event, *, limit: int = 1, sources=None):
     """按需拉取的桩：本机没有 astrbot 运行时（_onebot_client_for 必然拿不到客户端），
-    真实实现也会返回空；这里显式桩掉，保证"结果缓存兜底"的断言测的是缓存逻辑本身。"""
+    真实实现也会返回空；这里显式桩掉，保证"结果缓存兜底"的断言测的是缓存逻辑本身。
+
+    注意签名**不带 self**：桩是挂在假 self 的**实例属性**上的普通函数，不做绑定，
+    调用形态就是 `_extract_images` 里写的 `self._ensure_recent_user_images(event, ...)`。
+    """
     return []
 
 
@@ -149,6 +159,27 @@ def main() -> int:
     # ③ 引用里确有图、但路径解析失败 → 兜底「最近 1 张」，不是最近 5 张
     got = asyncio.run(fn_hist(me, _Event([_Reply([_Image()])])))
     check(got == [newest], f"引用图解析失败应只兜底最近 1 张，实际 {got}")
+
+    # ③b v7.7.63：按需取图只认「本条消息自己的引用 id」，绝不回溯会话历史登记的图源。
+    #     2026-10-13 线上日志：用户发「照片发我看看」+ 引用一条纯文字消息（Reply.id=1576887032），
+    #     兜底①却从会话里更早登记的 reply:-604553423 拉回一张旧图 → 文生图被判成图生图
+    #     → 会话沿用的文生图工作流没有 LoadImage 节点 → 出图直接失败。
+    asked: list = []
+
+    async def _spy_lazy(event, *, limit: int = 1, sources=None):
+        asked.append(sources)
+        return []
+
+    spy_self = _self_stub({"_ensure_recent_user_images": _spy_lazy})
+    fn_spy = _load_funcs(("_extract_images",), {
+        "g_last_received": {}, "g_recent_user_images": {},
+        "_extract_quoted_images": fake_quoted,
+        "_image_to_local_path": fake_local,
+    })["_extract_images"]
+    got = asyncio.run(fn_spy(spy_self, _Event([_Plain(), _Reply([_Plain()], rid="1576887032")])))
+    check(got == [], f"引用纯文字消息不得拉到图，实际 {got}")
+    check(asked == [[("reply", "1576887032")]],
+          f"按需取图只应查本条消息的引用 id（不得回溯历史图源），实际 {asked}")
 
     # ④ 消息内直接带图 → 用它，且不触发任何兜底
     own = _Image(str(tmp / "own.jpg"))
