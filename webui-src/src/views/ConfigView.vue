@@ -100,7 +100,7 @@ const GROUP_META = [
   { name: "服务器与模型", description: "ComfyUI 服务器连接配置", icon: "🖥️", keys: ["comfyui_servers"] },
   { name: "工作流列表", description: "各工作流的启用与参数（含封面/底模等）", icon: "🗂️", keys: ["workflows"] },
   { name: "LoRA 列表", description: "LoRA 库的启用、分类与关键字搜索等行为", icon: "🧩", keys: ["loras", "lora_keyword_auto", "lora_outfit_filter"] },
-  { name: "默认工作流", description: "未指定工作流时的默认选择与风格优先级", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback"] },
+  { name: "默认工作流", description: "未指定工作流时的默认选择与风格优先级", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback", "img2img_from_quote"] },
   { name: "尺寸比例预设", description: "方形 / 竖图 / 横图 / 9:16 等尺寸档位：用户话里命中关键词时按此出图（优先于工作流默认尺寸）", icon: "📐", keys: ["draw_ratio"] },
   { name: "AI 对话与 LLM", description: "AI 对话调用的 LLM 工具开关与 token 统计", icon: "🤖", keys: ["enable_llm_tools", "llm_model", "llm_token_stats", "llm_rewrite_timeout"] },
   { name: "Anima 翻译", description: "Anima 工作流中文提示词翻译模式、兜底与接口", icon: "🌐", keys: ["translator_mode", "translate_fallback_mode", "translate_llm_model", "translate_api", "danbooru"] },

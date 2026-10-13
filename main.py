@@ -1014,6 +1014,40 @@ _APPEARANCE_CHANGE_RE = re.compile(
     r"|[^,，。；;\n]{0,6}(?:" + _APPEARANCE_NOUNS + r")[^,，。；;\n]{0,8}(改|换|染|变|设|弄|调)")
 
 
+# 图生图意图（v7.7.64）：**引用(回复)里的图不再单独构成图生图信号**。
+# 判定「引用图=参考图」的唯一本地依据 = 用户原话里有没有「针对那张图」的说法：
+#   · 指代词：这张/这幅/这图/该图/上图/本图/原图/图片里/图里/图中/照片里、this image…
+#   · 针对图的动作：参考/参照/照着/仿照/基于这、继续改/再改/重新改/接着改/改一下/再调…
+# 刻意**不**收「改成/换成/变成/染成」这类泛化动词——它们在纯文生图提示词里太常见
+# （「画一个变成人鱼的少女」「把头发改成粉色」，后者已由 _APPEARANCE_CHANGE_RE 覆盖），
+# 收了就会把正常的文生图又拐回图生图，正是本次要治的病。
+# 另一条并列依据是「LLM 显式要图生图」（传了 image / img2img_workflow 参数），见 llm_draw 判定段。
+_I2I_INTENT_RE = re.compile(
+    r"(这张|这幅|这图|这个图|该图|上图|本图|原图|图片里|图里|图中|照片里"
+    r"|参考|参照|照着|仿照|基于这"
+    r"|继续改|再改|重新改|接着改|改一下|再调|重新调"
+    r"|this image|this picture|reference image|based on this)",
+    re.IGNORECASE,
+)
+
+
+def _user_wants_img2img_ref(event) -> bool:
+    """用户原话是否表达了「拿（引用的）那张图来改」的意图（v7.7.64）。
+
+    只认用户**原话**（event.message_str），绝不用 LLM 生成的提示词——理由同
+    `_ratio_source_text`（v7.0.17）：LLM 写出的英文自然语言里很容易出现
+    "reference image" / "this picture" 这类词，拿它判定等于让模型自己给自己开后门。
+    拿不到原话（伪事件/脚本直调）时返回 False —— 保守按「没有意图」处理。
+    """
+    try:
+        text = (getattr(event, "message_str", "") or "").strip()
+    except Exception:
+        text = ""
+    if not text:
+        return False
+    return bool(_I2I_INTENT_RE.search(text))
+
+
 def _default_prompt_boost_cfg() -> dict:
     """提示词丰富化配置的默认值（配置项缺失/类型异常时的兜底）。"""
     return {
@@ -4331,12 +4365,23 @@ class ComfyUIDrawPlugin(Star):
             return True
         return False
 
-    async def _extract_images(self, event: AstrMessageEvent) -> list[str]:
-        """从消息事件中提取所有图片的本地路径，用于图生图。支持多种来源：
+    async def _extract_images(
+        self, event: AstrMessageEvent, *, split: bool = False
+    ) -> list[str] | tuple[list[str], list[str]]:
+        """从消息事件中提取图片的本地路径。支持多种来源：
         - 消息中直接附带的图片（含「文字 + 图片」混合、纯图片、指令 + 图片）
         - 引用/回复消息里带的图片（Reply.chain 内嵌，或平台 API 回退）
         - 卡片图片（CardImage）
         每张图都会打印来源与最终路径；单张失败不影响其它图。
+
+        split=True（v7.7.64）：返回 `(own, ref)`——
+          · own = **本条消息自己带的图**（用户此刻确实发了图）；
+          · ref = **引用来源**的图（被引用消息内嵌 / AstrBot 引用解析 / 按需拉取）。
+        这个区分是「引用图不再单独构成图生图信号」的实现基础（见 llm_draw 判定段）：
+        引用图只有在本条消息自带图、LLM 显式要图生图、或用户原话表达了
+        「把这张图改成…」这类意图时才参与判定（由配置 img2img_from_quote 控制）。
+        不传 split 时行为与旧版一致：返回**引用图优先**的扁平列表
+        （引用图排前面，保持 v7.7.35「引用是主体」的多图语义）。
         """
         comps = list(event.get_messages())
         logger.debug(
@@ -4387,40 +4432,32 @@ class ComfyUIDrawPlugin(Star):
                     _ref_cands.append((ref, "引用消息API回退"))
         # v7.7.35：引用图优先——「引用是主体、新发的是辅助」的语义（多参考图时
         # 图1=引用图、图2=新发图）；单图工作流也因此取引用图作参考。
-        candidates = _ref_cands + _own_cands
-
-        paths: list[str] = []
+        # v7.7.64：两个来源**分开装桶**，供调用方区分「本条自带图」与「引用来源图」。
+        own_paths: list[str] = []
+        ref_paths: list[str] = []
         seen: set = set()
-        for item, src in candidates:
-            p = await _image_to_local_path(item)
-            if p and p not in seen:
-                seen.add(p)
-                paths.append(p)
-                logger.info(f"【取图】 成功 [{src}] -> {p}")
-            elif p:
-                logger.info(f"【取图】 跳过重复 [{src}] -> {p}")
-            else:
-                logger.warning(f"【取图】 失败 [{src}] 无法解析为本地路径")
+        for bucket, cands in ((ref_paths, _ref_cands), (own_paths, _own_cands)):
+            for item, src in cands:
+                p = await _image_to_local_path(item)
+                if p and p not in seen:
+                    seen.add(p)
+                    bucket.append(p)
+                    logger.info(f"【取图】 成功 [{src}] -> {p}")
+                elif p:
+                    logger.info(f"【取图】 跳过重复 [{src}] -> {p}")
+                else:
+                    logger.warning(f"【取图】 失败 [{src}] 无法解析为本地路径")
+        paths = ref_paths + own_paths
 
-        # 兜底：消息里带了引用(Reply)、且**引用消息里确实有图**（只是路径解析失败）时，
-        # 回退到「本会话用户最近发过的图」——用户引用的通常正是他自己刚发的那张图。
-        #
-        # v7.7.59 两处收紧（2026-10-10 线上日志实证的误判源头）：
-        #   ① 必须 _ref_cands 非空：只有「引用里真有图、但没解析出来」才兜底。此前只要消息
-        #      带 Reply 就兜底——引用一条**纯文字**消息、而本会话历史里有图，也会捞历史图
-        #      → 文生图被整成图生图（用户完全没提图）。这是"经常莫名变成图生图"的元凶。
-        #   ② 只取最近 1 张：最近那张才是"他刚发、想引用的那张"。此前把会话里最近 5 张
-        #      一股脑塞进去，多图工作流于是把不相干的旧图也当参考图（还混进过 GIF 首帧）。
         if not paths and _cur_reply_ids:
-            # ① v7.7.61 按需取图：调平台接口 get_msg 把**本条消息引用的那条消息**拉回来
-            #    → 解析图片引用 → 下载落盘。
-            #    预取阶段一次请求都不打，只有走到"确实要图、当前消息/引用都没解析出来"才走这里。
-            # v7.7.63 收紧（2026-10-13 线上日志实证的又一误判源头）：只认**本条消息自己的
-            #    引用 id**（用 `sources=` 明确指定），绝不走「本会话全部登记图源」。那天用户发
-            #    「照片发我看看」+ 引用一条纯文字消息（Reply.id=1576887032），按需拉取却从会话里
-            #    更早登记的图源 reply:-604553423 拉回一张旧图 → 文生图被判成图生图 → 会话沿用的
-            #    文生图工作流没有 LoadImage 节点 → 出图直接失败。图源 id 与当前引用对不上，
-            #    就是"拉回了不相干的旧图"的铁证（v7.7.59 堵过同一个坑，v7.7.61 又开了条更宽的口子）。
+            # 按需取图（v7.7.61 引入 / v7.7.63 收紧）：调平台接口 get_msg 把**本条消息引用的
+            # 那条消息**拉回来 → 解析图片引用 → 下载落盘。
+            #   预取阶段一次请求都不打，只有走到"确实要图、当前消息/引用都没解析出来"才走这里。
+            #   v7.7.63：只认本条消息自己的引用 id（`sources=` 明确指定），绝不走
+            #   「本会话全部登记图源」——2026-10-13 日志实证：用户发「照片发我看看」+ 引用一条
+            #   纯文字消息（Reply.id=1576887032），按需拉取却从会话里更早登记的图源
+            #   reply:-604553423 拉回一张旧图（id 与当前引用对不上就是铁证）→ 文生图被判成
+            #   图生图 → 会话沿用的文生图工作流没有 LoadImage 节点 → 出图直接失败。
             try:
                 fetched = await self._ensure_recent_user_images(
                     event, limit=1,
@@ -4430,35 +4467,31 @@ class ComfyUIDrawPlugin(Star):
                 fetched = []
                 logger.debug(f"【取图】 按需拉取异常（忽略）: {_e}")
             for p in fetched:
-                if p and p not in paths:
-                    paths.append(p)
-        if not paths and has_reply and _ref_cands:
-            # ② 结果缓存兜底：引用里确实有图、但平台没给可解析的引用（v7.7.59 语义）。
-            #    缓存内容由上面的按需拉取（或历史版本预取）写入，通常为空时直接跳过。
-            # v7.6.2：没有会话标识时不猜（空键桶是所有会话共用的，捞了就串味）
-            sid = str(getattr(event, "session_id", "") or "").strip()
-            for store in (
-                (list(reversed(g_last_received.get(sid) or []))
-                 if sid else []),
-                (list(reversed(g_recent_user_images.get(sid) or []))
-                 if sid else []),
-            ):
-                for p in store:
-                    if p and os.path.exists(p) and p not in paths:
-                        paths.append(p)
-                        break     # v7.7.59：只取最近 1 张
-                if paths:
-                    break
-            if paths:
-                logger.info(
-                    f"【取图】 引用消息里的图解析失败，用本会话最近 1 张用户图兜底"
-                    f"（这会判为图生图）: {paths}"
-                )
+                if p and p not in seen:
+                    seen.add(p)
+                    ref_paths.append(p)
+                    logger.info(f"【取图】 成功 [引用消息按需拉取] -> {p}")
+            paths = ref_paths + own_paths
+
+        # v7.7.64：**删掉「会话缓存兜底」**（v7.7.59 的兜底②）。它只在"引用里确实有图、
+        # 但没解析出来"时生效，代价是把**会话里最近一张用户图**（多半不是本次引用的那张，
+        # 甚至可能是几轮前的另一张）当成参考图 → 于是"文生图被整成图生图"与"参考图给错"
+        # 同时发生。日志实证引用图解析失败很常见（`失败 [引用消息内嵌图片]/[引用消息API回退]
+        # 无法解析为本地路径` 多次出现），所以这条兜底收益极小、风险很大：
+        # 现在取不到就是取不到，由调用方决定「提示重发」还是「退回文生图」。
+        # （/放大 /抠图 等指令本来就有自己的 `_pick_recent_images` 兜底，不受影响。）
 
         if paths:
-            logger.info(f"【取图】 完成：共取得 {len(paths)} 张图片")
+            logger.info(
+                f"【取图】 完成：共取得 {len(paths)} 张图片"
+                f"（自带 {len(own_paths)} 张、引用来源 {len(ref_paths)} 张）"
+            )
+        elif has_reply:
+            logger.info("【取图】 引用消息里没解析出图片（v7.7.64 起不再用会话缓存兜底）")
         else:
             logger.info("【取图】 消息/引用/卡片内均未取到图片（本方法不兜底历史生成图）")
+        if split:
+            return list(own_paths), list(ref_paths)
         return paths
 
     @staticmethod
@@ -14470,8 +14503,11 @@ class ComfyUIDrawPlugin(Star):
         ★一条用户请求只调用本工具【一次】：要几张都在这一次用 prompts 说完；本轮出过图后再调会被拦回、白费一轮。
         一次调用的总张数（= prompts 条数）受插件配置的单次上限约束（默认 3 条），超出会从末尾截断。
         
-        图生图判定（最重要，高频错误）：**默认一律文生图**。只有当用户【当前这条消息】真的附带/引用了图片，
+        图生图判定（最重要，高频错误）：**默认一律文生图**。只有当用户【当前这条消息】真的附带图片，
         或明确说「把这张图/参考这张图/这张照片变成XX」时，才按图生图处理（传 image 或 img2img_workflow）。
+        ★用户只是【回复/引用】了一条带图的消息、而自己并没有说要改那张图（如「照片发我看看」「再画一张」），
+          这【不算】图生图——"回复某条消息"往往只是接话，不是"拿这条消息里的图当参考"；
+          此时绝不传 img2img_workflow。只有用户表达了针对那张图的意图（这张/参考这张/照着/再改…）时才算。
         ★上一轮做过图生图、群里或对话历史里出现过图、用户只是继续用文字要新图——这些都【不算】图生图，
           此时绝不传 image、绝不传 img2img_workflow（传了就会被迫走图生图，用户投诉过"没说明就一直图生图"）。
 
@@ -15041,7 +15077,9 @@ class ComfyUIDrawPlugin(Star):
                     f" 若本应走图生图，请让调用方传入当前服务器上真实可用的图片路径或 URL。"
                 )
 
-        # ② 从事件中自动提取图片（本次消息/引用里的图，是"用户确实发了图"的最可靠信号）
+        # ② 从事件中自动提取图片（**分开**收集：本条消息自带图 / 引用来源图）
+        own_images: list[str] = []   # 用户此刻真的发在消息里的图
+        ref_images: list[str] = []   # 来自"被引用消息"的图（引用/回复里带的）
         event_images: list[str] = []
         # v7.6.2：只接受**同一会话**的最近事件（跨会话兜底会把私聊的图捞到群聊里，
         # 导致群里没点名却画出私聊刚画的那个角色）。
@@ -15058,10 +15096,38 @@ class ComfyUIDrawPlugin(Star):
                     "需要参考图请在 image 参数里显式传入"
                 )
             else:
-                event_images = await plugin._extract_images(event)
-                if not event_images and last_ev is not None and last_ev is not event:
+                own_images, ref_images = await plugin._extract_images(event, split=True)
+                if not own_images and not ref_images and last_ev is not None and last_ev is not event:
                     logger.info("【取图】 llm_draw 工具 event 未取到图，回退到本会话 LLM 调用前捕获的原始事件再取一次")
-                    event_images = await plugin._extract_images(last_ev)
+                    own_images, ref_images = await plugin._extract_images(last_ev, split=True)
+
+        # ── 引用图闸门（v7.7.64）─────────────────────────────────────
+        # 「引用(回复)里的图」**不再单独构成图生图信号**。理由：判定挂在"图能不能抠出来"
+        # 上是不可靠的（能不能抠取决于平台当次给不给，日志实证引用图解析失败很常见），
+        # 于是同一个"回复一张图 + 说句别的"的动作会时而图生图时而画新图；
+        # 而用户"回复某条消息"往往只是接话，并不是"拿这条消息里的图当参考"。
+        # 现在只有下列之一成立，引用图才算数（由配置 img2img_from_quote 控制）：
+        #   · mode=always：保留旧行为（能抠出来就图生图）；
+        #   · 用户原话表达了「针对那张图」的意图（这张/参考/照着/再改…，见 _I2I_INTENT_RE）；
+        #   · LLM 显式要图生图（传了 img2img_workflow 参数）——工具说明本来就要求这样；
+        #   · mode=never：引用图永不参与（只认显式 image 参数 / 本条自带图）。
+        _quote_mode = (plugin._cfg("img2img_from_quote", "intent") or "intent").strip().lower()
+        _wf_param_i2i = bool(img2img_workflow and img2img_workflow.strip())
+        _user_i2i_intent = _user_wants_img2img_ref(event)
+        _ref_ok = _quote_mode == "always" or (
+            _quote_mode != "never" and (_wf_param_i2i or _user_i2i_intent)
+        )
+        if ref_images and not _ref_ok:
+            logger.info(
+                f"【取图】 引用里取到 {len(ref_images)} 张图，但本次没有图生图意图"
+                f"（quote_mode={_quote_mode}、用户原话命中={_user_i2i_intent}、"
+                f"LLM 指定 img2img_workflow={_wf_param_i2i}）"
+                f" → 不拿引用图当参考图，按文生图处理"
+            )
+            ref_images = []
+        # 引用图优先（v7.7.35：引用是主体、新发的是辅助）——多图工作流图1=引用图
+        event_images = ref_images + own_images
+
         # 去重合并（避免 image 参数 URL 和事件里是同一张图）
         seen = set(init_images)
         for ep in event_images:
@@ -15071,22 +15137,33 @@ class ComfyUIDrawPlugin(Star):
 
         # ③ 判定图生图意图，区分「强 / 弱」信号：
         #   · strong_img2img：显式传了 image 参数（无论解析成败——路径不可达也是明确
-        #     的图生图意图），或本次消息/引用里真有图 —— 确有图生图意图。
+        #     的图生图意图），或 **本条消息自带图**（用户此刻真的发了图），或
+        #     引用图通过了上面的闸门 —— 确有图生图意图。
+        #     ★v7.7.64：「引用里的图」**不再**单独算信号，只有用户表达了针对那张图的意图
+        #     （_I2I_INTENT_RE）或 LLM 显式要图生图（img2img_workflow 参数）才算；没过的
+        #     引用图在上面的闸门里已被清空（不判、也不当参考图）。
         #   · weak_img2img：只显式指定了 img2img_workflow，但既没传 image、消息里也没图。
         #     这常见于伴侣插件文生图也顺带带上默认图生图工作流，并不代表真要走图生图；
         #     不能仅凭它判成图生图（否则伴侣文生图会被误判、中断）。
         #   强信号无参考图 → 走 img2img_fallback（prompt 提示 or txt2img 回退）；
         #   弱信号无参考图 → 直接回退对应风格文生图，避免误中断调用方（如伴侣）。
-        strong_img2img = bool(image and image.strip()) or bool(event_images)
+        strong_img2img = (
+            bool(image and image.strip())
+            or bool(own_images)
+            or bool(ref_images)      # 走到这里说明引用图已过闸门（否则已被清空）
+        )
         weak_img2img = (
             bool(img2img_workflow and img2img_workflow.strip()) and not strong_img2img
         )
         is_img2img = strong_img2img or weak_img2img
         # v7.7.59：把判定依据打出来——「怎么突然变图生图了」这类问题必须能一眼定位，
         # 否则只能靠翻十几种日志倒推（2026-10-10 排查就吃了这个亏）。
+        # v7.7.64：自带图/引用图分开打，并带上引用图闸门的判定依据。
         logger.info(
             f"【取图】 图生图判定：显式 image={'有' if (image and image.strip()) else '无'}、"
-            f"事件图 {len(event_images)} 张、img2img_workflow={img2img_workflow!r}"
+            f"本条自带图 {len(own_images)} 张、引用来源图 {len(ref_images)} 张"
+            f"（quote_mode={_quote_mode}、引用意图={_user_i2i_intent}、"
+            f"img2img_workflow={img2img_workflow!r}）"
             f" → is_img2img={is_img2img}（强信号={strong_img2img}、弱信号={weak_img2img}）"
         )
 
@@ -15226,6 +15303,14 @@ class ComfyUIDrawPlugin(Star):
                 return "图生图需要一张参考图，但没能从本次消息/引用/历史里取到图片。请先发送一张图片（或引用一张图）再说明要怎么变换它，例如「把这张图变成夜晚」。"
         else:
             was_img2img = False
+
+        # v7.7.64：把**最终**结论再打一行。上面那行「图生图判定」打在弱信号回退之前，
+        # 日志里会出现 is_img2img=True 而实际跑了文生图的错觉（"怎么动不动就图生图"的
+        # 一部分观感就来自这里）。这一行才是本次实际走的模式。
+        logger.info(
+            f"【取图】 图生图判定（最终）：is_img2img={is_img2img}、参考图 {len(init_images)} 张"
+            f"{'（曾判图生图但已回退文生图）' if (was_img2img and not is_img2img) else ''}"
+        )
 
         if is_img2img and img2img_workflow and img2img_workflow.strip():
             resolved_wf = img2img_workflow.strip()

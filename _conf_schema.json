@@ -573,6 +573,13 @@
     "default": "prompt",
     "options": ["prompt", "txt2img"]
   },
+  "img2img_from_quote": {
+    "type": "string",
+    "description": "「引用（回复）里的图」何时算作图生图",
+    "hint": "AI 对话里，用户回复/引用了一条带图的消息，并不一定是要拿那张图去改。本项只影响 comfyui_draw 的**自动判定**（AI 显式调用 comfyui_img2img、或显式传入参考图时不受影响）。可选：intent（默认，推荐）——只有用户原话表达了「这张/参考这张/照着/再改…」这类意图，或 AI 显式指定了图生图工作流，才按图生图；always——保留旧行为（只要引用里能取到图就算图生图）；never——引用图永不参与，只认 AI 显式传入的参考图或用户本条消息自己发的图。（本条消息自己发的图始终算图生图，不受此项影响。）",
+    "default": "intent",
+    "options": ["intent", "always", "never"]
+  },
   "default_style_priority": {
     "type": "string",
     "description": "未指定工作流时的风格优先级",
