@@ -2956,6 +2956,52 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
+    async def _rewrite_to_natural_llm(self, text: str, lang: str = "中文") -> str:
+        """按底模库「优先语种」把提示词归一化成**该语种的自然语言描述**（v7.7.65）。
+
+        与 `_rewrite_to_real_llm` 的分工：那个是「第三方调用 + 真人写实工作流」的清理
+        （措辞是写实/摄影专用）；这个是**语种与写法**的归一化，措辞中立（不假定写实/动漫）。
+
+        触发场景（用户 2026-10-13 报的问题）：底模配了「自然语言 + 优先语种=中文」，
+        但 AI 自己写成了英文标签（`1girl, silver hair, ...`），而当时链路上只有
+        「中文→英文」的翻译兜底，**没有反向的归一化**，于是英文标签原样送进底模 ——
+        设置形同没有。现在当输入语言与底模契约不符时，一律按契约改写一次。
+
+        失败抛异常，由调用方决定回退（保留原提示词，绝不阻断出图）。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("LLM 改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        prompt = (
+            f"你是生图提示词的语种归一化助手。底模要求：**{lang}自然语言描述**。"
+            "用户会给你一段生图提示词，它可能是英文标签写法、也可能是中英混杂。请改写为"
+            f"符合底模要求的{lang}提示词。要求：\n"
+            "1. 输出必须是连贯的"
+            f"{lang}描述（整句或分句），**不要保留英文标签列表、不要写 tag 堆砌**；\n"
+            f"2. 原文里的画面要素必须全部保留：人物外观（发色/发型/瞳色/兽耳等）、服装、"
+            "场景、动作、表情、构图/镜头、光影氛围、风格与画质词，一个都不许丢；\n"
+            "3. 严格忠实原文，**不要臆造**原文没有的内容；\n"
+            "4. 若原文含 <lora:xxx> 之类的语法标记，原样保留，不要翻译或改写它；\n"
+            "5. 只输出改写后的提示词本身，不要任何解释、不要序号、不要代码块。\n\n"
+            f"原始提示词：\n{text}\n\n改写后的{lang}描述："
+        )
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("rewrite_natural", provider_id, llm_resp)
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"LLM 语种归一化超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"LLM 语种归一化失败: {e}") from e
+        out = out.strip()
+        out = out.strip("`").strip()
+        out = " ".join(out.split())
+        return out
+
     # ---- Qwen-Image 官方格式提示词（v7.7.42） -------------------------------- #
     # 规范文档随包发布在 skills/qwen-image/（用户可直接改文件替换规范），缺文件时用内置精简规则。
     _QWEN_SKILL_DIR = "skills/qwen-image"
@@ -3508,25 +3554,32 @@ class ComfyUIDrawPlugin(Star):
         （纯中文设定板提示词）——这是该规范的明确诉求，所以设定板场景不做英文翻译兜底。
         v7.7.54：底模库「优先语种」接入——Qwen 文生图 priority_lang=中文 时按中文改写
         （Qwen-Image 官方原生支持中文），也不再触发中→英兜底翻译；英文/未配维持旧行为。
-        翻译失败（未配置翻译模式等）仍保留原提示词，绝不阻断出图。
+        v7.7.65：**优先语种是双向契约**。此前只有「中文→英文」的翻译兜底，没有反向：
+        底模配「自然语言 + 优先语种=中文」时若 AI 自己写成英文标签，链路上没有任何一步
+        会把它改回中文（v7.7.54 的中文改写只在"输入含中文"时触发），于是"设置形同没有、
+        出图仍是英文+标签"。现在无论输入什么语言，只要与底模契约不符就按契约归一化一次
+        （Qwen 走官方规范改写、其它自然语言系走 `_rewrite_to_natural_llm`）；
+        标签系（is_anima）仍以英文标签为契约，不受影响。
+        翻译/改写失败（未配置模型等）仍保留原提示词，绝不阻断出图。
         """
         # v7.7.44：工作流可显式「关联 skill」（prompt_skill），显式配置优先于自动判定
         _plan, _qwen_edit = self._resolve_prompt_plan(wf, positive, has_input_image)
         _qwen = _plan == "qwen"
         _sheet = _plan == "sheet"
-        # v7.7.54：底模库「优先语种」接入——Qwen 文生图不再无条件「必须英文」：
-        # priority_lang=中文 时按中文改写（Qwen-Image 官方原生支持中文），
-        # 兜底翻译（中→英）也不该触发；英文 / 未配（旧数据）维持原行为。
+        # v7.7.54 / v7.7.65：底模库「优先语种」——不再只在 Qwen 分支读，legacy（自然语言系）
+        # 也要用它做契约校验（v7.7.65 新增反向归一化）。
         _prio_lang = ""
-        if _qwen:
-            try:
-                _prio_lang = str(
-                    (self._basemodel_of_workflow(wf) or {}).get("priority_lang") or ""
-                ).strip()
-            except Exception:
-                _prio_lang = ""
+        try:
+            _prio_lang = str(
+                (self._basemodel_of_workflow(wf) or {}).get("priority_lang") or ""
+            ).strip()
+        except Exception:
+            _prio_lang = ""
+        # 契约：优先语种=中文 / =英文。未配（旧数据）一律不动，维持旧行为。
+        _want_cn = _prio_lang == "中文"
+        _want_en = _prio_lang == "英文"
         _must_en = bool(wf.get("is_anima")) or (
-            _qwen and not _qwen_edit and _prio_lang != "中文"
+            _qwen and not _qwen_edit and not _want_cn
         )
         # Qwen 文生图正文语言按优先语种（默认仍英文）；图像编辑正文随指令；角色设定板规范要求通篇中文 → 不翻译
         _need_en = _must_en and not _sheet
@@ -3582,6 +3635,23 @@ class ComfyUIDrawPlugin(Star):
                 return _r
             return ""
 
+        async def _try_natural(_why: str) -> str:
+            """按底模契约把提示词归一化成「优先语种的自然语言描述」（v7.7.65）。"""
+            _lang = _prio_lang or "中文"
+            logger.info(
+                f"【绘图·LLM⑥】trace={trace_id} 阶段=按底模语种归一化提示词"
+                f"（{_why}｜目标语种={_lang}）"
+            )
+            try:
+                _r = await self._rewrite_to_natural_llm(positive, lang=_lang)
+            except Exception as _e:
+                logger.warning(f"【绘图·LLM⑥】 语种归一化失败（保留原提示词）: {_e}")
+                return ""
+            if _r and _r.strip():
+                logger.info(f"【语种归一化】 {_why}，改写结果: {_r[:160]}")
+                return _r
+            return ""
+
         try:
             if source and not _refine_on:
                 logger.info(
@@ -3631,16 +3701,40 @@ class ComfyUIDrawPlugin(Star):
                 _got = await _try_sheet("原生调用设定板意图")
                 if _got:
                     return _got
-            elif _qwen and (self._has_chinese(positive)
+            elif _qwen and (_want_cn or self._has_chinese(positive)
                             or self._prompt_skill_of(wf) in ("qwen-t2i", "qwen-edit")):
-                # 原生调用 + Qwen 工作流含中文：同样按官方规范改写（中文 brief → 规范提示词）；
-                # 工作流**显式关联**了 Qwen 规范时，纯英文也照规范走一遍
-                _got = await _try_qwen("原生调用（含中文或显式关联 Qwen 规范）")
+                # 原生调用 + Qwen 工作流：按官方规范改写（中文 brief → 规范提示词）；
+                # 工作流**显式关联**了 Qwen 规范时，纯英文也照规范走一遍。
+                # v7.7.65：底模「优先语种=中文」时**不再要求输入含中文**——AI 若写成了英文标签，
+                # 同样按中文规范改写（否则"配了中文却出英文"，这正是用户报的问题）。
+                _got = await _try_qwen(
+                    f"原生调用（优先语种={_prio_lang or '未配'}/含中文/显式关联 Qwen 规范）"
+                )
                 if _got:
                     return _got
             # 统一兜底（原生调用 / 第三方整理失败 / 第三方关闭整理但必须英文）
             if _need_en and self._has_chinese(positive):
                 _got = await _try_translate("第三方调用回退" if source else "原生调用含中文")
+                if _got:
+                    return _got
+            # v7.7.65：**反向**归一化——底模契约要求英文（优先语种=英文）、但手上是中文描述。
+            # （标签系/Qwen 的"必须英文"在上面 `_need_en` 里已处理；这里补的是自然语言系底模。）
+            if (not _must_en) and (not _qwen_edit) and _want_en \
+                    and self._has_chinese(positive):
+                _got = await _try_natural(
+                    "底模优先语种=英文，但提示词是中文（按底模契约归一化）"
+                )
+                if _got:
+                    return _got
+            # v7.7.65：**反向**归一化——底模契约要求中文（优先语种=中文）、但手上是英文标签。
+            # 此前链路上只有「中文→英文」的翻译兜底，没有这一条：底模配了中文，AI 却写成
+            # 英文标签时，没有任何一步会把它改回中文，英文标签原样进模型（设置形同没有）。
+            # 标签系（_must_en）与 Qwen 图像编辑（正文随指令）不在此列。
+            if (not _must_en) and (not _qwen_edit) and _want_cn \
+                    and self._looks_english(positive) and not self._has_chinese(positive):
+                _got = await _try_natural(
+                    "底模优先语种=中文，但提示词是英文写法（按底模契约归一化）"
+                )
                 if _got:
                     return _got
         except Exception as e:
@@ -4335,6 +4429,20 @@ class ComfyUIDrawPlugin(Star):
     def _has_chinese(text: str) -> bool:
         """判断文本是否包含中文字符。用于决定是否调用提示词翻译。"""
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
+
+    @staticmethod
+    def _looks_english(text: str) -> bool:
+        """粗判「这段提示词是英文写法」（v7.7.65）。
+
+        判据：**不含中文** + 含 ≥3 个连续拉丁字母。用于底模契约「优先语种=中文」时
+        判断要不要把 AI 写出来的英文标签归一化成中文描述（反过来判断同理）。
+        故意宽松：只要没有中文、又有真正的英文单词，就算英文写法（`1girl, silver hair`
+        这类标签、以及 `a girl standing in the snow` 这类句子都覆盖）。
+        """
+        t = text or ""
+        if any("\u4e00" <= ch <= "\u9fff" for ch in t):
+            return False
+        return bool(re.search(r"[A-Za-z]{3,}", t))
 
     @staticmethod
     def _msg_has_image_comp(comp, *, include_reply: bool = True) -> bool:

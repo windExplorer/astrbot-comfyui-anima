@@ -95,9 +95,13 @@ class FakeSelf:
             raise RuntimeError("LLM 清理未配置可用模型")
         return "写实中文清理结果"
 
-    async def _rewrite_to_qwen_llm(self, text, *, edit_mode=False):
+    async def _rewrite_to_qwen_llm(self, text, *, edit_mode=False, lang=""):
+        # ★签名必须与真身一致：v7.7.54 起真身多了 lang=（底模优先语种）参数。
+        # 少了它会 TypeError → 被 _try_qwen 的 except 吞掉 → 静默回退翻译，
+        # 于是第 ⑨ 例（第三方 + Qwen 文生图）看起来像"没走 Qwen 规范"（2026-10-13 查明）。
         self.qwen_calls += 1
         self.qwen_edit_flag = edit_mode
+        self.qwen_lang = lang
         if not self.qwen_ok:
             raise RuntimeError("Qwen 改写未配置可用模型")
         return self.qwen_result
