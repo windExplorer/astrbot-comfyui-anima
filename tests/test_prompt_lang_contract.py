@@ -29,6 +29,7 @@ FAILED = []
 
 WANT_FUNCS = (
     "_llm_refine_prompt",
+    "_need_prompt_refine",
     "_resolve_prompt_plan",
     "_prompt_skill_of",
     "_is_qwen_image",
@@ -220,10 +221,11 @@ def main() -> int:
     check(out == "REAL-CN" and s.real_calls == 1,
           f"第三方调用应走既有清理路径，实际 {out!r}")
 
-    # ⑪ Qwen 图像编辑（有输入图）+ 中文优先语种 + 英文 → 不强制中文正文（编辑正文随指令语言）
+    # ⑪ Qwen 图像编辑（有输入图）+ 中文优先语种 + 英文 → **不**做语种归一化
+    #    （Qwen 编辑规范：正文随指令语言；旧口径也只在该场景含中文时才进）
     out, s = _run(QWEN_CN, EN_TAGS, has_image=True)
-    check(out.startswith("QWEN(") and s.qwen_lang == "",
-          f"Qwen 图像编辑不该被强制中文正文，实际 lang={s.qwen_lang!r}")
+    check(out == EN_TAGS and s.qwen_calls == 0,
+          f"Qwen 图像编辑不该被语种契约强制改写，实际 {out!r}")
 
     # ⑫ 接线守卫：新路径真的接在链路上（否则测试桩再对也白搭）
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
@@ -232,6 +234,50 @@ def main() -> int:
           f"两个方向的归一化兜底都要接上（+1 处定义），当前 {src.count('_try_natural(')} 处")
     check("_looks_english" in src, "缺少 _looks_english（英文写法粗判）")
     check('阶段=按底模语种归一化提示词' in src, "缺少语种归一化的日志埋点")
+
+    # ⑬ v7.7.66 调度闸门：`_need_prompt_refine` 必须与 `_llm_refine_prompt` 同口径。
+    #     教训（用户 2026-10-14 日志）：v7.7.65 只改了 `_llm_refine_prompt` 内部，
+    #     `_do_draw` 里那份手写闸门仍按旧口径（"原生调用只在含中文时整理"）→
+    #     Qwen 底模配中文 + AI 写英文标签 → 判据 False → task 根本没创建
+    #     （日志表现：`LLM 整理 0.0s`、一条 `【绘图·LLM*】` 都没有），修复等于没生效。
+    need = REAL["_need_prompt_refine"]
+
+    def _need(base, text, *, source="", has_image=False, is_anima=False, wf_extra=None):
+        fake = FakeSelf(base, source_is_anima=is_anima)
+        wf = {"name": "wf1", "prompt_skill": "auto"}
+        if is_anima:
+            wf["is_anima"] = True
+        if wf_extra:
+            wf.update(wf_extra)
+        return need(fake, wf, text, source, has_image)
+
+    check(_need(QWEN_CN, EN_TAGS) is True,
+          "★用户场景：Qwen 底模配中文 + AI 写出英文标签 → 必须进 LLM 整理（否则修复不生效）")
+    check(_need(QWEN_CN, ZH_TEXT) is True, "Qwen 底模配中文 + 中文输入 → 要进（按规范改写）")
+    check(_need({"name": "Qwen Image 2.1", "prompt_style": "qwen",
+                 "priority_lang": ""}, EN_TAGS) is False,
+          "Qwen 未配优先语种 + 英文 → 不必空转一次整理")
+    check(_need(NATURAL_CN, EN_TAGS) is True, "自然语言底模配中文 + 英文标签 → 要进（反向归一化）")
+    check(_need(NATURAL_CN, ZH_TEXT) is False, "自然语言底模配中文 + 中文输入 → 无需整理")
+    check(_need(NATURAL_EN, ZH_TEXT) is True, "自然语言底模配英文 + 中文输入 → 要进（反向归一化）")
+    check(_need(NATURAL_NONE, EN_TAGS) is False, "优先语种未配（旧数据）→ 不进，维持旧行为")
+    check(_need({"name": "Danbooru 底模", "prompt_style": "danbooru",
+                 "danbooru_ready": True}, EN_TAGS, is_anima=True) is False,
+          "标签系 + 英文标签 → 无需整理")
+    check(_need({"name": "Danbooru 底模", "prompt_style": "danbooru",
+                 "danbooru_ready": True}, ZH_TEXT, is_anima=True) is True,
+          "标签系 + 中文 → 要进（翻译兜底）")
+    check(_need(NATURAL_EN, EN_TAGS, wf_extra={"prompt_skill": "qwen-t2i"}) is True,
+          "工作流显式关联 skill → 一律进")
+    check(_need(NATURAL_CN, EN_TAGS, source="partner") is True, "第三方调用 + 整理开 → 进")
+    check(_need(QWEN_CN, EN_TAGS, has_image=True) is False,
+          "Qwen 图像编辑 + 英文 → 不进（正文随指令语言，别空转）")
+    check(_need(QWEN_CN, ZH_TEXT, has_image=True) is True,
+          "Qwen 图像编辑 + 中文 → 要进（按编辑规范改写）")
+    check(src.count("_need_prompt_refine(") == 2,
+          f"整理判据必须只有一份（定义 + `_do_draw` 调用），当前 {src.count('_need_prompt_refine(')} 处")
+    check("_must_en_now" not in src,
+          "`_do_draw` 里不应再有第二份手写判据（_must_en_now 应已删除）")
 
     if FAILED:
         print(f"\n{len(FAILED)} 项失败")

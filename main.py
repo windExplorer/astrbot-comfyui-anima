@@ -3532,6 +3532,67 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【提示词清理】 异常，保留原文: {e}")
             return positive or ""
 
+    def _need_prompt_refine(
+        self, wf: dict, positive: str, source: str = "", has_input_image: bool = False
+    ) -> bool:
+        """出图前**是否要进 LLM 提示词整理**（调度闸门，v7.7.66）。
+
+        ★这是 `_llm_refine_prompt` 的**唯一**判据来源。历史上这里是第二份手写判据
+        （v7.7.41 写在 `_do_draw` 里），只覆盖「可用 skill / 设定板 / 含中文」——
+        v7.7.65 在 `_llm_refine_prompt` 里补了「按底模优先语种反向归一化」之后，
+        闸门仍按旧口径把 task 挡在门外：用户 2026-10-14 日志实证，底模=Qwen+优先语种=中文、
+        AI 写成英文标签 → `LLM 整理 0.0s`、一条改写日志都没有，等于修复没生效。
+        两处判据一旦分开写就必然再次漂移，所以合并到本方法（调用点只剩一处）。
+
+        判据（与 `_llm_refine_prompt` 内部分支一一对应）：
+          · 显式关联 skill（非 auto/off）或设定板意图 → 要（用户显式指定了规范）；
+          · 第三方调用：整理开关开着 → 要；关着 → 只在「必须英文 + 含中文」时要
+            （里面那条路径是唯一在关闭整理时仍会执行的动作）；
+          · 原生调用：Qwen 家族（含中文 / 优先语种=中文 / 显式 skill）；
+            必须英文（标签系）且含中文；**优先语种=中文但提示词是英文写法**（v7.7.65 新增路径）；
+            优先语种=英文且提示词是中文（自然语言系，反向归一化）。
+        拿不准就返回 False（少跑一次 LLM，出图不受影响）。
+        """
+        try:
+            _plan, _qwen_edit = self._resolve_prompt_plan(wf, positive, bool(has_input_image))
+            _explicit_skill = self._prompt_skill_of(wf) not in ("auto", "off")
+            if _explicit_skill or _plan == "sheet":
+                return True
+            _zh = self._has_chinese(positive)
+            _prio = ""
+            try:
+                _prio = str(
+                    (self._basemodel_of_workflow(wf) or {}).get("priority_lang") or ""
+                ).strip()
+            except Exception:
+                _prio = ""
+            _want_cn = _prio == "中文"
+            _want_en = _prio == "英文"
+            _must_en = bool(wf.get("is_anima")) or (
+                _plan == "qwen" and not _qwen_edit and not _want_cn
+            )
+            if source:
+                # 第三方：整理开着就进去；关着只在里面仍会执行的那条路径（必须英文+中文）进去
+                if bool(self._cfg("third_party_llm_refine", True)):
+                    return True
+                return bool(_must_en and _zh)
+            if _plan == "qwen":
+                # 文生图：优先语种=中文时英文输入也要进（按中文规范改写）；
+                # 图像编辑：正文随指令语言，维持旧口径（只在含中文时进）。
+                return bool(_zh or (_want_cn and not _qwen_edit))
+            if _must_en and _zh:
+                return True
+            # 底模契约要中文、但提示词是英文写法（自然语言系）→ v7.7.65 的反向归一化路径
+            if _want_cn and self._looks_english(positive):
+                return True
+            # 底模契约要英文、但提示词是中文（自然语言系）→ 同上，方向相反
+            if _want_en and _zh and not _must_en:
+                return True
+            return False
+        except Exception as e:  # 判据异常宁可进去（里面任何失败都保留原提示词）
+            logger.debug(f"【提示词】 整理闸门判据异常（按需要整理处理）: {e}")
+            return True
+
     async def _llm_refine_prompt(
         self, wf: dict, positive: str, source: str, trace_id: str = "",
         has_input_image: bool = False,
@@ -3701,7 +3762,8 @@ class ComfyUIDrawPlugin(Star):
                 _got = await _try_sheet("原生调用设定板意图")
                 if _got:
                     return _got
-            elif _qwen and (_want_cn or self._has_chinese(positive)
+            elif _qwen and (self._has_chinese(positive)
+                            or (_want_cn and not _qwen_edit)
                             or self._prompt_skill_of(wf) in ("qwen-t2i", "qwen-edit")):
                 # 原生调用 + Qwen 工作流：按官方规范改写（中文 brief → 规范提示词）；
                 # 工作流**显式关联**了 Qwen 规范时，纯英文也照规范走一遍。
@@ -7303,26 +7365,19 @@ class ComfyUIDrawPlugin(Star):
             if _pos_cleaned != (positive or "").strip():
                 logger.info(f"【提示词清理】 剔除跨后端语法垃圾后: {_pos_cleaned}")
                 positive = _pos_cleaned
-        # v7.7.41/v7.7.42：调度条件按回退链细化——第三方调用且**关闭**LLM 整理时，只有
-        # 「必须英文（标签系 / Qwen 文生图）+ 含中文」才需要进去翻译兜底；Qwen-Image 家族的
-        # 原生调用含中文也要进去（按官方格式改写）；其余情况不必空转一次 task。
+        # v7.7.41/v7.7.42：调度条件按回退链细化（第三方关闭整理时只有「必须英文+含中文」
+        # 才进去翻译兜底；Qwen 原生调用含中文要进去按官方格式改写…）。
+        # v7.7.66：判据**统一到 `_need_prompt_refine`**——此前这里是手写第二份判据，
+        # 与 `_llm_refine_prompt` 内部各写一套，v7.7.65 补了「按底模优先语种反向归一化」
+        # 后闸门仍是旧口径，把 task 挡在门外（用户 2026-10-14 日志：Qwen 底模 + 优先语种=中文
+        # + AI 写的英文标签 → LLM 整理 0.0s，修复等于没生效）。合并成一处，杜绝再漂移。
         _need_refine = False
         if not _fixed_prompt and not raw_prompt:
-            _zh_now = self._has_chinese(positive)
-            # v7.7.44：先解析本次规范（工作流可显式关联 skill，优先于自动判定）
-            _plan_now, _qwen_edit_now = self._resolve_prompt_plan(wf, positive, bool(init_images))
-            _explicit_skill = self._prompt_skill_of(wf) not in ("auto", "off")
-            _must_en_now = bool(wf.get("is_anima")) or (_plan_now == "qwen" and not _qwen_edit_now)
-            if source:
-                # 第三方调用：整理开着就进去；关了只在「设定板意图 / 必须英文+中文」时进去
-                _need_refine = bool(self._cfg("third_party_llm_refine", True)
-                                    or _plan_now == "sheet"
-                                    or (_must_en_now and _zh_now))
-            else:
-                # 原生调用：显式关联的 skill 一律生效；自动判定沿用「设定板意图 or 含中文」口径
-                _need_refine = bool(_explicit_skill
-                                    or _plan_now == "sheet"
-                                    or (_zh_now and (_plan_now == "qwen" or _must_en_now)))
+            _need_refine = self._need_prompt_refine(
+                wf, positive, source, has_input_image=bool(init_images)
+            )
+            if not _need_refine:
+                logger.debug("【提示词】 本次无需 LLM 整理（判据见 _need_prompt_refine）")
         if _need_refine:
             _llm_task = asyncio.create_task(
                 self._llm_refine_prompt(
