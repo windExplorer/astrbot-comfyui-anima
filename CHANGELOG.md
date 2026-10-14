@@ -2,6 +2,50 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.69（剥服装复述：撞脸的根没在「分组」，在两个角色编了同一套衣服）
+
+现象（v7.7.68 上线后用户实测贴回出图提示词）：外形复述确实被剥干净了，
+`2girls, (suomingwuwa, black strapless dress, detached sleeves, black coat on shoulders,
+diamond choker, gold bells hair ornaments:1.2), (xinyuehu, black strapless dress, black choker,
+detached sleeves, puffy sleeves, side slit, hair ornament, tassel:1.2), side_by_side,
+looking_at_each_other, cowboy shot, …` ——**外形（red hair / fox ears / orange eyes）全没了，
+但两个角色仍穿着同一套 `black strapless dress` + `detached sleeves`，于是两人照旧同脸。**
+
+根因：v7.7.68 我给剥除范围划了一条「服装配饰一律不动」的线，理由是「换装是用户该干预的维度」。
+这条线本身没错，错在**没区分服装是用户说的、还是 LLM 自己编的**——用户原话里根本没提任何服装，
+`black strapless dress` / `diamond choker` / `tassel` 全是 LLM 为了"把角色钉在组里"自己发明
+的（v7.7.68 才刚把那条错误规则删掉，但代码层的服装豁免没跟着改）。标签系底模眼里
+「2girls + 同一套衣服」就是双胞胎，服装这个共有项一在，两人必然趋同——**服装才是撞脸的主因，
+外形剥不剥只是次要因素**。
+
+修复：
+
+1. `strip_lora_echo_appearance(text, dims=…)` 增加维度参数：`LORA_ECHO_DIMS`（外形，默认）
+   与 `LORA_ECHO_DIMS_WITH_OUTFIT`（外形 + 服装配饰）。
+2. `_strip_lora_echo_appearance` 改为**外形 / 服装两维独立判定**（而不是上一版的一刀切）：
+   - 用户本轮提到发型发色兽耳等外形，或有染/剪/换类动词 → 保留外形，不剥；
+   - 用户本轮提到服饰名或穿/戴/脱/套类动作 → 保留服装，不剥；
+   - 都没提 → 两维都剥，服装交给 LoRA 自带的 outfit。
+   这样「只说画两个角色」得到 `(suomingwuwa:1.2), (xinyuehu:1.2)` 这样的干净分组，
+   而「给她换成红裙」仍然只给该角色加衣服。
+3. 新增 `outfit_intent()`：判定用户是否干预服装。中英连写场景有坑——`\b` 在
+   Python 里对 CJK 字母也算 `\w`，所以"戴个choker"里"个"与"c"之间**没有词边界**，
+   `appearance_dims` 的英文服饰正则会漏判；为此在用户原话这种短文本上额外做英文服饰词
+   **子串**兜底（`_EN_OUTFIT_HINTS`）。
+4. `APPEARANCE_RULES.outfit` 继续扩充（配饰是服装维度，实测案例里都在这）：
+   `ornaments? / hair ornaments? / hairpins? / hair pins? / hairpieces? / tassels? /
+   bells? / scrunchie / pendants?`（此前 `gold bells hair ornaments`、`tassel` 这类根本识别不出
+   是配饰，导致"共有服装"检测漏报）。
+
+文档同步（SKILL.md + `comfyui_draw` docstring + 多人拦截重写模板）：把"禁止自己给角色编衣服"
+写进规则，并说明理由是"两人编同一套会被理解成双胞胎"；插件兜底描述改为"外形与服装各自独立
+判定，说了才保留那一维"。
+
+验证：`tests/test_prompt_guard.py` 13 组 → **15 组**，新增两组直接以用户这次的真实提示词为样本
+（含服装维度剥除后 `black strapless dress` 计数归零、触发词/权重/场景全留；服装干预意图的
+正反判定，含"戴个choker"这个 `\b` 失效的坑）。全通过；`compileall` 零错；
+`test_llm_tool_docstrings.py` 8 工具全过；`test_logic.py` 1~4 组过。
+
 ## v7.7.68（角色 LoRA 已自带形象：剥掉提示词里对形象的复述 + 多人撞脸告警）
 
 现象（用户 2026-10-14 实测）：只说「画两个角色」并加上她们的 LoRA，出图提示词却是

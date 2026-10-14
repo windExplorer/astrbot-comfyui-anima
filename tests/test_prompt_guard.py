@@ -9,11 +9,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from prompt_guard import (  # noqa: E402
-    LORA_ECHO_DIMS, MULTI_FUSION_NEGATIVE, appearance_change_intent, appearance_dims,
-    ensure_quality_prefix, free_dim_coverage, has_character_tag, is_multi_person,
-    is_short_prompt, keeps_original_tags, merge_multi_negative, multi_person_hints,
-    multi_shared_appearance, prompt_style_of, quality_prefix_for,
-    strip_conflicting_appearance, strip_lora_echo_appearance, strip_new_appearance,
+    LORA_ECHO_DIMS, LORA_ECHO_DIMS_WITH_OUTFIT, MULTI_FUSION_NEGATIVE,
+    appearance_change_intent, appearance_dims, ensure_quality_prefix, free_dim_coverage,
+    has_character_tag, is_multi_person, is_short_prompt, keeps_original_tags,
+    merge_multi_negative, multi_person_hints, multi_shared_appearance, outfit_intent,
+    prompt_style_of, quality_prefix_for, strip_conflicting_appearance,
+    strip_lora_echo_appearance, strip_new_appearance,
 )
 
 ANCHOR = "long hair, green hair, green eyes, cat ears, hair ribbon"
@@ -228,6 +229,42 @@ def test_appearance_change_intent():
     print("== 12. 用户改外形意图判定（有则整体放弃剥除） OK")
 
 
+def test_strip_lora_echo_appearance_with_outfit():
+    """v7.7.69：用户没提服装时，服装配饰也归 LoRA 自带，一并剥除。"""
+    txt = ("2girls, (suomingwuwa, black strapless dress, detached sleeves, black coat on shoulders, "
+           "diamond choker, gold bells hair ornaments:1.2), "
+           "(xinyuehu, black strapless dress, black choker, detached sleeves, puffy sleeves, "
+           "side slit, hair ornament, tassel:1.2), side_by_side, cowboy shot, night")
+    out, dropped = strip_lora_echo_appearance(txt, LORA_ECHO_DIMS_WITH_OUTFIT)
+    for t in ("black strapless dress", "detached sleeves", "diamond choker",
+              "gold bells hair ornaments", "tassel"):
+        assert t in dropped, (t, dropped)
+    # 触发词 / 场景 / 权重保留
+    assert "suomingwuwa" in out and "xinyuehu" in out and ":1.2" in out, out
+    assert "side_by_side" in out and "cowboy shot" in out and "night" in out, out
+    # 只剩触发词的两个分组仍在，且两组内容不再相同（撞脸根因消除）
+    assert out.count("black strapless dress") == 0, out
+    # 服装维度确认在 dims 里
+    assert "outfit" in LORA_ECHO_DIMS_WITH_OUTFIT, LORA_ECHO_DIMS_WITH_OUTFIT
+    print("== 14. 角色 LoRA 复述剥除（含服装维度） OK")
+
+
+def test_outfit_intent():
+    # 用户明说换装 → 保留服装
+    assert outfit_intent("给她换成红裙子")
+    assert outfit_intent("让她穿上校服")
+    assert outfit_intent("戴个choker")
+    assert outfit_intent("脱掉外套")
+    assert outfit_intent("换一身和服")
+    assert outfit_intent("穿件黑色风衣")
+    assert outfit_intent("undress her")
+    # 用户没提服装 → 剥
+    assert not outfit_intent("画两个角色并加上她们的 LoRA")
+    assert not outfit_intent("两个女孩在樱花树下合照")
+    assert not outfit_intent("t 两个角色")
+    print("== 15. 用户服装干预意图判定 OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -259,4 +296,6 @@ if __name__ == "__main__":
     test_strip_lora_echo_appearance()
     test_appearance_change_intent()
     test_multi_shared_appearance()
+    test_strip_lora_echo_appearance_with_outfit()
+    test_outfit_intent()
     print("提示词护栏全部通过")

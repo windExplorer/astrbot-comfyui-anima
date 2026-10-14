@@ -97,7 +97,9 @@ APPEARANCE_RULES: dict[str, list[re.Pattern]] = {
         re.compile(r"\b(dress|skirt|shirt|blouse|hoodie|sweater|jacket|coat|kimono|yukata|"
                    r"uniform|sailor\s*uniform|maid|suit|bikini|swimsuit|lingerie|apron|robe|"
                    r"cape|scarf|gloves?|sleeves?|stockings?|thighhighs?|pantyhose|boots?|shoes?|hat|"
-                   r"ribbon|necktie|tie|choker|necklace|earrings?|glasses|goggles)\b", re.I),
+                   r"ribbon|necktie|tie|choker|necklace|earrings?|glasses|goggles|"
+                   r"ornaments?|hair\s?ornaments?|hairpins?|hair\s?pins?|hairpieces?|"
+                   r"tassels?|bells?|scrunchie|pendants?)\b", re.I),
         re.compile(r"(连衣裙|裙子|衬衫|卫衣|毛衣|外套|水手服|制服|和服|浴衣|泳装|内衣|围裙|"
                    r"斗篷|围巾|手套|丝袜|过膝袜|靴子|鞋子|帽子|发带|领带|项圈|项链|耳环|眼镜)"),
     ],
@@ -485,28 +487,34 @@ def merge_multi_negative(negative: str, custom: str = "") -> tuple[str, list[str
 # 训练进去的形象；② 凭记忆写外形会写错；③ 两个角色外形词写得越像（甚至撞同一套衣服），
 # 越画成同一张脸。
 #
-# 剥除范围刻意**不含 outfit 维度**：LoRA 自带原服装，但「让角色换件衣服」正是用户唯一
-# 应该干预的维度之一，动不得。是否剥外形由调用方先判「用户本轮没有改外形意图」——有则整体不剥。
-
-# 会剥掉的外形维度（与 FREEZE_DIMS 同口径，即「角色形象的一部分」）
+# 剥除范围分两档，由调用方按「用户本轮有没有干预该维度」分别决定：
+#   - 外形（发色/发型/瞳色/兽化/体型）：LoRA 自带，用户没提就别复述；
+#   - 服装配饰：同样由 LoRA 自带（v7.7.69 起纳入）——用户实测里 LLM 会**自己编**衣服，
+#     而且两个角色编成同一套（两边都是 `black strapless dress` + `detached sleeves`），
+#     标签系底模直接理解成双胞胎 → 两人同脸。真正的换装诉求（"给她换成红裙"）由
+#     `outfit_intent` / `appearance_change_intent` 放行，绝不误伤。
 LORA_ECHO_DIMS: tuple[str, ...] = FREEZE_DIMS
+LORA_ECHO_DIMS_WITH_OUTFIT: tuple[str, ...] = FREEZE_DIMS + ("outfit",)
 
 # 分组标签尾部的权重记号：`:1.20` / `:1.2)`
 _GROUP_TAIL_RE = re.compile(r":\s*\d+(?:\.\d+)?\s*\)?$")
 
 
-def _has_echo_dim(tag: str) -> bool:
-    """单个标签是否命中「角色自带形象」的外形维度。"""
-    return bool(set(appearance_dims(tag or "")) & set(LORA_ECHO_DIMS))
+def _has_echo_dim(tag: str, dims: tuple[str, ...]) -> bool:
+    """单个标签是否命中指定维度集合。"""
+    return bool(set(appearance_dims(tag or "")) & set(dims))
 
 
-def strip_lora_echo_appearance(text: str) -> tuple[str, list[str]]:
-    """剥掉「复述角色 LoRA 自带形象」的外形标签，返回 ``(新文本, 被剥标签)``。
+def strip_lora_echo_appearance(
+        text: str, dims: tuple[str, ...] = LORA_ECHO_DIMS
+    ) -> tuple[str, list[str]]:
+    """剥掉「复述角色 LoRA 自带形象」的标签，返回 ``(新文本, 被剥标签)``。
 
-    - 括号权重分组**逐标签剥**：`(:1.25)` 只摘掉组内的外形标签，组内其余标签
-      （角色 tag、用户明说的衣服、动作）与权重原样保留；剥空了的组整组删除；
-    - 组外的裸标签同样剥；
-    - 服装 / 配饰（outfit）、镜头、光影、氛围、场景等一律不动。
+    - ``dims``：要剥的维度集合。默认只剥外形（发色/发型/瞳色/兽化/体型）；传入
+      ``LORA_ECHO_DIMS_WITH_OUTFIT`` 会连**服装配饰**一起剥（用户本轮没提换装时用）。
+    - 括号权重分组**逐标签剥**：`(:1.25)` 只摘掉组内的目标标签，组内其余标签
+      （角色 tag、用户明说的动作/场景）与权重原样保留；剥空了的组整组删除；
+    - 镜头、光影、氛围、场景、画师串等一律不动。
     """
     dropped: list[str] = []
     out: list[str] = []
@@ -518,14 +526,14 @@ def strip_lora_echo_appearance(text: str) -> tuple[str, list[str]]:
             kept: list[str] = []
             for sub in split_tags(body[: m.start()]):
                 sub = sub.strip()
-                if _has_echo_dim(sub):
+                if _has_echo_dim(sub, dims):
                     dropped.append(sub)
                 elif sub:
                     kept.append(sub)
             if kept:
                 out.append(f"({', '.join(kept)}{body[m.start():]})")
             continue
-        if _has_echo_dim(raw):
+        if _has_echo_dim(raw, dims):
             dropped.append(raw)
             continue
         out.append(raw)
@@ -547,6 +555,38 @@ _APPEARANCE_CHANGE_RE = re.compile(
 def appearance_change_intent(text: str) -> bool:
     """用户原话里是否有「明确要改外形」的意图（染/剪/换/去掉/戴…）。"""
     return bool(_APPEARANCE_CHANGE_RE.search(text or ""))
+
+
+# 用户本话里提到服装/配饰（含"穿/戴/脱/套…"动词，或直接说了服饰名）。
+# 命中即视为「用户在管这一维度」→ 不剥服装，让 LLM 写的衣服保留。
+_OUTFIT_INTENT_RE = re.compile(
+    r"(?:穿|戴|系|挂|披|套|换|脱|摘|褪|裸|着)(?:上|着|了|过)?[^，。！？\n]{0,8}?"
+    r"(?:衣|裙|服|装|鞋|靴|袜|帽|披肩|斗篷|围巾|手套|头饰|耳环|项链|饰品|围裙|泳衣|和服|校服)"
+    r"|(?:undress|topless|swimsuit|bikini|outfit\s+change)",
+    re.I,
+)
+
+
+def outfit_intent(text: str) -> bool:
+    """用户原话里是否干预了服装/配饰（提到服饰名或穿/戴/脱等动作）。"""
+    t = text or ""
+    if _OUTFIT_INTENT_RE.search(t):
+        return True
+    if appearance_dims(t).get("outfit"):
+        return True
+    # 兜底：中英连写时 `\b` 不成立（"戴个choker" 里"个"与 c 之间没有词边界，
+    # Python 的 \w 含 CJK 字母），所以英文服饰词在**用户原话**这种短文本上
+    # 直接做子串判断更可靠。
+    low = t.lower()
+    return any(w in low for w in _EN_OUTFIT_HINTS)
+
+
+_EN_OUTFIT_HINTS: tuple[str, ...] = (
+    "choker", "dress", "skirt", "shirt", "coat", "jacket", "sweater", "hoodie",
+    "uniform", "kimono", "suit", "boots", "shoes", "socks", "gloves", "scarf",
+    "hat", "ribbon", "ornament", "hairpin", "tassel", "bikini", "swimsuit",
+    "apron", "cloak", "robe", "necklace", "earrings", "ring",
+)
 
 
 # --------------------------------------------------------------------------- #

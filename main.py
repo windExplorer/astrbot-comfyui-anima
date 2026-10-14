@@ -14622,13 +14622,18 @@ class ComfyUIDrawPlugin(Star):
         （`_guard_appearance` → `prompt_guard.strip_conflicting_appearance`），
         角色 **LoRA** 路径完全没有约束——LLM 照 skill 里那条「每个角色的分组里还必须再写
         2~4 个最有辨识度的外观标签」把外形复述一遍，后果是①用弱文本标签稀释/覆盖 LoRA
-        训练进去的形象 ②凭记忆写外形会写错 ③两个角色外形写得越像越画成同一张脸。
+        训练进去的形象 ②凭记忆写外形会写错 ③两个角色外形词写得越像越画成同一张脸。
 
-        三重保守前提（任一不满足就**什么都不剥**）：
+        v7.7.69：外形剥除实测生效（用户确认 `red hair` / `fox ears` 等都没了），但**衣服还在**
+        ——LLM 自己在两个分组里编了同一套 `black strapless dress` + `detached sleeves`，
+        两人照旧同脸。用户并未提任何服装，按同一条原则（"除非我说穿啥啥衣服"），
+        服装配饰同样归 LoRA 自带，一并纳入剥除。
+
+        保守前提（任一不满足就**什么都不剥**）：
         1. 本次确实启用了 category=角色 的 LoRA，且其触发词出现在正向里（否则说明角色是
            用 danbooru 角色 tag / 角色卡表达的，另有锚点机制管，别插手）；
-        2. 用户本轮**没有**「染成 / 剪短 / 换成…」这类改外形意图（有则用户才是权威）；
-        3. 只剥发色/发型/瞳色/兽化/体型，**服装配饰一律不动**（换装正是用户该干预的维度）。
+        2. 用户本轮**没有**干预对应维度——外形（染/剪/换发色）与服装（穿/戴/脱/说了服饰名）
+           各自独立判定：说了才保留那一维，没说才剥那一维。
         """
         try:
             if not (positive or "").strip():
@@ -14661,17 +14666,35 @@ class ComfyUIDrawPlugin(Star):
             if not _hit:
                 return positive, ""
             _raw = (getattr(event, "message_str", "") or "") if event is not None else ""
-            if prompt_guard.appearance_change_intent(_raw):
+            # 分档：外形 / 服装各自看用户有没有干预（"说了才保留，没说才剥"）
+            _raw_dims = prompt_guard.appearance_dims(_raw)
+            _keep_look = (
+                prompt_guard.appearance_change_intent(_raw)
+                or any(dims for k, dims in _raw_dims.items() if k != "outfit")
+            )
+            _keep_outfit = prompt_guard.outfit_intent(_raw)
+            if _keep_look and _keep_outfit:
                 logger.info(
-                    "【LoRA 形象】 用户本轮明确说了要改外形 → 保留提示词里的外形标签不动"
+                    "【LoRA 形象】 用户本轮既说了要改外形、也说了要换装 → 提示词里的"
+                    "外形与服装标签全部保留"
                 )
                 return positive, ""
-            _new, _dropped = prompt_guard.strip_lora_echo_appearance(positive)
+            _dims: tuple[str, ...] = tuple(
+                [d for d in prompt_guard.FREEZE_DIMS if not _keep_look]
+                + (["outfit"] if not _keep_outfit else [])
+            )
+            if not _dims:
+                return positive, ""
+            _new, _dropped = prompt_guard.strip_lora_echo_appearance(positive, _dims)
             if not _dropped:
                 return positive, ""
+            _kept_note = "保留" + (
+                "服装配饰、" if _keep_outfit else ""
+            ) + ("外形标签" if _keep_look else "")
             return _new, (
                 f"角色 LoRA（触发词 {', '.join(_hit)}）已自带完整形象，"
                 f"剥除提示词里对其形象的复述 {len(_dropped)} 个: {', '.join(_dropped)}"
+                + (f"（用户本轮明确说了要{_kept_note}，已保留）" if _kept_note else "")
             )
         except Exception as _e:
             logger.warning(f"【LoRA 形象】 处理异常（不影响出图）: {_e}")
@@ -14866,14 +14889,15 @@ class ComfyUIDrawPlugin(Star):
              插件会把这种写法归一成真分组或直接拦截，但你自己写对才不浪费一轮。
         3) 某角色用了 LoRA：该 LoRA 的触发词必须写进**那个角色自己的分组括号**（插件检测到已存在
            就不再全局追加，避免串到别人身上）。
-           ★**角色 LoRA 自带完整形象（发色/发型/瞳色/兽耳/体型/原服装），提示词里不要复述它。**
+           ★**角色 LoRA 自带完整形象（外形 + 原服装），提示词里不要复述它。**
            分组里只写「本图的变化项」：该角色 LoRA 触发词 + 用户明说的东西（换的衣服、动作、
-           表情）；**禁止**再补发色/发型/瞳色/兽耳/角/体型——那是用弱文本标签稀释甚至覆盖
-           LoRA 训练进去的形象，凭记忆写还大概率写错。用户没提衣服就别加衣服。
+           表情）；**禁止**再补发色/发型/瞳色/兽耳/角/体型，也**禁止自己给角色编衣服**
+           （用户没提穿什么时）——那是用弱文本标签稀释甚至覆盖 LoRA 训练进去的形象，凭记忆写还
+           大概率写错；两人编成同一套衣服更会被标签系底模理解成双胞胎、直接画成同一张脸。
            对：2girls, (suomingwuwa:1.25), (xinyuehu:1.25), holding hands, night, pavilion
            错：2girls, (suomingwuwa, red hair, twin hair buns, red eyes, black dress:1.25), …
-           ⚙️ 插件已兜底：命中角色 LoRA 且用户本轮没说改外形时，自动剥除提示词里复述的外形标签
-           （发色/发型/瞳色/兽化/体型，服装不动），日志 `【LoRA 形象】`。
+           ⚙️ 插件已兜底：命中角色 LoRA 时，用户本轮**没说**改外形 / 换装的那一维会被自动剥除
+           （外形与服装各自独立判定，说了才保留），日志 `【LoRA 形象】`。
            ★★多人都用角色 LoRA 时，两个 LoRA 是同时全局作用于整张图的，拉开两人的办法是
            **差异化的变化项**而非复述形象：让两人穿**不同的衣服**（最有效）、做不同动作、
            各有不同道具。两人共写同一套 `black strapless dress` 时，标签系底模会理解成双胞胎、
@@ -15385,8 +15409,9 @@ class ComfyUIDrawPlugin(Star):
                         '     "girl A (left): (1girl:1.2), (long white hair:1.1), (cat ears:1.1)"\n'
                         "     ——这既不是分组，自然语言标签（girl A (left):）也会变成垃圾 token；\n"
                         "3) 每个角色分组里只放：该角色 LoRA 触发词（若用了 LoRA）+ **用户明说的**"
-                        "衣服/动作/表情。**绝对不要**补发色/发型/瞳色/兽耳/角/体型——"
-                        "角色 LoRA 自带完整形象，复述它只会稀释 LoRA、且两人写得越像越撞脸"
+                        "衣服/动作/表情。**绝对不要**补发色/发型/瞳色/兽耳/角/体型，**也不要自己给"
+                        "角色编衣服**（用户没提穿什么时）——角色 LoRA 自带完整形象，复述/编造只会"
+                        "稀释 LoRA，且两人编成同一套衣服会被理解成双胞胎、直接同脸"
                         "（插件会自动剥除这类复述，日志 `【LoRA 形象】`）；\n"
                         "4) 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会自动剔除）。\n"
                         f"本次角色 LoRA 与触发词：\n{_tw_lines}\n"
