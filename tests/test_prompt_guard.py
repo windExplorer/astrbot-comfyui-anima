@@ -514,6 +514,19 @@ def test_assign_personal_to_blocks():
     print("== 24. 公共区角色专属标签归位到各角色块 OK")
 
 
+def test_lora_description_as_anchor_source():
+    """LoRA 库的 description 可直接当身份锚点（原创角色 Danbooru 查不到时的救命档）。"""
+    desc = ("红发，双丸子头缀金铃，灰色渐变双马尾，红色瞳孔，黑色无肩带连衣裙，黑色外套披肩")
+    anchors = identity_anchor_tags(desc)
+    assert anchors, anchors
+    joined = " ".join(anchors)
+    assert "红发" in joined or "红" in joined, anchors
+    assert "黑" in joined, anchors
+    # 描述里没有的维度不会凭空出现
+    assert "fox" not in joined.lower() and "cat" not in joined.lower(), anchors
+    print("== 25. LoRA 描述可作身份锚点来源 OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -556,4 +569,5 @@ if __name__ == "__main__":
     test_classify_common_tags()
     test_differentiation_intent()
     test_assign_personal_to_blocks()
+    test_lora_description_as_anchor_source()
     print("提示词护栏全部通过")

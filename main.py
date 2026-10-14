@@ -2826,7 +2826,7 @@ class ComfyUIDrawPlugin(Star):
         cfg = getattr(prov, "provider_config", None) or {}
         return cfg.get("id") if isinstance(cfg, dict) else None
 
-    async def _translate_llm(self, text: str) -> str:
+    async def _translate_llm(self, text: str, lora_ref: str = "") -> str:
         """用 LLM 把中文动漫描述翻译为英文 Danbooru 风格标签。
 
         使用独立配置 translate_llm_model；留空则走 AstrBot 当前默认对话模型。
@@ -2841,6 +2841,7 @@ class ComfyUIDrawPlugin(Star):
             "（如 1boy, long hair, blue eyes, school uniform）。只输出标签本身，"
             "不要任何解释、不要序号、不要中文。\n\n"
             f"中文描述：\n{text}\n\n"
+            f"{self._lora_ref_tail(lora_ref)}\n"
             "英文标签："
         )
         try:
@@ -2861,7 +2862,7 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
-    async def _rewrite_to_anima_llm(self, text: str) -> str:
+    async def _rewrite_to_anima_llm(self, text: str, lora_ref: str = "") -> str:
         """用 LLM 把一段自然语言描述（可能中英混杂）改写为纯英文 Anima 生图提示词。
 
         适用场景：第三方插件调用 comfyui_draw 传入的是整段结构化描述（非 Anima 标签
@@ -2894,6 +2895,7 @@ class ComfyUIDrawPlugin(Star):
             "（例如『真人摄影感』可表达为 anime style, detailed）；\n"
             "6. 只输出提示词本身，不要任何解释、不要序号、不要代码块、不要中文。\n\n"
             f"画面描述：\n{text}\n\n"
+            f"{self._lora_ref_tail(lora_ref)}\n"
             "改写后的英文动漫（Anime）提示词："
         )
         try:
@@ -2914,7 +2916,7 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
-    async def _rewrite_to_real_llm(self, text: str) -> str:
+    async def _rewrite_to_real_llm(self, text: str, lora_ref: str = "") -> str:
         """用 LLM 把第三方插件传入的描述清理为适合「真人/写实」工作流的中文提示词。
 
         适用场景：真人（is_anima=false）工作流被第三方插件调用时，提示词里往往
@@ -2939,6 +2941,7 @@ class ComfyUIDrawPlugin(Star):
             "不要臆造没有的内容；\n"
             "5. 只输出改写后的中文提示词本身，不要任何解释、不要序号、不要代码块。\n\n"
             f"原始描述：\n{text}\n\n"
+            f"{self._lora_ref_tail(lora_ref)}\n"
             "改写后的中文写实提示词："
         )
         try:
@@ -2958,7 +2961,7 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
-    async def _rewrite_to_natural_llm(self, text: str, lang: str = "中文") -> str:
+    async def _rewrite_to_natural_llm(self, text: str, lang: str = "中文", lora_ref: str = "") -> str:
         """按底模库「优先语种」把提示词归一化成**该语种的自然语言描述**（v7.7.65）。
 
         与 `_rewrite_to_real_llm` 的分工：那个是「第三方调用 + 真人写实工作流」的清理
@@ -2985,7 +2988,8 @@ class ComfyUIDrawPlugin(Star):
             "3. 严格忠实原文，**不要臆造**原文没有的内容；\n"
             "4. 若原文含 <lora:xxx> 之类的语法标记，原样保留，不要翻译或改写它；\n"
             "5. 只输出改写后的提示词本身，不要任何解释、不要序号、不要代码块。\n\n"
-            f"原始提示词：\n{text}\n\n改写后的{lang}描述："
+            f"原始提示词：\n{text}\n\n{self._lora_ref_tail(lora_ref)}\n\n"
+            f"改写后的{lang}描述："
         )
         try:
             timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
@@ -3298,7 +3302,7 @@ class ComfyUIDrawPlugin(Star):
                 continue
         return "\n".join(blocks)
 
-    async def _rewrite_to_char_sheet_llm(self, text: str) -> str:
+    async def _rewrite_to_char_sheet_llm(self, text: str, lora_ref: str = "") -> str:
         """按角色设定板规范改写提示词（纯中文设定板提示词）。失败抛异常，由调用方保留原文。"""
         provider_id = self._resolve_translate_provider_id()
         if not provider_id:
@@ -3310,6 +3314,7 @@ class ComfyUIDrawPlugin(Star):
             "【本次任务】用户想要一张角色设定板（三视图/四视图等）。请按上面的规范，"
             "生成这张设定板的中文提示词正文。只输出提示词正文，不要任何解释、标题或代码块。\n\n"
             f"用户需求：\n{text}\n"
+            f"{self._lora_ref_tail(lora_ref)}\n"
         )
         if ctx:
             prompt += (
@@ -3597,7 +3602,7 @@ class ComfyUIDrawPlugin(Star):
 
     async def _llm_refine_prompt(
         self, wf: dict, positive: str, source: str, trace_id: str = "",
-        has_input_image: bool = False,
+        has_input_image: bool = False, lora_ref: str = "",
     ) -> str:
         """出图前的 LLM 提示词整理（原内联逻辑抽成方法，便于与参考图上传并行调度）。
 
@@ -3668,7 +3673,7 @@ class ComfyUIDrawPlugin(Star):
             )
             try:
                 _r = await self._rewrite_to_qwen_llm(
-                    positive, edit_mode=_qwen_edit, lang=_lang
+                    positive, edit_mode=_qwen_edit, lang=_lang, lora_ref=lora_ref
                 )
             except Exception as _e:
                 logger.warning(f"【绘图·LLM④】 Qwen 改写失败（走后续兜底）: {_e}")
@@ -3681,7 +3686,7 @@ class ComfyUIDrawPlugin(Star):
         async def _try_sheet(_why: str) -> str:
             logger.info(f"【绘图·LLM⑤】trace={trace_id} 阶段=按角色设定板规范改写（{_why}）")
             try:
-                _r = await self._rewrite_to_char_sheet_llm(positive)
+                _r = await self._rewrite_to_char_sheet_llm(positive, lora_ref=lora_ref)
             except Exception as _e:
                 logger.warning(f"【绘图·LLM⑤】 设定板改写失败（保留原文）: {_e}")
                 return ""
@@ -3706,7 +3711,7 @@ class ComfyUIDrawPlugin(Star):
                 f"（{_why}｜目标语种={_lang}）"
             )
             try:
-                _r = await self._rewrite_to_natural_llm(positive, lang=_lang)
+                _r = await self._rewrite_to_natural_llm(positive, lang=_lang, lora_ref=lora_ref)
             except Exception as _e:
                 logger.warning(f"【绘图·LLM⑥】 语种归一化失败（保留原提示词）: {_e}")
                 return ""
@@ -3740,7 +3745,7 @@ class ComfyUIDrawPlugin(Star):
                     logger.info(f"【绘图·LLM①】trace={trace_id} 阶段=改写为Anima提示词 第三方插件调用进入LLM")
                     rewritten = ""
                     try:
-                        rewritten = await self._rewrite_to_anima_llm(positive)
+                        rewritten = await self._rewrite_to_anima_llm(positive, lora_ref=lora_ref)
                     except Exception as _e:
                         # v7.7.41：整理失败（无可用模型/超时/异常）→ 回退翻译，别把
                         # 中文直接喂给标签系底模
@@ -3752,7 +3757,7 @@ class ComfyUIDrawPlugin(Star):
                     logger.info(f"【绘图·LLM②】trace={trace_id} 阶段=清理为写实提示词 第三方插件调用进入LLM")
                     rewritten = ""
                     try:
-                        rewritten = await self._rewrite_to_real_llm(positive)
+                        rewritten = await self._rewrite_to_real_llm(positive, lora_ref=lora_ref)
                     except Exception as _e:
                         logger.warning(f"【绘图·LLM②】 写实清理失败，保留原提示词: {_e}")
                     if rewritten and rewritten.strip():
@@ -3966,7 +3971,9 @@ class ComfyUIDrawPlugin(Star):
             return False, "无可用 LLM（translate_llm_model 未配置且无默认模型）"
         return True, ""
 
-    async def _enhance_prompt_llm(self, positive: str, *, style: str = "tags") -> str:
+    async def _enhance_prompt_llm(
+        self, positive: str, *, style: str = "tags", lora_ref: str = ""
+    ) -> str:
         """LLM 扩写：只补「非外观维度」，原文标签逐字保留（prompt_guard 会二次校验）。"""
         provider_id = self._resolve_translate_provider_id()
         if not provider_id:
@@ -3990,6 +3997,7 @@ class ComfyUIDrawPlugin(Star):
             "插件会自动加，你加了会重复）；\n"
             "6. 只输出逗号分隔的英文标签，不要解释、不要编号、不要代码块、不要中文。\n\n"
             f"原标签：\n{positive}\n\n"
+            f"{self._lora_ref_tail(lora_ref)}\n"
             "扩写后的标签："
         )
         try:
@@ -4013,7 +4021,8 @@ class ComfyUIDrawPlugin(Star):
                               known_names: tuple[str, ...] = (),
                               draw_start: float = 0.0, trace_id: str = "",
                               platform_style: str = "",
-                              skip_llm: bool = False) -> str:
+                              skip_llm: bool = False,
+                              lora_ref: str = "") -> str:
         """提示词丰富化总入口：① LLM 扩写（只补自由维度）② 画质前缀（缺失才加）。
 
         任何一步失败都保留原提示词；扩写结果必须保留原文全部标签，且新增/改写的
@@ -4034,7 +4043,8 @@ class ComfyUIDrawPlugin(Star):
             if _ok:
                 try:
                     _t0 = time.time()
-                    _rich = await self._enhance_prompt_llm(out, style=_style)
+                    _rich = await self._enhance_prompt_llm(
+                out, style=_style, lora_ref=lora_ref)
                     if _rich and _rich.strip() and _rich.strip() != out:
                         if not prompt_guard.keeps_original_tags(out, _rich):
                             logger.warning(
@@ -7391,6 +7401,10 @@ class ComfyUIDrawPlugin(Star):
                 self._llm_refine_prompt(
                     wf, positive, source, _trace_id,
                     has_input_image=bool(init_images),
+                    # v7.7.74：把「本次要用到的 LoRA」参考资料喂给整理用的 LLM——
+                    # 只给本次生效的（不是整个 LoRA 库），让它写画面时能对上 LoRA 描述里的
+                    # 关键特征，而不是凭记忆瞎编。
+                    lora_ref=self._lora_reference_note(lora_map, wf),
                 )
             )
 
@@ -7546,6 +7560,8 @@ class ComfyUIDrawPlugin(Star):
                     known_names=self._known_character_names(),
                     draw_start=_draw_start, trace_id=_trace_id,
                     skip_llm=raw_prompt,
+                    # v7.7.74：扩写也只参考「本次要用的 LoRA」的描述
+                    lora_ref=self._lora_reference_note(lora_map, wf),
                 )
             except Exception as _be:
                 logger.warning(f"【提示词丰富化】 异常（保留原提示词）: {_be}")
@@ -14747,6 +14763,86 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【角色 LoRA 对齐】 检查异常（不影响出图）: {_e}")
             return positive, ""
 
+    def _lora_reference_note(
+        self, lora_map=None, wf: dict | None = None,
+        max_items: int = 8, desc_limit: int = 320,
+    ) -> str:
+        """本次**要用到的** LoRA 参考资料（名称/类别/触发词/描述），供 LLM 写提示词时参考。
+
+        用户需求（2026-10-14）：「让 LLM 写提示词之前参考一下 LoRA 里面的描述，描述有点重要，
+        **不要把所有 LoRA 的描述都拿来参考了，只看需要用到的**」。
+
+        因此这里刻意**只取本次生效的 LoRA**（`lora_map` ∪ 工作流实际 LoRA），而不是整个 LoRA 库：
+        库里有几十条描述，全塞进上下文既挤占 token，又会把无关角色的特征带进画面。
+        描述超长会截断（`desc_limit`），条目超限会截断（`max_items`）。
+        """
+        try:
+            try:
+                lib = self._lora_lib_index()
+            except Exception:
+                lib = {}
+            items: list[dict] = []
+            seen: set[str] = set()
+            cands: list[str] = list((lora_map or {}).keys())
+            try:
+                for _le in (self._loras_of(wf or {}) or []):
+                    if (_le.get("name") or "").strip():
+                        cands.append(_le["name"].strip())
+            except Exception:
+                pass
+            for name in cands:
+                key = (name or "").strip()
+                if not key or key in seen:
+                    continue
+                entry = lib.get(key)
+                if not isinstance(entry, dict):
+                    entry = next(
+                        (v for k, v in lib.items()
+                         if (k or "").strip().lower() == key.lower()),
+                        None,
+                    )
+                if not isinstance(entry, dict):
+                    continue      # 库外/临时启用的 LoRA：没有描述可参考
+                seen.add(key)
+                items.append(entry)
+                if len(items) >= max_items:
+                    break
+            if not items:
+                return ""
+            lines = [
+                "【本次要用的 LoRA 参考（只参考下列条目；未列出的角色/风格不要写进提示词）】"
+            ]
+            for i, e in enumerate(items, 1):
+                nm = (e.get("name") or "").strip()
+                cat = (e.get("category") or "").strip() or "未分类"
+                tw = (e.get("trigger_words") or "").strip()
+                desc = (e.get("description") or "").strip().replace("\n", " ")
+                if len(desc) > desc_limit:
+                    desc = desc[:desc_limit].rstrip() + "…"
+                parts = [f"{i}. {nm}（{cat}）"]
+                if tw:
+                    parts.append(f"触发词：{tw}")
+                if desc:
+                    parts.append(f"描述：{desc}")
+                lines.append(" | ".join(parts))
+            return "\n".join(lines)
+        except Exception as _e:
+            logger.warning(f"【LoRA 参考】 收集失败（忽略）: {_e}")
+            return ""
+
+    @staticmethod
+    def _lora_ref_tail(lora_ref: str) -> str:
+        """把 LoRA 参考资料拼到改写提示词末尾（附"不要臆造未列出的 LoRA"约束）。"""
+        ref = (lora_ref or "").strip()
+        if not ref:
+            return ""
+        return (
+            "\n\n" + ref
+            + "\n注意：以上是本次**实际启用**的 LoRA。若用户要求画这些角色/风格，请让画面与"
+              "描述里的关键特征（发色、发型、瞳色、兽耳、标志性服饰等）一致；"
+              "参考里没有的角色或风格不要凭空写进提示词。"
+        )
+
     async def _danbooru_identity_anchors(self, trigger: str) -> list[str]:
         """按参考做法（`docs/prompting.md:7`）用 Danbooru 校正角色 tag，取出身份锚点。
 
@@ -14812,6 +14908,45 @@ class ComfyUIDrawPlugin(Star):
             out.append({"name": trig, "anchors": _tags, "source": "danbooru"})
         return out
 
+    async def _resolve_identity_anchors_v2(
+        self, positive: str, lora_map, wf: dict, card_hits=None
+    ) -> list[dict]:
+        """v7.7.74：身份锚点来源加一档 **LoRA 库描述**（原创角色的救命档）。
+
+        顺序：角色卡锚点 → **LoRA 描述** → Danbooru 校正 → 空。
+        用户在 LoRA 库写的 `description` 通常就是角色设定本身（"红发双丸子头金铃、灰渐变双马尾、
+        红瞳、黑无肩带裙"），对 Danbooru 查不到的原创角色比联网查更准、也不依赖网络。
+        """
+        out = await self._resolve_identity_anchors(positive, lora_map, wf, card_hits)
+        if out and all(r.get("anchors") for r in out):
+            return out
+        try:
+            lib = self._lora_lib_index()
+        except Exception:
+            lib = {}
+        for _r in out:
+            if _r.get("anchors"):
+                continue
+            _trig = _r.get("name") or ""
+            _entry = lib.get((_trig or "").strip())
+            if not isinstance(_entry, dict):
+                _entry = next(
+                    (v for k, v in lib.items()
+                     if (k or "").strip().lower() == (_trig or "").strip().lower()),
+                    None,
+                )
+            if isinstance(_entry, dict) and (_entry.get("category") or "").strip() == "角色":
+                _tags = prompt_guard.identity_anchor_tags(
+                    str(_entry.get("description") or ""), limit=5)
+                if _tags:
+                    _r["anchors"] = _tags
+                    _r["source"] = f"LoRA 描述「{_entry.get('name')}」"
+                    logger.info(
+                        f"【身份锚点】 用 LoRA 描述为「{_trig}」提供锚点: {_tags}"
+                        "（原创角色 Danbooru 查不到时走这条）"
+                    )
+        return out
+
     async def _apply_multi_identity(
         self, positive: str, event, lora_map, wf: dict, card_hits=None
     ) -> tuple[str, str]:
@@ -14824,7 +14959,8 @@ class ComfyUIDrawPlugin(Star):
         try:
             if not (positive or "").strip():
                 return positive, ""
-            _roles = await self._resolve_identity_anchors(positive, lora_map, wf, card_hits)
+            _roles = await self._resolve_identity_anchors_v2(
+                positive, lora_map, wf, card_hits)
             _roles = [r for r in _roles if r.get("anchors")]
             if len(_roles) < 2:
                 if _roles:
