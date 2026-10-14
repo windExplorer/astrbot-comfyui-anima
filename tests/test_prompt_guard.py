@@ -9,8 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from prompt_guard import (  # noqa: E402
-    appearance_dims, ensure_quality_prefix, free_dim_coverage, has_character_tag,
-    is_short_prompt, keeps_original_tags, prompt_style_of, quality_prefix_for,
+    MULTI_FUSION_NEGATIVE, appearance_dims, ensure_quality_prefix, free_dim_coverage,
+    has_character_tag, is_multi_person, is_short_prompt, keeps_original_tags,
+    merge_multi_negative, multi_person_hints, prompt_style_of, quality_prefix_for,
     strip_conflicting_appearance, strip_new_appearance,
 )
 
@@ -136,6 +137,54 @@ def test_quality_prefix():
     print("== 7. 画质前缀分档与「缺失才加」 OK")
 
 
+def test_multi_person_detection():
+    assert is_multi_person("masterpiece, 2girls, side_by_side")
+    assert is_multi_person("1boy 1girl, smiling")
+    assert is_multi_person("三个女孩在樱花树下")          # 中文人数
+    assert is_multi_person("这两个女孩合照")               # 中文人数
+    assert not is_multi_person("1girl, solo, white dress")
+    assert not is_multi_person("两个苹果放在桌上")          # 不是人，不该触发
+    assert not is_multi_person("")
+    print("== 8. 多人判定（英文计数标签 + 中文人数表述） OK")
+
+
+def test_multi_person_hints():
+    # 贴身 + 大头贴裁切 → 两个风险都命中
+    multi, crops, contact = multi_person_hints(
+        "2girls, close-up, hugging, cheek to cheek")
+    assert multi and "close-up" in crops and "hugging" in contact, (crops, contact)
+    # 带部位的接触写法不该告警（是推荐形态）
+    multi2, crops2, contact2 = multi_person_hints(
+        "2girls, cowboy shot, hugging from behind, cheek to cheek")
+    assert multi2 and crops2 == [] and contact2 == [], (crops2, contact2)
+    # 中文近景 + 中文笼统接触
+    multi3, crops3, contact3 = multi_person_hints("两个女孩，特写，拥抱")
+    assert multi3 and crops3 and contact3, (crops3, contact3)
+    # 单人：完全不触发
+    assert multi_person_hints("1girl, solo, close-up, hugging") == (False, [], [])
+    print("== 9. 多人风险词告警（贴身裁切 + 笼统接触，带部位写法不告警） OK")
+
+
+def test_merge_multi_negative():
+    # 负向为空 → 整串畸形词补上
+    neg, added = merge_multi_negative("")
+    assert neg and added == list(MULTI_FUSION_NEGATIVE), added
+    # 已有负向：只增不覆盖，原词保持在前
+    neg2, added2 = merge_multi_negative("lowres, bad hands")
+    assert neg2.startswith("lowres, bad hands, ") and "conjoined" in neg2, neg2
+    assert "lowres" not in added2 and "bad hands" not in added2, added2
+    # 已有畸形词 → 去重不重复追加（给全量词表，预期零追加）
+    neg3, added3 = merge_multi_negative(", ".join(MULTI_FUSION_NEGATIVE) + ", lowres")
+    assert added3 == [] and neg3.endswith(", lowres"), (neg3, added3)
+    # 绝不能把人数词写进负向（会把 2 人压回 1 人）
+    for w in ("solo", "1girl", "2girls", "1boy"):
+        assert w not in MULTI_FUSION_NEGATIVE, w
+    # 自定义词表替换默认
+    neg4, added4 = merge_multi_negative("", custom="bad anatomy, 粘连")
+    assert added4 == ["bad anatomy", "粘连"], added4
+    print("== 10. 畸形负向并入（只增不覆盖 + 去重 + 绝不含人数词） OK")
+
+
 if __name__ == "__main__":
     test_appearance_dims()
     test_has_character_tag()
@@ -144,4 +193,7 @@ if __name__ == "__main__":
     test_keeps_original_tags()
     test_free_dim_coverage_and_short()
     test_quality_prefix()
+    test_multi_person_detection()
+    test_multi_person_hints()
+    test_merge_multi_negative()
     print("提示词护栏全部通过")

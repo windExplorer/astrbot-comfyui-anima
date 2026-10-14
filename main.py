@@ -1595,6 +1595,8 @@ class ComfyUIDrawPlugin(Star):
                 "webui_api", "standalone_webui",
                 "platform_store", "nai_client",
                 "comfyui_client", "workflow_builder",
+                # v7.7.67：prompt_guard 此前漏在重载列表外，热更新后跑的仍是旧提示词护栏
+                "prompt_guard",
                 "danbooru_client", "image_store",
                 "character_store", "character",
                 "draw_card",
@@ -6383,6 +6385,12 @@ class ComfyUIDrawPlugin(Star):
                 )
             if not (negative or "").strip():
                 negative = self._platform_store().enabled_negative_text()
+        # v7.7.54：多人贴在一起时的连体畸形兜底（只往负向里并入畸形抑制词 + 风险词告警）
+        negative, _mf_info, _mf_warn = self._boost_multi_fusion_negative(positive, negative)
+        if _mf_info:
+            logger.info(f"【多人防连体】 {_mf_info}")
+        if _mf_warn:
+            logger.warning(f"【多人防连体】 {_mf_warn}")
         # 画师串（NAI 专属语义）。优先级：
         #   ⓪ 哨兵 _NAI_ARTIST_NONE（指令路径传的「明确不用画师串」）→ 不补任何默认；
         #   ① 调用方显式指定（LLM 的 artist 参数/用户点名）——可传画师串预设名（支持包含匹配），
@@ -7621,6 +7629,15 @@ class ComfyUIDrawPlugin(Star):
         # 固定提示词或走 JSON 原值（positive 为空）时跳过，避免污染固定配方。
         if lora_presets and positive and not _fixed_prompt:
             positive, negative = self._apply_lora_presets(lora_presets, positive, negative)
+
+        # v7.7.54：多人贴在一起时的连体畸形兜底。放在 LoRA 预设追加之后、注入之前——
+        # 此刻 positive 已是最终形态（角色卡分组 / 多人归一 / 预设追加都已完成），
+        # 多人判定最准；此时补负向也保证不会被后续任何注入逻辑覆盖掉。
+        negative, _mf_info, _mf_warn = self._boost_multi_fusion_negative(positive, negative)
+        if _mf_info:
+            logger.info(f"【多人防连体】 {_mf_info}")
+        if _mf_warn:
+            logger.warning(f"【多人防连体】 {_mf_warn}")
 
         # 注入提示词（正/负下输入框名固定为 text，无需配置）。
         # 仅当提示词非空时注入：锁定提示词且未配置固定提示词时 positive 为空，
@@ -14522,6 +14539,55 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【多人归一】 异常，保留原文: {e}")
             return text, 0
 
+    # ---------------- 多人「连体畸形」兜底（v7.7.54） ----------------
+    @staticmethod
+    def _boost_multi_fusion_negative(positive: str, negative: str) -> tuple[str, str, str]:
+        """多人贴在一起时的连体畸形兜底，返回 ``(新负向, info 说明, warn 说明)``。
+
+        现象（用户反馈）：两人**贴在一起**（拥抱 / 贴脸 / 搭肩）时频繁出现「一个角色
+        长出两个头」「A 的身体长在 B 的身体上」。本方法只做两件事，**都不改变用户想要的
+        亲密构图**（不会把人拉远、不会拆掉接触标签）：
+
+        ① **负向并入畸形抑制词**（只增不覆盖、不动用户已有词）。负向只压畸形、不影响
+           两人靠多近，是唯一「贴近也能用」的杠杆。此前负向只有三个来源（LLM 传参、
+           平台预设——默认空列表、工作流 ``default_negative``），``conjoined`` /
+           ``two heads`` 这类词一次都没进过图，全靠模型自觉。
+        ② **风险词告警**：贴身构图里最该避免的是「裁切到腰线以上」（``close-up`` /
+           ``upper body`` 一砍掉下半身，模型就会省掉躯干连接→身体叠一起）与「笼统接触
+           词」（``hugging`` 不如带部位的 ``cheek to cheek`` 稳定）。命中只打日志，
+           **不擅自改写用户的提示词**。
+
+        治不了的是根：权重分组 ``(charA:1.2), (charB:1.2)`` 只做注意力加权、不做空间
+        隔离，像素上重叠的两人注意力区域也重叠，特征必然互串；真要根治得靠区域控制
+        （Regional Prompter / 蒙版分区域）或分开生成再合成，插件当前没有这套能力。
+        """
+        try:
+            _is_multi, _crops, _contact = prompt_guard.multi_person_hints(positive)
+            if not _is_multi:
+                return negative, "", ""
+            _neg2, _added = prompt_guard.merge_multi_negative(negative)
+            _info = (
+                f"检测到多人画面，兜底并入畸形负向 {len(_added)} 个: {', '.join(_added)}"
+                if _added else "多人画面，畸形负向已全部存在，未重复追加"
+            )
+            _warn = ""
+            if _crops:
+                _warn += (
+                    f"命中贴身易连体的裁切词 {_crops}——两人贴在一起时把画面裁到腰线以上，"
+                    "模型会省掉躯干连接，正是「一个身体长在另一个身上」的高发写法，"
+                    "建议改用 cowboy shot 或 full body；"
+                )
+            if _contact:
+                _warn += (
+                    f"命中未指定部位的接触词 {_contact}——笼统写法比带部位的"
+                    "（cheek to cheek / head on shoulder / hugging from behind）更易融合，"
+                    "下次改写可优先用带部位写法；"
+                )
+            return _neg2, _info, _warn
+        except Exception as _e:
+            logger.warning(f"【多人防连体】 检查异常（忽略，不影响出图）: {_e}")
+            return negative, "", ""
+
     def _resolve_workflow_for(self, workflow, img2img_workflow, is_img2img, was_img2img, fallback_wf):
         """根据单条 prompt 的 workflow / img2img_workflow 与调用级图生图状态，求最终工作流名。
 
@@ -14720,8 +14786,27 @@ class ComfyUIDrawPlugin(Star):
            <lora:xxx:1>（A1111 语法，ComfyUI 走 LoRA 参数注入，不写进 prompt）、
            score_9/score_8_up 等 Pony 质量词（仅 pony 底模可用）；也不要照抄 @style_name 这类占位符。
            ★启用 2 个及以上角色 LoRA 时，插件会检查分组：没写权重分组会被拦截并要求重写。
-        5) 补互动/站位标签：side_by_side、holding_hands、hugging、looking_at_each_other、kissing_cheek 等；
+        5) 补互动/站位标签：side_by_side、looking_at_each_other；**要贴合就写带部位的接触词**
+           ——cheek_to_cheek、head_on_shoulder、leaning_on_shoulder、hugging_from_behind、
+           shoulder_to_shoulder、arms_around；**别写 hugging / holding_hands /
+           leaning_on_each_other / kissing 这类没部位的笼统词**（贴在一起时最容易糊成连体）。
            「谁左谁右」只是软约束、无法精确摆位，用户要求精确构图时建议图生图/ControlNet。
+        6)【防连体，用户实测高频】用户要的多半是两人**贴在一起**（拥抱/贴脸/搭肩），
+           这没问题、**不要为了"分开"把构图改远**；要防的是「一个角色长出两个头、
+           A 的身体长在 B 的身上」这种融合畸形，遵守两条即可：
+           a) **贴在一起时禁止把画面裁到腰线以上**——不要 close-up / upper_body / bust_shot
+              （"大头贴"砍掉腰线以下后，模型会省掉躯干连接，两人下半身直接叠成一块，
+              这是"身体长在另一个身上"的最主要来源）；改用 cowboy shot（保腰）或 full_body；
+           b) 负向必须带畸形抑制词：conjoined, fused bodies, merged bodies, shared limbs,
+              conjoined twins, two heads, extra head, multiple heads, extra torso, extra arms,
+              extra legs, fused fingers, fused hands, extra fingers, bad anatomy,
+              malformed limbs, poorly drawn hands, overlapping bodies。
+              ⚙️ 插件已兜底：检测到多人（2girls / 1girl 1boy / 中文「两个女孩」「合照」等）
+              会自动把这串词并入负向（只增不覆盖），你写了也不会重复加；
+              ⛔ 负向里绝不要出现 solo / 1girl / 2girls（那是抑制人数的，会把 2 人压回 1 人）。
+           ⚠️ 原理：权重分组只做注意力加权、不做空间隔离，像素重叠→注意力区域重叠→特征互串。
+           贴得近更容易糊，所以靠"负向畸形词 + 不裁太狠 + 带部位姿势词"压住，而不是拉开距离；
+           真要根治需要区域控制（Regional Prompter / 蒙版）或分开生成再合成（本插件暂未支持）。
         详细规则与示例见技能 comfyui-draw 的「画多人 / 多人场景」章节。
 
         ★★★用户已经给出提示词时【原样绘制】，严禁画蛇添足（最高优先级的省事原则）：
@@ -14753,7 +14838,9 @@ class ComfyUIDrawPlugin(Star):
           `two different hair colors`、`white hair and teal hair`、`holding hands with each other`
           ——这些读音像描述、但不是 danbooru 标签，插件会剔除其权重（不再放大），对标签系底模仍是噪音。
           正确写法：两色发用 `two-tone hair` / `multicolored hair` / `streaked hair`；
-          两个角色各自的发色分别写进各自的分组；互动用 `holding hands` / `hugging` / `looking at viewer` 等标准 tag。
+          两个角色各自的发色分别写进各自的分组；互动优先用**带部位**的标准 tag
+          （`cheek to cheek` / `head on shoulder` / `shoulder to shoulder` / `arms around`），
+          别用 `hugging` / `holding hands` 这类没部位的笼统写法（多人贴身时最易糊成连体）。
           ★注意：**英文标签不会被翻译或校验**（插件只翻译含中文的片段），写错没有任何兜底，全靠你自己写对。
         - z-image-turbo（阿里 Z-Image）：中文或英文**自然语言整句**（中文理解最好）；不写标签/质量词；
           要渲染的文字放引号（渲染力强，引号外类文字 token 也可能被画出来）。

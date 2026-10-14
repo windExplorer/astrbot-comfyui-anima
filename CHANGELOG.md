@@ -2,6 +2,68 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.67（多人贴在一起时的「连体人」兜底：负向畸形词 + 贴身构图风险告警）
+
+现象（用户反馈，长期高频）：两人**贴在一起**（拥抱 / 贴脸 / 搭肩）出图时频繁出现
+「一个角色长出两个头」「A 的身体长在 B 的身体上」这类融合畸形。用户明确说明
+**要的就是两人贴近**，此前"让人站远一点"的思路方向错误，本版据此纠正。
+
+根因（三条，都不是"模型不听话"）：
+
+1. **负向侧对连体零约束**。`_do_draw` 的 negative 只有三个来源：LLM 传参、
+   平台预设（`platform_store` 的 `negative_presets` **默认空列表**）、工作流
+   `default_negative`。插件从不主动补词，于是 `conjoined` / `two heads` /
+   `fused bodies` 这一串抑制词**一次都没进过图**。而负向只压畸形、**完全不影响两人
+   靠多近**，是唯一"贴得近也能用"的杠杆——这条以前恰恰是空的。
+2. **权重分组只做注意力加权、不做空间隔离**。`(charA:1.2), (charB:1.2)` 让 CLIP 更关注
+   这两串特征，但像素上重叠的两人，其注意力区域也重叠 → 特征互串，下一步就是身体融合。
+   这是结构性的：真要根治得靠区域控制（Regional Prompter / 蒙版分区域）或分开生成再合成，
+   本插件当前没有这套能力（skill 里已如实标注）。
+3. **贴身构图里最该避免的写法，文档此前反而在鼓励**。skill 与 `comfyui_draw` docstring
+   让模型写 `hugging` / `holding_hands` / `leaning_on_each_other`（**没有具体部位**），
+   并鼓励 `close-up` / `upper_body`；而"大头贴"把画面裁到腰线以上后，模型会省掉躯干连接，
+   两人下半身直接叠成一块——这正是"身体长在另一个身上"的最主要来源。
+
+修复（后端 `prompt_guard.py` 新增三段纯函数 + `main.py` 两处接入）：
+
+1. `MULTI_FUSION_NEGATIVE`：18 个畸形抑制词（conjoined / fused bodies / two heads /
+   extra torso / fused fingers / bad anatomy …）。**刻意不含任何人数词**——
+   `solo` / `1girl` 放进负向会把 2 人压回 1 人，与多人目标相反，测试里有守卫断言。
+2. `multi_person_hints()`：多人判定（英文计数标签 + 中文人数表述「两个女孩」「合照」等）
+   + 两份风险清单——贴身易连体的**裁切词**（close-up / upper body / bust shot / 特写 / 胸像）
+   与**笼统接触词**（hugging / holding hands / kissing / 拥抱 …）。带部位的写法
+   （`cheek to cheek` / `head on shoulder` / `hugging from behind` / `shoulder to shoulder`）
+   先从文本里剔除、不告警——它们是**推荐**形态。
+3. `merge_multi_negative()`：负向**只增不覆盖**，按小写去重，用户原词与顺序一律不动；
+   `custom` 参数可整表替换默认词表。
+4. `main.py` 新增 `_boost_multi_fusion_negative(positive, negative)`（返回新负向 + info +
+   warn），接入两处出图链路：`_do_draw_nai_style`（平台路径，负向默认值解析之后）与
+   `_do_draw`（**LoRA 预设追加之后、注入之前**——此刻 positive 已是最终形态，多人判定最准，
+   且补的负向不会被后续任何注入覆盖）。**不改写用户的正向提示词**：风险词只
+   `logger.warning`，由日志/下轮改写去处理，用户的构图意图不动。
+5. 顺手修一个隐蔽错位：`prompt_guard` **此前漏在 `main.py` 的 `importlib.reload` 热重载
+   列表外**，热更新后跑的仍是旧护栏代码（既有的"前端新版、生图链路旧版"那类问题）。
+   已补进列表——本次改的正是它的函数，漏了会表现为"功能没生效但不报错"。
+
+文档（`skills/comfyui-draw/SKILL.md` + `comfyui_draw` docstring）：
+
+- 互动标签改为**优先带部位**写法，并把 `hugging` / `holding_hands` / `leaning_on_each_other` /
+  `kissing` 明确列为"别写"；新增「防连体」整节：禁贴身 `close-up`（改 `cowboy shot` /
+  `full_body`）、必写畸形负向词（并说明插件已兜底、写了不重复）、负向绝不可含人数词、
+  以及"为什么权重分组救不了贴一起"的原理说明。
+- 删掉原第 3 节里"站远一点"式的暗示，明确写「**不要为了分开把构图改远**」。
+- `comfyui_draw` docstring 底模语言规范里那句"互动用 `holding hands` / `hugging`"
+  同步改为带部位写法（与新规则冲突，属同一处口径漂移）。
+
+治不了的部分照实说清：区域控制（Regional Prompter / 蒙版）与"分开生成再合成"仍不支持，
+多人 + 强贴身 + 多角色 LoRA 同时开时，畸形只能被压低、无法根除。
+
+验证：`tests/test_prompt_guard.py` 从 7 组扩到 **10 组**（新增多人判定 / 风险词告警 /
+负向并入三组，含"两个苹果"不误判、"四位数"不误判、人数词绝不入负向、全量词表零重复追加
+等守卫），全部通过；`python -m compileall main.py prompt_guard.py` 零错；
+`tests/test_llm_tool_docstrings.py` 8 个工具 schema 全通过；`tests/test_logic.py` 1~4 组通过
+（第 5 组需完整 astrbot 运行时，本机环境限制，与本次改动无关）。
+
 ## v7.7.66（v7.7.65 的语种归一化为什么没生效：整理闸门是第二份判据）
 
 现象（用户 2026-10-14 00:08 日志 `logs/log2.log`，已确认跑的就是 v7.7.65）：

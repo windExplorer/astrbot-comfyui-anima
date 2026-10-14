@@ -157,10 +157,23 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 
 在计数标签和分组之后，补互动 / 站位词，避免各画各的飘在画面两端：
 
-- 互动：`holding_hands`、`hugging`、`looking_at_each_other`、`arm_in_arm`、`leaning_on_each_other`、`kissing`。
-- 站位 / 构图：`side_by_side`、`standing_close`、`centered`、`wide_shot`、`group_photo`、`from_side`、`sitting_together`、`back_to_back`。
-- 不要只写"在一起"中文——用上面英文标签（动漫）或"并肩站着/互相看着对方"（真人）。
+- 互动：**优先写「带部位」的接触词**——`cheek_to_cheek`、`head_on_shoulder`、`leaning_on_shoulder`、`hugging_from_behind`、`shoulder_to_shoulder`、`arms_around`。
+- ⚠️ **别写笼统的接触词**：`hugging`、`holding_hands`、`leaning_on_each_other`、`arm_in_arm`、`embrace`、`kissing` 这类"没有具体部位"的写法，两人贴在一起时最容易糊成连体（实测高频）。
+- 站位 / 构图：`side_by_side`、`standing_close`、`group_photo`、`from_side`、`sitting_together`、`back_to_back`。
 - ⚠️ 纯提示词对「谁在左/谁在右」只是**软约束**，不能精确摆位。Anima 普通生图是单 positive 通道、没有 Regional Prompter，靠「计数标签 + 每角色分组」已是当前最佳近似；要精确构图得靠 ControlNet / 参考图（图生图）。
+
+#### ★ 两人贴在一起时的「连体」防线（用户实测高频，必须遵守）
+
+用户要的往往就是**贴在一起**（拥抱 / 贴脸 / 搭肩）——这没问题，**不要为了"分开"把构图改远**。要防的是「一个角色长出两个头」「A 的身体长在 B 的身上」这种融合畸形。三条硬规则：
+
+1. **禁止把画面裁到腰线以上**：贴在一起时**不要**用 `close-up`、`upper_body`、`bust_shot`（"大头贴"）。腰线以下被砍掉后，模型会省掉躯干连接，两人下半身直接叠成一块——这正是"身体长在另一个身上"的最主要来源。**用 `cowboy shot`（保腰）或 `full_body`。**
+2. **负向提示词必须带畸形抑制词**（可直接抄）：
+   `conjoined, fused bodies, merged bodies, shared limbs, conjoined twins, two heads, extra head, multiple heads, extra torso, extra arms, extra legs, fused fingers, fused hands, extra fingers, bad anatomy, malformed limbs, poorly drawn hands, overlapping bodies`
+   > ⚙️ 插件已做兜底：出图链路检测到多人（`2girls` / `1girl 1boy` / 中文「两个女孩」「合照」等）时，会把这串词**自动并入负向**（只增不覆盖，不会动你写的负向）。你仍可自己写，写了不会重复加。
+   > ⛔ **负向里绝不要出现 `solo` / `1girl` / `2girls`**——那是抑制人数的，会把 2 人压回 1 人或干脆畸形。
+3. **两人同时用角色 LoRA 时更要守住 1、2 条**：LoRA 是全局作用于整张图、不认 prompt 分组，两张脸压在重叠区域上，融合概率显著上升。
+
+> 原理说清：`(角色A:1.2), (角色B:1.2)` 这种权重分组只做**注意力加权**，不做**空间隔离**。像素上重叠的两人，注意力区域也重叠，特征必然互串。所以贴得越近越容易糊——**贴一起也能做，靠的是负向畸形词 + 不裁太狠 + 带部位的姿势词**，而不是把人拉开。真要根治需要区域控制（Regional Prompter / 蒙版分区域）或分开生成再合成，本插件暂未支持。
 
 ### 4. 多人时的避坑
 
@@ -168,6 +181,8 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 - ❌ 只写"两个女孩"却不分角色描述（特征融合成一张脸、或两人长得一模一样分不清）。
 - ❌ 把两个角色的外观标签平铺混在一起（如 `blue_hair red_hair`，模型不知道谁蓝发谁红发）→ 必须分组 `(蓝发:1.2), (红发:1.2)`。
 - ❌ 动漫工作流用中文写人数（"两个女孩"）→ 必须用 `2girls` 英文计数标签。
+- ❌ **两人贴在一起还用 `close-up` / `upper_body`** → 裁掉腰线以下，必连体（见上节防线）。
+- ❌ **写 `hugging` 这种笼统接触词** → 改 `cheek_to_cheek` / `head_on_shoulder` 等带部位写法。
 - ✅ 画质前缀照常加（动漫 `masterpiece, best quality…`、真人 `最高画质…`），多人不影响前缀规则。
 - ✅ 分组权重 1.1~1.3 即可，**别超过 1.5**（过高人物易过拟合/崩坏、且可能把该角色画得过重挤压别人）。
 

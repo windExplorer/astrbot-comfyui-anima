@@ -357,3 +357,117 @@ def ensure_quality_prefix(text: str, style: str, custom: str = "") -> tuple[str,
 def is_short_prompt(text: str, max_tags: int = 8) -> bool:
     """描述是否偏短（用于决定要不要做一次扩写）。"""
     return 0 < count_tags(text) <= max(1, int(max_tags))
+
+
+# --------------------------------------------------------------------------- #
+# 多人场景「连体畸形」兜底（v7.7.54）
+# --------------------------------------------------------------------------- #
+# 现象（用户反馈）：两人**贴在一起**（拥抱 / 贴脸 / 搭肩）时频繁出现
+# 「一个角色长出两个头」「A 的身体长在 B 的身体上」这类融合畸形。
+#
+# 为什么这是结构性的、本模块只能压不能治：权重分组 `(charA:1.2), (charB:1.2)`
+# 只做「注意力加权」，不做「空间隔离」——像素上重叠的两人，其注意力区域也重叠，
+# 特征必然互串，下一步就是身体融合。真要根治得靠区域控制（Regional Prompter /
+# 蒙版分区域）或分开生成再合成，插件当前没有这套能力（见 skills 的说明）。
+#
+# 本模块做两件「零风险」的事，都不改变用户想要的构图（**不**把人拉远）：
+#   ① 负向注入：把畸形抑制词并入 negative（只增不覆盖）——负向只压畸形，
+#      完全不影响两人靠多近，是唯一「贴近也能用」的杠杆；
+#   ② 风险词告警：贴身构图时最该避免的是「裁切到腰线以上」和「笼统接触词」，
+#      命中就在日志里点出来（供 LLM 下轮改写 / 排查），不擅自改写用户的词。
+
+# 畸形抑制词（Anima / Illustrious / Pony 系通用）。不要在这里放 `solo`、`1girl`
+# 之类「人数」词——那是抑制少人的，与多人目标相反。
+MULTI_FUSION_NEGATIVE: tuple[str, ...] = (
+    "conjoined",
+    "fused bodies",
+    "merged bodies",
+    "shared limbs",
+    "conjoined twins",
+    "two heads",
+    "extra head",
+    "multiple heads",
+    "extra torso",
+    "extra arms",
+    "extra legs",
+    "fused fingers",
+    "fused hands",
+    "extra fingers",
+    "bad anatomy",
+    "malformed limbs",
+    "poorly drawn hands",
+    "overlapping bodies",
+)
+
+# 多人判定：英文计数标签（与 main 的 _MULTI_COUNT_RE 同口径）+ 中文人数表述
+_MULTI_EN_RE = re.compile(
+    r"(?:[2-9]\s*girls|[2-9]\s*boys|multiple\s+girls|multiple\s+boys|"
+    r"1girl\s+1boy|1boy\s+1girl|\bgroup\b|\bcrowd\b)",
+    re.I,
+)
+_ZH_MULTI_RE = re.compile(
+    # 「三个 / 两位 / 4名 / 两人 / 俩」+ 人称量词（后接「数」如「四位数」不算人数）
+    r"(?:[两俩二三四五六七八九2-9]\s*(?:个|位|名)\s*(?:人|女孩|男孩|少年|少女|孩子|角色)(?!数)"
+    r"|[两俩二三四五六七八九2-9]\s*(?:人|女孩|男孩|少年|少女)"
+    r"|一群|合照|合影|多人|两人)"
+)
+
+# 贴身场景下最容易连体的写法（只告警）
+_TIGHT_CROP_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\bclose[\s\-_]?up\b", re.I), "close-up"),
+    (re.compile(r"\bbust\s+shot\b", re.I), "bust shot"),
+    (re.compile(r"\bupper\s*body\b", re.I), "upper body"),
+    (re.compile(r"\b(?:face|head)\s*(?:close[\s\-_]?up|shot)\b", re.I), "face closeup"),
+    (re.compile(r"(?:特写|胸像|半身|上半身)"), "中文近景（特写/胸像/半身）"),
+)
+_VAGUE_CONTACT_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\bhug(?:ging|s)?\b", re.I), "hugging"),
+    (re.compile(r"\bholding\s+hands?\b|\bhand\s*in\s*hand\b", re.I), "holding hands"),
+    (re.compile(r"\blean(?:ing)?\s+on\s+each\s+other\b", re.I), "leaning on each other"),
+    (re.compile(r"\barm\s*in\s*arm\b", re.I), "arm in arm"),
+    (re.compile(r"\b(?:embrac\w*|arms?\s+around)\b", re.I), "embrace / arms around"),
+    (re.compile(r"\bkiss(?:ing|ed)?\b", re.I), "kissing"),
+    (re.compile(r"(?:拥抱|搂着|依偎|牵手|接吻|亲吻)"), "中文笼统接触词"),
+)
+# 明确部位的接触写法 = **推荐** 形态，先从文本里剔掉，避免被当成「笼统接触」告警
+_SPECIFIC_CONTACT_RE = re.compile(
+    r"\b(?:hug(?:ging|s)?\s+from\s+behind|cheek\s+to\s+cheek|"
+    r"head\s+on\s+\w+\s+shoulder|lean(?:ing)?\s+on\s+(?:his|her|their|the)\s+shoulder|"
+    r"shoulder\s+to\s+shoulder|side\s+hug)\b",
+    re.I,
+)
+
+
+def is_multi_person(text: str) -> bool:
+    """文本是否描述了 ≥2 人（英文计数标签或中文人数表述）。"""
+    t = text or ""
+    return bool(_MULTI_EN_RE.search(t) or _ZH_MULTI_RE.search(t))
+
+
+def multi_person_hints(text: str) -> tuple[bool, list[str], list[str]]:
+    """多人场景体检：返回 ``(是否多人, 贴身易连体的裁切词, 笼统接触词)``。
+
+    两个风险清单都只用于**日志告警**，不会改写提示词。
+    """
+    t = text or ""
+    if not is_multi_person(t):
+        return False, [], []
+    probe = _SPECIFIC_CONTACT_RE.sub(" ", t)
+    crops = [label for rx, label in _TIGHT_CROP_PATTERNS if rx.search(t)]
+    contact = [label for rx, label in _VAGUE_CONTACT_PATTERNS if rx.search(probe)]
+    return True, crops, contact
+
+
+def merge_multi_negative(negative: str, custom: str = "") -> tuple[str, list[str]]:
+    """把畸形抑制词并入负向（**只增不覆盖**），返回 ``(新负向, 实际加入的词)``。
+
+    - ``custom`` 非空时**用它替换**默认词表（逗号/分号/换行分隔），便于站点定制；
+    - 已存在的词按小写去重，不重复追加；原负向的词序与内容一律保持不动。
+    """
+    parts = [p.strip() for p in re.split(r"[,，;\n]+", negative or "") if p.strip()]
+    have = {_norm(p) for p in parts}
+    words = [w.strip() for w in re.split(r"[,，;\n]+", custom or "") if w.strip()]
+    if not words:
+        words = list(MULTI_FUSION_NEGATIVE)
+    added = [w for w in words if _norm(w) not in have]
+    return ", ".join(parts + added), added
