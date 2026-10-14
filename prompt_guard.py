@@ -668,6 +668,75 @@ def clean_multi_count_conflicts(text: str) -> tuple[str, list[str]]:
 
 
 # --------------------------------------------------------------------------- #
+# LoRA 触发词净化（v7.7.78）
+# --------------------------------------------------------------------------- #
+# 实测案例：角色 LoRA 的 trigger_words 被整段填入了 Civitai 推荐提示词
+# （`qingxiao \(wuthering waves\), 1girl, solo, full body, blue hair, …, @NJSW33T`），
+# 插件把每个词追加进公共提示词后：① `1girl, solo` 与画面实际的 `2girls` 直接打架；
+# ② 质量词 / 负向词残渣（masterpiece、B4d4n4t0my 之类）在正向里纯是噪音。
+#
+# 定位原则：**人数由 LLM 根据画面统一决定，触发词永远不该携带计数标签**；
+# 质量词属于工作流/底模层，不该由角色 LoRA 的触发词兜售。
+# 只做减法，用户填写的激活词本身（哪怕再长）永不改动、永不"智能截断"。
+
+_TRIGGER_SPLIT_RE = re.compile(r"[\n,，、;；]+")
+
+# 计数标签：`1girl` / `2girls` / `1boy` / `3boys` / `multiple girls` / `solo` / `solo_focus`
+# 以及英文数字写法（`two girls`）。触发词里出现这些只有一个解释：整段抄了推荐提示词。
+_TRIGGER_COUNT_RE = re.compile(
+    r"^(?:\d+\s*(?:girls?|boys?|others?|men|women|people|guys|males?|females?)"
+    r"|multiple\s*(?:girls?|boys?|others?|people)"
+    r"|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:girls?|boys?)"
+    r"|solo(?:[_\s]?(?:focus|female|male))?)$",
+    re.I,
+)
+
+# 质量/负向 meta 标签：抄推荐提示词时混进正向的噪音（负向词、评分词、日期词）。
+_TRIGGER_META_TOKENS: frozenset[str] = frozenset({
+    "masterpiece", "best quality", "amazing quality", "very aesthetic",
+    "absurdres", "high quality", "normal quality", "low quality",
+    "good quality", "worst quality", "bad quality", "bad anatomy",
+    "bad hands", "bad proportions", "jpeg artifacts", "watermark",
+    "signature", "username", "logo", "newest", "oldest", "recent",
+})
+
+
+def sanitize_trigger_words(raw: str) -> tuple[list[str], list[str]]:
+    """拆分 LoRA 触发词字段并剔除不应由触发词携带的标签，返回 ``(保留词, 剔除词)``。
+
+    剔除的只有两类：计数标签（`1girl` / `solo` 等——人数由 LLM 统一决定，触发词带
+    计数只会与画面人数打架）与质量/负向 meta 标签（进正向纯是噪音）。
+    其余词原样保留、保持原顺序；空输入返回 ``([], [])``。
+    """
+    kept: list[str] = []
+    dropped: list[str] = []
+    for tok in _TRIGGER_SPLIT_RE.split((raw or "").strip()):
+        tok = tok.strip()
+        if not tok:
+            continue
+        low = tok.lower()
+        if _TRIGGER_COUNT_RE.match(low) or low in _TRIGGER_META_TOKENS:
+            dropped.append(tok)
+        else:
+            kept.append(tok)
+    return kept, dropped
+
+
+def looks_char_lora(trigger_raw: str) -> bool:
+    """触发词字段是否带计数标签——角色 LoRA（整段抄推荐提示词）的典型特征。
+
+    用于 main.py 的「角色 LoRA 触发词不全局追加」判定：配置里分类没写「角色」
+    但触发词自带 `1girl`/`solo` 的，按角色 LoRA 同等对待（多角色/多人画面下
+    整段外观标签全局追加 = 角色特征互相污染）。
+    """
+    for tok in _TRIGGER_SPLIT_RE.split((trigger_raw or "").strip()):
+        tok = tok.strip()
+        if tok and _TRIGGER_COUNT_RE.match(tok):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # 参考混合式多人渲染（v7.7.71）
 # --------------------------------------------------------------------------- #
 # 来源声明（v7.7.72 补）：`_Refs/anima-master` 是**第三方 AstrBot 插件**，不是 Anima 官方仓库。

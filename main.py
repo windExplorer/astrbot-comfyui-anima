@@ -8270,25 +8270,36 @@ class ComfyUIDrawPlugin(Star):
             # （全局追加=两个角色特征互相污染，实测「薄荷的猫耳跑到鉴定师头上」）。
             # 多角色时触发词必须由 LLM 写进各自的角色分组括号（comfyui_draw 已有
             # 「无分组即拦截」保证分组存在；已写进分组的词走下方「已存在不重复追加」）。
+            # v7.7.78：角色判定放宽——分类没写「角色」但触发词自带人数标签
+            # （1girl/solo，整段抄推荐提示词的典型特征）的也算角色 LoRA；
+            # 且只要画面本身是多人（positive 含 2girls 等），单个角色 LoRA 的触发词
+            # 同样不全局追加（实测「清宵」的整段角色外观标签污染了公共提示词，
+            # `1girl, solo` 还与画面 `2girls` 直接打架）。
             _multi_char_skip: set[str] = set()
             _skip_words: set[str] = set()
             for _nm in enabled:
                 _le = _lib.get(_nm) or _lib.get((_nm or "").lower()) or {}
-                if (_le.get("category") or "").strip() == "角色":
+                _le_tw = str(_le.get("trigger_words") or "")
+                if ((_le.get("category") or "").strip() == "角色"
+                        or prompt_guard.looks_char_lora(_le_tw)):
                     _multi_char_skip.add(_nm)
-                    for _tw in re.split(r"[\n,，、;；]+", str(_le.get("trigger_words") or "").strip()):
+                    for _tw in re.split(r"[\n,，、;；]+", _le_tw.strip()):
                         _tw = _tw.strip()
                         if _tw:
                             _skip_words.add(_tw.lower())
-            if len(_multi_char_skip) >= 2:
+            if _multi_char_skip and (
+                len(_multi_char_skip) >= 2 or prompt_guard.is_multi_person(positive)
+            ):
                 logger.warning(
-                    f"【LoRA 触发词】 多角色模式：{sorted(_multi_char_skip)} 的触发词不全局追加"
+                    f"【LoRA 触发词】 多角色/多人模式：{sorted(_multi_char_skip)} 的触发词不全局追加"
                     f"（防串味），应已由 LLM 写进各自的角色分组括号"
                 )
             else:
                 _multi_char_skip = set()
                 _skip_words = set()
-            # ① 全量自动列表：启用 LoRA 的触发词永不缺失（多角色模式除外，见上）
+            # ① 全量自动列表：启用 LoRA 的触发词永不缺失（多角色模式除外，见上）。
+            #    v7.7.78：先过净化器——计数标签（1girl/solo）与质量/负向 meta 残渣
+            #    不追加（人数归 LLM 管；整段抄推荐提示词的典型脏东西在这里拦下）。
             for nm in enabled:
                 if nm in _multi_char_skip:
                     continue
@@ -8302,9 +8313,20 @@ class ComfyUIDrawPlugin(Star):
                     or (_lib.get(nm) or {}).get("trigger_words")
                     or ""
                 )
-                for _tw in re.split(r"[\n,，、;；]+", str(_tw_raw).strip()):
-                    _tw = _tw.strip()
-                    if _tw and _tw not in _triggers:
+                _tw_kept, _tw_dropped = prompt_guard.sanitize_trigger_words(str(_tw_raw))
+                if _tw_dropped:
+                    logger.info(
+                        f"【LoRA 触发词】 「{nm}」触发词剔除计数/质量类标签: {_tw_dropped}"
+                        f"（人数由画面统一决定，触发词不携带）"
+                    )
+                if len(_tw_kept) >= 8:
+                    logger.warning(
+                        f"【LoRA 触发词】 「{nm}」的触发词有 {len(_tw_kept)} 项，"
+                        f"疑似整段推荐提示词——建议只保留激活词（1~3 个），"
+                        f"外观细节交给改写 LLM 或角色卡"
+                    )
+                for _tw in _tw_kept:
+                    if _tw not in _triggers:
                         _triggers.append(_tw)
             # ② LLM 显式传入的词：只增补、不替换
             if trigger_words is not None:
@@ -8316,6 +8338,15 @@ class ComfyUIDrawPlugin(Star):
                     for _tw in re.split(r"[\n,，、;；]+", str(trigger_words).strip()):
                         _tw = _tw.strip()
                         if not _tw or _tw in _triggers or _tw in _extra:
+                            continue
+                        # v7.7.78：LLM 偶尔会把推荐提示词里的计数/质量词当触发词
+                        # 增补回来（`1girl` / `solo` / `masterpiece`），这里同样拦下
+                        _tw_keep, _tw_bad = prompt_guard.sanitize_trigger_words(_tw)
+                        if _tw_bad and not _tw_keep:
+                            logger.info(
+                                f"【LoRA 触发词】 LLM 增补的「{_tw}」是计数/质量类标签，"
+                                f"不全局追加（人数由画面统一决定）"
+                            )
                             continue
                         # 多角色模式：角色 LoRA 的触发词绝不全局增补（必须进对应角色分组）
                         if _skip_words and _tw.lower() in _skip_words:
@@ -8379,6 +8410,21 @@ class ComfyUIDrawPlugin(Star):
                     logger.info(f"【LoRA 触发词】 已追加到正向提示词: {_add}")
                 else:
                     logger.info(f"【LoRA 触发词】 启用 LoRA 的触发词均已存在于正向提示词中，无需追加")
+                # v7.7.78 兜底：触发词追加发生在主多人计数清理（_do_draw 前段）之后，
+                # 追加进来的 `1girl` / `solo` 不会再被它清到——这里重跑一次，
+                # 确保最终进工作流的提示词里没有与人数打架的单人计数标签。
+                try:
+                    positive, _cc_drop2 = prompt_guard.clean_multi_count_conflicts(positive)
+                    if _cc_drop2:
+                        logger.info(
+                            f"【多人计数】 触发词追加后复检剔除 {len(_cc_drop2)} 项: {_cc_drop2}"
+                        )
+                        workflow_builder.set_text_node(
+                            prompt, wf.get("positive_node"),
+                            (wf.get("positive_field") or "").strip() or "text", positive
+                        )
+                except Exception as _cce2:
+                    logger.warning(f"【多人计数】 触发词追加后复检异常（忽略）: {_cce2}")
 
         # 随机化种子（未指定 --seed 时），避免每次出图完全相同
         # v7.0.0：工作流配置了固定种子（fixed_seed）且用户未显式指定时，用固定值
@@ -15000,7 +15046,10 @@ class ComfyUIDrawPlugin(Star):
             "\n\n" + ref
             + "\n注意：以上是本次**实际启用**的 LoRA。若用户要求画这些角色/风格，请让画面与"
               "描述里的关键特征（发色、发型、瞳色、兽耳、标志性服饰等）一致；"
-              "参考里没有的角色或风格不要凭空写进提示词。"
+              "参考里没有的角色或风格不要凭空写进提示词。\n"
+              "描述里如附有整段推荐标签串（含 1girl/solo 等计数标签或 masterpiece 等质量词），"
+              "**不要整段照抄**——人数与多人编排由你根据画面统一决定，质量词不许写；"
+              "只把与该角色身份强相关的少数关键特征写进对应角色分组。"
         )
 
     async def _danbooru_identity_anchors(self, trigger: str) -> list[str]:

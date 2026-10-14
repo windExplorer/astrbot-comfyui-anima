@@ -644,6 +644,50 @@ def test_stable_ids_backfill():
     print("== 27. 稳定 ID 自动补齐（LoRA/工作流、新旧数据、已有不动、写盘） OK")
 
 
+def test_sanitize_trigger_words():
+    # 真实事故原样（v7.7.78）：角色 LoRA 的 trigger_words 被整段填入推荐提示词，
+    # `1girl, solo` 追加进 2girls 画面直接打架；质量词/@水印残渣纯噪音。
+    dump = ("qingxiao \\(wuthering waves\\), 1girl, solo, full body, blue hair, "
+            "very long hair, blue eyes, white dress, china dress, "
+            "white thighhighs, white high heels, @NJSW33T, masterpiece, best quality")
+    kept, dropped = prompt_guard.sanitize_trigger_words(dump)
+    assert kept[0] == "qingxiao \\(wuthering waves\\)", kept
+    assert "full body" in kept and "blue hair" in kept and "white high heels" in kept, kept
+    # 计数标签必须全部剔除
+    assert "1girl" not in kept and "solo" not in kept, kept
+    assert "1girl" in dropped and "solo" in dropped, dropped
+    # 质量/负向 meta 残渣剔除（@水印残渣保留——@ 是 Anima 画师名的合法前缀，不能误杀）
+    assert "best quality" in dropped and "masterpiece" in dropped, dropped
+    assert "@NJSW33T" in kept, kept
+    # 英文数字写法与变体
+    kept2, dropped2 = prompt_guard.sanitize_trigger_words(
+        "two girls, multiple girls, solo focus, 3boys, my_lora_activation")
+    assert kept2 == ["my_lora_activation"], kept2
+    assert set(dropped2) == {"two girls", "multiple girls", "solo focus", "3boys"}, dropped2
+    # 中文分隔符也认
+    kept3, _ = prompt_guard.sanitize_trigger_words("qinxiao_tag，1girl、solo")
+    assert kept3 == ["qinxiao_tag"], kept3
+    # 干净的短触发词原样通过（激活词永不改动）
+    assert prompt_guard.sanitize_trigger_words("qingxiao \\(wuthering waves\\)") == (
+        ["qingxiao \\(wuthering waves\\)"], [])
+    assert prompt_guard.sanitize_trigger_words("") == ([], [])
+    assert prompt_guard.sanitize_trigger_words(None) == ([], [])
+    print("== 28. 触发词净化（计数/质量标签剔除，激活词保留） OK")
+
+
+def test_looks_char_lora():
+    # 整段抄推荐提示词 → 一定带人数标签 → 判定为角色 LoRA
+    assert prompt_guard.looks_char_lora(
+        "qingxiao \\(wuthering waves\\), 1girl, solo, blue hair")
+    # 干净激活词 / 画风触发词不误判
+    assert not prompt_guard.looks_char_lora("qingxiao \\(wuthering waves\\)")
+    assert not prompt_guard.looks_char_lora("sketch style, monochrome")
+    assert not prompt_guard.looks_char_lora("")
+    # 触发词里夹自然语言含 solo 之外的人数（blonde girl 不算计数）
+    assert not prompt_guard.looks_char_lora("blonde girl, red dress")
+    print("== 29. 角色 LoRA 启发式判定（触发词带人数标签） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -689,4 +733,6 @@ if __name__ == "__main__":
     test_lora_description_as_anchor_source()
     test_lora_lookup_unique_fuzzy()
     test_stable_ids_backfill()
+    test_sanitize_trigger_words()
+    test_looks_char_lora()
     print("提示词护栏全部通过")
