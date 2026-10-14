@@ -216,6 +216,13 @@ Anima 参考插件（源码在 `_Refs/anima-master`）对多人的参考插件�
 - ❌ 动漫工作流用中文写人数（"两个女孩"）→ 必须用 `2girls` 英文计数标签。
 - ❌ **多人提示词里出现 `1girl` / `1boy` / `solo`** —— 与 `2girls` 直接打架，模型可能只画一个或画三个；也包括把它们写进自然语言句子里（`1girl standing on the left and 1girl standing on the right`）。左右站位用 `side_by_side` / `from_side` 表达，或干脆不写。
 - ❌ **prompt 里的角色触发词与 `loras` 参数对不上**（例如 loras 传的是 A、B，prompt 分组里却写着上一轮对话里的 C、D）→ 等于"加载 A 的模型、点名 C"，出图根本不是那两个人。传 `loras` 时必须同步把各角色触发词写进对应分组。
+- ❌★★★ **把"各自的体型 / 服饰 / 动作 / 表情"写到括号分组外面**（实测高频，用户原话明明说了"她们各自有不同的体型服饰和动作"，模型却把 `petite, tall, black dress, red dress, sitting, standing, blush, smile` 全丢在公共区）→ **公共区的标签模型理解成两人共有**，于是两人穿同一套衣服、做同一个动作，直接同脸。
+  ✅ 正确写法：**每个角色的体型/服饰/动作/表情一律写进该角色自己的括号分组里**；公共区只允许「人数计数 / 关系（side_by_side、holding hands）/ 场景 / 镜头 / 光影 / 氛围」。
+  ```
+  ❌ 2girls, (A:1.2), (B:1.2), petite, tall, black dress, red dress, sitting, standing, blush
+  ✅ 2girls, (A, black dress, sitting:1.2), (B, red dress, standing:1.2), side_by_side, night, full body
+  ```
+  > ⚙️ 插件兜底：用户本轮说了"各自/分别/不同"等差异化要求时，出图链路会把公共区里的角色专属标签（服饰/体型/发色/动作/表情）**按顺序轮流归位**到各角色块（日志 `【多人混合式】… 归位`）。但轮流归位只是兜底，**顺序可能与你的意图相反**，所以还是请直接写进各自分组。
 - ⛔ 标签系底模（Anima / Illustrious / Pony）里不要写自然语言句子（`two girls standing on the left…`）：CLIP 只当噪音 token，人数与站位都用标签表达。
 - ❌ **角色 LoRA 已经给了完整形象，还把发色/发型/瞳色/兽耳写进分组** → 稀释 LoRA、且两人写得越像越撞脸；只写触发词 + 用户明说的变化项。
 - ❌ **两个角色写同一套衣服**（`2girls, (A, black strapless dress:1.2), (B, black strapless dress:1.2)`）→ 标签系底模理解成双胞胎，两人画成同一张脸；至少让一位换衣服 / 换动作 / 加道具。

@@ -755,7 +755,7 @@ def visual_label_for(anchors: list[str], fallback: str = "") -> str:
 
 
 def build_hybrid_multi_person(
-    positive: str, per_char: list[dict]
+    positive: str, per_char: list[dict], assign_personal: bool = False
 ) -> tuple[str, list[str]]:
     """把权重分组形态的多人提示词重写为参考混合式，返回 ``(新提示词, 改写说明)``。
 
@@ -764,6 +764,10 @@ def build_hybrid_multi_person(
     - 公共部分（人数 / 关系 / 场景 / 镜头 / 光影）保留原 tag；
     - 每个角色展开成一个自然语言块 ``visual_label: tag1, tag2, …``，块内不再加权；
     - 组内的裸触发词、以及与锚点重复的标签剔除（身份已由 label + 锚点表达）；
+    - ``assign_personal=True`` 时，把**公共区里的角色专属标签**（服饰/体型/发色/动作/表情，
+      实测 LLM 常把"各自的体型服饰动作"写在括号外）按出现顺序**轮流归位**到各角色块——
+      留在公共区会被模型理解成两人共有，正是同脸的主因之一。只在用户本轮明确要求
+      "各自不同"时启用（见 `differentiation_intent`），否则公共标签两人共有是用户自己的选择；
     - **任一组没有权威锚点就整体放弃重构**（返回原文）：没锚点的角色块无法与他人区分，
       硬写等于造出两个"空标签人"，比现状更糟。
     """
@@ -784,9 +788,15 @@ def build_hybrid_multi_person(
         if not groups or len(groups) != len(per_char):
             return positive, []
         common = [t.strip() for part in rest_parts for t in split_tags(part) if t.strip()]
+        # 公共区里的角色专属标签 → 按顺序轮流归位给各角色（仅在用户要求差异化时）
+        assigned: list[list[str]] = [[] for _ in groups]
+        if assign_personal:
+            common, personal = classify_common_tags(", ".join(common))
+            for _i, _t in enumerate(personal):
+                assigned[_i % len(groups)].append(_t)
         blocks: list[str] = []
         notes: list[str] = []
-        for grp, info in zip(groups, per_char):
+        for gi, (grp, info) in enumerate(zip(groups, per_char)):
             anchors = [a for a in (info.get("anchors") or []) if a]
             if not anchors:
                 return positive, []
@@ -805,16 +815,75 @@ def build_hybrid_multi_person(
                     if _norm(t) != _norm(trigger) and _norm(t) not in _anorm]
             merged: list[str] = []
             seen: set[str] = set()
-            for t in keep + anchors:
+            for t in keep + assigned[gi] + anchors:
                 if t and _norm(t) not in seen:
                     seen.add(_norm(t))
                     merged.append(t)
             blocks.append(f"{label}: " + ", ".join(merged) + ".")
-            notes.append(f"{label} ← [{', '.join(anchors)}]")
+            notes.append(
+                f"{label} ← [{', '.join(anchors)}]"
+                + (f" + 归位 [{', '.join(assigned[gi])}]" if assigned[gi] else "")
+            )
         parts = ([", ".join(common)] if common else []) + blocks
         return ", ".join(p for p in parts if p), notes
     except Exception:
         return positive, []
+
+
+# 角色专属 vs 公共：LLM 常把"各自的体型/服饰/动作"写到公共区（实测），而公共区的标签
+# 模型理解成**两人共有** → 同脸。参考实现对此的硬规则是：公共部分只放人数/关系/场景/镜头/
+# 光影，每个角色的 clothing/expression/pose/props 必须在自己的语义块里
+# （`_Refs/anima-master` 多人模板的 `common_tags` 与 per-character 字段划分）。
+#
+# 动作/表情词表刻意保守：只收"明确属于某个人"的动作与表情；`holding hands` /
+# `looking at each other` 这类**关系**词不进名单（两人共有才对）。
+_PERSONAL_ACTION_TAGS = frozenset((
+    "standing", "sitting", "walking", "running", "jumping", "kneeling", "crouching",
+    "lying", "sleeping", "squatting", "leaning", "stretching", "dancing", "flying",
+    "holding", "carrying", "raising arm", "raised arm", "arms crossed", "waving",
+    "reaching", "pointing", "touching", "covering", "hand on cheek",
+    "smile", "smiling", "blush", "blushing", "expressionless", "pouting", "crying",
+    "tears", "closed eyes", "open mouth", "angry", "surprised", "shy", "embarrassed",
+))
+_PERSONAL_ONLY_DIMS = ("outfit", "body", "animal", "hair_color", "eye_color", "hair_style")
+
+
+def classify_common_tags(text: str) -> tuple[list[str], list[str]]:
+    """把顶层标签分成 ``(公共标签, 角色专属标签)``。
+
+    角色专属 = 命中外观维度（服饰/体型/兽化/发色/发型/瞳色）或动作/表情词表。
+    其余（人数、关系、场景、镜头、光影、氛围、画质、画师串）一律算公共。判定保守，
+    宁可漏判（漏判只是维持现状）也不误判（误判会把公共标签塞进某个人）。
+    """
+    common: list[str] = []
+    personal: list[str] = []
+    for tag in split_tags(text or ""):
+        t = tag.strip()
+        if not t:
+            continue
+        dims = appearance_dims(t)
+        if any(dims.get(d) for d in _PERSONAL_ONLY_DIMS):
+            personal.append(t)
+            continue
+        if _norm(t) in _PERSONAL_ACTION_TAGS:
+            personal.append(t)
+            continue
+        common.append(t)
+    return common, personal
+
+
+# 用户"要求两人不同"的显式意图（中文/英文）。只有用户确实要求差异化时，才把公共区的
+# 角色专属标签按顺序**轮流归位**给各角色——否则公共动作/服饰两人共有正是用户自己的选择。
+_DIFFERENTIATE_INTENT_RE = re.compile(
+    r"各自|分别|不同|不一样|各有|都不同|区别|区分|差异化|迥异|迥然|完全不同|"
+    r"distinct|different|varied|various",
+    re.I,
+)
+
+
+def differentiation_intent(text: str) -> bool:
+    """用户本轮是否明确要求「两个角色要有差异」（各自不同 / 各有各的）。"""
+    return bool(_DIFFERENTIATE_INTENT_RE.search(text or ""))
 
 
 def multi_shared_appearance(text: str) -> tuple[bool, list[str]]:

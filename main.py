@@ -14840,7 +14840,13 @@ class ComfyUIDrawPlugin(Star):
                     )
                 return positive, ""
             _new, _notes = prompt_guard.build_hybrid_multi_person(
-                positive, [{"anchors": r["anchors"]} for r in _roles])
+                positive,
+                [{"anchors": r["anchors"]} for r in _roles],
+                # 用户本轮明确说"各自不同/各有各的"时，把 LLM 写在公共区的体型/服饰/动作
+                # **轮流归位**到各角色块——留在公共区会被模型理解成两人共有（同脸主因之一）。
+                assign_personal=prompt_guard.differentiation_intent(
+                    (getattr(event, "message_str", "") or "") if event is not None else ""),
+            )
             if not _notes:
                 logger.info(
                     "【多人混合式】 未能按参考实现形态改写（分组数与角色数不一致或缺锚点），保持原提示词"
@@ -15162,6 +15168,15 @@ class ComfyUIDrawPlugin(Star):
         详细规则与示例见技能 comfyui-draw 的「画多人 / 多人场景」章节。
 
         ★★★★★ 多人场景按 Anima 参考实现架构来（v7.7.71，多人最高优先级规则）：
+        ★★★ 【最容易犯、也最致命的一条】用户说"她们**各自**有不同的体型/服饰/动作"时，这些
+           内容**必须写进各角色自己的括号分组里**，绝不能丢在公共区：
+             ❌ 2girls, (A:1.2), (B:1.2), petite, tall, black dress, red dress, sitting, standing
+             ✅ 2girls, (A, black dress, sitting:1.2), (B, red dress, standing:1.2), side_by_side, night
+           公共区只允许「人数计数 / 关系（side_by_side、holding hands）/ 场景 / 镜头 / 光影 / 氛围」。
+           原因：**公共区的标签模型理解成两人共有**——写在公共区等于让两人穿同一套衣服、做同一个
+           动作，这就是"用户明明说了要不同、结果两人一模一样"的直接原因。
+           ⚙️ 插件兜底：用户本轮说了"各自/分别/不同"时会把公共区的角色专属标签轮流归位到各角色块
+           （日志 `【多人混合式】… 归位`），但顺序可能与意图相反，所以请直接写进各自分组。
         📌 来源：`anima-master` 是**第三方 AstrBot 插件**，不是 Anima 官方仓库；下面这条结论与
         「混合式 / 身份锚点 / 不用角色 LoRA」都是**该参考插件的方案选择**，不是官方规范。
         模型层面的权威依据只有 Anima 模型发布方（circlestone-labs）模型卡；**模型卡从未提过多角色

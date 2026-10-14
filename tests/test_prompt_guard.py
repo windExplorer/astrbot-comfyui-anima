@@ -14,7 +14,8 @@ import prompt_guard  # noqa: E402
 from prompt_guard import (  # noqa: E402
     LORA_ECHO_DIMS, LORA_ECHO_DIMS_WITH_OUTFIT, MULTI_FUSION_NEGATIVE,
     appearance_change_intent, appearance_dims, build_hybrid_multi_person,
-    clean_multi_count_conflicts, ensure_quality_prefix, free_dim_coverage,
+    classify_common_tags, clean_multi_count_conflicts, differentiation_intent,
+    ensure_quality_prefix, free_dim_coverage,
     has_character_tag, identity_anchor_tags, is_multi_person, is_short_prompt,
     keeps_original_tags, merge_multi_negative, multi_person_hints,
     multi_shared_appearance, outfit_intent, prompt_style_of, quality_prefix_for,
@@ -460,6 +461,59 @@ def test_end_to_end_multi_identity():
     print("== 21. 端到端：剥除 → 补权威锚点 → 参考混合式（两人标签不同） OK")
 
 
+def test_classify_common_tags():
+    # 用户实测：说"各自有不同的体型服饰动作"，模型却把专属项全丢在公共区
+    txt = ("2girls, side_by_side, looking_at_each_other, night, full body, soft lighting, "
+           "petite, tall, black dress, red dress, sitting, standing, blush, "
+           "simple background, depth of field")
+    common, personal = classify_common_tags(txt)
+    # 角色专属：体型/服饰/动作/表情
+    for t in ("petite", "tall", "black dress", "red dress", "sitting", "standing", "blush"):
+        assert t in personal, (t, common, personal)
+    # 公共：人数/关系/场景/镜头/画质
+    for t in ("2girls", "side_by_side", "looking_at_each_other", "night", "full body",
+              "soft lighting", "simple background", "depth of field"):
+        assert t in common, (t, common, personal)
+    # 关系类动作不进个人专属（两人共有才对）
+    _c2, _p2 = classify_common_tags("2girls, holding hands, hugging, smile")
+    assert "holding hands" not in _p2 and "hugging" not in _p2, _p2
+    assert "smile" in _p2, _p2
+    print("== 22. 公共 / 角色专属标签分类（体型服饰动作表情 vs 关系场景镜头） OK")
+
+
+def test_differentiation_intent():
+    assert differentiation_intent("她们各自有不同的体型服饰和动作")
+    assert differentiation_intent("两个角色要不一样的画风")
+    assert differentiation_intent("画两个风格迥异的人")
+    assert differentiation_intent("two characters with different outfits")
+    assert not differentiation_intent("画两个角色并加上她们的 LoRA")
+    assert not differentiation_intent("两个女孩合照")
+    print("== 23. 用户「要求差异化」意图判定 OK")
+
+
+def test_assign_personal_to_blocks():
+    """公共区的角色专属标签要归位到各角色块，而不是留在公共区让两人共用。"""
+    positive = ("masterpiece, 2girls, (suomingwuwa:1.2), (xinyuehu:1.2), side_by_side, "
+                "night, petite, tall, black dress, red dress, sitting, standing, blush")
+    per_char = [{"anchors": ["red hair", "fox ears"]},
+                {"anchors": ["long white hair", "orange eyes"]}]
+    out, notes = build_hybrid_multi_person(positive, per_char, assign_personal=True)
+    # 四项专属标签应被拆到两个块里，且不再出现在公共段
+    head = out.split("red-haired")[0]
+    for t in ("petite", "tall", "black dress", "red dress", "sitting", "standing", "blush"):
+        assert t not in head, (t, out)
+    a_block = out.split("red-haired")[1].split(".")[0]
+    b_block = out.split("white-haired")[1]
+    assert "petite" in a_block and "black dress" in a_block and "sitting" in a_block, out
+    assert "tall" in b_block and "red dress" in b_block and "standing" in b_block, out
+    # 公共区保留真正的公共项
+    assert "side_by_side" in head and "night" in head, out
+    # 不启用归位时，公共专属标签留在公共区（维持用户自己的选择）
+    out2, _ = build_hybrid_multi_person(positive, per_char, assign_personal=False)
+    assert "petite" in out2.split("red-haired")[0], out2
+    print("== 24. 公共区角色专属标签归位到各角色块 OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -499,4 +553,7 @@ if __name__ == "__main__":
     test_visual_label_for()
     test_build_hybrid_multi_person()
     test_end_to_end_multi_identity()
+    test_classify_common_tags()
+    test_differentiation_intent()
+    test_assign_personal_to_blocks()
     print("提示词护栏全部通过")

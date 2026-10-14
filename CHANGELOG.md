@@ -2,6 +2,46 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.73（用户明说"各自有不同的体型服饰动作"却全写在括号外 → 公共区标签让两人共用）
+
+现象（用户 2026-10-14 实测）：用户原话明确说了「她们**各自**有不同的体型、服饰和动作」，
+但 LLM 产出的提示词里 `petite, tall, black dress, red dress, sitting, standing, blush`
+**全在括号分组外面的公共区**。公共区的标签模型理解成**两人共有** → 两人穿同一套衣服、做同一个
+动作、同一种体型 → 这正是"用户明明要求了不同、结果两人一模一样"的**直接原因**，也是此前几版
+一直修不掉的根因之一（我一直在改"该怎么写"，没管"写到了哪儿"）。
+
+参考实现的模板对此有硬规则（`_Refs/anima-master` 多人规划模板）：公共部分
+（`common_tags`）只放人数 / 关系 / 场景 / 镜头 / 光影，**每个角色的 clothing / expression /
+pose / props 必须在自己的语义块里**。我们此前的混合式渲染只把**组内**标签搬进人物块，组外的
+一律当公共保留，于是 LLM 放错位置的内容原样留着、两人共用。
+
+修复：
+
+1. `prompt_guard.classify_common_tags()`：把顶层标签分成 `(公共, 角色专属)`。角色专属 = 命中
+   外观维度（服饰 outfit / 体型 body / 兽化 animal / 发色 / 发型 / 瞳色）或动作·表情词表
+   （`_PERSONAL_ACTION_TAGS`，刻意保守：`holding hands` / `looking_at_each_other` 这类**关系**
+   词不进名单，两人共有才对）。判定保守——宁可漏判（维持现状）也不误判（把公共标签塞给某人）。
+2. `prompt_guard.differentiation_intent()`：判定用户本轮是否明确要求差异化（各自 / 分别 /
+   不同 / 不一样 / 各有 / 迥异 / 完全不同 / distinct / different / varied / various）。
+   **只有用户确实要求差异化时**才做下面的归位——否则公共的动作/服饰两人共有是用户自己的选择，
+   不该由插件替他改。
+3. `build_hybrid_multi_person(..., assign_personal=True)`：把公共区里的角色专属标签按出现顺序
+   **轮流归位**到各角色块（`petite, black dress, sitting` → A；`tall, red dress, standing, blush`
+   → B），并在该角色的改写说明里记「+ 归位 [...]」。`main._apply_multi_identity` 按用户原话意图
+   传入该开关。
+4. **文档硬规则**（`comfyui_draw` docstring 多人规则 + `skills/comfyui-draw/SKILL.md` 避坑清单）：
+   新增「最容易犯、也最致命的一条」——角色专属的体型/服饰/动作/表情**必须写进各自分组**，
+   公共区只允许人数/关系/场景/镜头/光影/氛围，并给出正误对照；同时说明插件的轮流归位只是兜底、
+   顺序可能与意图相反，所以还是请直接写进各自分组。
+
+验证：`tests/test_prompt_guard.py` 21 组 → **24 组**，新增三组：① 公共/角色专属分类（含
+`holding hands`、`looking_at_each_other` 不算专属的正向守卫）② 差异化意图判定（正反各 4 条）
+③ 归位（断言四项专属标签不再出现在公共段、A/B 块各自拿到对应标签与动作、不启用归位时维持原状）。
+全通过；`compileall` 零错；产物 `dist/astrbot_plugin_comfyui_anima_v7.7.73.zip`。
+
+> 归位是**按出现顺序轮流**分配的，无法知道用户想给谁哪一件。它能把"两人共用"变成"两人不同"，
+> 但不保证分配得符合本意——所以文档同时要求 LLM 直接写进各自分组。
+
 ## v7.7.72（术语更正：`anima-master` 是第三方插件，不是 Anima 官方仓库）
 
 用户指出 `x:\_WorkSpace\Mine\_AstrbotPlugins\_Refs\anima-master` **不是官方**，而是另一个第三方
