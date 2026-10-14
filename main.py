@@ -1015,16 +1015,83 @@ def _inject_tags_into_char_group(
     括号，不许裸露在公共区**——裸露=两个人被同一套装扮罩住。分组 body 允许含
     转义括号；找不到包含 token 的分组 → 原样返回 ``(positive, False)``，由调用方
     决定跳过（多人语境，宁缺勿污染）。
+
+    ★v7.7.84：定位改用**归一化核心**（去空格/下划线/反斜杠/括号再比）——LLM 手写
+    `Denia\\(wuthering_waves\\)`、库里是 `denia \\(wuthering waves\\)`，旧式子串
+    匹配因下划线/空格差异失配，装扮永远注不进去（用户实测）。
     """
     if not (positive and tags and (token or "").strip()):
         return positive or "", False
-    low = token.strip().lower()
+    tcore = _norm_tag_core(token)
+    if not tcore:
+        return positive or "", False
     for m in _PRESET_GROUP_RE.finditer(positive):
         body = m.group(1)
-        if low in body.lower():
+        if tcore in _norm_tag_core(body):
             new_body = body + ", " + ", ".join(tags)
             return positive[:m.start()] + f"({new_body}:{m.group(2)})" + positive[m.end():], True
     return positive, False
+
+
+def _norm_tag_core(s: str) -> str:
+    """标签归一化核心：去空格/下划线/反斜杠/括号后小写——兼容 LLM 的手写变体
+    （`Denia\\(wuthering_waves\\)` ↔ `denia \\(wuthering waves\\)`）。"""
+    return re.sub(r"[\s_\\()]+", "", (s or "")).lower()
+
+
+# 去重分词：权重分组整体算一个 token（内部逗号不拆），其余按逗号/换行/分号切
+_DEDUPE_SEG_RE = re.compile(
+    r"\((?:\\.|[^()])*?:\s*\d+(?:\.\d+)?\s*\)"
+    r"|[^,，、;；\n]+"
+    r"|[,，、;；\n]+"
+)
+_DEDUPE_SEP_RE = re.compile(r"^[,，、;；\n]+$")
+
+
+def _dedupe_char_tags_from_common(positive: str) -> tuple[str, list[str]]:
+    """把「已进分组却还裸露在公共区」的角色激活词从公共区剥掉，返回 ``(新提示词, 剥除表)``。
+
+    v7.7.84 用户实测：LLM 把激活词既写进分组又在公共区复述一遍——
+    `2girls, qingxiaowuwa, Denia\\(wuthering_waves\\), side_by_side, …,
+    (qingxiaowuwa:1.2), (Denia\\(wuthering_waves\\):1.2)`。
+    规则：每个权重分组的**首个 token**（按惯例是激活词）算「已归位」；
+    公共区里归一化核心与之相同的裸露词剥掉。匹配走 `_norm_tag_core`，
+    `Denia\\(wuthering_waves\\)`（LLM 手写）与分组里的同形词天然相认。
+    场景/质量词（side_by_side、night…）不在分组里，不受影响。
+    """
+    ms = list(_DEDUPE_SEG_RE.finditer(positive or ""))
+    if not ms:
+        return positive or "", []
+    cores: set[str] = set()
+    for m in ms:
+        t = m.group(0)
+        if not t.lstrip().startswith("("):
+            continue
+        body = t[1:t.rfind(")")]
+        body = re.sub(r":\s*\d+(?:\.\d+)?\s*$", "", body).strip()
+        first = re.split(r"[,，]", body)[0].strip()
+        c = _norm_tag_core(first)
+        if c:
+            cores.add(c)
+    if not cores:
+        return positive or "", []
+    out: list[str] = []
+    dropped: list[str] = []
+    need_sep = False
+    for m in ms:
+        t = m.group(0)
+        if _DEDUPE_SEP_RE.fullmatch(t):
+            continue                      # 分隔符统一重建为 ", "
+        is_group = t.lstrip().startswith("(")
+        c = "" if is_group else _norm_tag_core(t.strip())
+        if c and c in cores:
+            dropped.append(t.strip())     # 已在分组里，公共区这份剥掉
+            continue
+        if need_sep:
+            out.append(", ")
+        out.append(t.strip())
+        need_sep = True
+    return "".join(out), dropped
 
 
 def _safe_llm_tool(func):
@@ -8002,6 +8069,17 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(f"【多人混合式】 异常（忽略）: {_mie}")
                 if _mi_note:
                     logger.info(f"【多人混合式】 {_mi_note}")
+            # v7.7.84：激活词已在分组里、公共区又裸露复述一遍（`2girls, qingxiaowuwa,
+            # Denia\(...\), …, (qingxiaowuwa:1.2), (Denia\(...\):1.2)`）→ 公共区那份剥掉。
+            # 用户定则：角色相关内容只准出现在对应角色的分组括号里。
+            try:
+                positive, _bare_dropped = _dedupe_char_tags_from_common(positive)
+                if _bare_dropped:
+                    logger.info(
+                        f"【多人分组】 公共区裸露的角色激活词已剥（分组内已有）: {_bare_dropped}"
+                    )
+            except Exception as _dde:
+                logger.warning(f"【多人分组】 公共区激活词剥除异常（忽略）: {_dde}")
         # v7.7.70：多人提示词里与人数冲突的单人计数标签 / 含它的自然语言句（"1girl standing
         # on the left and 1girl standing on the right"）一律剔除——与 `2girls` 打架。
         try:

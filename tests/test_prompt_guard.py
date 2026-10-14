@@ -961,7 +961,10 @@ def test_preset_routes_into_char_group():
            if isinstance(n, _ast.Assign)
            and any(getattr(t, "id", "") == "_PRESET_GROUP_RE" for t in n.targets)]
     assert gre, "main.py 必须有模块级 _PRESET_GROUP_RE"
-    exec(compile(_ast.Module([gre[0], gmod[0]], []), "main.py", "exec"), ns)
+    ncore = [n for n in tree.body
+             if isinstance(n, _ast.FunctionDef) and n.name == "_norm_tag_core"]
+    assert ncore, "main.py 必须有模块级 _norm_tag_core"
+    exec(compile(_ast.Module([gre[0], ncore[0], gmod[0]], []), "main.py", "exec"), ns)
     inject = ns["_inject_tags_into_char_group"]
 
     # ① 分组 body 含转义括号也能定位（旧式 [^()]* 正则会断，2 个分组被数成 1 个）
@@ -1017,7 +1020,61 @@ def test_preset_routes_into_char_group():
     out4, _ = S(LIB_STYLE, PRESETS_STYLE)._apply_lora_presets(
         {"鬼猫风格": "默认"}, pos2, "", multi_context=True)
     assert "@4x0style, dramatic shadow" in out4, out4
+    # ⑦ v7.7.84：注入定位用归一化核心——LLM 手写 Denia\(wuthering_waves\)（下划线）
+    #    与库里 denia \(wuthering waves\)（空格）也能对上
+    new7, ok7 = inject(pos2, "denia \\(wuthering waves\\)", ["blue headpiece"])
+    assert ok7 and "blue headpiece" in new7, new7
     print("== 35. 装扮预设路由进角色分组（转义括号分组可定位；画风预设仍全局） OK")
+
+
+def test_dedupe_char_tags_from_common():
+    # v7.7.84 用户实测原样提示词：激活词既在公共区裸露、又在分组里——公共区那份剥掉
+    import ast as _ast
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    ns: dict = {"re": re}
+    want = {"_dedupe_char_tags_from_common", "_norm_tag_core"}
+    nodes = []
+    for n in tree.body:
+        if isinstance(n, _ast.FunctionDef) and n.name in want:
+            nodes.append(n)
+        if isinstance(n, _ast.Assign):
+            names = {getattr(t, "id", "") for t in n.targets}
+            if names & {"_DEDUPE_SEG_RE", "_DEDUPE_SEP_RE", "_PRESET_GROUP_RE"}:
+                nodes.append(n)
+    assert len(nodes) >= 5, "缺少 _dedupe_char_tags_from_common/_norm_tag_core/正则"
+    exec(compile(_ast.Module(nodes, []), "main.py", "exec"), ns)
+    fn = ns["_dedupe_char_tags_from_common"]
+
+    pos = ("masterpiece, best quality, very aesthetic, absurdres, 2girls, "
+           "qingxiaowuwa, Denia\\(wuthering_waves\\), side_by_side, "
+           "looking_at_each_other, standing, night, ancient chinese pavilion, "
+           "lanterns, falling petals, cowboy shot, detailed background, "
+           "cinematic lighting, rim light, "
+           "(qingxiaowuwa:1.2), (Denia\\(wuthering_waves\\):1.2)")
+    new, dropped = fn(pos)
+    # 裸露的两份剥掉，分组里的保留
+    assert dropped == ["qingxiaowuwa", "Denia\\(wuthering_waves\\)"], dropped
+    assert "2girls, side_by_side" in new, new
+    assert "(qingxiaowuwa:1.2), (Denia\\(wuthering_waves\\):1.2)" in new, new
+    assert "rim light, (qingxiaowuwa:1.2)" in new, new  # 逗号重建不断链
+    assert "qingxiaowuwa, side_by_side" not in new, new
+    # 场景/质量词不受影响
+    assert "ancient chinese pavilion" in new and "cinematic lighting" in new, new
+    # 场景词即使在公共区、分组里没有 → 保留（只剥分组内已有的重复）
+    pos2 = "night, lanterns, (denia \\(wuthering waves\\):1.2)"
+    new2, d2 = fn(pos2)
+    assert new2 == pos2 and d2 == [], (new2, d2)
+    # 归一化核心：库里的 denia \(wuthering waves\) 与手写 Denia\(wuthering_waves\) 相认
+    pos3 = ("denia \\(wuthering waves\\), standing, "
+            "(Denia\\(wuthering_waves\\):1.2)")
+    new3, d3 = fn(pos3)
+    assert d3 == ["denia \\(wuthering waves\\)"], d3
+    assert new3 == "standing, (Denia\\(wuthering_waves\\):1.2)", new3
+    # 无分组 → 原样返回
+    pos4 = "2girls, qingxiaowuwa, night"
+    assert fn(pos4) == (pos4, [])
+    print("== 36. 公共区裸露激活词剥除（分组内已有才剥、核心归一化匹配） OK")
 
 
 def test_multi_shared_appearance():
@@ -1073,4 +1130,5 @@ if __name__ == "__main__":
     test_identity_anchor_tags_html()
     test_apply_lora_presets_sanitize()
     test_preset_routes_into_char_group()
+    test_dedupe_char_tags_from_common()
     print("提示词护栏全部通过")
