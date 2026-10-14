@@ -13,11 +13,13 @@ import prompt_guard  # noqa: E402
 
 from prompt_guard import (  # noqa: E402
     LORA_ECHO_DIMS, LORA_ECHO_DIMS_WITH_OUTFIT, MULTI_FUSION_NEGATIVE,
-    appearance_change_intent, appearance_dims, clean_multi_count_conflicts,
-    ensure_quality_prefix, free_dim_coverage, has_character_tag, is_multi_person,
-    is_short_prompt, keeps_original_tags, merge_multi_negative, multi_person_hints,
+    appearance_change_intent, appearance_dims, build_hybrid_multi_person,
+    clean_multi_count_conflicts, ensure_quality_prefix, free_dim_coverage,
+    has_character_tag, identity_anchor_tags, is_multi_person, is_short_prompt,
+    keeps_original_tags, merge_multi_negative, multi_person_hints,
     multi_shared_appearance, outfit_intent, prompt_style_of, quality_prefix_for,
     strip_conflicting_appearance, strip_lora_echo_appearance, strip_new_appearance,
+    visual_label_for,
 )
 
 ANCHOR = "long hair, green hair, green eyes, cat ears, hair ribbon"
@@ -378,6 +380,86 @@ def test_align_character_lora_triggers():
     print("== 17. 触发词与实际角色 LoRA 对齐（错写角色名自动纠正） OK")
 
 
+def test_identity_anchor_tags():
+    # Danbooru 返回：角色 tag + 标准外观（官方流程：先校正角色 tag，再取身份锚点）
+    tags = ("hatsune_miku \\(vocaloid\\), 1girl, solo, long hair, blue hair, blue eyes, "
+            "ahoge, headset, white shirt, detached sleeves, smile")
+    anchors = identity_anchor_tags(tags)
+    assert "blue hair" in anchors and "blue eyes" in anchors, anchors
+    assert not any("hatsune_miku" in a for a in anchors), anchors      # 角色 tag 本身不作锚点
+    assert "1girl" not in anchors and "solo" not in anchors, anchors
+    assert "white shirt" in anchors or "detached sleeves" in anchors, anchors   # 服装可作锚点
+    assert "smile" not in anchors, anchors                              # 表情/动作不算身份
+    # 空输入不炸
+    assert identity_anchor_tags("") == []
+    print("== 18. 身份锚点提取（跳过角色 tag / 人数词，按维度取） OK")
+
+
+def test_visual_label_for():
+    # 官方 multi_person_prompt.py:221：visual_label 必须唯一、不含名字与 left/right
+    assert visual_label_for(["red hair", "fox ears"]) == "red-haired fox"
+    assert visual_label_for(["long white hair", "orange eyes"]) == "white-haired"
+    assert visual_label_for(["orange eyes"]) == "orange-eyed"
+    assert visual_label_for(["cat ears"]) == "cat"
+    assert visual_label_for([], fallback="xinyuehu") == "xinyuehu"
+    print("== 19. visual_label 生成（唯一可见特征，不含名字/方位） OK")
+
+
+def test_build_hybrid_multi_person():
+    # 用户实测形态：两个分组只剩触发词（v7.7.70 剥除后的结果）
+    positive = ("masterpiece, best quality, 2girls, (suomingwuwa:1.2), (xinyuehu:1.2), "
+                "side_by_side, looking_at_each_other, night")
+    per_char = [{"anchors": ["red hair", "fox ears"]},
+                {"anchors": ["long white hair", "orange eyes"]}]
+    out, notes = build_hybrid_multi_person(positive, per_char)
+    # 官方形态：公共 tag + 每角色一个自然语言块（标签: 标签, 标签.）
+    assert "red-haired fox: " in out, out
+    assert "white-haired: " in out, out
+    # 身份由 label + 锚点表达，裸触发词与权重括号都该消失
+    assert "suomingwuwa" not in out and "xinyuehu" not in out, out
+    assert ":1.2" not in out, out
+    # 公共部分（人数/关系/场景/画质）保持
+    for keep in ("masterpiece", "2girls", "side_by_side", "looking_at_each_other", "night"):
+        assert keep in out, (keep, out)
+    assert len(notes) == 2, notes
+    # 缺锚点 → 放弃重构（宁可不改，也不能写成两个没区分的人）
+    same, notes2 = build_hybrid_multi_person(
+        positive, [{"anchors": ["red hair"]}, {"anchors": []}])
+    assert same == positive and not notes2, (same, notes2)
+    # 分组数与角色数不一致 → 放弃
+    same3, notes3 = build_hybrid_multi_person(positive, [{"anchors": ["red hair"]}])
+    assert same3 == positive and not notes3, (same3, notes3)
+    # 无分组 → 放弃
+    same4, _ = build_hybrid_multi_person("2girls, suomingwuwa, xinyuehu, night", per_char)
+    assert same4 == "2girls, suomingwuwa, xinyuehu, night"
+    print("== 20. 官方混合式渲染（公共 tag + 自然语言块 + 权威锚点） OK")
+
+
+def test_end_to_end_multi_identity():
+    """端到端复现用户 v7.7.70 的事故现场：剥完只剩触发词 → 必须补回权威锚点并混合式渲染。"""
+    # 用户实际日志里的提示词（外形已被剥除，两个分组只剩触发词 + standing）
+    positive = ("masterpiece, best quality, very aesthetic, absurdres, 2girls, "
+                "(suomingwuwa, standing:1.2), (xinyuehu, standing:1.2), "
+                "side_by_side, looking_at_each_other, simple background, soft lighting")
+    # 模拟 Danbooru 校正返回（官方流程：角色 tag → 标准外观标签）
+    a1 = identity_anchor_tags(
+        "suomingwuwa, 1girl, solo, red hair, twin hair buns, red eyes, black coat")
+    a2 = identity_anchor_tags(
+        "xinyuehu, 1girl, solo, long white hair, fox ears, orange eyes, white and red hanfu")
+    assert a1 and a2, (a1, a2)
+    out, notes = build_hybrid_multi_person(positive, [{"anchors": a1}, {"anchors": a2}])
+    assert notes and len(notes) == 2, notes
+    # 两个角色必须落在**不同**的视觉标签上（这是治同脸的关键）
+    labels = [n.split(" ←")[0] for n in notes]
+    assert len(set(labels)) == 2, labels
+    assert "red-haired" in out and "white-haired" in out, out
+    assert "2girls" in out and "side_by_side" in out, out
+    # 官方负向词必须含治同脸的几个
+    for w in ("twins", "duplicate characters", "cloned character", "fused characters"):
+        assert w in MULTI_FUSION_NEGATIVE, w
+    print("== 21. 端到端：剥除 → 补权威锚点 → 官方混合式（两人标签不同） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -413,4 +495,8 @@ if __name__ == "__main__":
     test_align_character_lora_triggers()
     test_strip_lora_echo_appearance_with_outfit()
     test_outfit_intent()
+    test_identity_anchor_tags()
+    test_visual_label_for()
+    test_build_hybrid_multi_person()
+    test_end_to_end_multi_identity()
     print("提示词护栏全部通过")

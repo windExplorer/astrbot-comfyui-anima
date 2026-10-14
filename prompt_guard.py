@@ -385,10 +385,28 @@ def is_short_prompt(text: str, max_tags: int = 8) -> bool:
 
 # 畸形抑制词（Anima / Illustrious / Pony 系通用）。不要在这里放 `solo`、`1girl`
 # 之类「人数」词——那是抑制少人的，与多人目标相反。
+#
+# v7.7.71：并入 Anima 官方多人负向词表（官方插件 `anima/prompts/multi_person_prompt.py:41-54`）。
+# 官方那套词直击「同脸 / 多脸 / 分屏 / 克隆」：twins（双胞胎）、duplicate characters、
+# cloned character、extra person、fused characters、merged bodies、character sheet、
+# multiple views、split screen、comic panels。下面按「官方词优先、通用词兜底」排列。
 MULTI_FUSION_NEGATIVE: tuple[str, ...] = (
+    # —— 官方多人负向（docs/anima-master）——
+    "twins",
+    "duplicate characters",
+    "cloned character",
+    "extra person",
+    "extra girl",
+    "extra boy",
+    "fused characters",
+    "merged bodies",
+    "character sheet",
+    "multiple views",
+    "split screen",
+    "comic panels",
+    # —— 通用畸形抑制（连体 / 多头 / 多肢）——
     "conjoined",
     "fused bodies",
-    "merged bodies",
     "shared limbs",
     "conjoined twins",
     "two heads",
@@ -647,6 +665,147 @@ def clean_multi_count_conflicts(text: str) -> tuple[str, list[str]]:
     if not dropped:
         return text or "", []
     return ", ".join(t for t in out if t), dropped
+
+
+# --------------------------------------------------------------------------- #
+# 官方混合式多人渲染（v7.7.71）
+# --------------------------------------------------------------------------- #
+# 依据 Anima 官方插件源码（`_Refs/anima-master`）：
+#   · `anima/prompts/multi_person_prompt.py:164-241` 多人规划模板；
+#   · `tests/test_multi_person_prompt.py:273-294` 断言的最终提示词形态；
+#   · `docs/prompting.md:53`「公共人数/场景/镜头走 Tag 清洗，人物块与互动关系**不**送清洗」。
+# 官方最终形态是**混合式**：`2girls, duo, holding hands, <公共tag…>` +
+# `green-eyed girl: green eyes, dark school uniform, …`（每人一个自然语言块）+
+# 互动自然语言句。**不用 CLIP 权重括号绑定身份**——官方只给"易混淆身份锚点"加
+# `(tag:1.3)`（`anima/prompts/prompt_pipeline.py:672-677`），从不文档化 1.2 这类通用权重。
+#
+# 本函数把「权重分组」形态重写为上述官方形态；任一角色拿不到权威锚点就**放弃重构、
+# 原样返回**（宁可不改，也不能把两人写成没区分的两个"空标签人"）。
+
+_ANCHOR_DIM_ORDER: tuple[str, ...] = (
+    "hair_color", "eye_color", "hair_style", "animal", "outfit", "body",
+)
+_ANCHOR_SKIP_TAGS = {"1girl", "1boy", "solo", "girl", "boy", "child", "female", "male"}
+
+
+def identity_anchor_tags(tag_str: str, limit: int = 5) -> list[str]:
+    """从 Danbooru / 角色卡锚点标签串里挑出「身份锚点」（官方要求 3~6 个可见特征）。
+
+    按维度优先级取（发色 → 瞳色 → 发型 → 兽化 → 服装 → 体型），跳过角色 tag 本身
+    （`name (series)` 形态）与人数词；同一维度最多取 2 个，避免全是发色。
+    """
+    by_dim: dict[str, list[str]] = {}
+    for tag in split_tags(tag_str or ""):
+        t = tag.strip()
+        if not t:
+            continue
+        if re.search(r"\\?\(.*\)\s*$", t):        # 角色 tag（含作品消歧括号）不作锚点
+            continue
+        if _norm(t) in _ANCHOR_SKIP_TAGS:
+            continue
+        for dim in APPEARANCE_RULES:
+            if dim in by_dim and len(by_dim[dim]) >= 2:
+                continue
+            if appearance_dims(t).get(dim):
+                by_dim.setdefault(dim, []).append(t)
+                break
+    picked: list[str] = []
+    for dim in _ANCHOR_DIM_ORDER:
+        for t in by_dim.get(dim, []):
+            if t not in picked:
+                picked.append(t)
+    return picked[: max(1, int(limit))]
+
+
+def visual_label_for(anchors: list[str], fallback: str = "") -> str:
+    """按官方 `visual_label` 规则生成**唯一的可见特征描述**（不含名字、不含 left/right）。
+
+    例：`["red hair", "fox ears"]` → `red-haired fox`；`["long white hair", "orange eyes"]`
+    → `white-haired`。官方模板明确禁止用名字 / 序数 / left / right 当 visual_label
+    （`multi_person_prompt.py:221`），所以这里只从外观维度拼。
+    """
+    hair = eye = animal = ""
+    for t in anchors or []:
+        d = appearance_dims(t)
+        if not hair and d.get("hair_color"):
+            hair = sorted(d["hair_color"])[0]
+        if not eye and d.get("eye_color"):
+            eye = sorted(d["eye_color"])[0]
+        if not animal and d.get("animal"):
+            m = re.match(r"([a-z]+)", sorted(d["animal"])[0])
+            animal = m.group(1) if m else ""
+    seg: list[str] = []
+    if hair:
+        words = hair.split()
+        seg.append(f"{words[0]}-haired" if len(words) == 1 else " ".join(words[:-1]) + "-haired")
+    elif eye:
+        seg.append(f"{eye}-eyed")
+    if animal:
+        seg.append(animal)
+    return " ".join(seg) if seg else (fallback or "")
+
+
+def build_hybrid_multi_person(
+    positive: str, per_char: list[dict]
+) -> tuple[str, list[str]]:
+    """把权重分组形态的多人提示词重写为官方混合式，返回 ``(新提示词, 改写说明)``。
+
+    ``per_char`` 每项 ``{"anchors": [权威锚点]}``，顺序与提示词里权重分组出现顺序一致。规则：
+
+    - 公共部分（人数 / 关系 / 场景 / 镜头 / 光影）保留原 tag；
+    - 每个角色展开成一个自然语言块 ``visual_label: tag1, tag2, …``，块内不再加权；
+    - 组内的裸触发词、以及与锚点重复的标签剔除（身份已由 label + 锚点表达）；
+    - **任一组没有权威锚点就整体放弃重构**（返回原文）：没锚点的角色块无法与他人区分，
+      硬写等于造出两个"空标签人"，比现状更糟。
+    """
+    try:
+        text = (positive or "").strip()
+        if not text or not per_char:
+            return positive, []
+        groups: list[list[str]] = []
+        rest_parts: list[str] = []
+        last = 0
+        for m in _GROUP_SCAN_RE.finditer(text):
+            inner = m.group(1)
+            body = inner[: inner.rindex(":")] if ":" in inner else inner
+            groups.append([s.strip() for s in split_tags(body) if s.strip()])
+            rest_parts.append(text[last:m.start()])
+            last = m.end()
+        rest_parts.append(text[last:])
+        if not groups or len(groups) != len(per_char):
+            return positive, []
+        common = [t.strip() for part in rest_parts for t in split_tags(part) if t.strip()]
+        blocks: list[str] = []
+        notes: list[str] = []
+        for grp, info in zip(groups, per_char):
+            anchors = [a for a in (info.get("anchors") or []) if a]
+            if not anchors:
+                return positive, []
+            _anorm = {_norm(a) for a in anchors}
+            # 触发词 = 组内第一个「不是外观维度也不是人数词」的标签（Danbooru 角色 tag）
+            trigger = ""
+            for t in grp:
+                if _norm(t) in _ANCHOR_SKIP_TAGS or appearance_dims(t):
+                    continue
+                trigger = t
+                break
+            label = visual_label_for(anchors, fallback=trigger)
+            if not label:
+                return positive, []
+            keep = [t for t in grp
+                    if _norm(t) != _norm(trigger) and _norm(t) not in _anorm]
+            merged: list[str] = []
+            seen: set[str] = set()
+            for t in keep + anchors:
+                if t and _norm(t) not in seen:
+                    seen.add(_norm(t))
+                    merged.append(t)
+            blocks.append(f"{label}: " + ", ".join(merged) + ".")
+            notes.append(f"{label} ← [{', '.join(anchors)}]")
+        parts = ([", ".join(common)] if common else []) + blocks
+        return ", ".join(p for p in parts if p), notes
+    except Exception:
+        return positive, []
 
 
 def multi_shared_appearance(text: str) -> tuple[bool, list[str]]:

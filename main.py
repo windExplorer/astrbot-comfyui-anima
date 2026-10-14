@@ -7664,6 +7664,18 @@ class ComfyUIDrawPlugin(Star):
                 positive, event, lora_map, wf)
             if _le_note:
                 logger.info(f"【LoRA 形象】 {_le_note}")
+            # v7.7.71：剥完必须**补回权威身份锚点**（官方混合式）。只做减法会让两个分组
+            # 只剩触发词 → 官方所说「只列角色名模型会混淆人物」→ 两人同脸。
+            if prompt_guard.is_multi_person(positive):
+                try:
+                    # _card_hits 只在走到角色卡注入分支时才赋值，故用 locals().get 取
+                    positive, _mi_note = await self._apply_multi_identity(
+                        positive, event, lora_map, wf, locals().get("_card_hits") or [])
+                except Exception as _mie:
+                    _mi_note = ""
+                    logger.warning(f"【多人混合式】 异常（忽略）: {_mie}")
+                if _mi_note:
+                    logger.info(f"【多人混合式】 {_mi_note}")
         # v7.7.70：多人提示词里与人数冲突的单人计数标签 / 含它的自然语言句（"1girl standing
         # on the left and 1girl standing on the right"）一律剔除——与 `2girls` 打架。
         try:
@@ -14735,6 +14747,114 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【角色 LoRA 对齐】 检查异常（不影响出图）: {_e}")
             return positive, ""
 
+    async def _danbooru_identity_anchors(self, trigger: str) -> list[str]:
+        """按官方做法（`docs/prompting.md:7`）用 Danbooru 校正角色 tag，取出身份锚点。
+
+        官方原文：聊天模型给出角色 tag 候选后「插件随后查询 Danbooru character 分类进行校正」。
+        本插件的 Danbooru 客户端走标签搜索接口（`danbooru_client.DanbooruClient.search`），
+        返回值里除角色 tag 外还带该角色的标准外观标签，正好可作身份锚点。
+
+        带进程内缓存（同一次会话不重复查）、4 秒超时、异常一律降级为空并告警。
+        """
+        key = (trigger or "").strip().lower()
+        if not key:
+            return []
+        cache = getattr(self, "_identity_anchor_cache", None)
+        if cache is None:
+            cache = {}
+            self._identity_anchor_cache = cache
+        if key in cache:
+            return list(cache[key])
+        try:
+            _api = self._build_danbooru()
+            if _api is None:
+                logger.info(
+                    f"【身份锚点】 未启用 Danbooru，无法为「{trigger}」校正标准 tag"
+                    "（可在工作流里把翻译模式设为 danbooru，或用角色卡保存锚点）"
+                )
+                cache[key] = []
+                return []
+            tags = await asyncio.wait_for(_api.search(trigger), timeout=4.0)
+            anchors = prompt_guard.identity_anchor_tags(tags or "", limit=5)
+            cache[key] = anchors
+            logger.info(
+                f"【身份锚点】 Danbooru 校正「{trigger}」→ {anchors or '（无外观标签）'}"
+            )
+            return list(anchors)
+        except Exception as _e:
+            logger.warning(f"【身份锚点】 Danbooru 查询「{trigger}」失败（降级）：{_e}")
+            cache[key] = []
+            return []
+
+    async def _resolve_identity_anchors(
+        self, positive: str, lora_map, wf: dict, card_hits=None
+    ) -> list[dict]:
+        """解析多人各角色的**权威身份锚点**（官方 `fixed_characters` 的等价实现）。
+
+        优先级与官方一致（锚点是外观身份的唯一依据）：
+
+        1. **角色卡锚点**（离线、最可靠）——等价官方 `fixed_characters`，用户存一次永久生效；
+        2. **Danbooru 校正**——按角色 LoRA 触发词联网查标准 tag（官方 `prompting.md:7`）；
+        3. 都没有 → 空（调用方据此放弃重构，不硬写）。
+        """
+        out: list[dict] = []
+        names, triggers = self._char_lora_triggers(lora_map, wf)
+        for card, anchor in (card_hits or []):
+            _pos = anchor.get("positive") or ""
+            _tags = prompt_guard.identity_anchor_tags(_pos, limit=5)
+            if _tags:
+                out.append({"name": card.get("name") or "", "anchors": _tags,
+                            "source": f"角色卡「{card.get('name')}」"})
+        if out:
+            return out
+        for trig in triggers:
+            _tags = await self._danbooru_identity_anchors(trig)
+            out.append({"name": trig, "anchors": _tags, "source": "danbooru"})
+        return out
+
+    async def _apply_multi_identity(
+        self, positive: str, event, lora_map, wf: dict, card_hits=None
+    ) -> tuple[str, str]:
+        """多人场景：剥掉模型编造的外形后，按官方混合式补回**权威身份锚点**。
+
+        这一步是 v7.7.68~70 的"另一半"：之前只做减法（剥掉 LLM 复述的外形），却没人补回
+        权威外形，于是两个分组只剩触发词 → 正是 Anima 官方多人模板里那句「只列角色名，
+        模型可能混淆人物」（`docs/prompting.md`）→ 两人同脸。这里补上"加法"。
+        """
+        try:
+            if not (positive or "").strip():
+                return positive, ""
+            _roles = await self._resolve_identity_anchors(positive, lora_map, wf, card_hits)
+            _roles = [r for r in _roles if r.get("anchors")]
+            if len(_roles) < 2:
+                if _roles:
+                    logger.info(
+                        "【身份锚点】 只解析到 1 个角色的锚点，多人混合式渲染需要每个角色都有锚点，"
+                        "本次保持原提示词（建议用角色卡把两个角色的锚点都存上）"
+                    )
+                else:
+                    logger.info(
+                        "【身份锚点】 没解析到任何权威锚点（角色卡未存 + Danbooru 无该角色），"
+                        "多人提示词保持原样。建议用角色卡（comfyui_character / 角色指令）"
+                        "把这两个角色的标准 tag 各存一次——官方 fixed_characters 就是干这个的。"
+                    )
+                return positive, ""
+            _new, _notes = prompt_guard.build_hybrid_multi_person(
+                positive, [{"anchors": r["anchors"]} for r in _roles])
+            if not _notes:
+                logger.info(
+                    "【多人混合式】 未能按官方形态改写（分组数与角色数不一致或缺锚点），保持原提示词"
+                )
+                return positive, ""
+            logger.info(
+                "【多人混合式】 已按 Anima 官方形态改写（公共 tag + 每角色自然语言块 + 权威锚点）:\n"
+                f"  {_new}\n  锚点来源: {'；'.join(r['source'] for r in _roles)}"
+            )
+            return _new, _new
+        except Exception as _e:
+            logger.warning(f"【多人混合式】 处理异常（不影响出图）: {_e}")
+            return positive, ""
+
     def _strip_lora_echo_appearance(
         self, positive: str, event, lora_map, wf: dict
     ) -> tuple[str, str]:
@@ -15040,6 +15160,21 @@ class ComfyUIDrawPlugin(Star):
            贴得近更容易糊，所以靠"负向畸形词 + 不裁太狠 + 带部位姿势词"压住，而不是拉开距离；
            真要根治需要区域控制（Regional Prompter / 蒙版）或分开生成再合成（本插件暂未支持）。
         详细规则与示例见技能 comfyui-draw 的「画多人 / 多人场景」章节。
+
+        ★★★★★ 多人场景按 Anima 官方架构来（v7.7.71，多人最高优先级规则）：
+        · 官方结论：「第一版不提供每角色独立 LoRA、区域遮罩或 Regional Prompting。角色相似…
+          仍可能需要多生成几个种子筛选」（docs/prompting.md:57）。**多角色 LoRA 同开是官方不支持
+          的场景**，两人同脸是模型层面的限制，不要为此反复改写提示词。
+        · 官方保证身份一致靠「角色名 + 权威标准 tag」（角色卡 / Danbooru 校正），**不靠 LoRA**；
+          官方明确「只列角色名，模型可能混淆人物」——所以**你不需要写这些角色的外形**。
+        · 出图链路已内置：剥掉模型编造的外形/服装 → 取权威锚点（角色卡优先，其次 Danbooru 校正）
+          → 改写成官方混合式（公共 tag + 每角色一个自然语言块 `red-haired fox: …`）。
+          日志：`【身份锚点】`、`【多人混合式】`、`【LoRA 形象】`。
+        · ★权威锚点拿不到时（原创/冷门角色 Danbooru 查不到），最有用的动作是**把角色存进角色卡**
+          （comfyui_character / 角色指令，等价官方 fixed_characters），例：
+          `锁暝 = 1girl, red hair, twin hair buns, red eyes, black coat`；存一次以后永久生效。
+        · ★官方建议多人**多种子筛选**：可在同一次调用里用 `prompts` 传 2~3 条同画面变体，
+          这是承认"角色相似"后的正解；但**不要在用户没要求时擅自加张数**。
 
         ★★★用户已经给出提示词时【原样绘制】，严禁画蛇添足（最高优先级的省事原则）：
         - 触发场景：用户直接贴出提示词，或贴了站点的出图参数块——参数块形如
@@ -15502,32 +15637,25 @@ class ComfyUIDrawPlugin(Star):
                         for _cn, _tw in _char_loras
                     ) or "  （本次未启用角色 LoRA）"
                     logger.info(
-                        f"【多人拦截】 {_reason} 但提示词只有 {_best_groups} 个权重分组"
-                        f"（需 ≥2），返回指导要求重写"
+                        f"【多人提示】 {_reason} 但提示词只有 {_best_groups} 个权重分组"
+                        f"（建议 ≥2）。v7.7.71 起**不再拦截**：出图链路会自动按 Anima 官方形态"
+                        "补回权威身份锚点并渲染成混合式（公共 tag + 每角色自然语言块），"
+                        "没必要让模型为这事重写一轮。以下要求仅作建议写进日志。"
                     )
                     _ex = (
                         "2girls, (角色A触发词, 用户明说的A的衣服或动作:1.2), "
                         "(角色B触发词, 用户明说的B的衣服或动作:1.2), "
                         "互动标签, 场景标签"
                     )
-                    return (
-                        f"出图被拦截：{_reason}，但提示词没有写成「每个角色一个权重分组」——"
-                        "不分组时两个角色的特征必然互相污染（A 长出 B 的猫耳/衣服、两人穿同一套衣服）。"
-                        "请重写 prompt 后重新调用本工具一次，要求：\n"
-                        "1) 计数标签紧跟画质前缀（如 2girls / 1girl 1boy），绝不写 solo；\n"
-                        "2) 【一个角色一个括号分组】整段只允许两个角色分组，格式必须形如：\n"
-                        f"   {_ex}\n"
-                        "   ✗ 禁止的写法（实测翻车）：把标签按行铺开、每个标签各自加权，例如\n"
-                        '     "girl A (left): (1girl:1.2), (long white hair:1.1), (cat ears:1.1)"\n'
-                        "     ——这既不是分组，自然语言标签（girl A (left):）也会变成垃圾 token；\n"
-                        "3) 每个角色分组里只放：该角色 LoRA 触发词（若用了 LoRA）+ **用户明说的**"
-                        "衣服/动作/表情。**绝对不要**补发色/发型/瞳色/兽耳/角/体型，**也不要自己给"
-                        "角色编衣服**（用户没提穿什么时）——角色 LoRA 自带完整形象，复述/编造只会"
-                        "稀释 LoRA，且两人编成同一套衣服会被理解成双胞胎、直接同脸"
-                        "（插件会自动剥除这类复述，日志 `【LoRA 形象】`）；\n"
-                        "4) 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会自动剔除）。\n"
-                        f"本次角色 LoRA 与触发词：\n{_tw_lines}\n"
-                        "重写后带着新 prompt 重新调用本工具（其余参数不变）。"
+                    logger.info(
+                        "【多人提示】 建议写法：\n"
+                        f"  {_ex}\n"
+                        "  · 计数标签紧跟画质前缀（2girls / 1girl 1boy），绝不写 solo；\n"
+                        "  · 每个角色一个括号分组，组内只放该角色触发词 + 用户明说的衣服/动作；\n"
+                        "  · 不要自己给角色编衣服/外形：插件会剥除这类复述，并自动补回"
+                        "权威锚点（角色卡或 Danbooru 校正）后改写成官方混合式；\n"
+                        "  · 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会自动剔除）。\n"
+                        f"  本次角色 LoRA 与触发词：\n{_tw_lines}"
                     )
         except Exception as _e:
             logger.warning(f"【多人拦截】 检查异常（不拦截）: {_e}")

@@ -2,6 +2,84 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.71（按 Anima 官方架构重做多人：剥除只做减法不够，必须补回权威身份锚点）
+
+用户提供了 Anima 官方插件源码 `x:\_WorkSpace\Mine\_AstrbotPlugins\_Refs\anima-master`，本版据此
+重做多人链路——**之前几版一直在错的维度上打转**（反复调提示词规则），根因是缺了官方那套
+「权威身份锚点」机制，只做了减法。
+
+### 官方源码给出的硬事实（本版的依据）
+
+1. **多角色 LoRA 同开是官方不支持的场景**。`docs/prompting.md:57` 原文：「第一版不提供每角色
+   独立 LoRA、区域遮罩或 Regional Prompting。**角色相似**、三人以上或肢体交叠复杂时仍可能需要
+   多生成几个种子筛选。」全项目唯一的 LoRA 是加速用的 `anima-turbo-lora-v0.2`，**没有角色 LoRA
+   的概念**。→ 用户「两人同脸」不是提示词写得不好，是模型层面的限制；此前我把这当成提示词
+   问题反复修，是判断错了方向。
+2. **官方身份一致性靠「角色名 + 权威标准 tag」，不靠 LoRA**。`docs/prompting.md:7`：LLM 给角色
+   tag 候选 → 插件查 Danbooru character 分类校正 → Donmai 不可用回退 Safebooru；`:49`
+   「已保存角色的固定 Tag 是外观身份的唯一依据」，冲突外貌直接丢弃；
+   `anima/prompts/prompt_templates.py:170-172`：命中已保存角色时 **leave appearance empty and do
+   not restate or alter their hair, eyes, species, ears, tail, body type…**（只规划可变服装/表情/
+   姿势/道具）。→ 这解释了 v7.7.68「不剥外形」方向其实与官方一致，但**我们缺了"补权威 tag"这一
+   步**，于是剥完两人只剩触发词，反而把同脸做实了（用户 v7.7.70 实测：`(suomingwuwa, standing:1.2)`,
+   `(xinyuehu, standing:1.2)`）。
+3. **官方多人提示词是「混合式」，不用 CLIP 权重括号绑定身份**。`anima/prompts/multi_person_prompt.py:386`
+   的 `render_multi_person_character()` 返回自然语言块 `label: tag1, tag2, …`；`docs/prompting.md:53`
+   「公共人数、场景、镜头和光影继续经过 Tag 清洗；每个人物的自然语言块、互动关系和空间关系
+   **不会**送入 Tag 清洗器」；`tests/test_multi_person_prompt.py:273-294` 断言的最终形态即
+   `2girls, duo, holding hands` + `green-eyed girl: …` + 自然语言互动句。
+   权重只有两个内部值：`(tag:1.3)` 给易混淆身份锚点（`prompt_pipeline.py:672-677`）、
+   `(key:2)` 给画风（`prompt_constraints.py:158-163`）——**官方从未文档化 1.2 这类通用权重**。
+4. **官方多人负面词**（`multi_person_prompt.py:41-54`）：`twins, duplicate characters, cloned
+   character, extra person, extra girl, extra boy, merged bodies, fused characters, character sheet,
+   multiple views, split screen, comic panels`——直击同脸/多脸/分屏。
+5. 官方模板**禁止**用左右描述画面区域、禁止 panel/split screen（`:168` "must never describe separate
+   regions…Prefer one shared central group"）；互动里人物名统一改写为 `Character A/B/C/D`（`:229`）。
+
+### 本版实现
+
+1. **权威身份锚点**（新）：`prompt_guard.identity_anchor_tags()` 按维度优先级（发色→瞳色→发型→
+   兽化→服装→体型，每维最多 2 个）从标签串里挑 3~6 个可见特征，跳过角色 tag 本身与人数词；
+   `main._danbooru_identity_anchors()` 按触发词走插件已有的 Danbooru 客户端校正（进程内缓存 +
+   4s 超时 + 异常降级）；`main._resolve_identity_anchors()` 的优先级 = **角色卡锚点 → Danbooru
+   校正 → 空**，与官方「锚点是外观身份唯一依据」一致。角色卡那一档等价官方 `fixed_characters`，
+   离线、最可靠。
+2. **官方混合式渲染**（新）：`prompt_guard.build_hybrid_multi_person()` 把权重分组形态改写成
+   `公共 tag + 每角色一个自然语言块`；`visual_label_for()` 按官方 `visual_label` 规则生成**唯一可见
+   特征描述**（`red hair + fox ears → red-haired fox`），不含名字/序数/left/right
+   （官方 `multi_person_prompt.py:221`）。**任一角色没有锚点就整体放弃重构、原样返回**——没锚点
+   的角色块无法与他人区分，硬写等于造两个"空标签人"，比现状更糟。
+3. **接入顺序**（关键）：`_do_draw` 里现在是「对齐触发词 → 剥除模型编造的外形 → **补权威锚点 +
+   混合式渲染** → 清理与人数冲突的计数标签」。补在剥除之后，才不会出现"剥完没人补"。
+4. **多人拦截器改为软告警**：原来"提示词没有 ≥2 个权重分组就拦截并要求重写"是 CLIP 时代的
+   规则（官方并不要求），且会让模型白白重写一轮；现在只 `logger.info` 记录建议（`【多人提示】`），
+   不再返回拦截文案。真正的兜底交给上面的自动混合式渲染。
+5. **负向词并入官方词表**：`MULTI_FUSION_NEGATIVE` 头部加入官方 12 词（twins / duplicate
+   characters / cloned character / extra person / fused characters / merged bodies / character sheet /
+   multiple views / split screen / comic panels 等），通用畸形词（conjoined / two heads / fused
+   fingers…）保留在后。
+6. **文档**（`skills/comfyui-draw/SKILL.md` 多人章节 + `comfyui_draw` docstring）：删掉与官方冲突的
+   "必须每角色一个权重分组、权重 1.1~1.3"，写明官方口径（多角色 LoRA 同开不支持 / 身份靠权威
+   tag / 混合式 / 官方负向词 / 多种子筛选），并给出**可操作建议**：原创或冷门角色查不到 Danbooru
+   时，把角色存进角色卡（`comfyui_character` / 角色指令）= 官方 `fixed_characters`，存一次永久生效。
+
+### 没做的部分（如实说明）
+
+- **官方那套"多种子候选 + 出图后视觉复检"没有实现**：`generation_verifier.py:372-389` 那种
+  复检（人数/重复角色/分屏/身份串色/互动方向）需要多模态模型看图，成本与复杂度都高；本版只
+  在文档里建议用户用 `prompts` 一次传 2~3 条自己挑，并且**没有**在用户没要求时擅自加张数
+  （尊重既有"默认 1 张"的约定）。
+- **不做"每个角色独立 LoRA"**（官方也不做），因此**多角色 LoRA 同开导致的脸部趋同无法根除**，
+  只能靠权威锚点把差异拉大 + 多种子筛选。
+
+### 验证
+
+`tests/test_prompt_guard.py` 17 组 → **21 组**，新增 4 组，其中第 21 组直接复现用户 v7.7.70 的
+事故现场（剥除后只剩 `(suomingwuwa, standing:1.2)` / `(xinyuehu, standing:1.2)`），断言补锚点后
+两人的 visual_label **不同**（`red-haired fox` vs `white-haired`）且公共部分完整、权重括号消失；
+另有锚点提取 / visual_label / 混合式渲染（含三种降级：缺锚点、组数不匹配、无分组）三组。
+全通过；`compileall main.py prompt_guard.py` 零错；`test_llm_tool_docstrings.py` 8 工具全过。
+
 ## v7.7.70（用户贴回提示词发现三处不对：角色张冠李戴最致命 + 计数冲突 + 古装没被识别）
 
 用户把实际出图的提示词贴了回来（`2girls, 1girl standing on the left and 1girl standing on
