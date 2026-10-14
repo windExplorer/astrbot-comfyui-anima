@@ -1000,6 +1000,33 @@ def _char_lora_skip_plan(
     return skip, words, decision
 
 
+# 权重分组扫描：body 允许含**转义括号**（`\(wuthering waves\)` 是 Danbooru 角色
+# tag 的标准形态）。旧式 `[^()]*` 遇到转义括号会断——这正是「明明 2 个分组被数成
+# 1 个」的原因之一（log5.log 实测）。
+_PRESET_GROUP_RE = re.compile(r"\(((?:\\.|[^()])*?):\s*(\d+(?:\.\d+)?)\s*\)")
+
+
+def _inject_tags_into_char_group(
+    positive: str, token: str, tags: list[str]
+) -> tuple[str, bool]:
+    """把 tags 注入到 positive 里包含 token 的那个**角色权重分组内**（保持权重）。
+
+    v7.7.83 用户定则：**角色相关内容（触发词、装扮预设）必须进对应角色的分组
+    括号，不许裸露在公共区**——裸露=两个人被同一套装扮罩住。分组 body 允许含
+    转义括号；找不到包含 token 的分组 → 原样返回 ``(positive, False)``，由调用方
+    决定跳过（多人语境，宁缺勿污染）。
+    """
+    if not (positive and tags and (token or "").strip()):
+        return positive or "", False
+    low = token.strip().lower()
+    for m in _PRESET_GROUP_RE.finditer(positive):
+        body = m.group(1)
+        if low in body.lower():
+            new_body = body + ", " + ", ".join(tags)
+            return positive[:m.start()] + f"({new_body}:{m.group(2)})" + positive[m.end():], True
+    return positive, False
+
+
 def _safe_llm_tool(func):
     """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
     而是打印完整堆栈到日志并返回一句可读的失败说明，让用户能看到原因而非笼统报错。
@@ -2540,16 +2567,24 @@ class ComfyUIDrawPlugin(Star):
         return self._bm_fits((lora or {}).get("base_model"), self._wf_base_model(wf or {}))
 
     def _apply_lora_presets(
-        self, presets: dict[str, str], positive: str, negative: str
+        self, presets: dict[str, str], positive: str, negative: str,
+        multi_context: bool = False
     ):
         """把 --名称/预设名 引用的预设提示词追加到正向提示词。
 
         presets: {lora_name: preset_name}。每个预设的提示词（textarea 里的
         ``[名称|提示词]`` 内容）追加到正向提示词（用英文逗号分隔）。库里找不到
         LoRA 或预设名时记录告警并跳过该项，不影响其它 LoRA。
+
+        ★v7.7.83 用户定则：**角色相关内容必须进对应角色的分组括号，不裸露在公共区**。
+        ``multi_context=True``（多人画面 / ≥2 角色 LoRA 同开）时，角色 LoRA 的预设
+        内容不再全局追加，而是注入到该角色的权重分组内（`_inject_tags_into_char_group`，
+        以该角色触发词字段的第一个激活词定位分组）；找不到分组 → 跳过并告警
+        （宁缺勿污染）。画风/工具类 LoRA 的预设不受影响，照旧全局追加。
         """
         lib = {(l.get("name") or "").strip(): l for l in self._lora_library()}
-        pos_parts = [positive] if positive and positive.strip() else []
+        base = positive if positive and positive.strip() else ""
+        pos_parts: list[str] = []
         for lora_name, preset_name in presets.items():
             l = lib.get((lora_name or "").strip())
             if not l:
@@ -2566,10 +2601,11 @@ class ComfyUIDrawPlugin(Star):
                 )
                 continue
             pr = (found.get("prompt") or "").strip()
+            _pr_kept: list[str] = []
             if pr:
                 # v7.7.82：预设内容同样过净化器——实测「清宵-默认」装扮预设里存了
-                # 整段 C 站推荐串（含 1girl/solo），预设路径此前绕过触发词净化，
-                # 整段进公共提示词。计数/质量词一律剥，其余原样保留。
+                # 整段 C 站推荐串（含 1girl/solo），预设路径此前绕过触发词净化。
+                # 计数/质量词一律剥，其余原样保留。
                 _pr_kept, _pr_drop = prompt_guard.sanitize_trigger_words(pr)
                 if _pr_drop:
                     logger.info(
@@ -2577,13 +2613,37 @@ class ComfyUIDrawPlugin(Star):
                         f"（人数由画面统一决定）"
                     )
                 pr = ", ".join(_pr_kept)
-            if pr:
-                pos_parts.append(pr)
-            logger.info(
-                f"【LoRA】 应用预设：{lora_name}-{preset_name}"
-                f"（追加正向={pr!r}）"
+            _is_char = bool(l) and (
+                (l.get("category") or "").strip() == "角色"
+                or prompt_guard.looks_char_lora(str(l.get("trigger_words") or ""))
             )
-        positive = ", ".join(p for p in pos_parts if p and p.strip()) if pos_parts else (positive or "")
+            if pr and _is_char and multi_context:
+                # 角色路由：以触发词字段的第一个激活词定位该角色的分组
+                _toks, _ = prompt_guard.sanitize_trigger_words(
+                    str(l.get("trigger_words") or ""))
+                _tok = _toks[0].strip() if _toks else ""
+                new_pos, ok = _inject_tags_into_char_group(base, _tok, _pr_kept)
+                if ok:
+                    base = new_pos
+                    logger.info(
+                        f"【LoRA】 预设「{lora_name}-{preset_name}」已注入「{_tok}」"
+                        f"的角色分组: {_pr_kept}"
+                    )
+                else:
+                    logger.warning(
+                        f"【LoRA】 多人/多角色模式：预设「{lora_name}-{preset_name}」"
+                        f"找不到「{_tok}」的角色分组，不全局追加（避免罩到别的角色）；"
+                        f"让 LLM 在正向提示词里为该角色写分组括号即可"
+                    )
+            elif pr:
+                pos_parts.append(pr)
+                logger.info(
+                    f"【LoRA】 应用预设：{lora_name}-{preset_name}"
+                    f"（追加正向={pr!r}）"
+                )
+        parts = [base] + pos_parts if base else pos_parts
+        if parts:
+            positive = ", ".join(p for p in parts if p and p.strip())
         return positive, negative
 
     @staticmethod
@@ -7888,8 +7948,12 @@ class ComfyUIDrawPlugin(Star):
 
         # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词。
         # 固定提示词或走 JSON 原值（positive 为空）时跳过，避免污染固定配方。
+        # v7.7.83：多人画面下角色 LoRA 的装扮内容路由进对应角色分组（不裸露公共区）
         if lora_presets and positive and not _fixed_prompt:
-            positive, negative = self._apply_lora_presets(lora_presets, positive, negative)
+            positive, negative = self._apply_lora_presets(
+                lora_presets, positive, negative,
+                multi_context=prompt_guard.is_multi_person(positive),
+            )
 
         # v7.7.54：多人贴在一起时的连体畸形兜底。放在 LoRA 预设追加之后、注入之前——
         # 此刻 positive 已是最终形态（角色卡分组 / 多人归一 / 预设追加都已完成），
@@ -8292,22 +8356,14 @@ class ComfyUIDrawPlugin(Star):
                 if not (_named or "").strip():
                     _dp = self._default_preset_of(l)
                     if _dp and (self._outfit_change_hit(event, positive) is False):
-                        _is_char_l = ((l.get("category") or "").strip() == "角色"
-                                      or prompt_guard.looks_char_lora(
-                                          str(l.get("trigger_words") or "")))
-                        if _is_char_l and _pre_multi_ctx:
-                            logger.info(
-                                f"【LoRA】 多人/多角色模式：跳过「{ln}」的默认装扮预设"
-                                f"「{(_dp.get('name') or '').strip()}」（角色自带形象，"
-                                f"全局追加会罩到别的角色身上；要换装请显式点名预设或让 LLM 写进角色分组）"
-                            )
-                        else:
-                            _default_pre[ln] = (_dp.get("name") or "").strip()
-            # 固定提示词或走 JSON 原值（positive 为空）时跳过追加，避免污染固定配方
+                        _default_pre[ln] = (_dp.get("name") or "").strip()
+            # 固定提示词或走 JSON 原值（positive 为空）时跳过追加，避免污染固定配方。
+            # v7.7.83：multi_context 传下去——角色 LoRA 的装扮内容不再全局追加，
+            # 而是注入到该角色自己的分组括号内（不裸露在公共区）
             if positive and not _fixed_prompt:
                 if _default_pre:
                     positive, negative = self._apply_lora_presets(
-                        _default_pre, positive, negative
+                        _default_pre, positive, negative, multi_context=_pre_multi_ctx
                     )
                     logger.info(f"【LoRA】 已套用默认预设（装扮）: {_default_pre}")
                 if _legacy_always_words:

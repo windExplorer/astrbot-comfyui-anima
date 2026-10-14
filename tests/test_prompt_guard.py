@@ -935,6 +935,91 @@ def test_apply_lora_presets_sanitize():
     print("== 34. 预设内容净化（计数/质量词剥除，装扮词保留） OK")
 
 
+def test_preset_routes_into_char_group():
+    # v7.7.83 用户定则：角色相关内容（装扮预设）必须进对应角色的分组括号，
+    # 不裸露在公共区（裸露=两个人被同一套装扮罩住）。风格 LoRA 的触发词
+    # 全局追加不受影响（那是合法用法）。
+    import ast as _ast
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, _ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    ns: dict = {"prompt_guard": prompt_guard, "re": re,
+                "logger": _logging.getLogger("test")}
+    for fname in ("_apply_lora_presets",):
+        got = [n for n in cls.body
+               if isinstance(n, _ast.FunctionDef) and n.name == fname]
+        assert got, f"ComfyUIDrawPlugin 必须有 {fname}"
+        exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+    gmod = [n for n in tree.body
+            if isinstance(n, _ast.FunctionDef) and n.name == "_inject_tags_into_char_group"]
+    assert gmod, "main.py 必须有模块级 _inject_tags_into_char_group"
+    gre = [n for n in tree.body
+           if isinstance(n, _ast.Assign)
+           and any(getattr(t, "id", "") == "_PRESET_GROUP_RE" for t in n.targets)]
+    assert gre, "main.py 必须有模块级 _PRESET_GROUP_RE"
+    exec(compile(_ast.Module([gre[0], gmod[0]], []), "main.py", "exec"), ns)
+    inject = ns["_inject_tags_into_char_group"]
+
+    # ① 分组 body 含转义括号也能定位（旧式 [^()]* 正则会断，2 个分组被数成 1 个）
+    pos = ("masterpiece, 2girls, "
+           "(qingxiao \\(wuthering waves\\), qingxiaowuwa:1.2), "
+           "(denia \\(wuthering waves\\):1.2), side_by_side, night")
+    new, ok = inject(pos, "qingxiao \\(wuthering waves\\)", ["white dress", "gold trim"])
+    assert ok and "white dress" in new, new
+    assert "(qingxiao \\(wuthering waves\\), qingxiaowuwa, white dress, gold trim:1.2)" in new, new
+    # denia 分组未被波及
+    assert "(denia \\(wuthering waves\\):1.2)" in new, new
+    # ② 找不到分组 → 原样返回
+    new2, ok2 = inject(pos, "nonexistent_tag", ["white dress"])
+    assert not ok2 and new2 == pos
+
+    LIB = [{"name": "清宵", "category": "角色",
+            "trigger_words": "qingxiao \\(wuthering waves\\), 1girl, solo",
+            "presets": None}]
+    PRESETS = [{"name": "默认", "prompt": "white dress, white thighhighs"}]
+    LIB_STYLE = [{"name": "鬼猫风格", "category": "画风",
+                  "trigger_words": "@4x0style", "presets": None}]
+    PRESETS_STYLE = [{"name": "默认", "prompt": "@4x0style, dramatic shadow"}]
+
+    class S:
+        _apply_lora_presets = ns["_apply_lora_presets"]
+
+        def __init__(self, lib, presets):
+            self._lib, self._presets = lib, presets
+
+        def _lora_library(self):
+            return self._lib
+
+        def _lora_presets_of(self, l):
+            return self._presets
+
+    pos2 = pos  # 同上
+    # ③ multi_context=True：清宵的装扮注入清宵分组，公共区干净
+    s = S(LIB, PRESETS)
+    out, _ = s._apply_lora_presets({"清宵": "默认"}, pos2, "", multi_context=True)
+    assert "white dress" in out, out
+    g1 = "(qingxiao \\(wuthering waves\\), qingxiaowuwa, white dress, white thighhighs:1.2)"
+    assert g1 in out, out
+    assert out.count("white dress") == 1 and out.count("white thighhighs") == 1, out
+    # ④ multi_context=False（单人）：照旧全局追加
+    out2, _ = S(LIB, PRESETS)._apply_lora_presets({"清宵": "默认"}, "1girl, night", "",
+                                                  multi_context=False)
+    assert "white dress" in out2 and out2.startswith("1girl, night"), out2
+    # ⑤ multi_context=True 但找不到分组 → 跳过不追加（宁缺勿污染）
+    out3, _ = S(LIB, PRESETS)._apply_lora_presets(
+        {"清宵": "默认"}, "2girls, no groups here", "", multi_context=True)
+    assert "white dress" not in out3, out3
+    # ⑥ 画风 LoRA 预设永远全局追加（含 @ 触发词，合法用法）
+    out4, _ = S(LIB_STYLE, PRESETS_STYLE)._apply_lora_presets(
+        {"鬼猫风格": "默认"}, pos2, "", multi_context=True)
+    assert "@4x0style, dramatic shadow" in out4, out4
+    print("== 35. 装扮预设路由进角色分组（转义括号分组可定位；画风预设仍全局） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -987,4 +1072,5 @@ if __name__ == "__main__":
     test_lora_alias_lookup_switch()
     test_identity_anchor_tags_html()
     test_apply_lora_presets_sanitize()
+    test_preset_routes_into_char_group()
     print("提示词护栏全部通过")
