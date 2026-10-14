@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - 兼容旧版本
     CardImage = None
 from astrbot.api.star import Context, Star, register
 
-# 图库列表 render 模式使用的自定义 HTML 模板（走 AstrBot 官方文本转图片服务）。
+# 图库列表 render 模式使用的自定义 HTML 模板（走 AstrBot 参考文本转图片服务）。
 # 基于用户当前 AStrBot 的 t2i 模板（"小叽"卡片风）改造，仅把字号放大、行高加大，
 # 并配合 html_render 的 quality=90，解决默认 quality=40 + 字小导致的发虚问题。
 _GALLERY_T2I_TMPL = """<!doctype html>
@@ -3004,13 +3004,13 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
-    # ---- Qwen-Image 官方格式提示词（v7.7.42） -------------------------------- #
+    # ---- Qwen-Image 参考格式提示词（v7.7.42） -------------------------------- #
     # 规范文档随包发布在 skills/qwen-image/（用户可直接改文件替换规范），缺文件时用内置精简规则。
     _QWEN_SKILL_DIR = "skills/qwen-image"
     _QWEN_T2I_FILE = "qwen-image-t2i.md"
     _QWEN_EDIT_FILE = "qwen-image-edit.md"
     _QWEN_RULE_T2I = (
-        "你是把用户的图像需求改写成 Qwen-Image-2.1 官方格式**文生图**提示词的转换器。"
+        "你是把用户的图像需求改写成 Qwen-Image-2.1 参考格式**文生图**提示词的转换器。"
         "适用：没有任何输入图、从零生成。你是在报告画面里有什么，不是在下指令。\n"
         "铁律：① 长度不随输入缩水，恒定约 20 句 / 400–500 词；② 比例与分辨率永不写进正文"
         "（会真被渲染成字）；③ 观察而非指挥——现在时、第三人称、陈述句，不出现 make sure / "
@@ -3027,7 +3027,7 @@ class ComfyUIDrawPlugin(Star):
         "无说明、无标题、无代码围栏、无换行。"
     )
     _QWEN_RULE_EDIT = (
-        "你是把用户的编辑指令改写成 Qwen-Image-2.1 官方格式**图像编辑**提示词的转换器。"
+        "你是把用户的编辑指令改写成 Qwen-Image-2.1 参考格式**图像编辑**提示词的转换器。"
         "适用：输入图永远存在，这是编辑任务，不是从零文生图。\n"
         "治理原则：只改用户点名的属性、把改动推到强烈明确的程度，其余一切按输入图保真"
         "（保留的是内容，不是改动强度）。\n"
@@ -3045,7 +3045,7 @@ class ComfyUIDrawPlugin(Star):
     )
 
     def _is_qwen_image(self, wf: dict | None) -> bool:
-        """本工作流的底模是否属于 Qwen-Image 家族（用 Qwen 官方格式规范改写提示词）。
+        """本工作流的底模是否属于 Qwen-Image 家族（用 Qwen 参考格式规范改写提示词）。
 
         判定：底模库里显式把「提示词风格」配成 qwen（或 qwen-image 等写法）→ 是；
         显式配成 danbooru 标签系 → 否（用户明确要标签写法，别自作主张）；
@@ -3090,7 +3090,7 @@ class ComfyUIDrawPlugin(Star):
 
     async def _rewrite_to_qwen_llm(self, text: str, *, edit_mode: bool = False,
                                    lang: str = "") -> str:
-        """按 Qwen-Image-2.1 官方格式改写提示词（edit_mode=图像编辑，否则文生图）。
+        """按 Qwen-Image-2.1 参考格式改写提示词（edit_mode=图像编辑，否则文生图）。
 
         规范文本取自 `skills/qwen-image/`（那份文档本身写明「可直接作为系统提示词」）。
         lang=「中文」时（底模库优先语种配置）：规范文档里**五处**写死的英文条款会被
@@ -3202,7 +3202,7 @@ class ComfyUIDrawPlugin(Star):
         """本工作流「关联的 skill」（工作流配置里的 prompt_skill）。
 
         auto（默认）= 按底模与提示词意图自动判定；off = 不用 skill 规范（走原有翻译/标签逻辑）；
-        其余为显式指定规范：qwen-t2i / qwen-edit（Qwen-Image 官方格式）、character-sheet（角色设定板）。
+        其余为显式指定规范：qwen-t2i / qwen-edit（Qwen-Image 参考格式）、character-sheet（角色设定板）。
         """
         v = str((wf or {}).get("prompt_skill") or "auto").strip().lower()
         return v if v in self._PROMPT_SKILLS else "auto"
@@ -3211,7 +3211,7 @@ class ComfyUIDrawPlugin(Star):
                              has_input_image: bool = False) -> tuple[str, bool]:
         """决定本次用哪套提示词规范，返回 (plan, qwen 编辑模式)。
 
-        plan：`sheet`（角色设定板规范）/ `qwen`（Qwen-Image 官方格式）/ `legacy`（原有逻辑：
+        plan：`sheet`（角色设定板规范）/ `qwen`（Qwen-Image 参考格式）/ `legacy`（原有逻辑：
         标签系改写 / 写实清理 / 翻译）。
         显式关联 skill 时**不看底模也能生效**（例如给非 Qwen 底模的工作流挂设定板规范）；
         `off` 则一律回到 legacy。
@@ -3602,7 +3602,7 @@ class ComfyUIDrawPlugin(Star):
         """出图前的 LLM 提示词整理（原内联逻辑抽成方法，便于与参考图上传并行调度）。
 
         - source 非空（第三方插件调用）：标签系改写为 Anima/Danbooru 提示词、
-          Qwen-Image 家族按官方格式改写、其它清理为写实中文；
+          Qwen-Image 家族按参考格式改写、其它清理为写实中文；
         - source 为空且需要处理（标签系含中文 / Qwen 含中文）：翻译或按 Qwen 规范改写。
         任何失败都保留原提示词，绝不阻断出图。
 
@@ -3611,17 +3611,17 @@ class ComfyUIDrawPlugin(Star):
           ② 第三方调用 + 必须英文 + 关闭 LLM 整理（third_party_llm_refine=false）→ 含中文时
              仍走翻译（喂中文给标签系/Qwen 文生图必然崩，这条不能省）；纯英文则原样；
           ③ 非必须英文（写实/自然语言系，含 Qwen **图像编辑**）工作流：关了就原样。
-        v7.7.42：Qwen-Image 家族接入——文生图按官方格式（英文长叙述、一整段、不写比例与
+        v7.7.42：Qwen-Image 家族接入——文生图按参考格式（英文长叙述、一整段、不写比例与
         画质套话），图像编辑按编辑规范（正文语言随指令、<image1> 引用、只改点名属性）。
         v7.7.43：Qwen-Image 家族 + 设定板意图（三视图/四视图/设定板…）→ 按角色设定板规范改写
         （纯中文设定板提示词）——这是该规范的明确诉求，所以设定板场景不做英文翻译兜底。
         v7.7.54：底模库「优先语种」接入——Qwen 文生图 priority_lang=中文 时按中文改写
-        （Qwen-Image 官方原生支持中文），也不再触发中→英兜底翻译；英文/未配维持旧行为。
+        （Qwen-Image 参考原生支持中文），也不再触发中→英兜底翻译；英文/未配维持旧行为。
         v7.7.65：**优先语种是双向契约**。此前只有「中文→英文」的翻译兜底，没有反向：
         底模配「自然语言 + 优先语种=中文」时若 AI 自己写成英文标签，链路上没有任何一步
         会把它改回中文（v7.7.54 的中文改写只在"输入含中文"时触发），于是"设置形同没有、
         出图仍是英文+标签"。现在无论输入什么语言，只要与底模契约不符就按契约归一化一次
-        （Qwen 走官方规范改写、其它自然语言系走 `_rewrite_to_natural_llm`）；
+        （Qwen 走参考规范改写、其它自然语言系走 `_rewrite_to_natural_llm`）；
         标签系（is_anima）仍以英文标签为契约，不受影响。
         翻译/改写失败（未配置模型等）仍保留原提示词，绝不阻断出图。
         """
@@ -3767,7 +3767,7 @@ class ComfyUIDrawPlugin(Star):
             elif _qwen and (self._has_chinese(positive)
                             or (_want_cn and not _qwen_edit)
                             or self._prompt_skill_of(wf) in ("qwen-t2i", "qwen-edit")):
-                # 原生调用 + Qwen 工作流：按官方规范改写（中文 brief → 规范提示词）；
+                # 原生调用 + Qwen 工作流：按参考规范改写（中文 brief → 规范提示词）；
                 # 工作流**显式关联**了 Qwen 规范时，纯英文也照规范走一遍。
                 # v7.7.65：底模「优先语种=中文」时**不再要求输入含中文**——AI 若写成了英文标签，
                 # 同样按中文规范改写（否则"配了中文却出英文"，这正是用户报的问题）。
@@ -5736,15 +5736,15 @@ class ComfyUIDrawPlugin(Star):
         """按图库配置的展示方式发送展示内容。
 
         gallery.display_mode == "render" 时，优先用 AstrBot 自带的文本转图片服务
-        (text_to_image，官方 HTML 模板渲染美观、清晰)；若该服务不可用 / 返回空 /
+        (text_to_image，参考 HTML 模板渲染美观、清晰)；若该服务不可用 / 返回空 /
         发送异常，再用本插件内置的 Pillow 渲染做兜底（仅防止完全无图可发），再失败回退文字。
         其他值（默认 text）直接发送文字。
         """
         if str(self._cfg("gallery", {}).get("display_mode", "text")).strip().lower() == "render":
-            # 1) 优先：走 AstrBot 官方文本转图片服务，但用本插件自定义模板（大字号）+ 高清晰度渲染。
-            #    AstrBot 官方 text_to_image 的默认 quality 只有 40，且字号由默认模板固定，
+            # 1) 优先：走 AstrBot 参考文本转图片服务，但用本插件自定义模板（大字号）+ 高清晰度渲染。
+            #    AstrBot 参考 text_to_image 的默认 quality 只有 40，且字号由默认模板固定，
             #    导致渲染出的字小且发虚。这里用 html_render 传自定义模板文件（font-size 大）
-            #    并把 quality 提到 90，字大又清晰，同时仍是官方渲染服务。
+            #    并把 quality 提到 90，字大又清晰，同时仍是参考渲染服务。
             try:
                 _tmpl_path = Path(__file__).resolve().parent / "assets" / "gallery_t2i.html"
                 _tmpl = _tmpl_path.read_text(encoding="utf-8") if _tmpl_path.is_file() else self._GALLERY_T2I_TMPL
@@ -5761,13 +5761,13 @@ class ComfyUIDrawPlugin(Star):
                         img_comp = Image.fromFileSystem(url)
                     await event.send(MessageChain([img_comp]))
                     return
-                self.logger.warning("【图库】 官方渲染服务返回空 URL，改用默认模板")
+                self.logger.warning("【图库】 参考渲染服务返回空 URL，改用默认模板")
             except Exception as _e:
                 try:
-                    self.logger.warning(f"【图库】 官方自定义模板渲染失败，改用默认模板: {_e}")
+                    self.logger.warning(f"【图库】 参考自定义模板渲染失败，改用默认模板: {_e}")
                 except Exception:
                     pass
-            # 2) 兜底：AstrBot 官方默认模板（text_to_image）
+            # 2) 兜底：AstrBot 参考默认模板（text_to_image）
             render_text = text.replace("\n", "<br>\n")  # 默认模板按 Markdown 渲染，\n 需转 <br>
             try:
                 url = await self.text_to_image(render_text)
@@ -6699,7 +6699,7 @@ class ComfyUIDrawPlugin(Star):
                                    ("sampler", _eff_sampler), ("noise_schedule", _eff_noise)):
                         if _v is not None:
                             _extra[_k] = _v
-                    # 顶部 cfg/steps 列：NAI 引导系数官方叫 scale；用户给的 cfg 已按语义拆分
+                    # 顶部 cfg/steps 列：NAI 引导系数参考叫 scale；用户给的 cfg 已按语义拆分
                     # （>1 进 scale、0~1 进重缩放），这里填引导强度；steps 同理。
                     _cfg_val = _eff_scale
                     _steps_val = _eff_steps
@@ -7374,7 +7374,7 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"【提示词清理】 剔除跨后端语法垃圾后: {_pos_cleaned}")
                 positive = _pos_cleaned
         # v7.7.41/v7.7.42：调度条件按回退链细化（第三方关闭整理时只有「必须英文+含中文」
-        # 才进去翻译兜底；Qwen 原生调用含中文要进去按官方格式改写…）。
+        # 才进去翻译兜底；Qwen 原生调用含中文要进去按参考格式改写…）。
         # v7.7.66：判据**统一到 `_need_prompt_refine`**——此前这里是手写第二份判据，
         # 与 `_llm_refine_prompt` 内部各写一套，v7.7.65 补了「按底模优先语种反向归一化」
         # 后闸门仍是旧口径，把 task 挡在门外（用户 2026-10-14 日志：Qwen 底模 + 优先语种=中文
@@ -7664,8 +7664,8 @@ class ComfyUIDrawPlugin(Star):
                 positive, event, lora_map, wf)
             if _le_note:
                 logger.info(f"【LoRA 形象】 {_le_note}")
-            # v7.7.71：剥完必须**补回权威身份锚点**（官方混合式）。只做减法会让两个分组
-            # 只剩触发词 → 官方所说「只列角色名模型会混淆人物」→ 两人同脸。
+            # v7.7.71：剥完必须**补回权威身份锚点**（参考混合式）。只做减法会让两个分组
+            # 只剩触发词 → 参考所说「只列角色名模型会混淆人物」→ 两人同脸。
             if prompt_guard.is_multi_person(positive):
                 try:
                     # _card_hits 只在走到角色卡注入分支时才赋值，故用 locals().get 取
@@ -14748,9 +14748,9 @@ class ComfyUIDrawPlugin(Star):
             return positive, ""
 
     async def _danbooru_identity_anchors(self, trigger: str) -> list[str]:
-        """按官方做法（`docs/prompting.md:7`）用 Danbooru 校正角色 tag，取出身份锚点。
+        """按参考做法（`docs/prompting.md:7`）用 Danbooru 校正角色 tag，取出身份锚点。
 
-        官方原文：聊天模型给出角色 tag 候选后「插件随后查询 Danbooru character 分类进行校正」。
+        参考原文：聊天模型给出角色 tag 候选后「插件随后查询 Danbooru character 分类进行校正」。
         本插件的 Danbooru 客户端走标签搜索接口（`danbooru_client.DanbooruClient.search`），
         返回值里除角色 tag 外还带该角色的标准外观标签，正好可作身份锚点。
 
@@ -14789,12 +14789,12 @@ class ComfyUIDrawPlugin(Star):
     async def _resolve_identity_anchors(
         self, positive: str, lora_map, wf: dict, card_hits=None
     ) -> list[dict]:
-        """解析多人各角色的**权威身份锚点**（官方 `fixed_characters` 的等价实现）。
+        """解析多人各角色的**权威身份锚点**（参考 `fixed_characters` 的等价实现）。
 
-        优先级与官方一致（锚点是外观身份的唯一依据）：
+        优先级与参考一致（锚点是外观身份的唯一依据）：
 
-        1. **角色卡锚点**（离线、最可靠）——等价官方 `fixed_characters`，用户存一次永久生效；
-        2. **Danbooru 校正**——按角色 LoRA 触发词联网查标准 tag（官方 `prompting.md:7`）；
+        1. **角色卡锚点**（离线、最可靠）——等价参考 `fixed_characters`，用户存一次永久生效；
+        2. **Danbooru 校正**——按角色 LoRA 触发词联网查标准 tag（参考 `prompting.md:7`）；
         3. 都没有 → 空（调用方据此放弃重构，不硬写）。
         """
         out: list[dict] = []
@@ -14815,10 +14815,10 @@ class ComfyUIDrawPlugin(Star):
     async def _apply_multi_identity(
         self, positive: str, event, lora_map, wf: dict, card_hits=None
     ) -> tuple[str, str]:
-        """多人场景：剥掉模型编造的外形后，按官方混合式补回**权威身份锚点**。
+        """多人场景：剥掉模型编造的外形后，按参考混合式补回**权威身份锚点**。
 
         这一步是 v7.7.68~70 的"另一半"：之前只做减法（剥掉 LLM 复述的外形），却没人补回
-        权威外形，于是两个分组只剩触发词 → 正是 Anima 官方多人模板里那句「只列角色名，
+        权威外形，于是两个分组只剩触发词 → 正是 Anima 参考多人模板里那句「只列角色名，
         模型可能混淆人物」（`docs/prompting.md`）→ 两人同脸。这里补上"加法"。
         """
         try:
@@ -14836,18 +14836,18 @@ class ComfyUIDrawPlugin(Star):
                     logger.info(
                         "【身份锚点】 没解析到任何权威锚点（角色卡未存 + Danbooru 无该角色），"
                         "多人提示词保持原样。建议用角色卡（comfyui_character / 角色指令）"
-                        "把这两个角色的标准 tag 各存一次——官方 fixed_characters 就是干这个的。"
+                        "把这两个角色的标准 tag 各存一次——参考 fixed_characters 就是干这个的。"
                     )
                 return positive, ""
             _new, _notes = prompt_guard.build_hybrid_multi_person(
                 positive, [{"anchors": r["anchors"]} for r in _roles])
             if not _notes:
                 logger.info(
-                    "【多人混合式】 未能按官方形态改写（分组数与角色数不一致或缺锚点），保持原提示词"
+                    "【多人混合式】 未能按参考实现形态改写（分组数与角色数不一致或缺锚点），保持原提示词"
                 )
                 return positive, ""
             logger.info(
-                "【多人混合式】 已按 Anima 官方形态改写（公共 tag + 每角色自然语言块 + 权威锚点）:\n"
+                "【多人混合式】 已按 Anima 参考实现形态改写（公共 tag + 每角色自然语言块 + 权威锚点）:\n"
                 f"  {_new}\n  锚点来源: {'；'.join(r['source'] for r in _roles)}"
             )
             return _new, _new
@@ -15161,19 +15161,23 @@ class ComfyUIDrawPlugin(Star):
            真要根治需要区域控制（Regional Prompter / 蒙版）或分开生成再合成（本插件暂未支持）。
         详细规则与示例见技能 comfyui-draw 的「画多人 / 多人场景」章节。
 
-        ★★★★★ 多人场景按 Anima 官方架构来（v7.7.71，多人最高优先级规则）：
-        · 官方结论：「第一版不提供每角色独立 LoRA、区域遮罩或 Regional Prompting。角色相似…
-          仍可能需要多生成几个种子筛选」（docs/prompting.md:57）。**多角色 LoRA 同开是官方不支持
-          的场景**，两人同脸是模型层面的限制，不要为此反复改写提示词。
-        · 官方保证身份一致靠「角色名 + 权威标准 tag」（角色卡 / Danbooru 校正），**不靠 LoRA**；
-          官方明确「只列角色名，模型可能混淆人物」——所以**你不需要写这些角色的外形**。
+        ★★★★★ 多人场景按 Anima 参考实现架构来（v7.7.71，多人最高优先级规则）：
+        📌 来源：`anima-master` 是**第三方 AstrBot 插件**，不是 Anima 官方仓库；下面这条结论与
+        「混合式 / 身份锚点 / 不用角色 LoRA」都是**该参考插件的方案选择**，不是官方规范。
+        模型层面的权威依据只有 Anima 模型发布方（circlestone-labs）模型卡；**模型卡从未提过多角色
+        LoRA 同开**，所以"多角色 LoRA 不能用"是参考插件的取舍、不是模型限制（插件也不拦你用）。
+        · 参考插件结论：「第一版不提供每角色独立 LoRA、区域遮罩或 Regional Prompting。角色相似…
+          仍可能需要多生成几个种子筛选」（docs/prompting.md:57）。在参考实现里**多角色 LoRA 同开是
+          他们不支持的场景**，两人同脸是模型层面的限制，不要为此反复改写提示词。
+        · 参考保证身份一致靠「角色名 + 权威标准 tag」（角色卡 / Danbooru 校正），**不靠 LoRA**；
+          参考插件明确「只列角色名，模型可能混淆人物」——所以**你不需要写这些角色的外形**。
         · 出图链路已内置：剥掉模型编造的外形/服装 → 取权威锚点（角色卡优先，其次 Danbooru 校正）
-          → 改写成官方混合式（公共 tag + 每角色一个自然语言块 `red-haired fox: …`）。
+          → 改写成参考混合式（公共 tag + 每角色一个自然语言块 `red-haired fox: …`）。
           日志：`【身份锚点】`、`【多人混合式】`、`【LoRA 形象】`。
         · ★权威锚点拿不到时（原创/冷门角色 Danbooru 查不到），最有用的动作是**把角色存进角色卡**
-          （comfyui_character / 角色指令，等价官方 fixed_characters），例：
+          （comfyui_character / 角色指令，等价参考 fixed_characters），例：
           `锁暝 = 1girl, red hair, twin hair buns, red eyes, black coat`；存一次以后永久生效。
-        · ★官方建议多人**多种子筛选**：可在同一次调用里用 `prompts` 传 2~3 条同画面变体，
+        · ★参考插件建议多人**多种子筛选**：可在同一次调用里用 `prompts` 传 2~3 条同画面变体，
           这是承认"角色相似"后的正解；但**不要在用户没要求时擅自加张数**。
 
         ★★★用户已经给出提示词时【原样绘制】，严禁画蛇添足（最高优先级的省事原则）：
@@ -15310,10 +15314,10 @@ class ComfyUIDrawPlugin(Star):
                 （含 artist: 画师串与权重记号）再原样拼进本工具 prompt，不要凭记忆拼 NAI 标签；普通泛化画面可直接写英文标签不必查。
                 nai_codex 的 scope 默认 sfw（常规册），仅用户明确要涩涩内容时才传 nsfw-a/nsfw-b。
             cfg(number): CFG（仅 nai/openai 类）。NAI 按数值自适应落到哪个字段：0~1 → 「CFG Rescale
-                （缩放引导值，官方字段 cfg）」；>1 → 「提示词引导强度」（NAI 网页端叫 Guidance / 旧称
-                CFG Scale，官方字段 scale，常用 4~8）。不传=平台默认（引导约 6；重缩放 v4/v5 为 0）。
+                （缩放引导值，参考字段 cfg）」；>1 → 「提示词引导强度」（NAI 网页端叫 Guidance / 旧称
+                CFG Scale，参考字段 scale，常用 4~8）。不传=平台默认（引导约 6；重缩放 v4/v5 为 0）。
                 用户参数块里的 Scale / CFG / CFG scale 一律填这里，照数值填即可。
-            steps(number): 采样步数（仅 nai/openai 类）；不传=平台默认（NAI 约 28，官方上限 50）。用户写了 steps/步数 就照填。
+            steps(number): 采样步数（仅 nai/openai 类）；不传=平台默认（NAI 约 28，参考上限 50）。用户写了 steps/步数 就照填。
             sampler(string): 采样器（仅 nai/openai 类）。★直接用用户给的写法即可（大小写、空格、加号随便，
                 插件会自动归一）：dpm++2msde / DPM++ 2M SDE / DPM++ 2M SDE Karras / DPM++ 2M /
                 DPM++ SDE / DPM++ 2S a / DPM++ 3M SDE / Euler a / Euler / DPM2，或 NAI 内部名
@@ -15638,7 +15642,7 @@ class ComfyUIDrawPlugin(Star):
                     ) or "  （本次未启用角色 LoRA）"
                     logger.info(
                         f"【多人提示】 {_reason} 但提示词只有 {_best_groups} 个权重分组"
-                        f"（建议 ≥2）。v7.7.71 起**不再拦截**：出图链路会自动按 Anima 官方形态"
+                        f"（建议 ≥2）。v7.7.71 起**不再拦截**：出图链路会自动按 Anima 参考实现形态"
                         "补回权威身份锚点并渲染成混合式（公共 tag + 每角色自然语言块），"
                         "没必要让模型为这事重写一轮。以下要求仅作建议写进日志。"
                     )
@@ -15653,7 +15657,7 @@ class ComfyUIDrawPlugin(Star):
                         "  · 计数标签紧跟画质前缀（2girls / 1girl 1boy），绝不写 solo；\n"
                         "  · 每个角色一个括号分组，组内只放该角色触发词 + 用户明说的衣服/动作；\n"
                         "  · 不要自己给角色编衣服/外形：插件会剥除这类复述，并自动补回"
-                        "权威锚点（角色卡或 Danbooru 校正）后改写成官方混合式；\n"
+                        "权威锚点（角色卡或 Danbooru 校正）后改写成参考混合式；\n"
                         "  · 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会自动剔除）。\n"
                         f"  本次角色 LoRA 与触发词：\n{_tw_lines}"
                     )
@@ -18639,7 +18643,7 @@ class ComfyUIDrawPlugin(Star):
                 if _ps == "danbooru" or _bm_rec.get("danbooru_ready"):
                     _style = "Danbooru 标签"
                 elif _ps == "qwen":
-                    _style = ("Qwen-Image 官方格式长描述（文生图：约 20 句长段、正文语言按下方优先语种、"
+                    _style = ("Qwen-Image 参考格式长描述（文生图：约 20 句长段、正文语言按下方优先语种、"
                               "不写比例/画质词；编辑：正文随指令语言、多图用 <image1>；"
                               "画角色设定板/三视图/四视图时按插件内的角色设定板规范写纯中文提示词）")
                 else:

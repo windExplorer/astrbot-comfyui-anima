@@ -381,7 +381,7 @@ def test_align_character_lora_triggers():
 
 
 def test_identity_anchor_tags():
-    # Danbooru 返回：角色 tag + 标准外观（官方流程：先校正角色 tag，再取身份锚点）
+    # Danbooru 返回：角色 tag + 标准外观（参考流程：先校正角色 tag，再取身份锚点）
     tags = ("hatsune_miku \\(vocaloid\\), 1girl, solo, long hair, blue hair, blue eyes, "
             "ahoge, headset, white shirt, detached sleeves, smile")
     anchors = identity_anchor_tags(tags)
@@ -396,7 +396,7 @@ def test_identity_anchor_tags():
 
 
 def test_visual_label_for():
-    # 官方 multi_person_prompt.py:221：visual_label 必须唯一、不含名字与 left/right
+    # 参考 multi_person_prompt.py:221：visual_label 必须唯一、不含名字与 left/right
     assert visual_label_for(["red hair", "fox ears"]) == "red-haired fox"
     assert visual_label_for(["long white hair", "orange eyes"]) == "white-haired"
     assert visual_label_for(["orange eyes"]) == "orange-eyed"
@@ -412,7 +412,7 @@ def test_build_hybrid_multi_person():
     per_char = [{"anchors": ["red hair", "fox ears"]},
                 {"anchors": ["long white hair", "orange eyes"]}]
     out, notes = build_hybrid_multi_person(positive, per_char)
-    # 官方形态：公共 tag + 每角色一个自然语言块（标签: 标签, 标签.）
+    # 参考实现形态：公共 tag + 每角色一个自然语言块（标签: 标签, 标签.）
     assert "red-haired fox: " in out, out
     assert "white-haired: " in out, out
     # 身份由 label + 锚点表达，裸触发词与权重括号都该消失
@@ -432,7 +432,7 @@ def test_build_hybrid_multi_person():
     # 无分组 → 放弃
     same4, _ = build_hybrid_multi_person("2girls, suomingwuwa, xinyuehu, night", per_char)
     assert same4 == "2girls, suomingwuwa, xinyuehu, night"
-    print("== 20. 官方混合式渲染（公共 tag + 自然语言块 + 权威锚点） OK")
+    print("== 20. 参考混合式渲染（公共 tag + 自然语言块 + 权威锚点） OK")
 
 
 def test_end_to_end_multi_identity():
@@ -441,7 +441,7 @@ def test_end_to_end_multi_identity():
     positive = ("masterpiece, best quality, very aesthetic, absurdres, 2girls, "
                 "(suomingwuwa, standing:1.2), (xinyuehu, standing:1.2), "
                 "side_by_side, looking_at_each_other, simple background, soft lighting")
-    # 模拟 Danbooru 校正返回（官方流程：角色 tag → 标准外观标签）
+    # 模拟 Danbooru 校正返回（参考流程：角色 tag → 标准外观标签）
     a1 = identity_anchor_tags(
         "suomingwuwa, 1girl, solo, red hair, twin hair buns, red eyes, black coat")
     a2 = identity_anchor_tags(
@@ -454,10 +454,10 @@ def test_end_to_end_multi_identity():
     assert len(set(labels)) == 2, labels
     assert "red-haired" in out and "white-haired" in out, out
     assert "2girls" in out and "side_by_side" in out, out
-    # 官方负向词必须含治同脸的几个
+    # 参考负向词必须含治同脸的几个
     for w in ("twins", "duplicate characters", "cloned character", "fused characters"):
         assert w in MULTI_FUSION_NEGATIVE, w
-    print("== 21. 端到端：剥除 → 补权威锚点 → 官方混合式（两人标签不同） OK")
+    print("== 21. 端到端：剥除 → 补权威锚点 → 参考混合式（两人标签不同） OK")
 
 
 def test_multi_shared_appearance():

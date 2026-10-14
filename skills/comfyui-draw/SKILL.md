@@ -162,22 +162,28 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 >
 > ★★ **两个角色 LoRA 是同时、全局作用于整张图的**（LoRA 不认 prompt 分组，权重分组只是辅助）。所以真正能拉开两人的是**差异化的变化项**，不是复述形象：让两人穿**不同的衣服**（这条最有效）、做**不同的动作**、各有**不同的道具**。实测两人共写同一套 `black strapless dress` → 标签系底模把这理解成双胞胎，两张脸直接画成同一张（插件会就"分组共有标签"打 `【多人撞脸】` 告警，但换哪件衣服得听用户的）。要彻底避免串染需要 Regional Prompter 类区域控制（本插件暂未支持），或分开生成再合成。
 
-#### ★★ 官方口径（v7.7.71 起按 Anima 官方架构执行，别再自行发明）
+#### ★★ 参考实现口径（v7.7.71 起按 Anima 参考实现架构执行，别再自行发明）
 
-Anima 官方插件（源码在 `_Refs/anima-master`）对多人的官方结论是——**「第一版不提供每角色独立 LoRA、区域遮罩或 Regional Prompting。角色相似…仍可能需要多生成几个种子筛选」**（`docs/prompting.md:57`）。也就是说：
+> 📌 **来源说明**：`anima-master` 是**第三方 AstrBot 插件**（用 Anima 模型做图的社区实现），
+> **不是 Anima 官方仓库**。下面这条结论以及"混合式 / 身份锚点 / 不用角色 LoRA"都是**该参考插件的
+> 方案选择**，不是官方规范；模型层面的权威依据只有 Anima 模型发布方（circlestone-labs）模型卡。
+> 另外：**模型卡从未提过多角色 LoRA 同开**，所以"多角色 LoRA 不能用"是参考插件的取舍，
+> 不是模型限制——你若想用角色 LoRA，插件也不拦你。
 
-- **多角色 LoRA 同开是官方不支持的场景**，两人同脸不是提示词写得不好，是模型层面的限制；
-- 官方保证身份一致性的手段**不是 LoRA，而是"角色名 + 权威标准 tag"**：LLM 给角色 tag 候选 → 插件查 Danbooru 校正 → 冲突的外貌直接丢弃（`docs/prompting.md:7`、`:49`）；
-- 官方最终提示词是**混合式**：`2girls, duo, holding hands, <公共tag…>` + `green-eyed girl: green eyes, dark school uniform, …`（每人一个**自然语言块**，见 `anima/prompts/multi_person_prompt.py:386` 与 `tests/test_multi_person_prompt.py:273-294`），**不用 CLIP 权重括号绑定身份**（官方只给"易混淆身份锚点"加 `(tag:1.3)`）；
-- 官方多人负面词：`twins, duplicate characters, cloned character, extra person, fused characters, merged bodies, character sheet, multiple views, split screen, comic panels`。
+Anima 参考插件（源码在 `_Refs/anima-master`）对多人的参考插件结论是——**「第一版不提供每角色独立 LoRA、区域遮罩或 Regional Prompting。角色相似…仍可能需要多生成几个种子筛选」**（`docs/prompting.md:57`）。也就是说：
 
-> ⚙️ 插件已按此实现：出图链路会 ① 剥掉模型编造的外形/服装 ② 按**角色卡锚点 → Danbooru 校正**的顺序取权威身份锚点 ③ 把提示词改写成官方混合式。日志 `【身份锚点】` / `【多人混合式】`。
+- **多角色 LoRA 同开是参考不支持的场景**，两人同脸不是提示词写得不好，是模型层面的限制；
+- 参考保证身份一致性的手段**不是 LoRA，而是"角色名 + 权威标准 tag"**：LLM 给角色 tag 候选 → 插件查 Danbooru 校正 → 冲突的外貌直接丢弃（`docs/prompting.md:7`、`:49`）；
+- 参考实现的最终提示词是**混合式**：`2girls, duo, holding hands, <公共tag…>` + `green-eyed girl: green eyes, dark school uniform, …`（每人一个**自然语言块**，见 `anima/prompts/multi_person_prompt.py:386` 与 `tests/test_multi_person_prompt.py:273-294`），**不用 CLIP 权重括号绑定身份**（参考只给"易混淆身份锚点"加 `(tag:1.3)`）；
+- 参考多人负面词：`twins, duplicate characters, cloned character, extra person, fused characters, merged bodies, character sheet, multiple views, split screen, comic panels`。
+
+> ⚙️ 插件已按此实现：出图链路会 ① 剥掉模型编造的外形/服装 ② 按**角色卡锚点 → Danbooru 校正**的顺序取权威身份锚点 ③ 把提示词改写成参考混合式。日志 `【身份锚点】` / `【多人混合式】`。
 > ★ 所以**你不需要再自己写这些角色的外形**——写了会被剥掉，然后由插件用权威 tag 补上。
 > ★★ 但**权威锚点拿不到时插件无法凭空发明**（原创 / 冷门角色 Danbooru 查不到）。这时最有效的动作是
-> **把角色存进角色卡**（等价官方 `fixed_characters`）：用 `comfyui_character` 或角色指令把该角色的
+> **把角色存进角色卡**（等价参考 `fixed_characters`）：用 `comfyui_character` 或角色指令把该角色的
 > 标准 tag 存一次（例：`锁暝 = 1girl, red hair, twin hair buns, red eyes, black coat`），
 > 之后每次画这个角色都会自动带上权威锚点。
-> ★★★ 官方建议多人**多出几个种子筛选**（角色相似是已知现象）。一次调用里用 `prompts` 传 2~3 条
+> ★★★ 参考插件建议多人**多出几个种子筛选**（角色相似是已知现象）。一次调用里用 `prompts` 传 2~3 条
 > 同一画面的不同变体比在提示词上纠缠更有效——但这属于用户主动要求，**不要擅自加张数**。
 
 ### 3. 角色之间的互动 / 构图（让画面真的"在一起"）
