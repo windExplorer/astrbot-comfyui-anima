@@ -566,6 +566,7 @@ def test_lora_lookup_unique_fuzzy():
         _lora_library = lambda self: list(LIB)
         _lora_lib_index = ns["_lora_lib_index"]
         _lora_lookup = ns["_lora_lookup"]
+        _cfg = lambda self, key, default=None: default  # v7.7.81 别名开关（默认关）
 
     s = S()
     # ① 名字键不能被别名抢占：清宵2 排在清宵前面也不能抢
@@ -775,8 +776,9 @@ def test_char_lora_triggers_wiring():
     class S:
         _char_lora_triggers = ns["_char_lora_triggers"]
 
-        def __init__(self, entries):
+        def __init__(self, entries, raw_hits=None):
             self._entries = entries
+            self._raw_hits = raw_hits or {}
 
         def _lora_lib_index(self):
             return {"qingxiaowuwa": lib_e, "水墨": style_e}
@@ -790,6 +792,9 @@ def test_char_lora_triggers_wiring():
 
         def _loras_of(self, wf):
             return self._entries
+
+        def _match_loras_by_raw_message(self, event, include_keywords=False):
+            return dict(self._raw_hits)
 
     s = S([wf_entry, style_e])
     # ① lora_map 传工作流名「清宵」、库名不同 → 经 _lora_lookup 模糊命中，必须识别为角色
@@ -805,7 +810,64 @@ def test_char_lora_triggers_wiring():
              "trigger_words": "passerby_tag, 1girl, solo"}])
     names3, triggers3 = s2._char_lora_triggers(None, {})
     assert "路人甲" in names3 and "passerby_tag" in triggers3, (names3, triggers3)
-    print("== 31. 角色 LoRA 触发词解析接线（库名不一致 + category 缺失修复） OK")
+    # ④ v7.7.81 事故复刻：LLM 没传 loras、用户原话点名（raw_hits）→ 此前拿空列表
+    #    整条剥除链路静默空转；传 event 后必须把原话命中的角色 LoRA 纳入
+    s3 = S([], raw_hits={"清宵": None, "达妮娅": None})
+    names4, triggers4 = s3._char_lora_triggers(None, {}, event=object())
+    assert "qingxiaowuwa" in names4, names4
+    assert any("qingxiao" in t for t in triggers4), triggers4
+    # ⑤ 不传 event 时绝不触发原话匹配（/draw 指令等路径零额外开销）
+    s4 = S([], raw_hits={"清宵": None})
+    names5, _ = s4._char_lora_triggers(None, {})
+    assert names5 == [], names5
+    print("== 31. 角色 LoRA 触发词解析接线（库名不一致 + category 缺失 + 原话点名） OK")
+
+
+def test_lora_alias_lookup_switch():
+    # v7.7.81 用户诉求：「别名查询关了怎么还触发」——此前「关键字」无条件混进别名索引，
+    # 关键字与他人 LoRA 名称撞车就占索引键（日志刷冲突）还能被查中。
+    # 新开关 lora_alias_lookup（默认关）：索引只收名称键。
+    import ast as _ast
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, _ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    ns: dict = {"prompt_guard": prompt_guard, "re": re, "json": __import__("json"),
+                "logger": _logging.getLogger("test")}
+    got = [n for n in cls.body
+           if isinstance(n, _ast.FunctionDef) and n.name == "_lora_lib_index"]
+    assert got, "ComfyUIDrawPlugin 必须有 _lora_lib_index"
+    exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+
+    a = {"name": "心月狐3", "keywords_list": ["Wuthering", "Waves"], "aliases": ["心月狐3", "Wuthering", "Waves"]}
+    b = {"name": "ds鲸鱼娘1", "keywords_list": ["Girl", "deepseek"], "aliases": ["ds鲸鱼娘1", "Girl", "deepseek"]}
+
+    class S:
+        _lora_lib_index = ns["_lora_lib_index"]
+
+        def __init__(self, cfg):
+            self._cfgv = cfg
+
+        def _cfg(self, key, default=None):
+            return self._cfgv.get(key, default)
+
+        def _lora_library(self):
+            return [a, b]
+
+    # 默认（关）：索引只有名称键——Girl/Wuthering 等关键字既不进索引也不刷冲突日志
+    idx_off = S({})._lora_lib_index()
+    assert "心月狐3" in idx_off and "ds鲸鱼娘1" in idx_off
+    assert "Girl" not in idx_off and "girl" not in idx_off, sorted(idx_off)
+    assert "Wuthering" not in idx_off and "wuthering" not in idx_off, sorted(idx_off)
+    # 开启：别名键进索引，关键字可定位到对应 LoRA
+    s_on = S({"lora_alias_lookup": True})
+    idx_on = s_on._lora_lib_index()
+    assert idx_on.get("Girl") is b and idx_on.get("deepseek") is b
+    assert idx_on.get("Wuthering") is a and idx_on.get("waves") is a
+    print("== 32. LoRA 别名查库开关（默认只按名称，关键字进索引须显式开启） OK")
 
 
 def test_multi_shared_appearance():
@@ -857,4 +919,5 @@ if __name__ == "__main__":
     test_looks_char_lora()
     test_char_lora_skip_plan()
     test_char_lora_triggers_wiring()
+    test_lora_alias_lookup_switch()
     print("提示词护栏全部通过")

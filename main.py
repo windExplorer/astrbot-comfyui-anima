@@ -2220,6 +2220,14 @@ class ComfyUIDrawPlugin(Star):
         混在一个循环里 `setdefault`，若「清宵2」排在「清宵」前面且它的别名里写了
         「清宵」，`idx["清宵"]` 就被清宵2 抢占 → 之后查「清宵」拿到的是清宵2 的
         model_name/触发词/描述（用户实测事故：图用清宵、触发词却是清宵2）。
+
+        ★v7.7.81：别名键（= 名称 + 「关键字」字段拆词）只在配置
+        `lora_alias_lookup` 开启时才进索引——用户实测反馈「别名查询已关闭怎么还在
+        触发」：此前「关键字」无条件混进别名索引（`Girl`/`deepseek`/`Wuthering`/`Waves`
+        这类关键字占了索引键，既刷冲突日志又能被查中）。默认**关**：只按名称
+        （精确 + 版本后缀归一的唯一模糊）匹配；开了之后关键字才参与查库。
+        关键字的另两个用途不受此开关影响：原话自动启用（lora_keyword_auto）、
+        给 LLM 区分引用（comfyui_loras 列表展示）。
         """
         lib = self._lora_library()
         idx: dict[str, dict] = {}
@@ -2229,17 +2237,19 @@ class ComfyUIDrawPlugin(Star):
             if nm:
                 idx.setdefault(nm, l)
                 idx.setdefault(nm.lower(), l)
-        # 第二轮：别名——已被名称占据的键不覆盖（setdefault 语义）
-        for l in lib:
-            for al in (l.get("aliases") or []):
-                al = (al or "").strip()
-                if al:
-                    if al in idx and idx[al] is not l:
-                        logger.info(
-                            f"【LoRA】 别名「{al}」与现有键冲突，保留先注册的「{idx[al].get('name')}」"
-                        )
-                    idx.setdefault(al, l)
-                    idx.setdefault(al.lower(), l)
+        # 第二轮：别名——已被名称占据的键不覆盖（setdefault 语义）；
+        # v7.7.81 起受 lora_alias_lookup 开关控制（默认关，只按名称查库）
+        if bool(self._cfg("lora_alias_lookup", False)):
+            for l in lib:
+                for al in (l.get("aliases") or []):
+                    al = (al or "").strip()
+                    if al:
+                        if al in idx and idx[al] is not l:
+                            logger.info(
+                                f"【LoRA】 别名「{al}」与现有键冲突，保留先注册的「{idx[al].get('name')}」"
+                            )
+                        idx.setdefault(al, l)
+                        idx.setdefault(al.lower(), l)
         return idx
 
     def _check_lora_name_collisions(self, lib: list[dict]) -> None:
@@ -7897,7 +7907,8 @@ class ComfyUIDrawPlugin(Star):
         # 出图根本不是那两个人。对齐之后触发词才在提示词里出现，后面的剥除才认得出
         # "这些外形/服装是模型自己编的"。
         if not _fixed_prompt:
-            positive, _al_note = self._align_character_lora_triggers(positive, lora_map, wf)
+            positive, _al_note = self._align_character_lora_triggers(
+                positive, lora_map, wf, event=event)
             if _al_note:
                 logger.warning(f"【角色 LoRA 对齐】 {_al_note}")
             positive, _le_note = self._strip_lora_echo_appearance(
@@ -8336,6 +8347,9 @@ class ComfyUIDrawPlugin(Star):
         if enabled:
             _lib = self._lora_lib_index()
             _triggers: list[str] = []
+            # v7.7.81：记录每个触发词 token 的供体（LoRA 名 / LLM 增补）——
+            # 追加日志带来源，一出垃圾词立刻知道改谁家的触发词字段
+            _trigger_src: dict[str, str] = {}
             # v5.14.0：≥2 个「角色」分类 LoRA 同时启用时，绝不把它们的触发词全局追加
             # （全局追加=两个角色特征互相污染，实测「薄荷的猫耳跑到鉴定师头上」）。
             # 多角色时触发词必须由 LLM 写进各自的角色分组括号（comfyui_draw 已有
@@ -8399,6 +8413,7 @@ class ComfyUIDrawPlugin(Star):
                 for _tw in _tw_kept:
                     if _tw not in _triggers:
                         _triggers.append(_tw)
+                        _trigger_src.setdefault(_tw, f"LoRA「{nm}」")
             # ② LLM 显式传入的词：只增补、不替换
             if trigger_words is not None:
                 if not str(trigger_words).strip():
@@ -8427,6 +8442,7 @@ class ComfyUIDrawPlugin(Star):
                             )
                             continue
                         _extra.append(_tw)
+                        _trigger_src.setdefault(_tw, "LLM 增补")
                     if _extra:
                         logger.info(
                             f"【LoRA 触发词】 LLM 增补触发词: {_extra}"
@@ -8478,7 +8494,10 @@ class ComfyUIDrawPlugin(Star):
                         prompt, wf.get("positive_node"),
                         (wf.get("positive_field") or "").strip() or "text", positive
                     )
-                    logger.info(f"【LoRA 触发词】 已追加到正向提示词: {_add}")
+                    _src_note = ", ".join(
+                        f"{t}←{_trigger_src.get(t, '?')}" for t in _add
+                    )
+                    logger.info(f"【LoRA 触发词】 已追加到正向提示词: {_add}（来源: {_src_note}）")
                 else:
                     logger.info(f"【LoRA 触发词】 启用 LoRA 的触发词均已存在于正向提示词中，无需追加")
                 # v7.7.78 兜底：触发词追加发生在主多人计数清理（_do_draw 前段）之后，
@@ -14930,11 +14949,14 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【多人防连体】 检查异常（忽略，不影响出图）: {_e}")
             return negative, "", ""
 
-    def _char_lora_triggers(self, lora_map, wf: dict) -> tuple[list[str], list[str]]:
+    def _char_lora_triggers(
+        self, lora_map, wf: dict, event=None
+    ) -> tuple[list[str], list[str]]:
         """本次生效的「角色」LoRA 名称与触发词。
 
-        生效范围 = 调用方显式传入的 ``lora_map`` ∪ 本工作流实际生效的 LoRA
-        （``_loras_of``，含工作流默认/预设启用项）。按触发词拆分去重。
+        生效范围 = 调用方显式传入的 ``lora_map`` ∪ **用户原话点名的 LoRA**（event，
+        v7.7.81）∪ 本工作流实际生效的 LoRA（``_loras_of``，含工作流默认/预设启用项）。
+        按触发词拆分去重。
 
         ★v7.7.80 两处修复（用户实测：LoRA 描述内容被 LLM 抄进公共区，形象剥除
         却全程没生效，两人被同一套装备罩住）：
@@ -14946,13 +14968,30 @@ class ComfyUIDrawPlugin(Star):
            （category 已由 v7.7.80 补进合并条目；本判定同时放宽到
            `looks_char_lora`——触发词自带人数标签的也按角色对待，与
            `_char_lora_skip_plan` 口径一致。）
+
+        ★v7.7.81 第三处：``event`` 原话点名来源。用户实测（v7.7.80 日志行号比对确认）：
+        「画清宵和达妮娅」走 `_match_loras_by_raw_message` 命中 → 临时从库补全启用，
+        而本触发器只看 lora_map ∪ 工作流配置 → **拿到空列表** → 形象剥除 / 触发词对齐 /
+        身份锚点 / 混合式改写整条链路静默空转（早退无日志）。传 event 即补齐该来源
+        （只按名称匹配，关键字匹配仍由 lora_keyword_auto 单独控制）。
         """
         try:
             _lib_idx = self._lora_lib_index()
         except Exception:
             _lib_idx = {}
-        _cands: dict[str, dict | None] = {}
+        _activated: list[str] = []
         for _n in (lora_map or {}):
+            if (_n or "").strip() and _n not in _activated:
+                _activated.append(_n)
+        if event is not None:
+            try:
+                for _n in (self._match_loras_by_raw_message(event, include_keywords=False) or {}):
+                    if (_n or "").strip() and _n not in _activated:
+                        _activated.append(_n)
+            except Exception:
+                pass
+        _cands: dict[str, dict | None] = {}
+        for _n in _activated:
             _q = (_n or "").strip()
             _l, _how = None, ""
             try:
@@ -14985,7 +15024,7 @@ class ComfyUIDrawPlugin(Star):
         return names, triggers
 
     def _align_character_lora_triggers(
-        self, positive: str, lora_map, wf: dict
+        self, positive: str, lora_map, wf: dict, event=None
     ) -> tuple[str, str]:
         """把分组里写错的角色标识**换成**本次真正启用的角色 LoRA 触发词。
 
@@ -15004,7 +15043,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             if not (positive or "").strip():
                 return positive, ""
-            _names, _triggers = self._char_lora_triggers(lora_map, wf)
+            _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event)
             if not _triggers:
                 return positive, ""
             _low = (positive or "").lower()
@@ -15185,7 +15224,7 @@ class ComfyUIDrawPlugin(Star):
             return []
 
     async def _resolve_identity_anchors(
-        self, positive: str, lora_map, wf: dict, card_hits=None
+        self, positive: str, lora_map, wf: dict, card_hits=None, event=None
     ) -> list[dict]:
         """解析多人各角色的**权威身份锚点**（参考 `fixed_characters` 的等价实现）。
 
@@ -15194,9 +15233,14 @@ class ComfyUIDrawPlugin(Star):
         1. **角色卡锚点**（离线、最可靠）——等价参考 `fixed_characters`，用户存一次永久生效；
         2. **Danbooru 校正**——按角色 LoRA 触发词联网查标准 tag（参考 `prompting.md:7`）；
         3. 都没有 → 空（调用方据此放弃重构，不硬写）。
+
+        ★v7.7.81：Danbooru 查询只认**每个角色 LoRA 触发词字段的第一个有效激活词**
+        （净化后首个 token）——整段推荐提示词里的外观/服装/人数 token 拿去查只会
+        产出「blue hair」这类垃圾角色块；同时给每个角色挂上 `_entry`（库条目），
+        v2 的「LoRA 描述」档直接用它，不再按 token 反查库（token 查不中库名）。
         """
         out: list[dict] = []
-        names, triggers = self._char_lora_triggers(lora_map, wf)
+        names, triggers = self._char_lora_triggers(lora_map, wf, event=event)
         for card, anchor in (card_hits or []):
             _pos = anchor.get("positive") or ""
             _tags = prompt_guard.identity_anchor_tags(_pos, limit=5)
@@ -15205,13 +15249,26 @@ class ComfyUIDrawPlugin(Star):
                             "source": f"角色卡「{card.get('name')}」"})
         if out:
             return out
-        for trig in triggers:
-            _tags = await self._danbooru_identity_anchors(trig)
-            out.append({"name": trig, "anchors": _tags, "source": "danbooru"})
+        _seen_entries: set[int] = set()
+        for _nm in dict.fromkeys(names or []):
+            try:
+                _e, _how = self._lora_lookup(_nm)
+            except Exception:
+                _e = None
+            if not isinstance(_e, dict) or id(_e) in _seen_entries:
+                continue
+            _seen_entries.add(id(_e))
+            _toks, _ = prompt_guard.sanitize_trigger_words(str(_e.get("trigger_words") or ""))
+            _anchor_tok = _toks[0].strip() if _toks else ""
+            if not _anchor_tok:
+                continue
+            _tags = await self._danbooru_identity_anchors(_anchor_tok)
+            out.append({"name": _anchor_tok, "anchors": _tags,
+                        "source": "danbooru", "_entry": _e})
         return out
 
     async def _resolve_identity_anchors_v2(
-        self, positive: str, lora_map, wf: dict, card_hits=None
+        self, positive: str, lora_map, wf: dict, card_hits=None, event=None
     ) -> list[dict]:
         """v7.7.74：身份锚点来源加一档 **LoRA 库描述**（原创角色的救命档）。
 
@@ -15219,7 +15276,8 @@ class ComfyUIDrawPlugin(Star):
         用户在 LoRA 库写的 `description` 通常就是角色设定本身（"红发双丸子头金铃、灰渐变双马尾、
         红瞳、黑无肩带裙"），对 Danbooru 查不到的原创角色比联网查更准、也不依赖网络。
         """
-        out = await self._resolve_identity_anchors(positive, lora_map, wf, card_hits)
+        out = await self._resolve_identity_anchors(
+            positive, lora_map, wf, card_hits, event=event)
         if out and all(r.get("anchors") for r in out):
             return out
         try:
@@ -15230,14 +15288,20 @@ class ComfyUIDrawPlugin(Star):
             if _r.get("anchors"):
                 continue
             _trig = _r.get("name") or ""
-            _entry = lib.get((_trig or "").strip())
+            # v7.7.81：v1 已把库条目挂在角色上（`_entry`）——激活词是触发词字段的
+            # 第一个 token，按它反查库名通常查不中，直接用携带条目。
+            _entry = _r.pop("_entry", None)
+            if not isinstance(_entry, dict):
+                _entry = lib.get((_trig or "").strip())
             if not isinstance(_entry, dict):
                 _entry = next(
                     (v for k, v in lib.items()
                      if (k or "").strip().lower() == (_trig or "").strip().lower()),
                     None,
                 )
-            if isinstance(_entry, dict) and (_entry.get("category") or "").strip() == "角色":
+            if isinstance(_entry, dict) and ((_entry.get("category") or "").strip() == "角色"
+                                             or prompt_guard.looks_char_lora(
+                                                 str(_entry.get("trigger_words") or ""))):
                 _tags = prompt_guard.identity_anchor_tags(
                     str(_entry.get("description") or ""), limit=5)
                 if _tags:
@@ -15262,7 +15326,7 @@ class ComfyUIDrawPlugin(Star):
             if not (positive or "").strip():
                 return positive, ""
             _roles = await self._resolve_identity_anchors_v2(
-                positive, lora_map, wf, card_hits)
+                positive, lora_map, wf, card_hits, event=event)
             _roles = [r for r in _roles if r.get("anchors")]
             if len(_roles) < 2:
                 if _roles:
@@ -15327,7 +15391,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             if not (positive or "").strip():
                 return positive, ""
-            _names, _triggers = self._char_lora_triggers(lora_map, wf)
+            _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event)
             if not _triggers:
                 return positive, ""
             _low = (positive or "").lower()
