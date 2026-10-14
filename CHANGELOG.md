@@ -2,6 +2,70 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.68（角色 LoRA 已自带形象：剥掉提示词里对形象的复述 + 多人撞脸告警）
+
+现象（用户 2026-10-14 实测）：只说「画两个角色」并加上她们的 LoRA，出图提示词却是
+`masterpiece, ..., 2girls, (suomingwuwa, red hair, twin hair buns with gold bells, long
+grey-tipped twintails, red eyes, black strapless dress ...:1.25), (xinyuehu, long white hair
+with black tips, single hair bun, fox ears, orange eyes, ...:1.25)` ——**一大段外形标签全是
+插件/文档逼 LLM 复述出来的**，用户明确表态：
+
+> 「我只是说了画两个角色并加上她们的 LoRA，为什么要加这么多没必要的提示词？应该各自使用
+> 她们的 LoRA 自带的画风啊，除非我说穿啥衣服、做啥动作才需要加。特别是形象，都加了 LoRA
+> 为什么还要写头发颜色？」
+
+附带症状：两人画出来一模一样（同脸 + 同套 `black strapless dress`）。
+
+根因（三处口径都要改，其中一处是代码真空）：
+
+1. **文档明确要求补外形**。`skills/comfyui-draw/SKILL.md` 多人第 2 节写着「每个角色的分组里
+   还必须再写 2~4 个该角色最有辨识度的外观标签（发色/瞳色/兽耳/角等）与本图服装，把角色
+   "钉"在组内」；`comfyui_draw` docstring 与**多人拦截返回给 LLM 的重写模板**里各有一份同样
+   的要求（「每个角色分组里必须有：触发词 + 2~4 个外观标签 + 本图服装」）。这条是当年为治
+   「两个角色 LoRA 同开 → 串味」加的对策，但与「LoRA 自带完整形象」直接冲突：它让模型用
+   弱文本标签**稀释甚至覆盖**LoRA 训练进去的形象，凭记忆写还大概率写错。
+2. **代码对角色 LoRA 路径零约束**。「别复述形象」的硬兜底只对**角色卡**存在
+   （`_guard_appearance` → `strip_conflicting_appearance`）；角色 **LoRA** 路径此前任何检查
+   都没有——触发词进了分组就算合格，外形词一路原样送到模型。
+3. **「细节密度默认写丰富」没有人物维度豁免**。SKILL 要求标签系写 15~25 个标签、覆盖 6 个
+   维度，却没有「命中角色 LoRA / 角色 tag 时跳过人物外形维度」的例外，于是多人时也把外形写满。
+
+修复（`prompt_guard.py` + `main.py`）：
+
+1. `strip_lora_echo_appearance()`：剥掉命中「角色自带形象」的外形标签（发色/发型/瞳色/兽化/体型），
+   **括号权重分组逐标签剥**——组内角色 tag、用户明说的衣服、权重 `:1.25` 与场景标签全部保留，
+   剥空了的组整组删除；**outfit（服装配饰）维度一律不动**。
+2. `appearance_change_intent()`：用户本轮说了「染成 / 剪短 / 换成 / 加上猫耳 / change her hair…」
+   之类改外形意图时**整体放弃剥除**（用户才是权威），这条与 v7.6.0 的换装过滤是同一思路。
+3. `main.py` 新增 `_strip_lora_echo_appearance(positive, event, lora_map, wf)`，接入 `_do_draw`
+   （多人负向兜底之后）。四重保守前提：本次确有 category=角色 的 LoRA 生效（`lora_map` ∪
+   `_loras_of(wf)`）→ 其触发词出现在正向里 → 用户本轮无改外形意图 → 工作流未锁定提示词
+   （`_fixed_prompt` 是用户自配配方，不动）。任一不满足即**什么都不剥**，异常也只记日志。
+   日志：`【LoRA 形象】 剥除提示词里对其形象的复述 N 个: …`。
+4. `multi_shared_appearance()` + `【多人撞脸】` 告警：多人且各角色分组**共用**同一批外形/服装
+   标签时报警（实测形态：两组都写 `black strapless dress` + `detached sleeves` → 标签系底模
+   理解成双胞胎 → 两人同脸）。**只告警不自动改**——换哪件衣服得听用户的。
+5. `APPEARANCE_RULES.outfit` 补 `sleeves?`：`detached sleeves` / `puffy sleeves` 这类极常见的
+   服装词此前识别不出 outfit 维度，导致「共有服装」检测漏报（连带扩写护栏也漏判）。
+
+文档口径同步（SKILL.md + `comfyui_draw` docstring + 多人拦截的重写模板，三处原本互相冲突）：
+
+- 多人第 2 节那条 ★★「必须再写 2~4 个外观标签 + 本图服装」**整条改写**为「角色 LoRA 自带完整
+  形象（含原服装），分组里只写本图的变化项：触发词 + 用户明说的衣服/动作/表情」，并给出
+  正误对照（对：`2girls, (suomingwuwa:1.25), (xinyuehu:1.25), holding hands, night`）。
+- ★★ 的落点从「补外形钉住角色」改为「**差异化变化项**」：两人穿不同的衣服（最有效）、不同动作、
+  不同道具；并写明「两人写同一套衣服 = 双胞胎 = 同脸」。
+- 「细节密度」补人物维度豁免：命中角色 LoRA / 角色 tag 时外形整条跳过，标签数可以少于 15~25，
+  **宁少勿凑**（凑数只会稀释 LoRA）。
+- 多人拦截的返回文案同步改成「只放触发词 + 用户明说的衣服/动作」，避免拦截把 LLM 又引回
+  补外形的老路。
+
+验证：`tests/test_prompt_guard.py` 从 10 组扩到 **13 组**，新增三组全部以用户这次的**原始提示词**
+为样本——① 复述剥除（外形全剥、触发词/衣服/权重/场景全留、剥空的组整组消失、服装维度不受影响）；
+② 改外形意图判定（含"画两个角色并加上她们的 LoRA"这类**不得**误判成改外形）；③ 多人共有标签检测。
+全通过；`compileall main.py prompt_guard.py` 零错；`test_llm_tool_docstrings.py` 8 个工具 schema
+全通过；`test_logic.py` 1~4 组过。
+
 ## v7.7.67（多人贴在一起时的「连体人」兜底：负向畸形词 + 贴身构图风险告警）
 
 现象（用户反馈，长期高频）：两人**贴在一起**（拥抱 / 贴脸 / 搭肩）出图时频繁出现

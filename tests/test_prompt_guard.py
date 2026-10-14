@@ -9,10 +9,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from prompt_guard import (  # noqa: E402
-    MULTI_FUSION_NEGATIVE, appearance_dims, ensure_quality_prefix, free_dim_coverage,
-    has_character_tag, is_multi_person, is_short_prompt, keeps_original_tags,
-    merge_multi_negative, multi_person_hints, prompt_style_of, quality_prefix_for,
-    strip_conflicting_appearance, strip_new_appearance,
+    LORA_ECHO_DIMS, MULTI_FUSION_NEGATIVE, appearance_change_intent, appearance_dims,
+    ensure_quality_prefix, free_dim_coverage, has_character_tag, is_multi_person,
+    is_short_prompt, keeps_original_tags, merge_multi_negative, multi_person_hints,
+    multi_shared_appearance, prompt_style_of, quality_prefix_for,
+    strip_conflicting_appearance, strip_lora_echo_appearance, strip_new_appearance,
 )
 
 ANCHOR = "long hair, green hair, green eyes, cat ears, hair ribbon"
@@ -185,6 +186,65 @@ def test_merge_multi_negative():
     print("== 10. 畸形负向并入（只增不覆盖 + 去重 + 绝不含人数词） OK")
 
 
+def test_strip_lora_echo_appearance():
+    # 用户实测原样：两个角色 LoRA + LLM 复述了完整外形（衣服是用户没提的）
+    txt = ("masterpiece, best quality, safe, 2girls, "
+           "(suomingwuwa, red hair, twin hair buns with gold bells, long grey-tipped twintails, "
+           "red eyes, black strapless dress with detached sleeves and black coat on shoulders:1.25), "
+           "(xinyuehu, long white hair with black tips, single hair bun, fox ears, orange eyes, "
+           "red eyeliner, black strapless dress with puffy detached sleeves:1.25), "
+           "standing side by side, night")
+    out, dropped = strip_lora_echo_appearance(txt)
+    # 外形（发色/发型/瞳色/兽耳）全部剥掉
+    for t in ("red hair", "red eyes", "fox ears", "orange eyes", "single hair bun"):
+        assert t in dropped, (t, dropped)
+    # 角色触发词、用户可能明说的衣服、分组权重、场景标签必须保留
+    assert "suomingwuwa" in out and "xinyuehu" in out, out
+    assert "black strapless dress with detached sleeves and black coat on shoulders" in out, out
+    assert "black strapless dress with puffy detached sleeves" in out, out
+    assert ":1.25" in out and "standing side by side" in out and "night" in out, out
+    # 服装维度绝不参与剥除（outfit 不在 LORA_ECHO_DIMS）
+    assert "outfit" not in LORA_ECHO_DIMS, LORA_ECHO_DIMS
+    # 剥空了的组整组消失（只含外形的组）
+    out2, dropped2 = strip_lora_echo_appearance("2girls, (red hair, blue eyes:1.2), night")
+    assert "red hair" not in out2 and "blue eyes" not in out2, out2
+    assert "night" in out2, out2
+    # 没有外形标签 → 原样返回
+    same = "2girls, (suomingwuwa:1.2), (xinyuehu:1.2), night, moonlit pavilion"
+    out3, dropped3 = strip_lora_echo_appearance(same)
+    assert out3 == same and not dropped3, (out3, dropped3)
+    print("== 11. 角色 LoRA 形象复述剥除（剥外形、留服装与触发词） OK")
+
+
+def test_appearance_change_intent():
+    assert appearance_change_intent("把头发染成粉色")
+    assert appearance_change_intent("剪短一点")
+    assert appearance_change_intent("给她换成红裙子")          # 换装也算用户干预 → 不剥
+    assert appearance_change_intent("加上猫耳")
+    assert appearance_change_intent("去掉角")
+    assert appearance_change_intent("change her hair to blue")
+    assert not appearance_change_intent("画两个角色并加上她们的 LoRA")
+    assert not appearance_change_intent("两个女孩合照")
+    print("== 12. 用户改外形意图判定（有则整体放弃剥除） OK")
+
+
+def test_multi_shared_appearance():
+    # 用户实测原样：两人共用的 black strapless dress / detached sleeves
+    txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
+           "(xinyuehu, long white hair, black strapless dress, detached sleeves:1.25), night")
+    is_multi, shared = multi_shared_appearance(txt)
+    assert is_multi, shared
+    assert "black strapless dress" in shared and "detached sleeves" in shared, shared
+    assert "red hair" not in shared and "long white hair" not in shared, shared
+    # 两人服装不同 → 不报
+    txt2 = ("2girls, (suomingwuwa, black dress:1.2), (xinyuehu, white hanfu:1.2), night")
+    _, shared2 = multi_shared_appearance(txt2)
+    assert shared2 == [], shared2
+    # 单人不报
+    assert multi_shared_appearance("1girl, black dress, night") == (False, [])
+    print("== 13. 多人共有外观/服装检测（撞脸信号） OK")
+
+
 if __name__ == "__main__":
     test_appearance_dims()
     test_has_character_tag()
@@ -196,4 +256,7 @@ if __name__ == "__main__":
     test_multi_person_detection()
     test_multi_person_hints()
     test_merge_multi_negative()
+    test_strip_lora_echo_appearance()
+    test_appearance_change_intent()
+    test_multi_shared_appearance()
     print("提示词护栏全部通过")

@@ -96,7 +96,7 @@ APPEARANCE_RULES: dict[str, list[re.Pattern]] = {
     "outfit": [
         re.compile(r"\b(dress|skirt|shirt|blouse|hoodie|sweater|jacket|coat|kimono|yukata|"
                    r"uniform|sailor\s*uniform|maid|suit|bikini|swimsuit|lingerie|apron|robe|"
-                   r"cape|scarf|gloves?|stockings?|thighhighs?|pantyhose|boots?|shoes?|hat|"
+                   r"cape|scarf|gloves?|sleeves?|stockings?|thighhighs?|pantyhose|boots?|shoes?|hat|"
                    r"ribbon|necktie|tie|choker|necklace|earrings?|glasses|goggles)\b", re.I),
         re.compile(r"(连衣裙|裙子|衬衫|卫衣|毛衣|外套|水手服|制服|和服|浴衣|泳装|内衣|围裙|"
                    r"斗篷|围巾|手套|丝袜|过膝袜|靴子|鞋子|帽子|发带|领带|项圈|项链|耳环|眼镜)"),
@@ -471,3 +471,116 @@ def merge_multi_negative(negative: str, custom: str = "") -> tuple[str, list[str
         words = list(MULTI_FUSION_NEGATIVE)
     added = [w for w in words if _norm(w) not in have]
     return ", ".join(parts + added), added
+
+
+# --------------------------------------------------------------------------- #
+# 「角色 LoRA 已自带形象」：剥掉 LLM 对形象的复述（v7.7.68）
+# --------------------------------------------------------------------------- #
+# 用户诉求（2026-10-14）：「我只是画两个角色并加了她们的 LoRA，为什么还要写发色发型？
+# 角色 LoRA 自带画风与形象，只有我说了穿什么衣服、做什么动作才需要加。」
+#
+# 这条以前只对**角色卡**（character_card）有代码兜底（`strip_conflicting_appearance`），
+# 角色 **LoRA** 路径完全没有约束，于是 LLM 照着 skill 里那条「每个角色的分组里还必须再写
+# 2~4 个最有辨识度的外观标签」把外形复述一遍，后果有三：① 用弱文本标签**稀释/覆盖** LoRA
+# 训练进去的形象；② 凭记忆写外形会写错；③ 两个角色外形词写得越像（甚至撞同一套衣服），
+# 越画成同一张脸。
+#
+# 剥除范围刻意**不含 outfit 维度**：LoRA 自带原服装，但「让角色换件衣服」正是用户唯一
+# 应该干预的维度之一，动不得。是否剥外形由调用方先判「用户本轮没有改外形意图」——有则整体不剥。
+
+# 会剥掉的外形维度（与 FREEZE_DIMS 同口径，即「角色形象的一部分」）
+LORA_ECHO_DIMS: tuple[str, ...] = FREEZE_DIMS
+
+# 分组标签尾部的权重记号：`:1.20` / `:1.2)`
+_GROUP_TAIL_RE = re.compile(r":\s*\d+(?:\.\d+)?\s*\)?$")
+
+
+def _has_echo_dim(tag: str) -> bool:
+    """单个标签是否命中「角色自带形象」的外形维度。"""
+    return bool(set(appearance_dims(tag or "")) & set(LORA_ECHO_DIMS))
+
+
+def strip_lora_echo_appearance(text: str) -> tuple[str, list[str]]:
+    """剥掉「复述角色 LoRA 自带形象」的外形标签，返回 ``(新文本, 被剥标签)``。
+
+    - 括号权重分组**逐标签剥**：`(:1.25)` 只摘掉组内的外形标签，组内其余标签
+      （角色 tag、用户明说的衣服、动作）与权重原样保留；剥空了的组整组删除；
+    - 组外的裸标签同样剥；
+    - 服装 / 配饰（outfit）、镜头、光影、氛围、场景等一律不动。
+    """
+    dropped: list[str] = []
+    out: list[str] = []
+    for tag in split_tags(text or ""):
+        raw = tag.strip()
+        body = raw[1:-1] if (raw.startswith("(") and raw.endswith(")")) else ""
+        m = _GROUP_TAIL_RE.search(body) if body else None
+        if body and m:
+            kept: list[str] = []
+            for sub in split_tags(body[: m.start()]):
+                sub = sub.strip()
+                if _has_echo_dim(sub):
+                    dropped.append(sub)
+                elif sub:
+                    kept.append(sub)
+            if kept:
+                out.append(f"({', '.join(kept)}{body[m.start():]})")
+            continue
+        if _has_echo_dim(raw):
+            dropped.append(raw)
+            continue
+        out.append(raw)
+    if not dropped:
+        return text or "", []
+    return ", ".join(t for t in out if t), dropped
+
+
+# 「用户本轮明确要改外形」的意图判定。命中即**整体放弃剥除**（保守：宁可少剥也不改错）。
+_APPEARANCE_CHANGE_RE = re.compile(
+    r"(?:染成|染回|染成粉|剪短|剪长|剪成|留成|留长|留短|改成|换成|变成|变成粉|加.{0,4}(?:耳|角|尾巴|发)"
+    r"|去掉|摘掉|脱下|换上|穿上"
+    r"|dye|dyeing|shorten|cut\s+(?:her|his|their|it)?\s*hair|change\s+(?:her|his|their)?\s*hair"
+    r"|\bwithout\b\s+(?:cat\s*ears|ears|horns|tail|hair)|grow\s+long\s+hair)",
+    re.I,
+)
+
+
+def appearance_change_intent(text: str) -> bool:
+    """用户原话里是否有「明确要改外形」的意图（染/剪/换/去掉/戴…）。"""
+    return bool(_APPEARANCE_CHANGE_RE.search(text or ""))
+
+
+# --------------------------------------------------------------------------- #
+# 多人撞脸自查：各角色分组共有的外形 / 服装标签（v7.7.68）
+# --------------------------------------------------------------------------- #
+
+_GROUP_SCAN_RE = re.compile(r"\(([^()]*:\s*\d+(?:\.\d+)?)\)")
+
+
+def multi_shared_appearance(text: str) -> tuple[bool, list[str]]:
+    """多人时各权重分组**共有**的外形/服装标签（撞脸高发信号）。
+
+    返回 ``(是否多人, 共有标签列表)``。实测过的翻车形态：两个角色分组都写
+    ``black strapless dress`` + 同款 sleeves——标签系底模眼里这就是双胞胎，
+    于是两张脸被平均成同一张。本函数只做检测与告警，**不改写提示词**
+    （到底换哪件衣服得听用户的）。
+    """
+    if not is_multi_person(text or ""):
+        return False, []
+    groups: list[set[str]] = []
+    for m in _GROUP_SCAN_RE.finditer(text or ""):
+        inner = m.group(1)
+        inner = inner[: inner.rindex(":")] if ":" in inner else inner
+        tags: set[str] = set()
+        for t in split_tags(inner):
+            t = t.strip()
+            if not t:
+                continue
+            d = appearance_dims(t)
+            if (set(d) & set(LORA_ECHO_DIMS)) or d.get("outfit"):
+                tags.add(_norm(t))
+        if tags:
+            groups.append(tags)
+    if len(groups) < 2:
+        return True, []
+    shared = set(groups[0]).intersection(*groups[1:])
+    return True, sorted(shared)
