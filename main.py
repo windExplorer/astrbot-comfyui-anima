@@ -2436,6 +2436,9 @@ class ComfyUIDrawPlugin(Star):
                         "trigger_words": (lib_l.get("trigger_words") or ""),
                         "description": (lib_l.get("description") or ""),
                         "presets": self._parse_presets(lib_l.get("presets")),
+                        # v7.7.80：合并条目补带 category——_char_lora_triggers 等下游
+                        # 靠它识别「角色 LoRA」，缺了会导致形象剥除/锚点机制整体失效
+                        "category": (lib_l.get("category") or "").strip(),
                     }
                 )
             else:
@@ -2457,6 +2460,7 @@ class ComfyUIDrawPlugin(Star):
                         "trigger_words": (l.get("trigger_words") or ""),
                         "description": (l.get("description") or ""),
                         "presets": [],
+                        "category": (l.get("category") or "").strip(),
                     }
                 )
         return merged
@@ -8203,6 +8207,8 @@ class ComfyUIDrawPlugin(Star):
                             ),
                             "enabled": True,
                             "load_node": "",
+                            # v7.7.80：同 _loras_of——下游角色判定需要 category
+                            "category": (lib_l.get("category") or "").strip(),
                         }
                     ]
                     logger.info(
@@ -14929,6 +14935,17 @@ class ComfyUIDrawPlugin(Star):
 
         生效范围 = 调用方显式传入的 ``lora_map`` ∪ 本工作流实际生效的 LoRA
         （``_loras_of``，含工作流默认/预设启用项）。按触发词拆分去重。
+
+        ★v7.7.80 两处修复（用户实测：LoRA 描述内容被 LLM 抄进公共区，形象剥除
+        却全程没生效，两人被同一套装备罩住）：
+        1. lora_map 名字此前用 `_lib_idx.get(名)` **精确查**——工作流/LLM 传名与
+           全局库名不一致（靠模糊匹配才命中）时落空，条目被当 None 丢弃；
+           改走 `_lora_lookup`（精确/别名 → 唯一模糊），与 `_loras_of` 同源。
+        2. `_loras_of` 合并条目此前**不带 category 字段** → `_le.get("category")`
+           永远拿不到「角色」→ 工作流默认启用的角色 LoRA 全被过滤。
+           （category 已由 v7.7.80 补进合并条目；本判定同时放宽到
+           `looks_char_lora`——触发词自带人数标签的也按角色对待，与
+           `_char_lora_skip_plan` 口径一致。）
         """
         try:
             _lib_idx = self._lora_lib_index()
@@ -14936,7 +14953,13 @@ class ComfyUIDrawPlugin(Star):
             _lib_idx = {}
         _cands: dict[str, dict | None] = {}
         for _n in (lora_map or {}):
-            _cands[_n] = _lib_idx.get((_n or "").strip())
+            _q = (_n or "").strip()
+            _l, _how = None, ""
+            try:
+                _l, _how = self._lora_lookup(_q)
+            except Exception:
+                _l = None
+            _cands[_n] = _l or _lib_idx.get(_q)
         try:
             for _le in (self._loras_of(wf) or []):
                 _cands.setdefault(_le.get("name") or "", _le)
@@ -14947,11 +14970,16 @@ class ComfyUIDrawPlugin(Star):
         for _le in _cands.values():
             if not isinstance(_le, dict):
                 continue
-            if (_le.get("category") or "").strip() != "角色":
+            _tw_all = str(_le.get("trigger_words") or "")
+            _is_char = (
+                (_le.get("category") or "").strip() == "角色"
+                or prompt_guard.looks_char_lora(_tw_all)
+            )
+            if not _is_char:
                 continue
             if (_le.get("name") or "").strip():
                 names.append(_le["name"].strip())
-            for _tw in re.split(r"[,，;；\s]+", str(_le.get("trigger_words") or "")):
+            for _tw in re.split(r"[,，;；\s]+", _tw_all):
                 if _tw.strip() and _tw.strip() not in triggers:
                     triggers.append(_tw.strip())
         return names, triggers

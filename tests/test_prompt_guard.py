@@ -746,6 +746,68 @@ def test_char_lora_skip_plan():
     print("== 30. 角色 LoRA 拦截判定（库名不一致兜底 + 多人画面单角色也拦） OK")
 
 
+def test_char_lora_triggers_wiring():
+    # v7.7.80 事故复刻：LoRA 描述内容被 LLM 抄进公共区，形象剥除（v7.7.69）却全程没生效。
+    # 两个洞：① _loras_of 合并条目不带 category → 工作流默认启用的角色 LoRA 被过滤；
+    # ② lora_map 名用 _lib_idx 精确查 → 库名不一致（模糊命中）时落空。
+    import ast as _ast
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, _ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    ns: dict = {"prompt_guard": prompt_guard, "re": re,
+                "logger": _logging.getLogger("test")}
+    got = [n for n in cls.body
+           if isinstance(n, _ast.FunctionDef) and n.name == "_char_lora_triggers"]
+    assert got, "ComfyUIDrawPlugin 必须有 _char_lora_triggers"
+    exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+
+    lib_e = {"name": "qingxiaowuwa", "category": "",
+             "trigger_words": "qingxiao \\(wuthering waves\\), 1girl, solo"}
+    # 模拟修复后的 _loras_of：合并条目带 category（工作流名「清宵」≠ 库名）
+    wf_entry = {"name": "清宵", "category": "角色",
+                "trigger_words": "qingxiao \\(wuthering waves\\), 1girl, solo"}
+    style_e = {"name": "水墨", "category": "画风", "trigger_words": "ink wash style"}
+
+    class S:
+        _char_lora_triggers = ns["_char_lora_triggers"]
+
+        def __init__(self, entries):
+            self._entries = entries
+
+        def _lora_lib_index(self):
+            return {"qingxiaowuwa": lib_e, "水墨": style_e}
+
+        def _lora_lookup(self, nm):
+            if nm == "清宵":
+                return lib_e, "fuzzy"
+            if nm in ("水墨", "qingxiaowuwa"):
+                return self._lora_lib_index().get(nm), "exact"
+            return None, ""
+
+        def _loras_of(self, wf):
+            return self._entries
+
+    s = S([wf_entry, style_e])
+    # ① lora_map 传工作流名「清宵」、库名不同 → 经 _lora_lookup 模糊命中，必须识别为角色
+    names, triggers = s._char_lora_triggers({"清宵": 1.0}, {})
+    assert "qingxiaowuwa" in names, (names, triggers)
+    assert any("qingxiao" in t for t in triggers) and "1girl" in triggers, triggers
+    # ② 工作流默认启用（合并条目带 category）→ 不再被 category 缺失误过滤；画风不混入
+    names2, triggers2 = s._char_lora_triggers(None, {"loras_text": ""})
+    assert "清宵" in names2 and "水墨" not in names2, names2
+    assert any("qingxiao" in t for t in triggers2), triggers2
+    # ③ 触发词带人数标签、分类没写 → 同样按角色对待（与 _char_lora_skip_plan 口径一致）
+    s2 = S([{"name": "路人甲", "category": "",
+             "trigger_words": "passerby_tag, 1girl, solo"}])
+    names3, triggers3 = s2._char_lora_triggers(None, {})
+    assert "路人甲" in names3 and "passerby_tag" in triggers3, (names3, triggers3)
+    print("== 31. 角色 LoRA 触发词解析接线（库名不一致 + category 缺失修复） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -794,4 +856,5 @@ if __name__ == "__main__":
     test_sanitize_trigger_words()
     test_looks_char_lora()
     test_char_lora_skip_plan()
+    test_char_lora_triggers_wiring()
     print("提示词护栏全部通过")

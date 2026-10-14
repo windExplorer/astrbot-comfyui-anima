@@ -2,6 +2,42 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.80（形象剥除全程没生效：`_char_lora_triggers` 两个接线洞——category 缺失 + 库名不一致落空）
+
+问题（用户 2026-10-14，连续第三轮）：LLM 从 LoRA 描述参考来的内容（外观/服装）被写进
+**公共区**而不是对应角色的分组括号里，两个人被同一套装备罩住。SKILL.md 第 234 条明明
+早已禁止「把角色专属标签写到分组外」，且 v7.7.69 就做了代码兜底
+（`_strip_lora_echo_appearance`：用户没说改外形/换装时自动剥除复述的标签）——
+为什么兜底全程没跑？
+
+根因（对照源码实锤，与 v7.7.79 同类病、另一条接线）：
+形象剥除的入口 `_char_lora_triggers`（判定「本次有哪些角色 LoRA」）有两个洞：
+
+1. **`_loras_of` 合并条目不带 `category` 字段**：合并条目是 `loras_text` 有限信息
+   ∪ 库字段拼的，拼的时候漏了 `category` → `_le.get("category")` 永远拿不到
+   「角色」→ **工作流默认启用/常驻的角色 LoRA 全被过滤**，剥除直接空转；
+2. **lora_map 名字用 `_lib_idx.get(名)` 精确查**：LLM 传的工作流名（如「清宵」）
+   与全局库名（`qingxiaowuwa`）不一致、靠模糊匹配才命中时落空 → 条目被当
+   None 丢弃。v7.7.76/79 修了收集与拦截两处的同类问题，唯独这条接线漏网。
+
+修复：
+
+1. `_loras_of`（含 lib-miss 分支）与 `_do_draw` 临时补全条目统一补上
+   `category` 字段；
+2. `_char_lora_triggers`：lora_map 名改走 `_lora_lookup`（精确/别名 → 唯一模糊），
+   与 `_loras_of` 同源；角色判定放宽到 `looks_char_lora`（触发词自带人数标签的
+   也按角色对待），与 `_char_lora_skip_plan` 口径对齐；
+3. 影响面：`_align_character_lora_triggers`（触发词对齐）、`_resolve_identity_anchors`
+   （权威锚点/混合式改写）、`_strip_lora_echo_appearance`（形象剥除）三个下游
+   全部受益——名字不一致的场景下它们此前全部静默失效。
+
+修复后的多人链路（设计如此，此前从未真正走通）：LLM 抄进公共区的描述内容 →
+用户没说改外形/换装 → `【LoRA 形象】` 剥除复述标签 → 插件按「角色卡锚点 →
+LoRA 描述 → Danbooru 校正」补权威身份锚点进各分组 → 公共区只剩人数/关系/场景/镜头。
+
+测试：`tests/test_prompt_guard.py` 新增 31（`_char_lora_triggers` 接线：库名不一致
+模糊命中、合并条目 category、画风不混入、触发词带人数按角色对待），全套 31 项通过。
+
 ## v7.7.79（角色拦截判定漏了「工作流名 ≠ 库名」：模糊命中的角色 LoRA 触发词照旧全局追加）
 
 问题（用户 2026-10-14 复测 v7.7.78）：`2girls` 双人图里「清宵」的整段角色外观标签
