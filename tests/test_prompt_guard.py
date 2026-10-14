@@ -527,6 +527,63 @@ def test_lora_description_as_anchor_source():
     print("== 25. LoRA 描述可作身份锚点来源 OK")
 
 
+def test_lora_lookup_unique_fuzzy():
+    """v7.7.76 实测事故：查「清宵」不能被「清宵2」抢走（model_name/触发词/描述全拿错）。"""
+    import ast
+    import importlib.util
+    import logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    # workflow_builder 用真模块（_lora_name_matches 在里面）
+    spec = importlib.util.spec_from_file_location(
+        "wf_builder", str(ROOT / "workflow_builder.py"))
+    wb = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(wb)
+    except Exception as _e:
+        wb = None
+        print("   (workflow_builder import 失败:", _e, ")")
+    ns: dict = {"re": re, "logger": logging.getLogger("test"),
+                "workflow_builder": wb}
+    want = ("_lora_lib_index", "_lora_lookup")
+    for node in cls.body:
+        if isinstance(node, ast.FunctionDef) and node.name in want:
+            node.decorator_list = []
+            exec(compile(ast.Module([node], []), "main.py", "exec"), ns)
+
+    LIB = [
+        {"name": "清宵2", "category": "角色", "trigger_words": "qx2",
+         "model_name": "qingxiao2.safetensors", "description": "二号机"},
+        {"name": "清宵", "category": "角色", "trigger_words": "qingxiao",
+         "model_name": "qingxiao.safetensors", "description": "红发狐娘"},
+    ]
+
+    class S:
+        _lora_library = lambda self: list(LIB)
+        _lora_lib_index = ns["_lora_lib_index"]
+        _lora_lookup = ns["_lora_lookup"]
+
+    s = S()
+    # ① 名字键不能被别名抢占：清宵2 排在清宵前面也不能抢
+    idx = s._lora_lib_index()
+    assert idx["清宵"].get("name") == "清宵", idx["清宵"].get("name")
+    assert idx["清宵"].get("model_name") == "qingxiao.safetensors"
+    # ② 查「清宵」必须拿到清宵自己（而不是被"版本后缀归一"配到清宵2）
+    le, how = s._lora_lookup("清宵")
+    assert le is not None and le.get("name") == "清宵", (le, how)
+    assert le.get("trigger_words") == "qingxiao", le
+    assert le.get("description") == "红发狐娘", le
+    # ③ 查「清宵2」必须拿到清宵2
+    le2, how2 = s._lora_lookup("清宵2")
+    assert le2 is not None and le2.get("name") == "清宵2", (le2, how2)
+    assert le2.get("model_name") == "qingxiao2.safetensors"
+    print("== 26. LoRA 名称查找：同名优先 + 模糊匹配唯一（清宵/清宵2 不串） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -570,4 +627,5 @@ if __name__ == "__main__":
     test_differentiation_intent()
     test_assign_personal_to_blocks()
     test_lora_description_as_anchor_source()
+    test_lora_lookup_unique_fuzzy()
     print("提示词护栏全部通过")

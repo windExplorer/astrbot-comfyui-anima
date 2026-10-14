@@ -2081,26 +2081,74 @@ class ComfyUIDrawPlugin(Star):
         return out
 
     def _lora_lib_index(self) -> dict[str, dict]:
-        """全局 LoRA 库按「名称 + 全部关键字」建索引（键 -> 库条目）。
+        """全局 LoRA 库按「名称 + 别名」建索引（键 -> 库条目）。
 
-        供命令 / LLM 工具用关键字（如 phoebe_chibi）也能定位到真实 LoRA，
-        解决「comfyui_loras 查到关键字、出图却匹配不到」的问题：补全临时启用
-        的 LoRA 时，除精确 name 外也应命中关键字。
+        供命令 / LLM 工具用别名（如 phoebe_chibi）也能定位到真实 LoRA，
+        解决「comfyui_loras 查到别名、出图却匹配不到」的问题：补全临时启用
+        的 LoRA 时，除精确 name 外也应命中别名。
+
+        ★v7.7.76：**名称键永远优先于别名键**（两轮遍历）。旧实现把 name 与别名
+        混在一个循环里 `setdefault`，若「清宵2」排在「清宵」前面且它的别名里写了
+        「清宵」，`idx["清宵"]` 就被清宵2 抢占 → 之后查「清宵」拿到的是清宵2 的
+        model_name/触发词/描述（用户实测事故：图用清宵、触发词却是清宵2）。
         """
+        lib = self._lora_library()
         idx: dict[str, dict] = {}
-        for l in self._lora_library():
-            keys = set()
+        # 第一轮：名称（大小写不敏感）——name 键只由同名 LoRA 占据
+        for l in lib:
             nm = (l.get("name") or "").strip()
             if nm:
-                keys.add(nm)
+                idx.setdefault(nm, l)
+                idx.setdefault(nm.lower(), l)
+        # 第二轮：别名——已被名称占据的键不覆盖（setdefault 语义）
+        for l in lib:
             for al in (l.get("aliases") or []):
                 al = (al or "").strip()
                 if al:
-                    keys.add(al)
-            for k in keys:
-                idx.setdefault(k, l)
-                idx.setdefault(k.lower(), l)
+                    if al in idx and idx[al] is not l:
+                        logger.info(
+                            f"【LoRA】 别名「{al}」与现有键冲突，保留先注册的「{idx[al].get('name')}」"
+                        )
+                    idx.setdefault(al, l)
+                    idx.setdefault(al.lower(), l)
         return idx
+
+    def _lora_lookup(self, name: str) -> tuple[dict | None, str]:
+        """按名称查 LoRA 库条目，返回 ``(条目, 命中方式)``；查不到返回 ``(None, "")``。
+
+        顺序：精确名 / 小写名 → 别名精确 → **唯一**模糊匹配。
+
+        ★为什么模糊匹配要求唯一（v7.7.76 实测事故）：`_lora_name_matches` 里有
+        "去掉末尾版本后缀后相等"的规则（`安魂曲` ↔ `安魂曲1`）。于是查「清宵」时
+        「清宵2」也会命中 → `_loras_of` 把清宵 的 model_name / trigger_words /
+        description 全配成了清宵2 的，用户看到"图用清宵、触发词是清宵2"。
+        模糊命中**只有唯一候选时才采用**；多个候选（名称歧义）宁可放弃，让调用方
+        按"库里没有"处理并告警——猜错的代价比查不到更大。
+        """
+        key = (name or "").strip()
+        if not key:
+            return None, ""
+        idx = self._lora_lib_index()
+        hit = idx.get(key) or idx.get(key.lower())
+        if isinstance(hit, dict):
+            return hit, "name"
+        cands: list[dict] = []
+        seen_ids: set[int] = set()
+        for k, v in idx.items():
+            if not isinstance(v, dict):
+                continue
+            if workflow_builder._lora_name_matches(k, key) and id(v) not in seen_ids:
+                seen_ids.add(id(v))
+                cands.append(v)
+        if len(cands) == 1:
+            return cands[0], "fuzzy"
+        if len(cands) > 1:
+            logger.warning(
+                f"【LoRA】 名称「{key}」在库中有多个模糊匹配"
+                f"（{[c.get('name') for c in cands]}），已放弃模糊匹配——"
+                "请用完整名称，或在别名里写清楚以消除歧义"
+            )
+        return None, ""
 
     @staticmethod
     def _text_has_word(word: str, hay_low: str) -> bool:
@@ -2194,12 +2242,13 @@ class ComfyUIDrawPlugin(Star):
             name = (l.get("name") or "").strip()
             if not name:
                 continue
-            # 先按精确名/关键字/小写命中；命中不上再用 _lora_name_matches 做
-            # 前缀/版本后缀模糊匹配，避免工作流预设名与库名有微小差异时丢掉 model_name。
-            lib_l = lib.get(name) or next(
-                (v for k, v in lib.items() if workflow_builder._lora_name_matches(k, name)),
-                None,
-            )
+            # v7.7.76：统一走 _lora_lookup（精确名/别名 → 唯一模糊）。
+            # 旧实现直接 `lib.get(name) or next(... _lora_name_matches ...)`，
+            # 模糊命中不查唯一性——「清宵」会被"版本后缀归一"配到「清宵2」，
+            # model_name/触发词/描述全拿错（用户实测事故）。
+            lib_l, _how = self._lora_lookup(name)
+            if _how == "fuzzy":
+                logger.info(f"【LoRA】 「{name}」模糊命中「{lib_l.get('name')}」")
             if lib_l:
                 merged.append(
                     {
@@ -7936,7 +7985,6 @@ class ComfyUIDrawPlugin(Star):
         # apply_loras 因无配置项可遍历而不会注入任何节点，表现为「LoraLoader 节点: 无 /
         # 本次最终启用: 无」——这正是「/draw --安魂曲 没加上」的根因（工作流没引用安魂曲）。
         if active_map:
-            lib = self._lora_lib_index()
             for cmd_name in active_map:
                 if any(
                     workflow_builder._lora_name_matches(
@@ -7945,14 +7993,8 @@ class ComfyUIDrawPlugin(Star):
                     for l in (loras_cfg or [])
                 ):
                     continue
-                lib_l = lib.get(cmd_name) or next(
-                    (
-                        v
-                        for k, v in lib.items()
-                        if workflow_builder._lora_name_matches(k, cmd_name)
-                    ),
-                    None,
-                )
+                # v7.7.76：走 _lora_lookup（唯一模糊）——旧写法会把「清宵」配到「清宵2」
+                lib_l, _how = self._lora_lookup(cmd_name)
                 if lib_l:
                     # 底模兼容硬约束（管理员声明：底模留空=未配置/忘配，没有「通用 LoRA」）：
                     # 工作流已标注底模时，LoRA 底模必须存在且完全一致，否则拒绝注入。
@@ -8013,16 +8055,12 @@ class ComfyUIDrawPlugin(Star):
         #   - 旧配置的「0 号预设」语义上就是触发词，按触发词兜底追加并提示迁移；
         #   - 默认预设（装扮）：未点名预设时自动套用；检测到换装则跳过，让新衣服接手。
         if active_map:
-            lib_pre = self._lora_lib_index()
             _legacy_always_words: list[str] = []
             _default_pre: dict[str, str] = {}
             for lora_name in active_map:
                 ln = (lora_name or "").strip()
-                l = lib_pre.get(ln) or next(
-                    (v for k, v in lib_pre.items()
-                     if workflow_builder._lora_name_matches(k, ln)),
-                    None,
-                )
+                # v7.7.76：走 _lora_lookup（唯一模糊）——旧写法会把「清宵」配到「清宵2」
+                l, _how = self._lora_lookup(ln)
                 if not l:
                     continue
                 # 旧 0 号预设：按触发词处理（每次都带）
@@ -15718,14 +15756,11 @@ class ComfyUIDrawPlugin(Star):
             _lib_idx = self._lora_lib_index()
             _char_loras: list[tuple[str, str]] = []
             for _n in (lora_map or {}):
-                _le = _lib_idx.get((_n or "").strip()) or next(
-                    (
-                        v
-                        for k, v in _lib_idx.items()
-                        if workflow_builder._lora_name_matches(k, _n)
-                    ),
-                    None,
-                )
+                # v7.7.76：统一走 _lora_lookup（唯一模糊）。旧写法把「清宵」模糊配到
+                # 「清宵2」，于是角色分类/触发词/描述全按清宵2 走（用户实测事故）。
+                _le, _how = self._lora_lookup((_n or "").strip())
+                if _how == "fuzzy":
+                    logger.info(f"【LoRA】 「{_n}」模糊命中「{(_le or {}).get('name')}」")
                 if _le and (_le.get("category") or "").strip() == "角色":
                     _char_loras.append(
                         ((_le.get("name") or _n or "").strip(),
