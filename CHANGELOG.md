@@ -2,6 +2,52 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.70（用户贴回提示词发现三处不对：角色张冠李戴最致命 + 计数冲突 + 古装没被识别）
+
+用户把实际出图的提示词贴了回来（`2girls, 1girl standing on the left and 1girl standing on
+the right, (suomingwuwa, armor:1.2), (xinyuehu, hanfu:1.2), side by side, …`，LoRA 是
+`锁暝:1.0, 心月狐:1.0`），三处不对，严重性递减：
+
+1. **角色张冠李戴（最严重）**：分组里点名 `suomingwuwa` / `xinyuehu`（上一轮对话里的另两个人），
+   而实际加载的角色 LoRA 是 `锁暝` / `心月狐`——**加载的是 A 的模型、点名的是 B**，出图根本不是
+   那两个人。而且此时插件「多角色模式下不全局追加角色 LoRA 触发词」的分支也不生效（它按
+   "提示词里有没有触发词"判断，此时提示词里有的是别人的触发词）。这比"多写几个标签"严重得多。
+2. **与 `2girls` 打架的计数**：`1girl standing on the left and 1girl standing on the right` ——
+   LLM 把左右站位写成一句自然语言，里面还各带一个 `1girl`。此前只清分组内的计数标签
+   （`character.py` 归一时），裸的自然语言句清不掉；人数语义冲突下模型可能只画一个或画三个。
+3. **衣服没被剥**：`armor` / `hanfu` 不在 outfit 词表里 → 识别不出是服装 → v7.7.69 的
+   "服装复述剥除"漏掉了这两个（模型自己编的），两人各穿一套仍然趋同。
+
+修复（`prompt_guard.py` + `main.py`）：
+
+1. 新增 `main._align_character_lora_triggers()`：把分组里写错的角色标识**换成**本次真正启用的
+   角色 LoRA 触发词。三重前提才动手——①启用了 category=角色 的 LoRA ②提示词里**一个**启用
+   触发词都没出现 ③提示词里有 ≥2 个权重分组；组内找不到角色标识（只有衣服/动作）就跳过该组
+   并说明。角色标识判定 = 组内**第一个**「单个英文词、不是服装配饰、不是通用场景/画质词」的
+   标签（`suomingwuwa` ✓ / `armor` ✗ 因是服装 / `night` ✗ 因在 deny 集）。日志
+   `【角色 LoRA 对齐】… 已按分组顺序替换角色标识: suomingwuwa → lockming…`。
+2. 调用顺序改为 **先对齐、后剥除**（顺序不能反）：对齐后触发词才在提示词里出现，
+   `_strip_lora_echo_appearance` 认得出"这些外形/服装是模型自己编的"，否则这一局的
+   `armor` / `hanfu` 依然不会被剥。顺便把触发词收集抽成 `_char_lora_triggers()` 供两处共用。
+3. 新增 `clean_multi_count_conflicts()`：多人提示词里与人数冲突的 `1girl` / `1boy` / `solo`
+   一律剔除；**含这些词的自然语言标签整条剔除**（它们承载不了站位信息）。分组内也清，
+   剥空的组整组删除。日志 `【多人计数】`。
+4. `APPEARANCE_RULES.outfit` 补 `armor / hanfu / qipao / cheongsam / chinese clothes /
+   chinese dress / wedding dress / evening gown / cloak / tunic / vest / jerkin / plate armor`
+   （实测案例里的 `armor`、`hanfu` 此前都识别不出是服装，导致服装复述剥除与"共有服装"检测
+   双双漏报）。
+
+文档同步（SKILL.md 避坑清单 + `comfyui_draw` docstring 多人规则 1)）：多人提示词任何位置不得
+再出现 `1girl/1boy/solo`（含写进自然语言句）；左右站位用 `side_by_side` / `from_side`；
+标签系底模不读自然语言句子；传 `loras` 时 prompt 里的触发词必须是同一批角色。
+
+验证：`tests/test_prompt_guard.py` 15 组 → **17 组**。新增第 16 组直接以用户这条提示词为样本
+（`1girl standing on…` 整句剔除、分组内裸计数标签也清、单人场景不动）；第 17 组用 **AST 从
+main.py 原样抠出** `_char_lora_triggers` / `_align_character_lora_triggers`（本机 import 不了
+astrbot 运行时），覆盖替换成功、已点名则不动、只一个分组不动、无角色标识不动、无角色 LoRA 不动
+五种分支。全通过；`compileall` 零错；docstring schema 8 工具全过。
+（抠取时踩到一个细节：`main.py` 带 BOM，`read_text` 必须用 `utf-8-sig`，否则 ast.parse 报 U+FEFF。）
+
 ## v7.7.69（剥服装复述：撞脸的根没在「分组」，在两个角色编了同一套衣服）
 
 现象（v7.7.68 上线后用户实测贴回出图提示词）：外形复述确实被剥干净了，

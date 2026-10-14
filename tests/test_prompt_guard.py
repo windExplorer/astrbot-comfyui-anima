@@ -2,19 +2,22 @@
 
 跑法：python tests/test_prompt_guard.py
 """
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import prompt_guard  # noqa: E402
+
 from prompt_guard import (  # noqa: E402
     LORA_ECHO_DIMS, LORA_ECHO_DIMS_WITH_OUTFIT, MULTI_FUSION_NEGATIVE,
-    appearance_change_intent, appearance_dims, ensure_quality_prefix, free_dim_coverage,
-    has_character_tag, is_multi_person, is_short_prompt, keeps_original_tags,
-    merge_multi_negative, multi_person_hints, multi_shared_appearance, outfit_intent,
-    prompt_style_of, quality_prefix_for, strip_conflicting_appearance,
-    strip_lora_echo_appearance, strip_new_appearance,
+    appearance_change_intent, appearance_dims, clean_multi_count_conflicts,
+    ensure_quality_prefix, free_dim_coverage, has_character_tag, is_multi_person,
+    is_short_prompt, keeps_original_tags, merge_multi_negative, multi_person_hints,
+    multi_shared_appearance, outfit_intent, prompt_style_of, quality_prefix_for,
+    strip_conflicting_appearance, strip_lora_echo_appearance, strip_new_appearance,
 )
 
 ANCHOR = "long hair, green hair, green eyes, cat ears, hair ribbon"
@@ -265,6 +268,116 @@ def test_outfit_intent():
     print("== 15. 用户服装干预意图判定 OK")
 
 
+def test_clean_multi_count_conflicts():
+    # 用户实测原样：左右站位写成自然语言，各带一个 1girl，与 2girls 打架
+    txt = ("2girls, 1girl standing on the left and 1girl standing on the right, "
+           "(suomingwuwa, armor:1.2), (xinyuehu, hanfu:1.2), side by side, night")
+    out, dropped = clean_multi_count_conflicts(txt)
+    assert "1girl" not in out, out
+    assert "standing on the left" not in out, out
+    assert dropped == ["1girl standing on the left and 1girl standing on the right"], dropped
+    assert "2girls" in out and "(suomingwuwa, armor:1.2)" in out, out
+    # 分组内的裸计数标签也要清（此前只在 character.py 归一时清过）
+    out2, dropped2 = clean_multi_count_conflicts(
+        "2girls, (1girl, red hair:1.2), (1boy, blue hair:1.2), night")
+    assert "1girl" not in out2 and "1boy" not in out2, out2
+    assert "red hair" in out2 and "blue hair" in out2, out2
+    # 单人场景不动（1girl / solo 是正确计数）
+    same = "1girl, solo, white dress"
+    assert clean_multi_count_conflicts(same) == (same, [])
+    print("== 16. 多人计数冲突清理（裸计数标签 + 含计数的自然语言句） OK")
+
+
+def _load_main_methods(names: tuple[str, ...], extra_ns: dict | None = None):
+    """从 main.py 原样抠出指定方法 exec（带最小 stub），测磁盘上的真代码。
+
+    本机 import 不了 astrbot 运行时，所以走 AST 抠函数这条路——测的是磁盘上的真代码。
+    """
+    import ast
+    import logging
+    # main.py 带 BOM，必须用 utf-8-sig 读，否则 ast.parse 报 U+FEFF
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None, "未找到 ComfyUIDrawPlugin 类"
+    ns: dict = {"re": re, "logger": logging.getLogger("test"), "prompt_guard": prompt_guard}
+    ns.update(extra_ns or {})
+    got: set[str] = set()
+    for node in cls.body:
+        if isinstance(node, ast.FunctionDef) and node.name in names:
+            node.decorator_list = []
+            exec(compile(ast.Module([node], []), "main.py", "exec"), ns)
+            got.add(node.name)
+    assert got == set(names), f"抠取失败: {set(names) - got}"
+    return ns
+
+
+class _FakeLoraSelf:
+    """给 _align_character_lora_triggers / _char_lora_triggers 用的最小替身。"""
+
+    def __init__(self, lib: dict, wf_loras=None):
+        self._lib = lib
+        self._wf_loras = wf_loras or []
+
+    def _lora_lib_index(self):
+        return dict(self._lib)
+
+    def _loras_of(self, wf):
+        return list(self._wf_loras)
+
+
+def test_align_character_lora_triggers():
+    import logging
+    ns = _load_main_methods(
+        ("_char_lora_triggers", "_align_character_lora_triggers"),
+        {"logger": logging.getLogger("test")},
+    )
+
+    class S(_FakeLoraSelf):
+        _text_has_word = staticmethod(
+            lambda word, hay_low: (
+                bool(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", hay_low))
+                if word.isascii() else word.lower() in hay_low
+            )
+        )
+
+    S._char_lora_triggers = ns["_char_lora_triggers"]
+    S._align_character_lora_triggers = ns["_align_character_lora_triggers"]
+
+    lib = {
+        "锁暝": {"name": "锁暝", "category": "角色", "trigger_words": "lockming"},
+        "心月狐": {"name": "心月狐", "category": "角色", "trigger_words": "heartmoon"},
+    }
+    s = S(lib)
+    lora_map = {"锁暝": None, "心月狐": None}
+    # 用户实测：提示词里写的是上一轮对话里的另两个人 → 按分组顺序替换成本次真正的角色
+    txt = "2girls, (suomingwuwa, armor:1.2), (xinyuehu, hanfu:1.2), side by side, night"
+    out, note = s._align_character_lora_triggers(txt, lora_map, {})
+    assert "(lockming, armor:1.2)" in out and "(heartmoon, hanfu:1.2)" in out, out
+    assert "suomingwuwa" not in out and "xinyuehu" not in out, out
+    assert "suomingwuwa → lockming" in note, note
+    # 提示词里已经点名了本次角色 → 不插手
+    ok = "2girls, (lockming:1.2), (heartmoon:1.2), night"
+    out2, note2 = s._align_character_lora_triggers(ok, lora_map, {})
+    assert out2 == ok, out2
+    # 只有一个分组 → 保守不动
+    one = "1girl, (suomingwuwa:1.2), night"
+    out3, note3 = s._align_character_lora_triggers(one, {"锁暝": None}, {})
+    assert out3 == one, out3
+    # 组内没有可识别的角色标识（只有衣服）→ 不动并说明
+    none_role = "2girls, (armor:1.2), (hanfu:1.2), night"
+    out4, note4 = s._align_character_lora_triggers(none_role, lora_map, {})
+    assert out4 == none_role, out4
+    assert "不一致" in note4 and "保留原样" in note4, note4
+    # 没有角色 LoRA → 不动
+    plain = S({"天光02": {"name": "天光02", "category": "风格", "trigger_words": ""}})
+    out5, _ = plain._align_character_lora_triggers(txt, {"天光02": 0.3}, {})
+    assert out5 == txt, out5
+    print("== 17. 触发词与实际角色 LoRA 对齐（错写角色名自动纠正） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -296,6 +409,8 @@ if __name__ == "__main__":
     test_strip_lora_echo_appearance()
     test_appearance_change_intent()
     test_multi_shared_appearance()
+    test_clean_multi_count_conflicts()
+    test_align_character_lora_triggers()
     test_strip_lora_echo_appearance_with_outfit()
     test_outfit_intent()
     print("提示词护栏全部通过")

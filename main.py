@@ -7651,15 +7651,32 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _se:
             logger.warning(f"【多人撞脸】 检查异常（忽略）: {_se}")
 
-        # v7.7.68：角色 LoRA 已经把完整形象训练进去了，提示词里对形象的**复述**一律剥掉
-        # （只剥发色/发型/瞳色/兽化/体型，**服装不动**——换装是用户该干预的维度）。
-        # 用户本轮明说了「染成/剪短/换成…」之类改外形意图时整体放弃剥除。
-        # 工作流锁定提示词（_fixed_prompt）是用户自己配的固定配方，不动它。
+        # v7.7.70：**先对齐角色 LoRA 触发词，再剥形象复述**——顺序不能反。
+        # 实测事故：用户说"画锁暝和心月狐"、启用的也是这两个 LoRA，但 LLM 传进来的分组里
+        # 写的是上一轮对话里的另两个人（suomingwuwa / xinyuehu）→ 加载 A 的模型却点名 B，
+        # 出图根本不是那两个人。对齐之后触发词才在提示词里出现，后面的剥除才认得出
+        # "这些外形/服装是模型自己编的"。
         if not _fixed_prompt:
+            positive, _al_note = self._align_character_lora_triggers(positive, lora_map, wf)
+            if _al_note:
+                logger.warning(f"【角色 LoRA 对齐】 {_al_note}")
             positive, _le_note = self._strip_lora_echo_appearance(
                 positive, event, lora_map, wf)
             if _le_note:
                 logger.info(f"【LoRA 形象】 {_le_note}")
+        # v7.7.70：多人提示词里与人数冲突的单人计数标签 / 含它的自然语言句（"1girl standing
+        # on the left and 1girl standing on the right"）一律剔除——与 `2girls` 打架。
+        try:
+            if not _fixed_prompt:
+                positive, _cc_drop = prompt_guard.clean_multi_count_conflicts(positive)
+                if _cc_drop:
+                    logger.info(
+                        f"【多人计数】 剔除与人数冲突的单人计数/自然语言描述 {len(_cc_drop)} 项: "
+                        f"{'; '.join(_cc_drop[:4])}"
+                        f"{' …' if len(_cc_drop) > 4 else ''}"
+                    )
+        except Exception as _cce:
+            logger.warning(f"【多人计数】 清理异常（忽略）: {_cce}")
 
         # 注入提示词（正/负下输入框名固定为 text，无需配置）。
         # 仅当提示词非空时注入：锁定提示词且未配置固定提示词时 positive 为空，
@@ -14610,6 +14627,114 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【多人防连体】 检查异常（忽略，不影响出图）: {_e}")
             return negative, "", ""
 
+    def _char_lora_triggers(self, lora_map, wf: dict) -> tuple[list[str], list[str]]:
+        """本次生效的「角色」LoRA 名称与触发词。
+
+        生效范围 = 调用方显式传入的 ``lora_map`` ∪ 本工作流实际生效的 LoRA
+        （``_loras_of``，含工作流默认/预设启用项）。按触发词拆分去重。
+        """
+        try:
+            _lib_idx = self._lora_lib_index()
+        except Exception:
+            _lib_idx = {}
+        _cands: dict[str, dict | None] = {}
+        for _n in (lora_map or {}):
+            _cands[_n] = _lib_idx.get((_n or "").strip())
+        try:
+            for _le in (self._loras_of(wf) or []):
+                _cands.setdefault(_le.get("name") or "", _le)
+        except Exception:
+            pass
+        names: list[str] = []
+        triggers: list[str] = []
+        for _le in _cands.values():
+            if not isinstance(_le, dict):
+                continue
+            if (_le.get("category") or "").strip() != "角色":
+                continue
+            if (_le.get("name") or "").strip():
+                names.append(_le["name"].strip())
+            for _tw in re.split(r"[,，;；\s]+", str(_le.get("trigger_words") or "")):
+                if _tw.strip() and _tw.strip() not in triggers:
+                    triggers.append(_tw.strip())
+        return names, triggers
+
+    def _align_character_lora_triggers(
+        self, positive: str, lora_map, wf: dict
+    ) -> tuple[str, str]:
+        """把分组里写错的角色标识**换成**本次真正启用的角色 LoRA 触发词。
+
+        实测事故（v7.7.70）：用户说"画锁暝和心月狐"，实际启用的角色 LoRA 也是
+        锁暝 / 心月狐，但 LLM 传进来的 prompt 分组里写的是 `suomingwuwa` /
+        `xinyuehu`（上一轮对话里的另两个人）。后果比"多写几个标签"严重得多：
+        **加载的是 A 的模型、点名的是 B**——出图根本不是那两个人，而且插件的
+        "角色 LoRA 触发词不许全局追加"分支此时也不生效（它按提示词里有没有触发词判断）。
+
+        修法（保守）：仅当①启用了角色 LoRA ②提示词里**一个**启用触发词都没出现
+        ③提示词里有 ≥2 个权重分组 三个条件同时满足时，才按分组顺序把组内"角色标识"
+        替换为启用的触发词；组内找不到角色标识（只有衣服/动作）就跳过该组。
+        角色标识判定：组内**第一个**"单个英文词、不是服装配饰、不是通用场景词"的标签
+        （如 suomingwuwa / hatsune_miku）。任何一步不确定 → 原样返回并说明。
+        """
+        try:
+            if not (positive or "").strip():
+                return positive, ""
+            _names, _triggers = self._char_lora_triggers(lora_map, wf)
+            if not _triggers:
+                return positive, ""
+            _low = (positive or "").lower()
+            if any(self._text_has_word(_t, _low) for _t in _triggers):
+                return positive, ""      # 提示词已经点名了本次的角色，不插手
+            _groups = list(re.finditer(r"\(([^()]*:\s*\d+(?:\.\d+)?)\)", positive))
+            if len(_groups) < 2:
+                return positive, ""
+            # 通用场景/画质词不是角色标识（避免误把 night / masterpiece 当角色名换掉）
+            _deny = {w.strip(" ,") for _d in prompt_guard._FREE_HINTS.values() for w in _d}
+            _deny |= {t.strip(" ,").lower() for t in (
+                "masterpiece", "best quality", "high quality", "very aesthetic", "absurdres",
+                "highly detailed", "intricate details", "detailed background")}
+            _chars = [t for t in _triggers]
+            _out: list[str] = []
+            _last = 0
+            _replaced: list[str] = []
+            _ci = 0
+            for _m in _groups:
+                inner = _m.group(1)
+                _ci_w = inner[: inner.rindex(":")]
+                _subs = [s.strip() for s in prompt_guard.split_tags(_ci_w) if s.strip()]
+                _idx = -1
+                for _i, _s in enumerate(_subs):
+                    _lows = _s.lower()
+                    if not re.fullmatch(r"[a-z][a-z0-9_.'\-]{1,30}", _lows):
+                        continue
+                    if _lows in _deny:
+                        continue
+                    if prompt_guard.appearance_dims(_s).get("outfit"):
+                        continue
+                    _idx = _i
+                    break
+                _out.append(positive[_last:_m.start()])
+                if 0 <= _idx < len(_subs) and _ci < len(_chars):
+                    _replaced.append(f"{_subs[_idx]} → {_chars[_ci]}")
+                    _subs[_idx] = _chars[_ci]
+                    _ci += 1
+                _out.append(f"({', '.join(_subs)}{inner[inner.rindex(':'):]})")
+                _last = _m.end()
+            _out.append(positive[_last:])
+            if not _replaced:
+                return positive, (
+                    "提示词里的角色标识与本次启用的角色 LoRA 不一致"
+                    f"（启用 {', '.join(_names) or '角色 LoRA'}），"
+                    "但分组内未找到可替换的角色标识，已保留原样——请检查提示词"
+                )
+            return "".join(_out), (
+                f"⚠️ 提示词里的角色与本次启用的角色 LoRA（{', '.join(_names) or '角色 LoRA'}）"
+                f"不一致，已按分组顺序替换角色标识: {'；'.join(_replaced)}"
+            )
+        except Exception as _e:
+            logger.warning(f"【角色 LoRA 对齐】 检查异常（不影响出图）: {_e}")
+            return positive, ""
+
     def _strip_lora_echo_appearance(
         self, positive: str, event, lora_map, wf: dict
     ) -> tuple[str, str]:
@@ -14638,27 +14763,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             if not (positive or "").strip():
                 return positive, ""
-            try:
-                _lib_idx = self._lora_lib_index()
-            except Exception:
-                _lib_idx = {}
-            _cands: dict[str, dict | None] = {}
-            for _n in (lora_map or {}):
-                _cands[_n] = _lib_idx.get((_n or "").strip())
-            try:
-                for _le in (self._loras_of(wf) or []):
-                    _cands.setdefault(_le.get("name") or "", _le)
-            except Exception:
-                pass
-            _triggers: list[str] = []
-            for _le in _cands.values():
-                if not isinstance(_le, dict):
-                    continue
-                if (_le.get("category") or "").strip() != "角色":
-                    continue
-                for _tw in re.split(r"[,，;；\s]+", str(_le.get("trigger_words") or "")):
-                    if _tw.strip():
-                        _triggers.append(_tw.strip())
+            _names, _triggers = self._char_lora_triggers(lora_map, wf)
             if not _triggers:
                 return positive, ""
             _low = (positive or "").lower()
@@ -14880,6 +14985,13 @@ class ComfyUIDrawPlugin(Star):
 
         ★★★多人/合照规则（2 人及以上必守，违反必然融脸/串味）：
         1) 计数标签紧跟画质前缀：2girls / 1boy 1girl / 3girls…（多人绝不写 solo）。
+           ★ 多人提示词里**任何位置**都不该再出现 1girl / 1boy / solo——包括写进自然语言句子里
+           （实测翻车：`2girls, 1girl standing on the left and 1girl standing on the right, …`
+           与 2girls 打架，模型可能只画一个或画三个）。左右站位用 `side_by_side` / `from_side`
+           表达，或干脆不写；标签系底模不读自然语言句子。插件会兜底清理并打 `【多人计数】` 日志。
+           ★ 传 `loras` 时，prompt 分组里的角色触发词必须与 loras **是同一批角色**：实测事故是
+           loras 传 A/B、prompt 里却写着上一轮对话里的 C/D，等于"加载 A 的模型、点名 C"，
+           出图根本不是那两个人（插件会按分组顺序自动对齐并打 `【角色 LoRA 对齐】` 告警）。
         2) 【最重要】每个角色一个英文标签权重分组：`2girls, (charA标签, blue_hair, white_dress:1.2), (charB标签, red_hair, twin_tails:1.2)`。
            绝不用「Left girl XXX: 一段描述…」「Right girl …」这类自然语言句式——权重分组是把特征
            绑定到个体的唯一手段，自然语言必然融脸（左边角色长出右边的东西）；也绝不把两个角色的

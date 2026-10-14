@@ -190,6 +190,9 @@ description: 当用户表达任何想要绘制、生成、创作一张图片的�
 - ❌ 只写"两个女孩"却不分角色描述（特征融合成一张脸、或两人长得一模一样分不清）。
 - ❌ 把两个角色的外观标签平铺混在一起（如 `blue_hair red_hair`，模型不知道谁蓝发谁红发）→ 必须分组 `(蓝发:1.2), (红发:1.2)`。
 - ❌ 动漫工作流用中文写人数（"两个女孩"）→ 必须用 `2girls` 英文计数标签。
+- ❌ **多人提示词里出现 `1girl` / `1boy` / `solo`** —— 与 `2girls` 直接打架，模型可能只画一个或画三个；也包括把它们写进自然语言句子里（`1girl standing on the left and 1girl standing on the right`）。左右站位用 `side_by_side` / `from_side` 表达，或干脆不写。
+- ❌ **prompt 里的角色触发词与 `loras` 参数对不上**（例如 loras 传的是 A、B，prompt 分组里却写着上一轮对话里的 C、D）→ 等于"加载 A 的模型、点名 C"，出图根本不是那两个人。传 `loras` 时必须同步把各角色触发词写进对应分组。
+- ⛔ 标签系底模（Anima / Illustrious / Pony）里不要写自然语言句子（`two girls standing on the left…`）：CLIP 只当噪音 token，人数与站位都用标签表达。
 - ❌ **角色 LoRA 已经给了完整形象，还把发色/发型/瞳色/兽耳写进分组** → 稀释 LoRA、且两人写得越像越撞脸；只写触发词 + 用户明说的变化项。
 - ❌ **两个角色写同一套衣服**（`2girls, (A, black strapless dress:1.2), (B, black strapless dress:1.2)`）→ 标签系底模理解成双胞胎，两人画成同一张脸；至少让一位换衣服 / 换动作 / 加道具。
 - ❌ **两人贴在一起还用 `close-up` / `upper_body`** → 裁掉腰线以下，必连体（见上节防线）。

@@ -99,7 +99,12 @@ APPEARANCE_RULES: dict[str, list[re.Pattern]] = {
                    r"cape|scarf|gloves?|sleeves?|stockings?|thighhighs?|pantyhose|boots?|shoes?|hat|"
                    r"ribbon|necktie|tie|choker|necklace|earrings?|glasses|goggles|"
                    r"ornaments?|hair\s?ornaments?|hairpins?|hair\s?pins?|hairpieces?|"
-                   r"tassels?|bells?|scrunchie|pendants?)\b", re.I),
+                   r"tassels?|bells?|scrunchie|pendants?|"
+                   # v7.7.70：实测案例里 LLM 自己编的 "armor" / "hanfu" 此前识别不出是服装，
+                   # 剥除因此漏掉（两人各穿一套仍被保留）。中式/古装与装备类一并纳入。
+                   r"armou?r|hanfu|qipao|cheongsam|chinese\s?clothes|chinese\s?dress|"
+                   r"wedding\s+dress|evening\s+gown|cloak|tunic|vest|jerkin|plate\s?armou?r)\b",
+                   re.I),
         re.compile(r"(连衣裙|裙子|衬衫|卫衣|毛衣|外套|水手服|制服|和服|浴衣|泳装|内衣|围裙|"
                    r"斗篷|围巾|手套|丝袜|过膝袜|靴子|鞋子|帽子|发带|领带|项圈|项链|耳环|眼镜)"),
     ],
@@ -594,6 +599,54 @@ _EN_OUTFIT_HINTS: tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 
 _GROUP_SCAN_RE = re.compile(r"\(([^()]*:\s*\d+(?:\.\d+)?)\)")
+
+# --------------------------------------------------------------------------- #
+# 多人计数标签冲突清理（v7.7.70）
+# --------------------------------------------------------------------------- #
+# 实测案例：`2girls, 1girl standing on the left and 1girl standing on the right, ...`
+# —— LLM 把「左右站位」写成一句自然语言，里面还各带一个 `1girl`，与 `2girls` 直接打架
+# （此前只清分组内的计数标签，裸的自然语言句清不掉）。危害：① 人数语义冲突，模型可能
+# 只画一个或画三个；② 自然语言元描述在标签系底模里是垃圾 token。
+#
+# 规则：多人提示词里凡与多人计数冲突的**单人计数**（`1girl` / `1boy` / `solo`）一律剔除；
+# 含这些词的**自然语言标签**整条剔除（它们承载不了站位信息，CLIP 权重分组也用不上）。
+
+_SINGLE_COUNT_RE = re.compile(r"^(?:solo|1girl|1boy)$", re.I)
+
+
+def clean_multi_count_conflicts(text: str) -> tuple[str, list[str]]:
+    """多人提示词里剔除与人数冲突的单人计数标签，返回 ``(新文本, 被剔除项)``。
+
+    非多人场景原样返回。分组内与分组外都处理；分组被剥空时整组删除。
+    """
+    if not is_multi_person(text or ""):
+        return text or "", []
+    dropped: list[str] = []
+    out: list[str] = []
+    for tag in split_tags(text or ""):
+        raw = tag.strip()
+        body = raw[1:-1] if (raw.startswith("(") and raw.endswith(")")) else ""
+        m = _GROUP_TAIL_RE.search(body) if body else None
+        if body and m:
+            kept: list[str] = []
+            for s in split_tags(body[: m.start()]):
+                s = s.strip()
+                if not s:
+                    continue
+                if _SINGLE_COUNT_RE.match(s) or re.search(r"\b(?:solo|1girl|1boy)\b", s, re.I):
+                    dropped.append(s)
+                else:
+                    kept.append(s)
+            if kept:
+                out.append(f"({', '.join(kept)}{body[m.start():]})")
+            continue
+        if _SINGLE_COUNT_RE.match(raw) or re.search(r"\b(?:solo|1girl|1boy)\b", raw, re.I):
+            dropped.append(raw)
+            continue
+        out.append(raw)
+    if not dropped:
+        return text or "", []
+    return ", ".join(t for t in out if t), dropped
 
 
 def multi_shared_appearance(text: str) -> tuple[bool, list[str]]:
