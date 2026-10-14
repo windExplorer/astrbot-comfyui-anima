@@ -2026,7 +2026,69 @@ class ComfyUIDrawPlugin(Star):
         return self._cfg("comfyui_servers", []) or []
 
     def _workflows(self) -> list[dict]:
-        return self._cfg("workflows", []) or []
+        return self._ensure_stable_ids("workflows", "workflow_id", "wf_", "工作流")
+
+    @staticmethod
+    def _new_stable_id(prefix: str, taken: set[str]) -> str:
+        """生成不冲突的短 ID（前缀 + 8 位小写十六进制，如 wf_1a2b3c4d）。"""
+        import secrets
+        for _ in range(64):
+            cand = f"{prefix}{secrets.token_hex(4)}"
+            if cand not in taken:
+                return cand
+        return f"{prefix}{secrets.token_hex(8)}"
+
+    def _ensure_stable_ids(
+        self, cfg_key: str, id_field: str, prefix: str, label: str
+    ) -> list[dict]:
+        """给配置里的条目列表补「稳定 ID」并写回（新旧数据都会补，v7.7.77）。
+
+        为什么需要：LoRA 库与工作流此前都以**名称**为唯一键，于是出现两类事故——
+        ① 同系列近名（「清宵」/「清宵2」）模糊匹配张冠李戴，触发词/描述/文件名拿错；
+        ② 改名后工作流 `loras_text`、日志、摘要里的引用全部失配。
+        ID 作为行内字段（不是行号——AstrBot 的 template_list 删行会重排行号）,
+        生成后**永不改变**，改名/改别名都不影响。
+
+        - 只在真的补了 ID 时才写盘（正常路径零 IO）；
+        - 已有 ID 的原样保留；
+        - 回写用 `self.config[key] = ...`（AstrBotConfig 继承 dict）+ `save_config()`。
+        """
+        try:
+            raw = self._cfg(cfg_key, []) or []
+        except Exception:
+            return []
+        if not isinstance(raw, list):
+            return []
+        taken: set[str] = set()
+        for it in raw:
+            if isinstance(it, dict):
+                _v = str(it.get(id_field) or "").strip()
+                if _v:
+                    taken.add(_v)
+        out: list[dict] = []
+        added = 0
+        for it in raw:
+            if not isinstance(it, dict):
+                continue
+            item = dict(it)
+            _v = str(item.get(id_field) or "").strip()
+            if not _v:
+                _v = self._new_stable_id(prefix, taken)
+                taken.add(_v)
+                item[id_field] = _v
+                added += 1
+            out.append(item)
+        if added:
+            try:
+                self.config[cfg_key] = out
+                self.config.save_config()
+                logger.info(
+                    f"【配置迁移】 {label}有 {added} 条缺少稳定 ID，已自动补齐（{id_field}）并写回配置；"
+                    "该 ID 此后不变，日志与出图摘要可用它定位"
+                )
+            except Exception as _e:
+                logger.warning(f"【配置迁移】 {label} ID 补全写盘失败（不影响本次使用）: {_e}")
+        return out
 
     @staticmethod
     def _split_lora_keywords(raw: str) -> list[str]:
@@ -2064,7 +2126,10 @@ class ComfyUIDrawPlugin(Star):
         - aliases：名称 + 关键字，供索引 / 指令 / LLM 工具做名称等价匹配。
         """
         out = []
-        for l in (self._cfg("loras", []) or []):
+        _lib_raw = self._ensure_stable_ids("loras", "lora_id", "lora_", "LoRA 库")
+        # v7.7.77：同底模下名称互为近名（清宵/清宵2）→ 模糊匹配必然歧义，源头告警
+        self._check_lora_name_collisions(_lib_raw)
+        for l in _lib_raw:
             item = dict(l)
             name = (item.get("name") or "").strip()
             kws = (item.get("keywords") or "").strip()
@@ -2112,6 +2177,46 @@ class ComfyUIDrawPlugin(Star):
                     idx.setdefault(al, l)
                     idx.setdefault(al.lower(), l)
         return idx
+
+    def _check_lora_name_collisions(self, lib: list[dict]) -> None:
+        """同底模下 LoRA 名称互为「近名」时告警（v7.7.77，源头掐断清宵/清宵2 类歧义）。
+
+        判据用 `workflow_builder._lora_name_matches`（它含"版本后缀归一"：清宵 ↔ 清宵2）。
+        库里存在这种成对名称时，模糊匹配**必然**歧义——本插件的处理是"唯一才用、多候选放弃"，
+        但更该做的是让用户改名 / 写清别名。每个进程只告警一次，避免刷屏。
+        """
+        if getattr(self, "_lora_collision_logged", False):
+            return
+        try:
+            named = [
+                ((l.get("name") or "").strip(), l)
+                for l in (lib or [])
+                if isinstance(l, dict) and (l.get("name") or "").strip()
+            ]
+            warned: list[tuple[str, str]] = []
+            for i in range(len(named)):
+                for j in range(i + 1, len(named)):
+                    a, la = named[i]
+                    b, lb = named[j]
+                    if (la.get("base_model") or "").strip().lower() != (
+                            lb.get("base_model") or "").strip().lower():
+                        continue        # 不同底模不算歧义（本来就不能混用）
+                    if workflow_builder._lora_name_matches(a, b) or \
+                            workflow_builder._lora_name_matches(b, a):
+                        pair = tuple(sorted((a, b)))
+                        if pair not in warned:
+                            warned.append(pair)  # type: ignore[arg-type]
+            if warned:
+                self._lora_collision_logged = True
+                logger.warning(
+                    "【LoRA】 名称歧义告警：以下 LoRA 名称互为近名（版本后缀/前缀相同），"
+                    "用简称查询时无法区分，插件已按「唯一模糊匹配」处理（多候选直接放弃）："
+                    + "；".join(f"「{a}」↔「{b}」" for a, b in warned)
+                    + "。建议给其中一个改名，或把完整名称写进工作流 loras_text / 指令，"
+                      "避免张冠李戴（典型事故：触发词与描述拿成另一条的）。"
+                )
+        except Exception as _e:
+            logger.warning(f"【LoRA】 名称歧义自检失败（忽略）: {_e}")
 
     def _lora_lookup(self, name: str) -> tuple[dict | None, str]:
         """按名称查 LoRA 库条目，返回 ``(条目, 命中方式)``；查不到返回 ``(None, "")``。
@@ -2253,6 +2358,7 @@ class ComfyUIDrawPlugin(Star):
                 merged.append(
                     {
                         "name": name,
+                        "lora_id": (lib_l.get("lora_id") or "").strip(),
                         "model_name": (lib_l.get("model_name") or "").strip(),
                         "model_only": bool(lib_l.get("model_only", True)),
                         "base_model": (lib_l.get("base_model") or "").strip() or (l.get("base_model") or "").strip(),
@@ -2273,6 +2379,7 @@ class ComfyUIDrawPlugin(Star):
                 merged.append(
                     {
                         "name": name,
+                        "lora_id": str(l.get("lora_id") or "").strip(),
                         "model_name": (l.get("model_name") or "").strip(),
                         "model_only": True,
                         "base_model": (l.get("base_model") or "").strip(),
@@ -8121,15 +8228,16 @@ class ComfyUIDrawPlugin(Star):
                 )
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
-            # 仅记录到日志（含加载的文件名），不再回显给用户。
+            # 仅记录到日志（含加载的文件名与稳定 ID），不再回显给用户。
             for nm in enabled:
                 cfg = next(
                     (l for l in (loras_cfg or []) if (l.get("name") or "").strip() == nm),
                     None,
                 )
                 mn = (cfg or {}).get("model_name") or "" if cfg else ""
+                lid = ((cfg or {}).get("lora_id") or "").strip() if cfg else ""
                 if mn:
-                    logger.info(f"【LoRA】 启用 {nm} → {mn}")
+                    logger.info(f"【LoRA】 启用 {nm}{('#' + lid) if lid else ''} → {mn}")
                 else:
                     # 诊断：本次 LoRA 在全局库里到底有没有、库内 model_name 是啥，
                     # 用于区分「旧代码未重载 / 名字不在库 / 库里 model_name 真为空」三种情况。
@@ -8359,8 +8467,19 @@ class ComfyUIDrawPlugin(Star):
                 _lora_weight[nm] = _cfg_w if _cfg_w is not None else "默认"
             else:
                 _lora_weight[nm] = w
+        # v7.7.77：摘要里带上 LoRA / 工作流的稳定 ID（排查「用错哪条」时一眼定位）
+        def _lora_id_of(_nm: str) -> str:
+            for _l in (loras_cfg or []):
+                if (_l.get("name") or "").strip() == _nm:
+                    return (_l.get("lora_id") or "").strip()
+            return ""
+
         _enabled_lora = (
-            ", ".join(f"{nm}:{_lora_weight.get(nm, '?')}" for nm in (enabled or []))
+            ", ".join(
+                f"{nm}#{_lora_id_of(nm)}:{_lora_weight.get(nm, '?')}"
+                if _lora_id_of(nm) else f"{nm}:{_lora_weight.get(nm, '?')}"
+                for nm in (enabled or [])
+            )
             or "无"
         )
         # v7.4.7：尺寸**永远显示具体数值**，不再出现「(默认)」这种含糊文案——
@@ -8393,7 +8512,8 @@ class ComfyUIDrawPlugin(Star):
             "  负向提示词 : %s\n"
             "  启用LoRA : %s"
             % (
-                wf.get("name"),
+                f"{wf.get('name')}#{(wf.get('workflow_id') or '').strip()}"
+                if (wf.get("workflow_id") or "").strip() else wf.get("name"),
                 _size,
                 (seeds_used[0] if seeds_used else "(随机/未指定)"),
                 positive if positive else "(空)",
@@ -14862,6 +14982,8 @@ class ComfyUIDrawPlugin(Star):
                     parts.append(f"触发词：{tw}")
                 if desc:
                     parts.append(f"描述：{desc}")
+                if (e.get("lora_id") or "").strip():
+                    parts.append(f"#{e['lora_id'].strip()}")
                 lines.append(" | ".join(parts))
             return "\n".join(lines)
         except Exception as _e:
@@ -14980,7 +15102,7 @@ class ComfyUIDrawPlugin(Star):
                     _r["anchors"] = _tags
                     _r["source"] = f"LoRA 描述「{_entry.get('name')}」"
                     logger.info(
-                        f"【身份锚点】 用 LoRA 描述为「{_trig}」提供锚点: {_tags}"
+                        f"【身份锚点】 用 LoRA 描述为「{_trig}」#{(_entry.get('lora_id') or '').strip()} 提供锚点: {_tags}"
                         "（原创角色 Danbooru 查不到时走这条）"
                     )
         return out

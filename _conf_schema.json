@@ -69,6 +69,12 @@
             "hint": "在工作流与指令里都用这个名字引用，例如 --安魂曲。",
             "default": ""
           },
+          "lora_id": {
+            "type": "string",
+            "description": "稳定 ID（自动生成，请勿修改）",
+            "hint": "插件内部唯一标识：改名 / 改别名都不会变，日志与出图摘要里的 #lora_id 就是它（用来排查「用错了哪条 LoRA」）。留空时插件会自动补一个并写回配置，请勿手动修改。",
+            "default": ""
+          },
           "base_model": {
             "type": "string",
             "description": "底模（基座模型）",
@@ -198,6 +204,12 @@
             "description": "工作流名称",
             "hint": "指令 /draw --wf 和 AI 调用时引用此名。",
             "default": "default"
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "稳定 ID（自动生成，请勿修改）",
+            "hint": "插件内部唯一标识：改名不会变，日志与出图摘要里的 #workflow_id 就是它。留空时插件会自动补一个并写回配置（新旧工作流都会补），请勿手动修改。",
+            "default": ""
           },
           "kind": {
             "type": "string",

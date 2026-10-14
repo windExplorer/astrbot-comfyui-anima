@@ -584,6 +584,66 @@ def test_lora_lookup_unique_fuzzy():
     print("== 26. LoRA 名称查找：同名优先 + 模糊匹配唯一（清宵/清宵2 不串） OK")
 
 
+def test_stable_ids_backfill():
+    """v7.7.77：LoRA 库与工作流自动补稳定 ID（新旧数据都补，已有 ID 不动）。"""
+    import ast
+    import logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    ns: dict = {"logger": logging.getLogger("test")}
+    want = ("_new_stable_id", "_ensure_stable_ids")
+    for node in cls.body:
+        if isinstance(node, ast.FunctionDef) and node.name in want:
+            node.decorator_list = []
+            exec(compile(ast.Module([node], []), "main.py", "exec"), ns)
+
+    class FakeCfg(dict):
+        def save_config(self):
+            self["saved"] = True
+
+    class S:
+        _new_stable_id = staticmethod(ns["_new_stable_id"])
+        _ensure_stable_ids = ns["_ensure_stable_ids"]
+
+        def __init__(self, cfg: dict):
+            self.config = cfg
+            self._cfg = lambda key, default=None: cfg.get(key, default)
+
+    # ① 旧数据（无 ID）→ 补齐；已有 ID 原样保留
+    cfg = FakeCfg({
+        "loras": [{"name": "清宵"}, {"name": "清宵2", "lora_id": "lora_keepme"}],
+        "workflows": [{"name": "动漫"}, {"name": "真人", "workflow_id": "wf_keepme"}],
+    })
+    s = S(cfg)
+    loras = s._ensure_stable_ids("loras", "lora_id", "lora_", "LoRA 库")
+    wfs = s._ensure_stable_ids("workflows", "workflow_id", "wf_", "工作流")
+    assert loras[0].get("lora_id", "").startswith("lora_"), loras[0]
+    assert loras[1]["lora_id"] == "lora_keepme", loras[1]
+    assert wfs[0].get("workflow_id", "").startswith("wf_"), wfs[0]
+    assert wfs[1]["workflow_id"] == "wf_keepme", wfs[1]
+    assert loras[0]["lora_id"] != loras[1]["lora_id"]
+    # 补齐后必须写回配置（持久化）
+    assert cfg.get("saved"), "补了 ID 必须写盘"
+    assert cfg["loras"][0]["lora_id"] == loras[0]["lora_id"]
+    # ② 全部已有 ID → 不写盘（正常路径零 IO）
+    cfg2 = FakeCfg({"loras": [{"name": "A", "lora_id": "lora_aaa"}]})
+    s2 = S(cfg2)
+    out2 = s2._ensure_stable_ids("loras", "lora_id", "lora_", "LoRA 库")
+    assert not cfg2.get("saved"), "无需补齐时不应写盘"
+    assert out2[0]["lora_id"] == "lora_aaa"
+    # ③ 批量生成互不冲突
+    taken: set[str] = set()
+    ids = [ns["_new_stable_id"]("lora_", taken) for _ in range(200)]
+    for i in ids:
+        taken.add(i)
+    assert len(set(ids)) == 200, "生成的 ID 必须互斥"
+    print("== 27. 稳定 ID 自动补齐（LoRA/工作流、新旧数据、已有不动、写盘） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -628,4 +688,5 @@ if __name__ == "__main__":
     test_assign_personal_to_blocks()
     test_lora_description_as_anchor_source()
     test_lora_lookup_unique_fuzzy()
+    test_stable_ids_backfill()
     print("提示词护栏全部通过")

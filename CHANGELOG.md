@@ -2,6 +2,47 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.77（LoRA 与工作流都加稳定 ID：新旧数据自动补，日志/摘要可定位）
+
+需求（用户 2026-10-14）：「为啥不用 ID 啊，绘图命中 LoRA 之后获取到 ID，触发词/描述通过 ID 查详情」
++「工作流也应该加 ID，新旧工作流都要」。此前 LoRA 库与工作流都以**名称**为唯一键，导致
+① 同系列近名（清宵/清宵2）模糊匹配张冠李戴；② 改名后工作流 `loras_text`、日志、摘要里的引用全部失配。
+
+实现：
+
+1. **schema 加字段**（`_conf_schema.json`）：`loras` 模板加 `lora_id`、`workflows` 模板加
+   `workflow_id`（`type: string`，默认空）。两者都是 `template_list`，WebUI 会自动渲染出输入框。
+2. **新旧数据自动补 ID**（`main._ensure_stable_ids`）：读取时若条目没有 ID 就生成
+   `lora_xxxxxxxx` / `wf_xxxxxxxx`（`secrets.token_hex(4)`，冲突重试）并**写回配置**
+   （`self.config[key] = ...` + `save_config()`，AstrBotConfig 继承 dict）；已有 ID 原样保留；
+   **只有真的补了才写盘**，正常路径零 IO。首次启动会打
+   `【配置迁移】 LoRA 库有 N 条缺少稳定 ID，已自动补齐并写回配置`。
+   `_lora_library()` 与 `_workflows()` 全部改走该方法——所以旧版本升级上来的数据也会补齐。
+3. **ID 是行内字段、不是行号**：AstrBot 的 `template_list` 删一行会重排行号（`__template_key`），
+   所以绝不能用行号当 ID；ID 存在行数据里，改名/改别名/删别行都不变。
+4. **命中后按 ID 引用**：`_loras_of` 组装出的每个生效 LoRA 都带 `lora_id`；`_lora_lookup` 命中后
+   日志/锚点/参考文本都带 `#lora_id`。
+5. **日志与摘要带 ID**（排查"用错哪条"一眼定位）：
+   - `【LoRA】 启用 清宵#lora_1a2b3c4d → qingxiao.safetensors`
+   - `【绘图·摘要】 工作流 : 动漫#wf_9f8e7d6c` / `启用LoRA : 清宵#lora_1a2b3c4d:1.0, 心月狐#lora_…:1.0`
+   - `【身份锚点】 用 LoRA 描述为「xinyuehu」#lora_… 提供锚点: [...]`
+   - 喂给整理 LLM 的参考文本同样带 `#lora_id`
+6. **近名歧义源头告警**（`_check_lora_name_collisions`）：同底模下两条 LoRA 名称互为近名
+   （`_lora_name_matches` 判据，含版本后缀归一）时打一次警告，点名「清宵 ↔ 清宵2」这种配对，
+   并说明插件已按唯一模糊匹配处理、建议改名或写全称。每个进程只报一次，不刷屏。
+7. **WebUI 无需改动**：两个新字段会由 schema 自动渲染（LoRA 库页 / 工作流编辑弹窗），
+   描述里写明"自动生成、请勿手动修改"。
+
+验证：`tests/test_prompt_guard.py` 26 组 → **27 组**，新增第 27 组用 AST 从 main.py 原样抠出
+`_ensure_stable_ids` / `_new_stable_id`，断言：① 旧数据补 ID、已有 ID 不动、LoRA 与工作流都补
+② 补了必须写盘、无需补齐不写盘 ③ 批量生成 200 个 ID 互不冲突。全通过；
+`compileall main.py` 零错；`_conf_schema.json` JSON 解析通过（两字段均已就位）；
+产物 `dist/astrbot_plugin_comfyui_anima_v7.7.77.zip`。
+
+> 说明：ID 让"命中之后"的引用、日志、摘要都唯一可追，但**入口匹配仍按名称**——LLM 与指令
+> 物理上只能传名称（它们不知道库里的 ID）。所以 v7.7.76 的"唯一模糊 + 名字键优先"依然有效，
+> 两版合起来才是完整方案。
+
 ## v7.7.76（LoRA 名称串了：画的是「清宵」，触发词/描述却拿「清宵2」的）
 
 现象（用户 2026-10-14 实测）：出图用的 LoRA 是「清宵」，但提示词里的触发词、以及让它读的 LoRA
