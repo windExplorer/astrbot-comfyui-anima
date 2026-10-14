@@ -2567,6 +2567,17 @@ class ComfyUIDrawPlugin(Star):
                 continue
             pr = (found.get("prompt") or "").strip()
             if pr:
+                # v7.7.82：预设内容同样过净化器——实测「清宵-默认」装扮预设里存了
+                # 整段 C 站推荐串（含 1girl/solo），预设路径此前绕过触发词净化，
+                # 整段进公共提示词。计数/质量词一律剥，其余原样保留。
+                _pr_kept, _pr_drop = prompt_guard.sanitize_trigger_words(pr)
+                if _pr_drop:
+                    logger.info(
+                        f"【LoRA】 预设「{lora_name}-{preset_name}」剔除计数/质量类标签: {_pr_drop}"
+                        f"（人数由画面统一决定）"
+                    )
+                pr = ", ".join(_pr_kept)
+            if pr:
                 pos_parts.append(pr)
             logger.info(
                 f"【LoRA】 应用预设：{lora_name}-{preset_name}"
@@ -8245,6 +8256,21 @@ class ComfyUIDrawPlugin(Star):
         if active_map:
             _legacy_always_words: list[str] = []
             _default_pre: dict[str, str] = {}
+            # v7.7.82：先盘点本次的角色 LoRA 与多人语境——默认装扮预设对角色 LoRA
+            # 而言就是「自带形象的复述」，在多人画面 / ≥2 角色同开时全局追加
+            # = 污染公共区、罩到别人身上（实测「清宵-默认」把整段推荐串追加进了
+            # 2girls 公共区，完美绕过了触发词拦截/净化/计数清理三道防线）。
+            _pre_char_names: set[str] = set()
+            for _an in active_map:
+                try:
+                    _le2, _h2 = self._lora_lookup((_an or "").strip())
+                except Exception:
+                    _le2 = None
+                if _le2 and ((_le2.get("category") or "").strip() == "角色"
+                             or prompt_guard.looks_char_lora(
+                                 str(_le2.get("trigger_words") or ""))):
+                    _pre_char_names.add((_an or "").strip())
+            _pre_multi_ctx = len(_pre_char_names) >= 2 or prompt_guard.is_multi_person(positive)
             for lora_name in active_map:
                 ln = (lora_name or "").strip()
                 # v7.7.76：走 _lora_lookup（唯一模糊）——旧写法会把「清宵」配到「清宵2」
@@ -8266,7 +8292,17 @@ class ComfyUIDrawPlugin(Star):
                 if not (_named or "").strip():
                     _dp = self._default_preset_of(l)
                     if _dp and (self._outfit_change_hit(event, positive) is False):
-                        _default_pre[ln] = (_dp.get("name") or "").strip()
+                        _is_char_l = ((l.get("category") or "").strip() == "角色"
+                                      or prompt_guard.looks_char_lora(
+                                          str(l.get("trigger_words") or "")))
+                        if _is_char_l and _pre_multi_ctx:
+                            logger.info(
+                                f"【LoRA】 多人/多角色模式：跳过「{ln}」的默认装扮预设"
+                                f"「{(_dp.get('name') or '').strip()}」（角色自带形象，"
+                                f"全局追加会罩到别的角色身上；要换装请显式点名预设或让 LLM 写进角色分组）"
+                            )
+                        else:
+                            _default_pre[ln] = (_dp.get("name") or "").strip()
             # 固定提示词或走 JSON 原值（positive 为空）时跳过追加，避免污染固定配方
             if positive and not _fixed_prompt:
                 if _default_pre:

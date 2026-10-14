@@ -870,6 +870,71 @@ def test_lora_alias_lookup_switch():
     print("== 32. LoRA 别名查库开关（默认只按名称，关键字进索引须显式开启） OK")
 
 
+def test_identity_anchor_tags_html():
+    # v7.7.82 事故复刻（log5.log）：达妮娅的描述是 C 站复制的富文本 HTML，
+    # 整段 <p>/<span> 被当成一个「标签」参与维度匹配，抽出几百字符的垃圾锚点
+    # 进混合式改写（日志实锤：锚点首项是 '</span></p><p>…暂定的最终版…'）。
+    html_desc = (
+        '<p><span style="color:rgb(230,73,128)">达妮娅（白） 触发词：denia \\(wuthering waves\\)</span></p>'
+        '<p>发饰: denia black headband, blue headpiece,</p>'
+        '<pre><code>denia black headband, blue headpiece, white dress, frills, '
+        'jewelry choker, fur-trimmed sleeves, detached sleeves, red_gloves,</code></pre>'
+        '<p><span style="color:rgb(134,142,150)">暂定的最终版，还有solar5的皮肤没有训练进去，'
+        '达妮娅的故事还没有圆满</span></p>'
+    )
+    anchors = prompt_guard.identity_anchor_tags(html_desc, limit=5)
+    assert anchors, anchors
+    for a in anchors:
+        assert "<" not in a and ">" not in a, a
+        assert len(a) <= 80, a
+    assert any("dress" in a or "headband" in a for a in anchors), anchors
+    # 长度兜底：超长「标签」直接跳过
+    long_junk = "x" * 200 + ", white dress"
+    a2 = prompt_guard.identity_anchor_tags(long_junk, limit=5)
+    assert a2 == ["white dress"], a2
+    print("== 33. 锚点抽取剥 HTML + 超长标签兜底 OK")
+
+
+def test_apply_lora_presets_sanitize():
+    # v7.7.82 事故复刻（log5.log）：「清宵-默认」装扮预设里存了整段 C 站推荐串，
+    # 预设路径此前绕过触发词净化，1girl/solo/整段外观直接进公共提示词。
+    import ast as _ast
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, _ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    ns: dict = {"prompt_guard": prompt_guard, "re": re,
+                "logger": _logging.getLogger("test")}
+    got = [n for n in cls.body
+           if isinstance(n, _ast.FunctionDef) and n.name == "_apply_lora_presets"]
+    assert got, "ComfyUIDrawPlugin 必须有 _apply_lora_presets"
+    exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+
+    LIB = [{"name": "清宵", "presets": None,
+            "trigger_words": "qingxiao \\(wuthering waves\\)"}]
+    PRESETS = [{"name": "默认",
+                "prompt": ("qingxiao \\(wuthering waves\\), 1girl, solo, full body, "
+                           "blue hair, white dress, white thighhighs, masterpiece")}]
+
+    class S:
+        _apply_lora_presets = ns["_apply_lora_presets"]
+
+        def _lora_library(self):
+            return LIB
+
+        def _lora_presets_of(self, l):
+            return PRESETS
+
+    out, _neg = S()._apply_lora_presets({"清宵": "默认"}, "2girls, night", "")
+    assert "1girl" not in out and "solo" not in out and "masterpiece" not in out, out
+    assert "white dress" in out and "white thighhighs" in out, out
+    assert out.startswith("2girls, night"), out
+    print("== 34. 预设内容净化（计数/质量词剥除，装扮词保留） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -920,4 +985,6 @@ if __name__ == "__main__":
     test_char_lora_skip_plan()
     test_char_lora_triggers_wiring()
     test_lora_alias_lookup_switch()
+    test_identity_anchor_tags_html()
+    test_apply_lora_presets_sanitize()
     print("提示词护栏全部通过")

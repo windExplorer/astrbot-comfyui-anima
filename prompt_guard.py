@@ -20,6 +20,7 @@ docstring 里写一句「禁止补外观」——但这只是**说服模型**，
 
 from __future__ import annotations
 
+import html as _html
 import re
 
 # --------------------------------------------------------------------------- #
@@ -771,11 +772,21 @@ def identity_anchor_tags(tag_str: str, limit: int = 5) -> list[str]:
 
     按维度优先级取（发色 → 瞳色 → 发型 → 兽化 → 服装 → 体型），跳过角色 tag 本身
     （`name (series)` 形态）与人数词；同一维度最多取 2 个，避免全是发色。
+
+    ★v7.7.82：输入先剥 HTML——LoRA 库的 `description` 常是从 C 站复制的富文本
+    （`<p>`/`<span>`/`<code>`），实测整段 HTML 被当成一个「标签」参与维度匹配，
+    抽出几百字符的垃圾锚点进混合式改写。另：超过 80 字符的「标签」直接跳过
+    （真实 Danbooru tag 没这么长的，长度兜底防各种复制残渣）。
     """
+    text = tag_str or ""
+    if "<" in text:
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = _html.unescape(text)
+        text = re.sub(r"\s+", " ", text)
     by_dim: dict[str, list[str]] = {}
-    for tag in split_tags(tag_str or ""):
+    for tag in split_tags(text):
         t = tag.strip()
-        if not t:
+        if not t or len(t) > 80:
             continue
         if re.search(r"\\?\(.*\)\s*$", t):        # 角色 tag（含作品消歧括号）不作锚点
             continue
