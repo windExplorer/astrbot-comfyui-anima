@@ -936,6 +936,70 @@ def _is_outfit_trigger(token: str, extra_words=()) -> bool:
     return False
 
 
+def _char_lora_skip_plan(
+    enabled: list,
+    loras_cfg: list | None,
+    lib_index: dict,
+    lookup,
+    positive: str,
+) -> tuple[set, set, dict]:
+    """角色 LoRA 触发词「不全局追加」的判定与词表（v7.7.79 从 _do_draw 抽出为纯函数）。
+
+    返回 ``(multi_char_skip, skip_words, decision)``：
+
+    - ``multi_char_skip``：触发词**绝不全局追加**的 LoRA 名集合（应已由 LLM 写进
+      各自的角色分组括号）；
+    - ``skip_words``：这些 LoRA 触发词的全量**原始** token（小写），用于拦截
+      LLM 增补的同名词；
+    - ``decision``：``{名: (分类, 是否判为角色)}``，仅供日志展示判定依据。
+
+    判定：分类=「角色」，或触发词自带人数标签（`looks_char_lora`，整段抄推荐
+    提示词的典型特征）。触发词来源**优先工作流合并条目**（`loras_cfg`，`_loras_of`
+    已按 `_lora_lookup` 解析过库字段），再退全局库索引——★v7.7.79 修复：enabled
+    里的名字来自工作流 `loras_text`，可能与全局库名不一致（实际靠模糊匹配才命中），
+    旧写法 `_lib.get(名)` 精确键直接落空 → 角色判定全部查到空 → 整段角色触发词
+    照旧全局追加污染公共提示词（用户实测两连）。
+
+    拦截条件（v7.7.78）：≥2 个角色 LoRA 同开，**或**画面本身是多人
+    （`positive` 命中 2girls 等）时哪怕只有 1 个角色 LoRA 也拦截。
+    """
+    skip: set = set()
+    words: set = set()
+    decision: dict = {}
+    for nm in enabled:
+        nm = (nm or "").strip()
+        if not nm:
+            continue
+        meta_l = None
+        if lookup is not None:
+            try:
+                meta_l, _how = lookup(nm)
+            except Exception:
+                meta_l = None
+        if not meta_l:
+            meta_l = lib_index.get(nm) or lib_index.get(nm.lower())
+        _lc = next(
+            (l for l in (loras_cfg or []) if (l.get("name") or "").strip() == nm),
+            None,
+        )
+        tw_raw = str(
+            (_lc.get("trigger_words") if _lc else None)
+            or ((meta_l or {}).get("trigger_words") or "")
+        )
+        cat = ((meta_l or {}).get("category") or "").strip()
+        is_char = cat == "角色" or prompt_guard.looks_char_lora(tw_raw)
+        decision[nm] = (cat, is_char)
+        if is_char:
+            skip.add(nm)
+            for tw in re.split(r"[\n,，、;；]+", tw_raw.strip()):
+                tw = tw.strip()
+                if tw:
+                    words.add(tw.lower())
+    if not (skip and (len(skip) >= 2 or prompt_guard.is_multi_person(positive or ""))):
+        return set(), set(), decision
+    return skip, words, decision
+
+
 def _safe_llm_tool(func):
     """包裹 LLM 工具方法：任何未捕获异常都不再冒泡成 AstrBot 的「调用工具报错」，
     而是打印完整堆栈到日志并返回一句可读的失败说明，让用户能看到原因而非笼统报错。
@@ -8275,28 +8339,29 @@ class ComfyUIDrawPlugin(Star):
             # 且只要画面本身是多人（positive 含 2girls 等），单个角色 LoRA 的触发词
             # 同样不全局追加（实测「清宵」的整段角色外观标签污染了公共提示词，
             # `1girl, solo` 还与画面 `2girls` 直接打架）。
-            _multi_char_skip: set[str] = set()
-            _skip_words: set[str] = set()
-            for _nm in enabled:
-                _le = _lib.get(_nm) or _lib.get((_nm or "").lower()) or {}
-                _le_tw = str(_le.get("trigger_words") or "")
-                if ((_le.get("category") or "").strip() == "角色"
-                        or prompt_guard.looks_char_lora(_le_tw)):
-                    _multi_char_skip.add(_nm)
-                    for _tw in re.split(r"[\n,，、;；]+", _le_tw.strip()):
-                        _tw = _tw.strip()
-                        if _tw:
-                            _skip_words.add(_tw.lower())
-            if _multi_char_skip and (
-                len(_multi_char_skip) >= 2 or prompt_guard.is_multi_person(positive)
-            ):
+            # v7.7.79：判定抽到 _char_lora_skip_plan——触发词来源与下方 ① 同源
+            # （loras_cfg 合并条目优先），修复 enabled 名与全局库名不一致
+            # （模糊命中）时 `_lib.get(名)` 落空 → 拦截整体失效的漏判。
+            _multi_char_skip, _skip_words, _char_decision = _char_lora_skip_plan(
+                enabled, loras_cfg, _lib, self._lora_lookup, positive
+            )
+            if _multi_char_skip:
+                _why = ", ".join(
+                    f"{k}(分类={v[0] or '无'}{'/触发词带人数' if v[1] else ''})"
+                    for k, v in _char_decision.items()
+                )
                 logger.warning(
                     f"【LoRA 触发词】 多角色/多人模式：{sorted(_multi_char_skip)} 的触发词不全局追加"
-                    f"（防串味），应已由 LLM 写进各自的角色分组括号"
+                    f"（防串味），应已由 LLM 写进各自的角色分组括号；判定依据: {_why}"
                 )
             else:
-                _multi_char_skip = set()
-                _skip_words = set()
+                logger.info(
+                    "【LoRA 触发词】 角色判定（未触发拦截）: "
+                    + ", ".join(
+                        f"{k}(分类={v[0] or '无'}{'/角色' if v[1] else '/非角色'})"
+                        for k, v in _char_decision.items()
+                    )
+                )
             # ① 全量自动列表：启用 LoRA 的触发词永不缺失（多角色模式除外，见上）。
             #    v7.7.78：先过净化器——计数标签（1girl/solo）与质量/负向 meta 残渣
             #    不追加（人数归 LLM 管；整段抄推荐提示词的典型脏东西在这里拦下）。

@@ -688,6 +688,64 @@ def test_looks_char_lora():
     print("== 29. 角色 LoRA 启发式判定（触发词带人数标签） OK")
 
 
+def test_char_lora_skip_plan():
+    # v7.7.79 事故复刻：enabled 名来自工作流 loras_text（「清宵」），全局库名是
+    # 「qingxiaowuwa」——旧写法 `_lib.get("清宵")` 精确键落空 → 角色判定查到空 →
+    # 整段触发词照旧全局追加污染公共提示词。新逻辑经 lookup/loras_cfg 兜底必须拦住。
+    import ast as _ast
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    ns: dict = {"prompt_guard": prompt_guard, "re": re,
+                "logger": _logging.getLogger("test")}
+    got = [n for n in tree.body
+           if isinstance(n, _ast.FunctionDef) and n.name == "_char_lora_skip_plan"]
+    assert got, "main.py 必须有模块级 _char_lora_skip_plan"
+    exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+    fn = ns["_char_lora_skip_plan"]
+
+    lib_entry = {
+        "name": "qingxiaowuwa", "category": "",
+        "trigger_words": "qingxiao \\(wuthering waves\\), 1girl, solo, blue hair",
+    }
+    loras_cfg = [{"name": "清宵", "trigger_words": lib_entry["trigger_words"]}]
+
+    def lookup(nm, _e=lib_entry):
+        # 工作流名「清宵」与库名不一致：精确/别名都落空，靠模糊命中
+        return (_e, "fuzzy") if nm == "清宵" else (None, "miss")
+
+    # ① 多人画面：即使库名对不上、分类没写，也必须判为角色并拦截
+    skip, words, dec = fn(["清宵"], loras_cfg, {"qingxiaowuwa": lib_entry}, lookup,
+                          "2girls, (qingxiaowuwa:1.25)")
+    assert skip == {"清宵"}, (skip, dec)
+    assert "1girl" in words and "solo" in words and "blue hair" in words, words
+    assert dec["清宵"] == ("", True), dec
+    # ② 单人画面 + 单个角色 LoRA（触发词带人数）→ 拦截同样生效（多人判定不满足时
+    #    旧约定是放行；但触发词带人数标签的单角色在单人也一样污染 → v7.7.79 起
+    #    只要判定为角色且画面多人才拦，单人保持放行）
+    skip2, _, _ = fn(["清宵"], loras_cfg, {"qingxiaowuwa": lib_entry}, lookup,
+                     "1girl, smile, night")
+    assert skip2 == set(), skip2
+    # ③ 分类=角色 的干净触发词：多人画面拦截，词表收全
+    lib2 = {"月音": {"name": "月音", "category": "角色", "trigger_words": "yueyin_tag"}}
+    skip3, words3, dec3 = fn(["月音"], [{"name": "月音"}], lib2,
+                             lambda n: (lib2["月音"], "exact"), "2girls")
+    assert skip3 == {"月音"} and "yueyin_tag" in words3 and dec3["月音"] == ("角色", True)
+    # ④ 纯画风 LoRA：任何情况都不拦
+    lib3 = {"水墨": {"name": "水墨", "category": "画风", "trigger_words": "ink wash style"}}
+    skip4, _, dec4 = fn(["水墨"], [{"name": "水墨"}], lib3,
+                        lambda n: (lib3["水墨"], "exact"), "2girls")
+    assert skip4 == set() and dec4["水墨"] == ("画风", False)
+    # ⑤ lookup 与 loras_cfg 双双落空（库里真没有、也没触发词）→ 判非角色，不拦
+    skip5, _, _ = fn(["路人"], [{"name": "路人"}], {}, lambda n: (None, "miss"), "2girls")
+    assert skip5 == set()
+    # ⑥ 库里查不到、但工作流条目触发词自带人数 → 仍按角色拦（配置级证据足够）
+    skip6, words6, _ = fn(["路人"], [{"name": "路人", "trigger_words": "1girl, solo"}],
+                          {}, lambda n: (None, "miss"), "2girls")
+    assert skip6 == {"路人"} and "1girl" in words6 and "solo" in words6
+    print("== 30. 角色 LoRA 拦截判定（库名不一致兜底 + 多人画面单角色也拦） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -735,4 +793,5 @@ if __name__ == "__main__":
     test_stable_ids_backfill()
     test_sanitize_trigger_words()
     test_looks_char_lora()
+    test_char_lora_skip_plan()
     print("提示词护栏全部通过")
