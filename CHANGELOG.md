@@ -2,6 +2,38 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.85（分组内激活词与实际启用 LoRA 对不上——对齐函数三个 bug 静默失效）
+
+用户实测（2026-10-15）：`(qingxiaowuwa, hair stick, sword:1.25)`——用的是「清宵」
+LoRA，括号内写的却是「清宵2」的触发词 `qingxiaowuwa`。`_align_character_lora_triggers`
+本该把写错的标识换成本次真正启用的角色 LoRA 触发词，却**静默原样返回**（不报错，
+所以此前一直没发现）。三个 bug 叠加：
+
+1. 分组正则 `\(([^()]*:...)\)` **不支持转义括号**——`(Denia\(wuthering_waves\)...)` 含
+   `\(`/`\)`，正则匹配不到 → 只数到 1 个分组 → `len(_groups) < 2` 直接 bail（同 v7.7.84
+   那个「2 个被数成 1 个」的根因）；
+2. **「已点名就别动」的守卫用错了 token 列表**——拿扁平展开的全部触发词（含
+   `full body`/`blue hair`）判断，提示词里 ANY 一个 token 出现就 bail，outfit 词一出现
+   整个不对齐；
+3. **顺序配对用了扁平 token 列表** `_chars[_ci]`，清宵触发词拆成十几个 token，
+   第二组被换成 `wuthering` 之类乱词。
+
+修复（重写该函数）：
+
+- 分组扫描改用 `_PRESET_GROUP_RE`（支持转义括号）；
+- 每个角色 LoRA 取**权威首激活词**（触发词字段第一个有效 token），按分组顺序一对一替换；
+- 「已点名」守卫改为：每个权威激活词（**归一化核心**）都已出现在某分组内才跳过——
+  否则即便 prompt 已含 `blue hair` 等无关 token 也照样对齐；
+- **标识符判定改用「取转义括号前的引导词」**（`re.split(r"\s*\\?\(", _s, 1)[0]`）：
+  旧写法 `" " in _s` 会误杀 `qingxiao \(wuthering waves\)` 这种「名 (作品)」形态（含空格），
+  导致落到 `sword` 上被错换；现在 `qingxiao` / `Denia` 正确识别为标识，短语
+  `blue sky` 仍被跳过；
+- 仅当组内标识与权威词**不一致**才替换（已对上、含下划线/空格变体核心相认的——如
+  `Denia\(wuthering_waves\)` ↔ 达妮娅——不改动）。
+
+测试：`tests/test_prompt_guard.py` 新增 37（用户原样提示词 → qingxiaowuwa 换成清宵
+权威激活词、达妮娅组不动；已写对不改动；单分组不处理），全套 38 项通过。
+
 ## v7.7.84（已进分组的激活词不再裸露在公共区：去重 + 注入定位认下划线变体）
 
 用户实测（2026-10-15）：`2girls, qingxiaowuwa, Denia\(wuthering_waves\), side_by_side,

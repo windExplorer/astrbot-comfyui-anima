@@ -15213,46 +15213,70 @@ class ComfyUIDrawPlugin(Star):
         try:
             if not (positive or "").strip():
                 return positive, ""
+            # 本次真正启用的角色 LoRA（按 _char_lora_triggers 口径）→ 每个的「权威激活词」
+            # = 其触发词字段第一个有效 token。v7.7.85 修复：此前扁平展开所有触发词
+            # 按序配对（清宵触发词拆成十几个 token，第二组被换成 wuthering 之类乱词）。
             _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event)
-            if not _triggers:
+            if not _names:
                 return positive, ""
-            _low = (positive or "").lower()
-            if any(self._text_has_word(_t, _low) for _t in _triggers):
-                return positive, ""      # 提示词已经点名了本次的角色，不插手
-            _groups = list(re.finditer(r"\(([^()]*:\s*\d+(?:\.\d+)?)\)", positive))
+            _canon: list[tuple[str, str]] = []   # [(归一化核心, 展示激活词)]
+            for _n in _names:
+                try:
+                    _e, _ = self._lora_lookup(_n)
+                except Exception:
+                    _e = None
+                if not isinstance(_e, dict):
+                    continue
+                _toks, _ = prompt_guard.sanitize_trigger_words(
+                    str(_e.get("trigger_words") or ""))
+                if _toks:
+                    _first = _toks[0].strip()
+                    _canon.append((_norm_tag_core(_first), _first))
+            if not _canon:
+                return positive, ""
+            _groups = list(_PRESET_GROUP_RE.finditer(positive or ""))
             if len(_groups) < 2:
                 return positive, ""
+            # 每个权威激活词都已出现在某个分组（归一化核心）里 → 已经是本次角色，不插手
+            if all(any(_c in _norm_tag_core(_m.group(1)) for _m in _groups)
+                   for _c, _ in _canon):
+                return positive, ""
             # 通用场景/画质词不是角色标识（避免误把 night / masterpiece 当角色名换掉）
-            _deny = {w.strip(" ,") for _d in prompt_guard._FREE_HINTS.values() for w in _d}
-            _deny |= {t.strip(" ,").lower() for t in (
+            _deny = {_norm_tag_core(w) for _d in prompt_guard._FREE_HINTS.values() for w in _d}
+            _deny |= {_norm_tag_core(t) for t in (
                 "masterpiece", "best quality", "high quality", "very aesthetic", "absurdres",
                 "highly detailed", "intricate details", "detailed background")}
-            _chars = [t for t in _triggers]
             _out: list[str] = []
             _last = 0
             _replaced: list[str] = []
             _ci = 0
             for _m in _groups:
-                inner = _m.group(1)
-                _ci_w = inner[: inner.rindex(":")]
-                _subs = [s.strip() for s in prompt_guard.split_tags(_ci_w) if s.strip()]
+                _body = _m.group(1)                     # 分组内容（不含权重）
+                _subs = [s.strip() for s in prompt_guard.split_tags(_body) if s.strip()]
                 _idx = -1
                 for _i, _s in enumerate(_subs):
-                    _lows = _s.lower()
-                    if not re.fullmatch(r"[a-z][a-z0-9_.'\-]{1,30}", _lows):
+                    # 角色标识 = 「名」或「名 (作品)」形态：取转义括号前的引导词判断；
+                    # 真正多词短语（如 blue sky）无括号且引导词外还有空格 → 跳过
+                    _lead = re.split(r"\s*\\?\(", _s, 1)[0].strip()
+                    if not _lead or " " in _lead:
                         continue
-                    if _lows in _deny:
+                    if not re.fullmatch(r"[a-z][a-z0-9_.'\-]{1,40}", _lead.lower()):
                         continue
-                    if prompt_guard.appearance_dims(_s).get("outfit"):
+                    if _norm_tag_core(_lead) in _deny:
+                        continue
+                    if prompt_guard.appearance_dims(_lead).get("outfit"):
                         continue
                     _idx = _i
                     break
                 _out.append(positive[_last:_m.start()])
-                if 0 <= _idx < len(_subs) and _ci < len(_chars):
-                    _replaced.append(f"{_subs[_idx]} → {_chars[_ci]}")
-                    _subs[_idx] = _chars[_ci]
+                if 0 <= _idx < len(_subs) and _ci < len(_canon):
+                    _c_core, _c_disp = _canon[_ci]
+                    # 仅当组内标识与权威词不一致才替换（已对上就不改，避免无谓扰动）
+                    if _norm_tag_core(_subs[_idx]) != _c_core:
+                        _replaced.append(f"{_subs[_idx]} → {_c_disp}")
+                        _subs[_idx] = _c_disp
                     _ci += 1
-                _out.append(f"({', '.join(_subs)}{inner[inner.rindex(':'):]})")
+                _out.append(f"({', '.join(_subs)}:{_m.group(2)})")
                 _last = _m.end()
             _out.append(positive[_last:])
             if not _replaced:

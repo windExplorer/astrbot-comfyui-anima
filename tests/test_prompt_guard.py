@@ -1077,6 +1077,90 @@ def test_dedupe_char_tags_from_common():
     print("== 36. 公共区裸露激活词剥除（分组内已有才剥、核心归一化匹配） OK")
 
 
+def test_align_character_lora_triggers():
+    # v7.7.85 修复：用户实测「用的是清宵 LoRA，括号里却是清宵2 的触发词 qingxiaowuwa」。
+    # 旧对齐函数三个 bug：正则不支持转义括号（只数到 1 个分组→bail）；守卫用扁平
+    # 触发词判断「已点名」；顺序配对用扁平 token（第二组被换成 wuthering 之类）。
+    import ast as _ast
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, _ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    ns: dict = {"prompt_guard": prompt_guard, "re": re,
+                "logger": _logging.getLogger("test")}
+    for fname in ("_char_lora_triggers", "_align_character_lora_triggers"):
+        got = [n for n in cls.body
+               if isinstance(n, _ast.FunctionDef) and n.name == fname]
+        assert got, f"ComfyUIDrawPlugin 必须有 {fname}"
+        exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+    consts = [n for n in tree.body
+              if (isinstance(n, _ast.Assign)
+                   and any(getattr(t, "id", "") == "_PRESET_GROUP_RE" for t in n.targets))
+              or (isinstance(n, _ast.FunctionDef) and n.name in ("_norm_tag_core",))]
+    assert consts, "main.py 必须有 _PRESET_GROUP_RE / _norm_tag_core"
+    exec(compile(_ast.Module(consts, []), "main.py", "exec"), ns)
+
+    LIB = [
+        {"name": "清宵", "category": "角色",
+         "trigger_words": "qingxiao \\(wuthering waves\\), 1girl, solo, full body, blue hair, white dress"},
+        {"name": "清宵2", "category": "角色",
+         "trigger_words": "qingxiaowuwa, 1girl, solo"},
+        {"name": "达妮娅", "category": "角色",
+         "trigger_words": "denia \\(wuthering waves\\), 1girl, solo"},
+    ]
+    idx = {l["name"]: l for l in LIB}
+
+    class S:
+        _char_lora_triggers = ns["_char_lora_triggers"]
+        _align_character_lora_triggers = ns["_align_character_lora_triggers"]
+
+        def _lora_library(self):
+            return LIB
+
+        def _lora_lib_index(self):
+            return dict(idx)
+
+        def _lora_lookup(self, nm):
+            e = idx.get((nm or "").strip())
+            return (e, "exact") if e else (None, "")
+
+        def _match_loras_by_raw_message(self, event, include_keywords=False):
+            return {}
+
+        def _loras_of(self, wf):
+            return []
+
+    s = S()
+    # ① 用户原样：清宵组误用 qingxiaowuwa（清宵2）→ 替换为清宵的权威激活词
+    pos = ("masterpiece, best quality, very aesthetic, absurdres, 2girls, "
+           "(qingxiaowuwa, hair stick, sword:1.25), "
+           "(Denia\\(wuthering_waves\\), denia_hairband, denia_regular_clothes, "
+           "stuffed toy, bare shoulders:1.25), "
+           "side_by_side, looking_at_each_other, full body, outdoors, cherry_blossom, "
+           "petals, spring, soft sunlight, cinematic lighting, detailed background")
+    out, note = s._align_character_lora_triggers(
+        pos, {"清宵": 1.0, "达妮娅": 1.0}, {})
+    assert "qingxiao \\(wuthering waves\\)" in out, out
+    assert "qingxiaowuwa" not in out, out
+    # 达妮娅组用的是 Denia\(wuthering_waves\)（下划线变体，核心相认）→ 不动
+    assert "Denia\\(wuthering_waves\\)" in out, out
+    assert "denia_hairband" in out and "stuffed toy" in out, out
+    assert "已按分组顺序替换角色标识" in note, note
+    # ② 已经写对（清宵组就是 qingxiao）→ 不改动
+    pos2 = pos.replace("(qingxiaowuwa,", "(qingxiao \\(wuthering waves\\),")
+    out2, note2 = s._align_character_lora_triggers(
+        pos2, {"清宵": 1.0, "达妮娅": 1.0}, {})
+    assert out2 == pos2 and note2 == "", (out2, note2)
+    # ③ 单分组 → 不处理
+    out3, _ = s._align_character_lora_triggers(
+        "(qingxiaowuwa:1.2), side_by_side", {"清宵": 1.0}, {})
+    assert out3 == "(qingxiaowuwa:1.2), side_by_side", out3
+    print("== 37. 角色触发词对齐（转义括号分组、权威首激活词按序替换、已对上不动） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -1131,4 +1215,5 @@ if __name__ == "__main__":
     test_apply_lora_presets_sanitize()
     test_preset_routes_into_char_group()
     test_dedupe_char_tags_from_common()
+    test_align_character_lora_triggers()
     print("提示词护栏全部通过")
