@@ -1174,6 +1174,81 @@ def test_align_character_lora_triggers():
     print("== 37. 角色触发词对齐（转义括号分组、权威首激活词按序替换、已对上不动） OK")
 
 
+def test_llm_loras_version_ordering():
+    # v7.7.88（用户 11:31 日志实测）：comfyui_loras 查「清宵」，清宵2（关键字含
+    # 「清宵」）排在 清宵 前面 → LLM 照抄第一条 → 张冠李戴。
+    # 修复：①查找范围受 lora_alias_lookup 开关控制（关=只按名称）；
+    # ②命中按「精确名 → 无数字后缀 → 数字后缀升序」排序，第一条必是原版。
+    import ast as _ast
+    import asyncio as _asyncio
+    import logging as _logging
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = _ast.parse(src)
+    cls = next(
+        (n for n in tree.body
+         if isinstance(n, _ast.ClassDef) and n.name == "ComfyUIDrawPlugin"), None)
+    assert cls is not None
+    got = [n for n in cls.body
+           if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+           and n.name == "llm_loras"]
+    assert got, "ComfyUIDrawPlugin 必须有 llm_loras"
+    got[0].decorator_list = []  # 剥掉 @filter.llm_tool
+
+    class _WB:
+        @staticmethod
+        def _normalize_lora_name(x):
+            return (x or "").strip().lower()
+
+    ns: dict = {"filter": type("F", (), {"llm_tool": staticmethod(lambda **k: (lambda f: f))}),
+                "workflow_builder": _WB, "re": re, "logger": _logging.getLogger("test"),
+                "ComfyUIDrawPlugin": object, "_PLUGIN_INSTANCE": None, "AstrMessageEvent": object}
+    exec(compile(_ast.Module([got[0]], []), "main.py", "exec"), ns)
+
+    LIB = [
+        {"name": "清宵2", "category": "角色", "base_model": "anima",
+         "keywords_list": ["Qingxiao", "清宵", "鸣潮清宵"],
+         "aliases": ["清宵2", "Qingxiao", "清宵", "鸣潮清宵"],
+         "description": "v2", "trigger_words": "qingxiaowuwa"},
+        {"name": "清宵", "category": "角色", "base_model": "anima",
+         "keywords_list": ["Qingxiao", "Anima", "Wuthering"],
+         "aliases": ["清宵", "Qingxiao"],
+         "description": "v1", "trigger_words": "qingxiao \\(wuthering waves\\)"},
+        {"name": "鬼猫风格", "category": "风格", "base_model": "anima",
+         "keywords_list": [], "aliases": ["鬼猫风格"],
+         "description": "style", "trigger_words": "@4x0style"},
+    ]
+
+    class P:
+        _llm_loras = ns["llm_loras"]
+
+        def _lora_library(self):
+            return LIB
+
+        def __init__(self, alias_on):
+            self._alias_on = alias_on
+
+        def _cfg(self, key, default=None):
+            return self._alias_on if key == "lora_alias_lookup" else default
+
+    # ① 开关关（用户当前配置）：只按名称匹配——查「清宵」命中 清宵/清宵2，
+    #    但 清宵（精确名+无后缀）排第一
+    out = _asyncio.run(P(False)._llm_loras(None, "", "清宵", ""))
+    lines = [x for x in out.splitlines() if x.startswith("- ")]
+    assert lines[0].startswith("- 清宵（"), lines[0]
+    assert lines[1].startswith("- 清宵2（"), lines[0]
+    assert "鬼猫风格" not in out, out  # 名称不含「清宵」，不命中
+    # ② 查带后缀名 → 精确命中的那条第一
+    out2 = _asyncio.run(P(False)._llm_loras(None, "", "清宵2", ""))
+    assert out2.splitlines()[1].startswith("- 清宵2（"), out2
+    # ③ 开关关时关键字不参与：查「鸣潮清宵」（清宵2 的关键字）→ 只走宽松兜底
+    out3 = _asyncio.run(P(False)._llm_loras(None, "", "鸣潮清宵", ""))
+    assert "近似" in out3.splitlines()[0], out3.splitlines()[0]
+    # ④ 开关开：关键字参与精确匹配
+    out4 = _asyncio.run(P(True)._llm_loras(None, "", "鸣潮清宵", ""))
+    assert "清宵2" in out4 and "近似" not in out4.splitlines()[0], out4.splitlines()[0]
+    print("== 38. comfyui_loras 查找受别名开关控制 + 版本排序（精确名→无后缀→升序） OK")
+
+
 def test_multi_shared_appearance():
     # 用户实测原样：两人共用的 black strapless dress / detached sleeves
     txt = ("2girls, (suomingwuwa, red hair, black strapless dress, detached sleeves:1.25), "
@@ -1229,4 +1304,5 @@ if __name__ == "__main__":
     test_preset_routes_into_char_group()
     test_dedupe_char_tags_from_common()
     test_align_character_lora_triggers()
+    test_llm_loras_version_ordering()
     print("提示词护栏全部通过")

@@ -19195,7 +19195,7 @@ class ComfyUIDrawPlugin(Star):
 
         Args:
             base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
-            keyword(string): 可选。按名称/关键字模糊匹配查找某个 LoRA（描述、触发词不参与查找）。
+            keyword(string): 可选。按名称子串匹配查找某个 LoRA（描述、触发词不参与查找；别名/关键字仅在「别名查询」开关开启时参与）。命中多条时按「精确名 → 不带数字后缀 → 数字后缀升序」排序，**默认取第一条**（如查「清宵」返回 清宵、清宵2…，第一条 清宵 就是原版）。
             category(string): 可选。按分类过滤（角色 / 风格 / 工具）。当用户提到"某某角色/人物"、"某某风格/画风"或"某某工具类效果（如加速、细节增强、图像质量增强）"时，可传入 角色 / 风格 / 工具 缩小范围。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
@@ -19208,6 +19208,11 @@ class ComfyUIDrawPlugin(Star):
         kw = (keyword or "").strip().lower()
         cat = (category or "").strip()
         nkw = workflow_builder._normalize_lora_name(kw) if kw else ""
+        # v7.7.88：查找范围受「别名/关键字查询」开关控制。用户实测（log6 之后的
+        # 11:31 日志）：开关关了，comfyui_loras 查「清宵」仍按关键字命中 清宵2 且
+        # 排在 清宵 前面（清宵2 的关键字里写着「清宵」）→ LLM 照抄第一个结果 →
+        # 又是张冠李戴。关=只按名称；开=名称+别名关键字。
+        _alias_on = bool(plugin._cfg("lora_alias_lookup", False))
 
         def _match(l, check_bm=True) -> bool:
             name = (l.get("name") or "").strip()
@@ -19219,11 +19224,27 @@ class ComfyUIDrawPlugin(Star):
             if cat and (l.get("category") or "").strip() != cat:
                 return False  # 分类不匹配的 LoRA 不列出
             if kw:
-                # 只按「名称 + 关键字」查找：描述 / 触发词不参与搜索（它们只用于展示与理解）。
-                hay = " ".join([name, *[str(a) for a in (l.get("aliases") or [])]]).lower()
+                # 只按「名称（开开关时再加别名）」查找：描述 / 触发词不参与搜索。
+                hay = name.lower()
+                if _alias_on:
+                    hay = " ".join([hay, *[str(a) for a in (l.get("aliases") or [])]]).lower()
                 if kw not in hay:
                     return False
             return True
+
+        def _ver_key(l):
+            """v7.7.88 排序键（用户定则）：①名称精确命中最前 ②不带数字后缀优先
+            ③数字后缀从 1 递增。查「清宵」→ 清宵、清宵2、清宵3…，LLM 照抄第一个
+            也不会再拿错版本。"""
+            name = (l.get("name") or "").strip()
+            low = name.lower()
+            m = re.search(r"(\d+)\s*$", name)
+            return (
+                0 if (kw and low == kw) else 1,
+                1 if m else 0,
+                int(m.group(1)) if m else 0,
+                low,
+            )
 
         def _fmt(l, verbose: bool) -> str:
             name = (l.get("name") or "").strip()
@@ -19261,7 +19282,10 @@ class ComfyUIDrawPlugin(Star):
             name = (l.get("name") or "").strip().lower()
             if not name:
                 return False
-            for x in [name, *[(a or "").strip().lower() for a in (l.get("aliases") or [])]]:
+            _cands = [name]
+            if _alias_on:
+                _cands += [(a or "").strip().lower() for a in (l.get("aliases") or [])]
+            for x in _cands:
                 if not x:
                     continue
                 nx = workflow_builder._normalize_lora_name(x)
@@ -19283,13 +19307,18 @@ class ComfyUIDrawPlugin(Star):
         if not _hits:
             if kw:
                 return (
-                    f"没有找到匹配「{keyword}」的 LoRA。注意：keyword 是名称/关键字的"
-                    f"子串匹配，请换更短的关键词、角色英文名或关键字再查一次（本工具会自动做"
-                    f"去版本后缀的近似匹配）；不要一次查不到就断定库里没有。"
+                    f"没有找到匹配「{keyword}」的 LoRA。注意：keyword 是名称"
+                    f"{'/关键字' if _alias_on else ''}的子串匹配，请换更短的关键词、"
+                    f"角色英文名再查一次（本工具会自动做去版本后缀的近似匹配）；"
+                    f"不要一次查不到就断定库里没有。"
                 )
             if cat:
                 return f"分类「{category}」下没有可用的 LoRA。"
             return "没有可用的 LoRA。"
+        # v7.7.88：命中结果按版本排序（精确名 → 无后缀 → 数字后缀升序）——
+        # LLM 倾向照抄列表第一条，第一条必须是最可能想要的那个。
+        if kw:
+            _hits.sort(key=_ver_key)
         # 体积控制：带 keyword 且命中很少（≤8）→ 展开描述/触发词；否则精简（仅名称/分类/底模）。
         # 命中超过 40 条截断，提示用 keyword/category 缩小。
         _verbose = bool(kw) and len(_hits) <= 8
