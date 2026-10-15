@@ -1158,6 +1158,19 @@ def test_align_character_lora_triggers():
     out3, _ = s._align_character_lora_triggers(
         "(qingxiaowuwa:1.2), side_by_side", {"清宵": 1.0}, {})
     assert out3 == "(qingxiaowuwa:1.2), side_by_side", out3
+    # ④ v7.7.86（log6 实测）：LLM 传 清宵2/达妮娅2、原话点名 清宵/达妮娅 → 触发链路
+    #    与启用决策同口径剔除近名（否则 4 角色 vs 2 分组，且 qingxiaowuwa 恰好
+    #    「对上」清宵2 的触发词 → 对齐不替换 → 出图张冠李戴）
+    class S2(S):
+        def _match_loras_by_raw_message(self, event, include_keywords=False):
+            return {"清宵": 1.0, "达妮娅": 1.0} if event is not None else {}
+    s2 = S2()
+    nm4, _ = s2._char_lora_triggers({"清宵2": 1.0, "达妮娅2": 1.0}, {}, event=object())
+    assert nm4 == ["清宵", "达妮娅"], nm4
+    out4, note4 = s2._align_character_lora_triggers(
+        pos, {"清宵2": 1.0, "达妮娅2": 1.0}, {}, event=object())
+    assert "qingxiao \\(wuthering waves\\)" in out4 and "qingxiaowuwa" not in out4, out4
+    assert "Denia\\(wuthering_waves\\)" in out4, out4
     print("== 37. 角色触发词对齐（转义括号分组、权威首激活词按序替换、已对上不动） OK")
 
 

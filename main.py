@@ -15150,16 +15150,35 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             _lib_idx = {}
         _activated: list[str] = []
-        for _n in (lora_map or {}):
-            if (_n or "").strip() and _n not in _activated:
-                _activated.append(_n)
+        _raw_names: list[str] = []
         if event is not None:
             try:
-                for _n in (self._match_loras_by_raw_message(event, include_keywords=False) or {}):
-                    if (_n or "").strip() and _n not in _activated:
-                        _activated.append(_n)
+                _raw_names = list(
+                    self._match_loras_by_raw_message(event, include_keywords=False) or {})
             except Exception:
-                pass
+                _raw_names = []
+        for _n in (lora_map or {}):
+            _q = (_n or "").strip()
+            if not _q:
+                continue
+            # ★v7.7.86：与 _do_draw 的启用决策（「用户原话已点名同系列 LoRA，忽略
+            # LLM 指定的」）**同口径**。用户实测（log6）：LLM 传 清宵2/达妮娅2、原话
+            # 点名 清宵/达妮娅 → 启用层忽略前者（加载清宵的文件），但触发链路仍把
+            # 清宵2/达妮娅2 算进角色 → 4 角色 vs 2 分组；且分组里的 qingxiaowuwa
+            # 恰好「对上」清宵2 的触发词 → 对齐判「无不一致」不替换 → 出图张冠李戴。
+            if _q not in _raw_names and any(
+                _q != _h and (_q.lower() in _h.lower() or _h.lower() in _q.lower())
+                for _h in _raw_names
+            ):
+                logger.info(
+                    f"【LoRA 触发词】 用户原话已点名同系列 LoRA，触发链路同步忽略「{_q}」"
+                )
+                continue
+            if _q not in _activated:
+                _activated.append(_q)
+        for _n in _raw_names:
+            if (_n or "").strip() and _n not in _activated:
+                _activated.append(_n)
         _cands: dict[str, dict | None] = {}
         for _n in _activated:
             _q = (_n or "").strip()
