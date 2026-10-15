@@ -2376,12 +2376,16 @@ class ComfyUIDrawPlugin(Star):
                             warned.append(pair)  # type: ignore[arg-type]
             if warned:
                 self._lora_collision_logged = True
-                logger.warning(
-                    "【LoRA】 名称歧义告警：以下 LoRA 名称互为近名（版本后缀/前缀相同），"
-                    "用简称查询时无法区分，插件已按「唯一模糊匹配」处理（多候选直接放弃）："
-                    + "；".join(f"「{a}」↔「{b}」" for a, b in warned)
-                    + "。建议给其中一个改名，或把完整名称写进工作流 loras_text / 指令，"
-                      "避免张冠李戴（典型事故：触发词与描述拿成另一条的）。"
+                # v7.7.87：压到 DEBUG——这只是库自检的**信息**，不是故障。用户实测
+                # 反馈：同系列多版本（清宵/清宵2）本就是有意存放的，且精确名永远
+                # 优先（原话点名「清宵」必精确命中清宵），WARN/INFO 都会吓到用户、
+                # 还被误以为与「别名/关键字查询开关」有关（实际只比对库名，与该
+                # 开关无关）。只在 DEBUG 层留档，需要排查时再开。
+                logger.debug(
+                    "【LoRA】 同系列近名（库自检，仅记录）：以下 LoRA 名称互为同系列版本"
+                    "（如 清宵/清宵2），查询时**精确名永远优先**，原话点名即命中："
+                    + "；".join(f"「{a}」/「{b}」" for a, b in warned)
+                    + "。若想让 LLM 默认选其中某一条，可在工作流 loras_text 里写全名。"
                 )
         except Exception as _e:
             logger.warning(f"【LoRA】 名称歧义自检失败（忽略）: {_e}")
@@ -8540,9 +8544,12 @@ class ComfyUIDrawPlugin(Star):
                     f"{k}(分类={v[0] or '无'}{'/触发词带人数' if v[1] else ''})"
                     for k, v in _char_decision.items()
                 )
-                logger.warning(
-                    f"【LoRA 触发词】 多角色/多人模式：{sorted(_multi_char_skip)} 的触发词不全局追加"
-                    f"（防串味），应已由 LLM 写进各自的角色分组括号；判定依据: {_why}"
+                # v7.7.87：降级 INFO——这是防串味的**正常行为**（角色触发词只进
+                # 各自的分组括号、不全局追加），不是告警。用户实测把 INFO 也当成
+                # 「出问题了」的信号，措辞改成行为说明。
+                logger.info(
+                    f"【LoRA 触发词】 多角色/多人模式：{sorted(_multi_char_skip)} 的触发词"
+                    f"只进各自的角色分组括号、不全局追加（防串味，正常行为）；判定依据: {_why}"
                 )
             else:
                 logger.info(
