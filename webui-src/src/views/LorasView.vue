@@ -8,6 +8,7 @@
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
+          <n-button :loading="exporting" @click="exportLoras">导出 JSON</n-button>
           <n-button type="primary" @click="addLora">＋ 新增 LoRA</n-button>
         </div>
       </Teleport>
@@ -327,6 +328,36 @@ async function load() {
 function aliasFirst(raw: string): string {
   const a = parseAliases(raw);
   return a.length ? a[0] : "—";
+}
+
+// ---- 导出（v7.7.89）：LoRA 库整表导出为 JSON（纯前端，数据来自 config.loras）----
+const exporting = ref(false);
+function exportLoras() {
+  if (!loras.value.length) { message.warning("LoRA 库为空，无需导出"); return; }
+  exporting.value = true;
+  try {
+    const d = new Date();
+    const p = (x: number) => String(x).padStart(2, "0");
+    const payload = {
+      kind: "comfyui_anima_loras",
+      version: 1,
+      exported_at: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`,
+      count: loras.value.length,
+      items: loras.value,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `loras_export_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    message.success(`已导出 ${loras.value.length} 条 LoRA`);
+  } catch (e: any) {
+    message.error(e?.message || "导出失败");
+  } finally {
+    exporting.value = false;
+  }
 }
 
 // 大图详情（全屏：左侧封面，右侧字段信息）；封面导航列表

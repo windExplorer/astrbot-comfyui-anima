@@ -2,6 +2,35 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.89（LoRA 库与基础工作流库新增「导出 JSON」）
+
+需求：此前 WebUI 的「备份」只有图库数据库（gallery.db），LoRA 库与 v7.0.0 新版
+基础工作流库没有任何导出手段——换机/重装时这两块数据只能手动翻配置文件和
+`workflow.db`。本次给两个库分别加一键导出，产物为 JSON 文件。
+
+后端（`webui_api.py`）：
+
+1. 新增 `GET /baseworkflows/export`（`baseworkflows_export`）：一次导出基础工作流库
+   全部记录，含元数据（name/file_name/sha256/C站链接/描述/底模关联/时间戳）+
+   原始工作流 JSON（`workflow` 字段，已解析成对象；单条 JSON 损坏时降级为
+   `workflow_raw` 保留原文，不阻断整体导出）+ 解析注记 `roles`。
+   路由同步注册进 `ROUTE_METHODS`；独立 WebUI 通道
+   （`standalone_webui.py` 的 `_api_lora_translate` 映射表）补上同名映射，
+   两条通道都能用。
+2. LoRA 库不走后端：其数据本就存在插件配置 `loras` 键里（两条通道的
+   `GET /config` 都能完整读到），导出在纯前端完成，无需新接口。
+
+前端（`webui-src`）：
+
+1. `BaseWorkflowsView.vue`：工具栏加「导出 JSON」按钮，下载
+   `baseworkflows_export_<时间戳>.json`（`kind: comfyui_anima_base_workflows`）。
+2. `LorasView.vue`：工具栏加「导出 JSON」按钮，把当前加载的 LoRA 整表
+   （config.loras）导出为 `loras_export_<时间戳>.json`
+   （`kind: comfyui_anima_loras`），空库时提示不导出。
+
+说明：本次只做导出，导入（回灌）后续按需再加；基础工作流导出文件里每条
+都带原始 `workflow` JSON，临时需要恢复时可走页面上传逐条入库。
+
 ## v7.7.88（comfyui_loras 查找受「别名查询」开关控制 + 版本排序：精确名→无后缀→升序）
 
 用户实测（2026-10-15 11:31 日志）：别名/关键字查询已关，但 LLM 调 `comfyui_loras

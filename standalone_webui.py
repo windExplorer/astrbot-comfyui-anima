@@ -1326,6 +1326,7 @@ class StandaloneWebUI:
             "/baseworkflows/delete": ("baseworkflows_delete", "POST"),
             "/baseworkflows/reparse": ("baseworkflows_reparse", "POST"),
             "/baseworkflows/json": ("baseworkflows_json", "GET"),
+            "/baseworkflows/export": ("baseworkflows_export", "GET"),
             "/baseworkflows/nodes": ("baseworkflows_nodes", "GET"),
             "/legacyworkflows": ("legacyworkflows_list", "GET"),
             "/legacyworkflows/import": ("legacyworkflows_import", "POST"),

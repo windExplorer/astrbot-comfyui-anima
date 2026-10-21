@@ -8,6 +8,7 @@
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
+          <n-button :loading="exporting" @click="exportAll">导出 JSON</n-button>
           <n-button @click="openLegacy">📂 从旧版目录导入</n-button>
           <n-button type="primary" @click="openUpload">＋ 上传工作流</n-button>
         </div>
@@ -233,6 +234,36 @@ async function load() {
     message.error(e?.message || "读取基础工作流库失败");
   } finally {
     loading.value = false;
+  }
+}
+
+// ---- 导出（v7.7.89）----
+const exporting = ref(false);
+function tsString() {
+  const d = new Date();
+  const p = (x: number) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+function downloadJson(data: any, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+async function exportAll() {
+  exporting.value = true;
+  try {
+    const d = await apiGet("baseworkflows/export");
+    if (!d || !Array.isArray(d.items)) throw new Error("导出数据为空");
+    downloadJson(d, `baseworkflows_export_${tsString()}.json`);
+    message.success(`已导出 ${d.count ?? d.items.length} 条基础工作流`);
+  } catch (e: any) {
+    message.error(e?.message || "导出失败");
+  } finally {
+    exporting.value = false;
   }
 }
 

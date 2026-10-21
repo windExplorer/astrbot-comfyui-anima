@@ -1832,6 +1832,40 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"读取失败: {e}")
 
+    async def baseworkflows_export(self):
+        """导出基础工作流库为 JSON（GET，无参数）。
+
+        一次带走全部记录：元数据（name/file_name/sha256/C站链接/描述/底模关联/
+        时间戳）+ 原始工作流 JSON（workflow 字段，已解析成对象）+ 解析注记 roles。
+        下载的文件可直接归档备份；后续如需回导，可按 items 里的 name+workflow
+        走 baseworkflows/upload 逐条恢复。
+        """
+        try:
+            store = self._workflow_store()
+            items = []
+            for rec in store.list_all():
+                try:
+                    full = store.get(int(rec.get("id") or 0), with_json=True) or rec
+                except Exception:
+                    full = rec
+                entry = dict(full)
+                wf_text = str(entry.pop("wf_json", "") or "")
+                try:
+                    entry["workflow"] = json.loads(wf_text) if wf_text else None
+                except Exception:
+                    # 极端情况：JSON 损坏则保留原文，不因单条损坏阻断整个导出
+                    entry["workflow_raw"] = wf_text
+                items.append(entry)
+            return json_response({
+                "kind": "comfyui_anima_base_workflows",
+                "version": 1,
+                "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "count": len(items),
+                "items": items,
+            })
+        except Exception as e:
+            return error_response(f"导出失败: {e}")
+
     async def baseworkflows_fetch(self):
         """基础工作流 C 站抓取：标题/描述/封面（封面下载到 basemodel_assets/）。
 
@@ -3682,6 +3716,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/baseworkflows/delete", _h("baseworkflows_delete"), ["POST"], "基础工作流删除"),
         (f"{prefix}/baseworkflows/reparse", _h("baseworkflows_reparse"), ["POST"], "基础工作流重解析"),
         (f"{prefix}/baseworkflows/json", _h("baseworkflows_json"), ["GET"], "基础工作流原始 JSON"),
+        (f"{prefix}/baseworkflows/export", _h("baseworkflows_export"), ["GET"], "基础工作流库导出 JSON"),
         (f"{prefix}/baseworkflows/nodes", _h("baseworkflows_nodes"), ["GET"], "基础工作流节点清单/详情"),
         (f"{prefix}/legacyworkflows", _h("legacyworkflows_list"), ["GET"], "旧版工作流目录文件列表"),
         (f"{prefix}/legacyworkflows/import", _h("legacyworkflows_import"), ["POST"], "旧版工作流目录解析入库"),
