@@ -15,6 +15,7 @@
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
           <n-button :loading="loading" @click="load">刷新</n-button>
+          <n-button v-if="!legacy" :loading="exporting" @click="exportWorkflows">导出 JSON</n-button>
           <n-button v-if="!legacy" type="primary" @click="addWorkflow">＋ 新增工作流</n-button>
           <template v-else>
             <n-button type="primary" :loading="converting" @click="convertAllLegacy">
@@ -1088,6 +1089,39 @@ async function load() {
   loadServers();
   loadUpscaleOptions();
   loadTierTable();
+}
+
+// ---- 导出（v7.7.90）：出图工作流整表导出为 JSON（纯前端，数据来自 config.workflows）----
+// 注意：新版工作流通过 base_id 引用基础工作流，本导出只含引用与覆盖配置；
+// 完整备份请配合「基础工作流」页的「导出 JSON」一起用。
+const exporting = ref(false);
+function exportWorkflows() {
+  if (!workflows.value.length) { message.warning("工作流列表为空，无需导出"); return; }
+  exporting.value = true;
+  try {
+    const d = new Date();
+    const p = (x: number) => String(x).padStart(2, "0");
+    const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    const payload = {
+      kind: "comfyui_anima_workflows",
+      version: 1,
+      exported_at: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`,
+      count: workflows.value.length,
+      items: workflows.value,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `workflows_export_${ts}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    message.success(`已导出 ${workflows.value.length} 条工作流（基础工作流本体请在基础工作流页另行导出）`);
+  } catch (e: any) {
+    message.error(e?.message || "导出失败");
+  } finally {
+    exporting.value = false;
+  }
 }
 
 // 选定基础工作流后回填「默认宽高」（业务参数，直接取值；采样器/放大/保存等
