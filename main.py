@@ -7418,6 +7418,14 @@ class ComfyUIDrawPlugin(Star):
         if (_sn or _sd) and wf.get("_sampler_node"):
             if workflow_builder.set_sampler_node(prompt, wf["_sampler_node"], _sn, _sd):
                 logger.info(f"【采样器覆盖】 sampler={_sn or '沿用'} scheduler={_sd or '沿用'}")
+            else:
+                # 自定义采样链（CFGGuider + SamplerCustomAdvanced）的 sampler_name 在
+                # KSamplerSelect 上、没有 scheduler 字段——覆盖目标节点写不进去时明确
+                # 告警，避免「填了却不生效」的静默失败（v7.7.92）。
+                logger.warning(
+                    f"【采样器覆盖】 未生效：节点 {wf['_sampler_node']} 上没有可写的 "
+                    f"sampler_name/scheduler 字段（自定义采样链的调度走 ManualSigmas，不可覆盖）"
+                )
 
         save_node = wf.get("_save_node") or ""
         # 放大三态：bypass / inject / 默认（内置则由 upscale_model_name 替换，已有逻辑处理）
@@ -8704,6 +8712,13 @@ class ComfyUIDrawPlugin(Star):
         seeds_used = workflow_builder.randomize_seed(prompt, _seed_in)
         if seeds_used:
             logger.info(f"本次种子: {seeds_used}")
+        elif _seed_in:
+            # v7.7.92：显式要了种子（--seed 或固定种子）却一个节点都没写上 →
+            # 明确告警（正常随机出图 seeds_used 非空；走到这里说明工作流
+            # 没有任何带 seed/noise_seed 字段的节点）。
+            logger.warning(
+                f"【种子】 未生效：工作流里没有带 seed/noise_seed 字段的节点（请求 {_seed_in}）"
+            )
 
         # 注入采样器参数：denoise（降噪幅度/重绘强度）
         # -1 = 不注入（沿用工作流原始值）；未传则用工作流配置的 default_denoise
@@ -8740,6 +8755,13 @@ class ComfyUIDrawPlugin(Star):
         if _set_steps is not None or _set_cfg is not None:
             if workflow_builder.set_sampler_params(prompt, steps=_set_steps, cfg=_set_cfg):
                 logger.info(f"本次采样器参数: steps={_set_steps}, cfg={_set_cfg}")
+            else:
+                # v7.7.92：填了步数/cfg 却一个节点都没写进去（自定义采样链步数走
+                # ManualSigmas 调度表、无 steps 字段）→ 明确告警，不静默失败。
+                logger.warning(
+                    f"【采样器参数】 未生效：工作流里没有带 steps/cfg 字段的采样器节点"
+                    f"（请求 steps={_set_steps}, cfg={_set_cfg}）"
+                )
 
         # 注入放大模型（替换工作流里【已存在】的放大模型节点模型名）
         # 决策见 `_upscale_replace_plan`——旧版/新版（base_id）语义不同，不能混判。

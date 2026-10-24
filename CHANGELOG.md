@@ -2,6 +2,26 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.92（特有工作流覆盖注入「不静默失败」告警 + 口径确认）
+
+用户口径确认（2026-10-24）：特有工作流（如 ComfyOrg Qwen-Image 2.1 Turbo 模板）
+**不追求通用兼容**，能注入「提示词 / LoRA / 放大模型 / 种子 / 宽高」即够用。
+已在真实模板上逐项实测通过：正向→`ComfySwitchNode.on_false`（switch=false
+生效分支）、负向→`TextEncodeQwenImage21.negative_prompt`、LoRA→UNETLoader 后
+链式插入并自动改接 `QwenImage21Cache.model`、放大→VAEDecode 与保存节点之间
+注入放大链、种子→`RandomNoise.noise_seed`、宽高→`EmptyLatentImage`。
+另支持 cfg（CFGGuider）与采样器名（KSamplerSelect）覆盖。
+
+明确不支持：步数 / 调度器——8 步采样走 `ManualSigmas` 调度表（字符串），
+没有 `steps` 字段，硬改会破坏模型自身采样调度。但「填了不生效」不能静默：
+
+1. `_apply_base_overrides`：采样器/调度器覆盖目标节点写不进去时 WARN
+   （自定义采样链场景）。
+2. `_do_draw`：steps/cfg 注入一个节点都没改动时 WARN（注明请求值）。
+3. `_do_draw`：显式要了种子（--seed / fixed_seed）却没有任何节点带上时 WARN。
+
+三条都只在「显式请求了注入却没生效」时触发，正常出图零噪音。
+
 ## v7.7.91（解析器兼容自定义采样链：CFGGuider + SamplerCustomAdvanced）
 
 需求：用户上传 ComfyOrg 官方的 Qwen-Image 2.1 Turbo 模板
