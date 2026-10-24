@@ -331,7 +331,27 @@ def test_basemodel_defaults():
     assert bs2.reseed_defaults() == 1
     assert "anima" in {r["name"] for r in bs2.list_all()}
     assert bs2.reseed_defaults() == 0
-    print("== 9. 默认底模播种/补齐 OK")
+
+    # v7.7.95：升级新增的默认项自动补齐；用户删掉的不复活（手动 reseed 仍可找回）
+    import basemodel_store as _bms
+    _orig = _bms.DEFAULT_BASEMODELS
+    try:
+        _bms.DEFAULT_BASEMODELS = _orig + (
+            {"name": "测试新底模", "keywords": "testnewbm", "prompt_style": "natural",
+             "languages": ["英文"], "priority_lang": "英文", "danbooru_ready": False,
+             "description": "升级新增的默认项（测试用）"},
+        )
+        bs3 = BaseModelStore(tmp)      # 非空库：新默认项应自动补上
+        assert "测试新底模" in {r["name"] for r in bs3.list_all()}, "升级新增默认项应自动补齐"
+        _t = next(r for r in bs3.list_all() if r["name"] == "测试新底模")
+        assert bs3.delete(_t["id"]) is None
+        bs4 = BaseModelStore(tmp)      # 删掉的不复活
+        assert "测试新底模" not in {r["name"] for r in bs4.list_all()}, "用户删掉的默认项不应复活"
+        assert bs4.reseed_defaults() == 1   # 手动「补充默认底模」仍可找回
+        assert "测试新底模" in {r["name"] for r in bs4.list_all()}
+    finally:
+        _bms.DEFAULT_BASEMODELS = _orig
+    print("== 9. 默认底模播种/补齐（含升级自动补齐/删除不复活） OK")
 
 
 def test_list_nodes():

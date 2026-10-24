@@ -1790,6 +1790,25 @@ class ComfyUIDrawPlugin(Star):
         except Exception as _re2:
             logger.warning(f"【初始化】 独立 WebUI 的 WebUIApi 实例重建失败（剧情接口可能不可用）: {_re2}")
 
+        # v7.7.95：reload 之后重建底模库实例——上面的 self.basemodels 是在 reload **之前**
+        # 用「旧的」basemodel_store 类创建的，其 _init_db（默认项播种/补齐）早已跑完，
+        # 升级新增的默认底模（如 Moss-Image）不会自动出现。用 reload 后的新类重建，
+        # 走新代码的 _seed_defaults：新默认项自动补齐、用户删掉的不复活。
+        # （WebUI 两条通道的 WebUIApi 都会重建、懒加载底模库，本就拿得到新代码；
+        #   这里兜底 main.py 自己的实例，保证出图侧读到的底模信息同样是最新的。）
+        try:
+            import importlib as _il3
+            _bm_mod = _il3.import_module(
+                f"{__package__}.basemodel_store" if __package__ else "basemodel_store"
+            )
+            self.basemodels = _bm_mod.BaseModelStore(self.data_dir)
+            logger.info("【初始化】 底模库实例已按新代码重建（升级新增的默认底模自动补齐）")
+        except Exception as _re3:
+            logger.warning(
+                f"【初始化】 底模库实例重建失败（沿用旧实例；新默认底模可在「配置项」页点"
+                f"「补充默认底模」手动补齐）: {_re3}"
+            )
+
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
             try:

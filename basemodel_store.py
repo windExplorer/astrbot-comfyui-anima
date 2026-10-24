@@ -191,6 +191,14 @@ class BaseModelStore:
             "danbooru_ready": "INTEGER NOT NULL DEFAULT 0",
             "description": "TEXT DEFAULT ''",
         })
+        # v7.7.95：默认底模「已播种名单」记录表——用于区分「新版本新增的默认项」
+        # （自动补上）与「用户删掉的默认项」（不复活）。
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS seed_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            )"""
+        )
         conn.commit()
         # 列迁移之后再播种（旧库缺 keywords 列时也能正常写入）
         self._seed_defaults()
@@ -319,26 +327,69 @@ class BaseModelStore:
         except Exception as e:
             return None, str(e)
 
-    def _seed_defaults(self) -> int:
-        """空库时写入默认底模（模型族）。返回写入条数。
+    # ------------------------------------------------------------------ #
+    # 默认底模播种（v7.7.95：升级后新增的默认项自动补齐）
+    # ------------------------------------------------------------------ #
+    def _seeded_names(self) -> set:
+        """已播种过的默认底模名称（seed_meta 记录，大小写不敏感比较）。"""
+        try:
+            row = self._conn_get().execute(
+                "SELECT value FROM seed_meta WHERE key='default_names'"
+            ).fetchone()
+            if row:
+                return {str(n).strip().lower() for n in json.loads(row["value"] or "[]") if n}
+        except Exception:
+            pass
+        return set()
 
-        仅在**完全空库**时播种：避免用户删掉的默认项被反复塞回来。
-        想找回默认项用 reseed_defaults()（只补缺，不覆盖已有同名的自定义内容）。
+    def _mark_seeded(self, names) -> None:
+        try:
+            self._conn_get().execute(
+                "INSERT INTO seed_meta (key, value) VALUES ('default_names', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(sorted({str(n).strip() for n in names}), ensure_ascii=False),),
+            )
+            self._conn_get().commit()
+        except Exception as e:
+            logger.warning(f"【底模库】 记录播种名单失败（不影响使用）: {e}")
+
+    def _seed_defaults(self) -> int:
+        """写入默认底模（模型族）。返回写入条数。
+
+        v7.7.95 起升级语义：此前只有「完全空库才播种」，升级插件后新加的默认项
+        （如 Moss-Image）不会自动出现，用户不知道要去点「补充默认底模」按钮。
+        现在用 seed_meta 记录已播种名单自动补齐：
+          · 名字在名单里且库中没有 → 用户删过的，**不复活**；
+          · 名字不在名单里且库中也没有 → 新版本新增的默认项，**自动补上**并记录；
+          · 库中已有同名（播种过或用户自建）→ 不动，仅确保进名单。
+        老库首次迁移会把当前所有默认名写进名单（此前删掉的会随本次升级补回一次，
+        此后删除即生效，与手动「补充默认底模」按钮同口径）。
         """
         try:
             conn = self._conn_get()
             n = conn.execute("SELECT COUNT(*) AS c FROM basemodels").fetchone()["c"]
-            if n:
-                return 0
         except Exception:
             return 0
+        recorded = self._seeded_names()
+        have = {str(r.get("name") or "").strip().lower() for r in self.list_all()}
         added = 0
         for item in DEFAULT_BASEMODELS:
+            name = str(item.get("name") or "").strip()
+            low = name.lower()
+            if low in have:
+                continue                        # 库中已有：不动
+            if n and low in recorded:
+                continue                        # 播种过被用户删了：不复活
             _, err = self.save(dict(item))
             if not err:
                 added += 1
+                logger.info(f"【底模库】 已补齐默认底模：{name}")
+        # 无论有没有新增，都把当前默认名单落账（保证「删了不复活」从此生效）
+        self._mark_seeded([str(i.get("name") or "").strip() for i in DEFAULT_BASEMODELS])
         if added:
-            logger.info(f"【底模库】 已写入 {added} 条默认底模（模型族），可在「配置项」页增删改")
+            logger.info(
+                f"【底模库】 已写入/补齐 {added} 条默认底模（模型族），可在「配置项」页增删改"
+            )
         return added
 
     def reseed_defaults(self) -> int:
