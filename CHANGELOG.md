@@ -2,6 +2,57 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.96（MOSS-Image 提示词规范：JSON Layout 双档 + 多人一致性协议，专治角色互串）
+
+需求：用户用 MOSS-Image（复旦 OpenMOSS 5B）画多人/漫画时「角色总和原著不搭、
+多人容易串（两人合一、发色/瞳色/饰品互串）」。用户提供了一份效果很好的四格
+漫画提示词（爱弥斯 × 达妮娅）作为范本，并要求先全网调研再实现。
+
+调研结论（官方模型卡 / USERGUIDE_ZH / 官方 Prompt Enhancer skill / 社区教程）：
+MOSS-Image 原生支持三种输入——自然语言、Tag 串、JSON Layout；Layout 用
+`summary.caption + items[]（label=character/object/text、caption、text、bbox）+
+bbox_coord_space=abs_centralized + bbox_format=yxyx`，坐标以画布中心为原点的
+绝对像素、y 在前；SFT 版才支持 Layout；Euler + shift 5 + CFG 3（短词 3–6）+
+50 步（DMD 8 步 LoRA 走 CFG 1）；分辨率 16 倍数、1M/1.5M/2M；负向
+`nsfw, worst quality, bad anatomy, watermark, jpeg artifact`；Tag 序
+Quality→Score→Meta→Year→Character→Series→Artist→General；英文描述效果最好、
+画面文字逐字保留原语言。
+
+实现（规范文档 `skills/moss-image/moss-image.md`，用户可直接改文件替换）：
+
+1. **双档输出**：A 档 caption（单主体/简单场景，身份锚定句式）；B 档 JSON Layout
+   （多主体/漫画分格/海报/对白气泡/精确文字摆放）。模式判定写在规范里。
+2. **多人一致性协议**（治串角色五件套）：summary.caption 为每个角色写全量身份
+   （发色/发型/瞳色/服装/标志性饰品）+ 全局左右位置声明；**每个 character 条目
+   重写完整身份**并以位置短语开头；caption 末尾写死一致性指令句；对泡泡泡尾巴
+   指向说话人；禁止把任一角色特征写进另一角色条目。
+3. **坐标配方**：规划画布固定 1024×1024（±512），附单格/两格/四格/三格/六格的
+   可直接使用的 bbox 表；出图端按实际尺寸**等比缩放 bbox 并重新注入**
+   （`_rescale_moss_layout`，abs 坐标不随尺寸伸缩，否则用户改尺寸/说「竖版」
+   版面整体偏移）。
+4. **角色卡身份注入**：`_moss_char_context` 把用户点名的角色卡锚点（英文外观
+   标签）原样注入改写上下文——「和原著一模一样」靠这个，LLM 不再凭记忆编外观。
+
+主程序接线（`main.py`）：
+
+- `_is_moss_image`（底模库 name/keywords/file_name、工作流 base_model、基础工作流
+  model_file 三路兜底识别 MOSS 家族）+ `_is_moss_layout_request`（意图词，或同时
+  点到 ≥2 个角色卡角色——多人同框是串角色最高发场景，没说「漫画」也走 Layout）。
+- `_resolve_prompt_plan` 新增 `moss` 计划；`prompt_skill` 配置项与 schema 新增
+  `moss-image` 显式选项（不给 MOSS 底模也能强制挂载）。
+- `_llm_refine_prompt` 新增 `_try_moss` 分支（原生 + 第三方两条路径）；
+  `_need_prompt_refine` 闸门同步（Layout 意图/含中文/语种契约不符才进，纯英文
+  简单需求不折腾）。
+- **JSON 保护闸**：`_looks_moss_layout` 识别出 Layout 后，跳过全部标签系手术——
+  提示词扩写/画质前缀、角色卡锚点追加、LoRA 预设/触发词追加、角色 LoRA 对齐/
+  剥除/分组、多人计数清理（这些按逗号标签语法解析，会把 JSON caption 打穿）。
+- 规范文档含完整范本（2×2 四格双人漫画）+ 参数速查 + 避坑清单（yxyx 顺序、
+  中心原点、W/H 一致、text 项必须带 text、框别重叠等）。
+
+测试：新增 `tests/test_moss_prompt.py` 6 组（意图判定/JSON 识别/bbox 缩放与
+钳制容错/规范文档与示例合法性/schema 与底模项/解析器回归），全套通过；
+workflow_v7（22 组）/ 多参图 / 抠图 / 放大 / 提示词护栏回归无变化。
+
 ## v7.7.95（底模库默认项「升级自动补齐」：新默认项自动出现，删掉的不复活）
 
 问题：v7.7.94 在默认底模里加了 Moss-Image，但用户「配置项」页看不到——底模库

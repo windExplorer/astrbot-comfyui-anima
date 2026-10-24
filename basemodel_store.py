@@ -92,11 +92,14 @@ DEFAULT_BASEMODELS = (
         "name": "Moss-Image", "keywords": "moss、moss_image、mossimage",
         "prompt_style": "natural", "languages": ["英文", "中文"], "priority_lang": "英文",
         "danbooru_ready": False,
-        "description": "MOSS-Image（复旦 OpenMOSS）：自然语言与 Tag 串混合，英文效果最好（训练量最多）；"
-                       "Tag 顺序 Quality→Score→Meta→Year→Character→Series→Artist→General；"
-                       "负向建议 nsfw, worst quality, bad anatomy, watermark, jpeg artifact；"
-                       "推理 Euler + shift 5，SFT 基座 CFG 3.0、≥50 步，DMD 8 步加速 LoRA 走 CFG 1；"
-                       "宽高须 16 的倍数，总像素 1M/1.5M/2M 最佳（可外推 0.25M~4M）。",
+        "description": "MOSS-Image（复旦 OpenMOSS）：自然语言 / Tag 串 / JSON Layout 三式混合，"
+                       "英文效果最好（训练量最多）；Tag 顺序 Quality→Score→Meta→Year→"
+                       "Character→Series→Artist→General；负向建议 nsfw, worst quality, "
+                       "bad anatomy, watermark, jpeg artifact；推理 Euler + shift 5，"
+                       "SFT 基座 CFG 3.0、≥50 步，DMD 8 步加速 LoRA 走 CFG 1；宽高须 16 的"
+                       "倍数，总像素 1M/1.5M/2M 最佳。**多人同框 / 漫画分格 / 海报 / 对白气泡"
+                       "自动走 JSON Layout 规范**（skills/moss-image/，每角色独立 bbox + 身份"
+                       "重复锚定，专防角色互串）；工作流配置 prompt_skill 可强制指定。",
     },
     {
         "name": "SDXL", "keywords": "sdxl",

@@ -718,6 +718,16 @@ _DRAW_SENT_FRESH_SEC = 300.0
 g_pending_images: dict[str, tuple] = {}
 
 
+# MOSS-Image JSON Layout 意图词（v7.7.96）：命中任一 → 走 Layout 版面提示词（B 档）。
+# 模块级定义：供类内静态方法直接引用（测试也可 AST 提取单独验证）。
+_MOSS_LAYOUT_INTENT_RE = re.compile(
+    r"漫画|四格|三格|六格|多格|分镜|条漫|对话|气泡|对白|台词|"
+    r"双人|多人|两人|群像|同框|"
+    r"排版|海报|封面字|信息图|格子|panel|comic|manga|speech\s*bubble|layout",
+    re.IGNORECASE,
+)
+
+
 # 懒加载「所长 NovelAI 法典」检索模块（skills/nai-codex/search.py）。
 # 用 importlib 按绝对路径加载，避免依赖 skills/ 成为 python 包；
 # DATA_DIR 在 search.py 内部按自身 __file__ 解析，加载后依然正确指向 data/。
@@ -3595,7 +3605,8 @@ class ComfyUIDrawPlugin(Star):
             return False
 
     # 工作流可关联的提示词 skill（v7.7.44）：显式配置优先于「按底模/意图自动判定」
-    _PROMPT_SKILLS = ("auto", "off", "qwen-t2i", "qwen-edit", "character-sheet")
+    # v7.7.96：新增 moss-image（MOSS-Image 规范：caption / JSON Layout 双档）
+    _PROMPT_SKILLS = ("auto", "off", "qwen-t2i", "qwen-edit", "character-sheet", "moss-image")
 
     def _prompt_skill_of(self, wf: dict | None) -> str:
         """本工作流「关联的 skill」（工作流配置里的 prompt_skill）。
@@ -3624,10 +3635,16 @@ class ComfyUIDrawPlugin(Star):
             return "qwen", False
         if skill == "qwen-edit":
             return "qwen", True
+        if skill == "moss-image":
+            return "moss", False
         # auto：按底模识别 + 提示词里的设定板意图
         try:
             if self._is_char_sheet_mode(wf, text):
                 return "sheet", False
+            # v7.7.96：MOSS-Image 家族底模 → MOSS 规范（caption / JSON Layout 双档，
+            # 具体用哪档由规范里的模式判定决定）
+            if self._is_moss_image(wf):
+                return "moss", False
             if self._is_qwen_image(wf):
                 return "qwen", bool(has_input_image)
         except Exception:
@@ -3732,6 +3749,246 @@ class ComfyUIDrawPlugin(Star):
         out = out.strip().strip("`").strip()
         # 设定板提示词允许分段（排版分区），保留换行结构，去掉空行
         return "\n".join(ln.strip() for ln in out.splitlines() if ln.strip())
+
+    # ---- MOSS-Image 提示词规范（v7.7.96） -------------------------------- #
+    # 规范文档随包发布在 skills/moss-image/（用户可直接改文件替换规范），缺文件时用内置精简规则。
+    # MOSS-Image（复旦 OpenMOSS 5B）原生支持 JSON Layout 版面提示词——多主体/漫画分格/海报/
+    # 对白气泡场景下，它是防「角色互串（发色/瞳色/饰品互换、两人合一）」的关键手段：
+    # 每个角色独立 bbox + 身份在每条目重复锚定 + 全局位置声明，模型没有揉人的空间。
+    _MOSS_SKILL_DIR = "skills/moss-image"
+    _MOSS_SKILL_FILE = "moss-image.md"
+    # 内置精简规则（保底）：结构 + 坐标 + 多人一致性协议三要素不能少
+    _MOSS_RULE = (
+        "你是把用户需求转成 MOSS-Image 提示词的转换器，只输出提示词本体。\n"
+        "模式判定：多主体/漫画分格/海报/精确文字摆放/对白气泡 → JSON Layout；否则一段英文自然语言描述。\n"
+        "Layout 结构：{\"summary\":{\"canvas\":\"single|multi_panel\",\"meta\":[…],\"caption\":\"…\"},"
+        "\"items\":[{\"label\":\"character|object|text\",\"caption\":\"…\",\"text\":\"…(仅文字项)\","
+        "\"bbox\":[y_min,x_min,y_max,x_max]}],\"bbox_coord_space\":\"abs_centralized\","
+        "\"bbox_format\":\"yxyx\"}；bbox 在 1024×1024 规划画布上取值，范围 [-512,512]，"
+        "y 在前、原点在画布中心；多格按等分留约 24 单位沟渠。\n"
+        "多人一致性（必须全做）：summary.caption 为每个角色写全量身份（发色/发型/瞳色/服装/"
+        "标志性饰品）+ 全局左右位置声明；每个 character 条目重写完整身份并以位置短语开头；"
+        "caption 末尾写 \"Keep each character's official hairstyle, eye color, accessories and "
+        "outfit exactly consistent across all panels; never swap features between characters.\"；"
+        "禁止把任一角色特征写进另一角色条目。\n"
+        "文字项：text 放确切文字（原语言逐字），caption 写载体/气泡形状/尾巴指向谁。\n"
+        "描述默认英文；禁止质量词堆砌；不虚构用户没给的文字。"
+    )
+
+    def _moss_skill_text(self) -> str:
+        """取 MOSS-Image 规范全文（优先 skills/moss-image/ 下的文档，带 mtime 缓存）。
+
+        文件缺失/读取失败 → 用内置精简规则。用户直接改那个 md 即可换规范，无需改代码。
+        """
+        try:
+            p = Path(__file__).resolve().parent / self._MOSS_SKILL_DIR / self._MOSS_SKILL_FILE
+            if p.is_file():
+                mt = p.stat().st_mtime
+                cache = self.__dict__.setdefault("_moss_skill_cache", None)
+                if cache and cache[0] == mt:
+                    return cache[1]
+                txt = p.read_text(encoding="utf-8")
+                self._moss_skill_cache = (mt, txt)
+                return txt
+        except Exception as e:
+            logger.warning(f"【MOSS】 读取规范文档失败（改用内置规则）: {e}")
+        return self._MOSS_RULE
+
+    @staticmethod
+    def _is_moss_layout_request(text: str, char_names=()) -> bool:
+        """是否有 MOSS Layout 意图：命中意图词，或同时点到 ≥2 个已配置角色。
+
+        多人同框是「角色互串」的最高发场景（两人合一、饰品互串），哪怕用户没说
+        「漫画/排版」，只要同时点了两个角色卡里的角色就走 Layout——空间隔离 +
+        身份重复锚定正是治这个的。
+        """
+        if _MOSS_LAYOUT_INTENT_RE.search(text or ""):
+            return True
+        _t = text or ""
+        return len({n for n in (char_names or ()) if n and n in _t}) >= 2
+
+    def _is_moss_image(self, wf: dict | None) -> bool:
+        """底模是否为 MOSS-Image（OpenMOSS 5B，原生支持 JSON Layout 版面提示词）。"""
+        try:
+            b = self._basemodel_of_workflow(wf or {}) or {}
+            blob = " ".join(
+                str(b.get(k) or "") for k in ("name", "keywords", "file_name")
+            ).lower()
+            if "moss" in blob:
+                return True
+            # 底模库未配/未关联时，按工作流自带底模名与基础工作流模型文件名兜底
+            if "moss" in str((wf or {}).get("base_model") or "").lower():
+                return True
+            _bid = str((wf or {}).get("base_id") or "").strip()
+            if _bid.isdigit() and self.workflow_store is not None:
+                _rec = self.workflow_store.get(int(_bid)) or {}
+                if "moss" in str(_rec.get("model_file") or "").lower():
+                    return True
+                if "moss" in str(_rec.get("name") or "").lower():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _moss_char_context(self, text: str) -> str:
+        """MOSS 模式下把用户点名的角色卡资料整理成「身份锚定」上下文。
+
+        与设定板模式的区别：MOSS 描述性正文默认**英文**，角色卡锚点（英文标签）正是
+        身份锚定的最佳素材——原样注入、逐字采用，不要求转写中文。「和原著一模一样」
+        靠的就是这段：LLM 不再凭记忆编外观。
+        """
+        store = getattr(self, "character", None)
+        if store is None or not (text or "").strip():
+            return ""
+        try:
+            _cc = self._cfg("character_card", {}) or {}
+            if not (isinstance(_cc, dict) and _cc.get("enabled", True)):
+                return ""
+        except Exception:
+            pass
+        low = (text or "").lower()
+        blocks: list[str] = []
+        try:
+            chars = store.list_characters() or []
+        except Exception as e:
+            logger.debug(f"【MOSS】 读取角色卡失败（忽略）: {e}")
+            return ""
+        for c in chars[:80]:
+            try:
+                names = [str(c.get("name") or "")] + [str(a) for a in (c.get("aliases") or [])]
+                if not any(n and (n in text or n.lower() in low) for n in names):
+                    continue
+                lines = [f"- {c.get('name')}"]
+                if str(c.get("work") or "").strip():
+                    lines.append(f"  work: {str(c.get('work')).strip()}")
+                _a = store.get_anchor(c.get("id"))
+                if _a and str(_a.get("positive") or "").strip():
+                    lines.append(
+                        "  official appearance (identity anchor, use verbatim, "
+                        f"do not alter): {str(_a.get('positive')).strip()[:500]}"
+                    )
+                if _a and str(_a.get("negative") or "").strip():
+                    lines.append(f"  avoid: {str(_a.get('negative')).strip()[:200]}")
+                _note = str(c.get("note") or "").strip()
+                if _note:
+                    lines.append(f"  notes: {_note[:300]}")
+                blocks.append("\n".join(lines))
+            except Exception:
+                continue
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _looks_moss_layout(text: str) -> bool:
+        """正向提示词是否是 MOSS JSON Layout。
+
+        决定后续所有「追加/扩写/前缀」是否跳过——那些全是标签系语法，会把 JSON 结构
+        打穿（角色卡锚点追加、触发词追加、画质前缀、多人计数清理等都算）。
+        """
+        try:
+            d = json.loads((text or "").strip())
+        except Exception:
+            return False
+        if not isinstance(d, dict) or not isinstance(d.get("items"), list):
+            return False
+        return any(isinstance(it, dict) and "bbox" in it for it in d["items"])
+
+    @staticmethod
+    def _rescale_moss_layout(text: str, real_w: int, real_h: int,
+                             plan: int = 1024) -> str:
+        """把 Layout JSON 的 bbox 从规划画布（plan×plan，默认 1024）等比缩放到实际尺寸。
+
+        bbox 是 abs_centralized 绝对坐标，不会随出图尺寸自动伸缩——用户改尺寸/说「竖版」
+        时版面会整体偏移。这里在尺寸定下来后按轴等比缩放并重新注入。
+        只改 bbox，其它字段原样；解析/序列化失败原样返回（绝不阻断出图）。
+        """
+        try:
+            d = json.loads((text or "").strip())
+            if not isinstance(d, dict) or not isinstance(d.get("items"), list):
+                return text
+            _sx = float(real_w) / float(plan)
+            _sy = float(real_h) / float(plan)
+            _hx, _hy = float(real_w) / 2.0, float(real_h) / 2.0
+
+            def _c(v: float, lim: float) -> int:
+                return int(max(-lim, min(lim, round(v))))
+
+            changed = False
+            for it in d["items"]:
+                if not isinstance(it, dict):
+                    continue
+                bb = it.get("bbox")
+                if not (isinstance(bb, list) and len(bb) == 4):
+                    continue
+                if not all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) for v in bb
+                ):
+                    continue
+                y0, x0, y1, x1 = bb
+                nb = [_c(y0 * _sy, _hy), _c(x0 * _sx, _hx),
+                      _c(y1 * _sy, _hy), _c(x1 * _sx, _hx)]
+                if nb != list(bb):
+                    it["bbox"] = nb
+                    changed = True
+            if not changed:
+                return text
+            return json.dumps(d, ensure_ascii=False)
+        except Exception:
+            return text
+
+    async def _rewrite_to_moss_llm(self, text: str, *, lang: str = "",
+                                   lora_ref: str = "") -> str:
+        """按 MOSS-Image 规范改写提示词（A 档 caption / B 档 JSON Layout，v7.7.96）。
+
+        规范文本取自 skills/moss-image/。lang=「中文」时（底模库优先语种=中文）：
+        描述性正文按中文写（MOSS 原生支持中文），画面内文字仍逐字保留原语言。
+        失败抛异常，由调用方保留原文。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("MOSS 提示词改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        skill = self._moss_skill_text()
+        _char_ctx = self._moss_char_context(text)
+        _lang_tail = ""
+        if (lang or "").strip() == "中文":
+            _lang_tail = (
+                "【输出语言：中文 · 最高优先级】描述性正文（summary.caption 与各 item 的 caption）"
+                "一律用中文撰写；规范里的英文示例句式只作结构参照，转写成中文表达；"
+                "画面内要渲染的文字仍逐字保留其原语言。"
+            )
+        prompt = (
+            f"{skill}\n\n---\n\n"
+            "【本次任务】下面是用户 / 调用方给出的画面需求，请严格按上面的规范生成可以直接"
+            "送进 MOSS-Image 的提示词（A 档一段描述 / B 档 layout JSON，按规范里的模式判定决定）。"
+            "只输出提示词本体，不要任何解释、标题或代码块标记。\n\n"
+            f"用户需求：\n{text}\n"
+            + (f"\n【可用的角色身份资料（外观唯一真相，逐字采用、禁止改写特征）】\n{_char_ctx}\n"
+               if _char_ctx else "")
+            + (f"\n{lora_ref}\n" if lora_ref else "")
+            + (_lang_tail + "\n" if _lang_tail else "")
+        )
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("rewrite_moss", provider_id, llm_resp)
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"MOSS 提示词改写超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"MOSS 提示词改写失败: {e}") from e
+        out = out.strip()
+        # 去掉代码围栏（LLM 爱给 JSON 包 ```json … ```）
+        if out.startswith("```"):
+            out = out.strip("`").strip()
+            if out[:4].lower() == "json":
+                out = out[4:].strip()
+        if self._looks_moss_layout(out):
+            # Layout：保留 JSON 原样（可多行 pretty），坐标由出图端按实际尺寸缩放
+            return out.strip()
+        # caption：一整段、不含换行
+        return " ".join(out.split())
 
     @staticmethod
     def _split_prompt_segments(text: str) -> list[str]:
@@ -3951,6 +4208,7 @@ class ComfyUIDrawPlugin(Star):
           · 第三方调用：整理开关开着 → 要；关着 → 只在「必须英文 + 含中文」时要
             （里面那条路径是唯一在关闭整理时仍会执行的动作）；
           · 原生调用：Qwen 家族（含中文 / 优先语种=中文 / 显式 skill）；
+            MOSS 家族（Layout 意图 / 含中文 / 优先语种=中文但提示词是英文写法）；
             必须英文（标签系）且含中文；**优先语种=中文但提示词是英文写法**（v7.7.65 新增路径）；
             优先语种=英文且提示词是中文（自然语言系，反向归一化）。
         拿不准就返回 False（少跑一次 LLM，出图不受影响）。
@@ -3982,6 +4240,15 @@ class ComfyUIDrawPlugin(Star):
                 # 文生图：优先语种=中文时英文输入也要进（按中文规范改写）；
                 # 图像编辑：正文随指令语言，维持旧口径（只在含中文时进）。
                 return bool(_zh or (_want_cn and not _qwen_edit))
+            if _plan == "moss":
+                # MOSS-Image：Layout 意图（多人/漫画/海报/对白…）必须进（防串角色）；
+                # 含中文要进（描述默认英文）；优先语种=中文但提示词是英文写法也要进
+                # （按底模契约归一化）。纯英文简单需求模型原生能吃，不折腾。
+                return bool(
+                    self._is_moss_layout_request(positive, self._known_character_names())
+                    or _zh
+                    or (_want_cn and self._looks_english(positive))
+                )
             if _must_en and _zh:
                 return True
             # 底模契约要中文、但提示词是英文写法（自然语言系）→ v7.7.65 的反向归一化路径
@@ -4029,6 +4296,7 @@ class ComfyUIDrawPlugin(Star):
         _plan, _qwen_edit = self._resolve_prompt_plan(wf, positive, has_input_image)
         _qwen = _plan == "qwen"
         _sheet = _plan == "sheet"
+        _moss = _plan == "moss"
         # v7.7.54 / v7.7.65：底模库「优先语种」——不再只在 Qwen 分支读，legacy（自然语言系）
         # 也要用它做契约校验（v7.7.65 新增反向归一化）。
         _prio_lang = ""
@@ -4098,6 +4366,22 @@ class ComfyUIDrawPlugin(Star):
                 return _r
             return ""
 
+        async def _try_moss(_why: str) -> str:
+            logger.info(
+                f"【绘图·LLM⑦】trace={trace_id} 阶段=按 MOSS-Image 规范改写（{_why}）"
+            )
+            try:
+                _r = await self._rewrite_to_moss_llm(
+                    positive, lang=(_prio_lang if _want_cn else ""), lora_ref=lora_ref,
+                )
+            except Exception as _e:
+                logger.warning(f"【绘图·LLM⑦】 MOSS 改写失败（保留原文）: {_e}")
+                return ""
+            if _r and _r.strip():
+                logger.info(f"【MOSS】 {_why}，改写结果: {_r[:160]}")
+                return _r
+            return ""
+
         async def _try_natural(_why: str) -> str:
             """按底模契约把提示词归一化成「优先语种的自然语言描述」（v7.7.65）。"""
             _lang = _prio_lang or "中文"
@@ -4134,6 +4418,11 @@ class ComfyUIDrawPlugin(Star):
                         return _got
                 elif _qwen:
                     _got = await _try_qwen("第三方插件调用")
+                    if _got:
+                        return _got
+                elif _moss:
+                    # 第三方调用同样按 MOSS 规范改写（整理开关默认开；关时上方已 return 原文）
+                    _got = await _try_moss("第三方插件调用")
                     if _got:
                         return _got
                 elif _must_en:
@@ -4173,6 +4462,21 @@ class ComfyUIDrawPlugin(Star):
                 # 同样按中文规范改写（否则"配了中文却出英文"，这正是用户报的问题）。
                 _got = await _try_qwen(
                     f"原生调用（优先语种={_prio_lang or '未配'}/含中文/显式关联 Qwen 规范）"
+                )
+                if _got:
+                    return _got
+            elif _moss and (
+                self._is_moss_layout_request(positive, self._known_character_names())
+                or self._has_chinese(positive)
+                or self._prompt_skill_of(wf) == "moss-image"
+                or (_want_cn and self._looks_english(positive))
+                or (_want_en and self._has_chinese(positive))
+            ):
+                # 原生调用 + MOSS 工作流：Layout 意图（多人/漫画/海报/对白）走版面规范，
+                # 含中文按默认英文改写，优先语种契约不符时归一化；显式关联 moss-image
+                # 规范时纯英文也照规范走一遍。
+                _got = await _try_moss(
+                    f"原生调用（Layout意图/含中文/显式关联/语种契约）"
                 )
                 if _got:
                     return _got
@@ -7955,7 +8259,9 @@ class ComfyUIDrawPlugin(Star):
         _user_text_for_guard = (
             (getattr(event, "message_str", "") or "").strip() if event is not None else ""
         )
-        if not _fixed_prompt and (positive or "").strip():
+        # v7.7.96：MOSS JSON Layout 是结构化提示词，扩写/画质前缀会把 JSON 打穿 → 跳过
+        if not _fixed_prompt and (positive or "").strip() \
+                and not self._looks_moss_layout(positive):
             try:
                 positive = await self._boost_positive(
                     positive, wf=wf, style=self._prompt_style(wf),
@@ -7995,6 +8301,13 @@ class ComfyUIDrawPlugin(Star):
                     _sheet_flags.discard(_trace_id)   # 用过即清，避免标志堆积
                     logger.info(
                         "【角色卡·注入】 本次为角色设定板（角色资料已按设定板规范融入中文提示词）"
+                        "→ 跳过锚点标签注入"
+                    )
+                elif _hits and self._looks_moss_layout(positive):
+                    # v7.7.96：MOSS JSON Layout 的角色身份已织进版面 JSON（改写时注入了
+                    # 角色卡资料），再追加英文锚点标签只会把 JSON 打穿 → 跳过
+                    logger.info(
+                        "【角色卡·注入】 本次为 MOSS JSON Layout（角色身份已织进版面 JSON）"
                         "→ 跳过锚点标签注入"
                     )
                 elif _hits and _cc_cfg.get("auto_inject", True):
@@ -8047,7 +8360,9 @@ class ComfyUIDrawPlugin(Star):
         # 注入 LoRA 预设提示词（--名称/预设名）：追加到正/负向提示词。
         # 固定提示词或走 JSON 原值（positive 为空）时跳过，避免污染固定配方。
         # v7.7.83：多人画面下角色 LoRA 的装扮内容路由进对应角色分组（不裸露公共区）
-        if lora_presets and positive and not _fixed_prompt:
+        # v7.7.96：MOSS JSON Layout 同样跳过（追加即打穿 JSON 结构）
+        if lora_presets and positive and not _fixed_prompt \
+                and not self._looks_moss_layout(positive):
             positive, negative = self._apply_lora_presets(
                 lora_presets, positive, negative,
                 multi_context=prompt_guard.is_multi_person(positive),
@@ -8079,7 +8394,9 @@ class ComfyUIDrawPlugin(Star):
         # 写的是上一轮对话里的另两个人（suomingwuwa / xinyuehu）→ 加载 A 的模型却点名 B，
         # 出图根本不是那两个人。对齐之后触发词才在提示词里出现，后面的剥除才认得出
         # "这些外形/服装是模型自己编的"。
-        if not _fixed_prompt:
+        # v7.7.96：MOSS JSON Layout 跳过下面全部标签系手术（对齐/剥除/分组/计数清理），
+        # 它们按逗号标签语法解析提示词，对 JSON 只会误伤 caption 文本。
+        if not _fixed_prompt and not self._looks_moss_layout(positive):
             positive, _al_note = self._align_character_lora_triggers(
                 positive, lora_map, wf, event=event)
             if _al_note:
@@ -8114,7 +8431,7 @@ class ComfyUIDrawPlugin(Star):
         # v7.7.70：多人提示词里与人数冲突的单人计数标签 / 含它的自然语言句（"1girl standing
         # on the left and 1girl standing on the right"）一律剔除——与 `2girls` 打架。
         try:
-            if not _fixed_prompt:
+            if not _fixed_prompt and not self._looks_moss_layout(positive):
                 positive, _cc_drop = prompt_guard.clean_multi_count_conflicts(positive)
                 if _cc_drop:
                     logger.info(
@@ -8264,6 +8581,21 @@ class ComfyUIDrawPlugin(Star):
             logger.info(
                 f"【宽高】 图生图尺寸开关 → {'自定义尺寸（EmptyLatentImage ' + str(w) + 'x' + str(h) + '）' if _custom_size else '参考图尺寸'}"
             )
+
+        # v7.7.96：MOSS JSON Layout 的 bbox 按 1024×1024 规划画布生成，而
+        # abs_centralized 是绝对坐标、不随出图尺寸伸缩——用户改尺寸/说「竖版」时
+        # 版面会整体偏移。实际尺寸定下来后按轴等比缩放坐标并重新注入提示词节点。
+        if w and h and self._is_moss_image(wf) and self._looks_moss_layout(positive):
+            _scaled = self._rescale_moss_layout(positive, int(w), int(h))
+            if _scaled != positive:
+                positive = _scaled
+                workflow_builder.set_text_node(
+                    prompt, wf.get("positive_node"),
+                    (wf.get("positive_field") or "").strip() or "text", positive
+                )
+                logger.info(
+                    f"【MOSS Layout】 bbox 已按实际出图尺寸 {w}x{h} 等比缩放并重新注入"
+                )
 
         # v7.4.4：算出本次**实际输入尺寸**，写进图库大图信息的「输入尺寸」栏。
         # 旧版工作流此前这一栏拿不到值（面板直接不显示），其实是可以适配的：
@@ -8469,7 +8801,8 @@ class ComfyUIDrawPlugin(Star):
             # 固定提示词或走 JSON 原值（positive 为空）时跳过追加，避免污染固定配方。
             # v7.7.83：multi_context 传下去——角色 LoRA 的装扮内容不再全局追加，
             # 而是注入到该角色自己的分组括号内（不裸露在公共区）
-            if positive and not _fixed_prompt:
+            # v7.7.96：MOSS JSON Layout 跳过（追加即打穿 JSON）
+            if positive and not _fixed_prompt and not self._looks_moss_layout(positive):
                 if _default_pre:
                     positive, negative = self._apply_lora_presets(
                         _default_pre, positive, negative, multi_context=_pre_multi_ctx
@@ -8689,7 +9022,9 @@ class ComfyUIDrawPlugin(Star):
                 _triggers = _kept
             # 固定提示词或走 JSON 原值（positive 为空）时不追加触发词，
             # 避免覆盖工作流 JSON 内固化好的提示词
-            if _triggers and positive and not _fixed_prompt:
+            # v7.7.96：MOSS JSON Layout 同样不追加（打穿 JSON 结构）
+            if _triggers and positive and not _fixed_prompt \
+                    and not self._looks_moss_layout(positive):
                 _pos_set = [p.strip() for p in re.split(r"[\n,，、;；]+", positive or "")]
                 _add = [t for t in _triggers if t not in _pos_set and t not in (positive or "")]
                 if _add:
