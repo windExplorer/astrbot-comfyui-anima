@@ -138,7 +138,8 @@ def test_skill_doc():
     txt = p.read_text(encoding="utf-8")
     for must in ("bbox_format", "abs_centralized", "yxyx", "multi_panel",
                  "一致性", "character", "speech", "Euler", "shift",
-                 "nsfw, worst quality, bad anatomy, watermark, jpeg artifact"):
+                 "nsfw, worst quality, bad anatomy, watermark, jpeg artifact",
+                 "身份来源与自动补全", "规范英文名", "只写有把握的特征"):
         assert must in txt, f"规范文档缺少要素: {must}"
     # 示例 JSON 必须能被解析（规范里的范本不能本身是错的）。
     # 结构模板块含 y0/x0 占位符（非合法 JSON）属预期，跳过；其余块必须全部可解析。

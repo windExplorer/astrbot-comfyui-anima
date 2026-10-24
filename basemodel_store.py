@@ -99,7 +99,8 @@ DEFAULT_BASEMODELS = (
                        "SFT 基座 CFG 3.0、≥50 步，DMD 8 步加速 LoRA 走 CFG 1；宽高须 16 的"
                        "倍数，总像素 1M/1.5M/2M 最佳。**多人同框 / 漫画分格 / 海报 / 对白气泡"
                        "自动走 JSON Layout 规范**（skills/moss-image/，每角色独立 bbox + 身份"
-                       "重复锚定，专防角色互串）；工作流配置 prompt_skill 可强制指定。",
+                       "重复锚定，专防角色互串）；角色外观优先取角色卡锚点，未绑卡时由模型"
+                       "知识生成（想更稳可绑卡）；工作流配置 prompt_skill 可强制指定。",
     },
     {
         "name": "SDXL", "keywords": "sdxl",

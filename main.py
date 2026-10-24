@@ -3961,8 +3961,10 @@ class ComfyUIDrawPlugin(Star):
             "送进 MOSS-Image 的提示词（A 档一段描述 / B 档 layout JSON，按规范里的模式判定决定）。"
             "只输出提示词本体，不要任何解释、标题或代码块标记。\n\n"
             f"用户需求：\n{text}\n"
-            + (f"\n【可用的角色身份资料（外观唯一真相，逐字采用、禁止改写特征）】\n{_char_ctx}\n"
-               if _char_ctx else "")
+            + (f"\n【角色身份资料（外观唯一真相，逐字采用、禁止改写特征）】\n{_char_ctx}\n"
+               if _char_ctx else
+               "\n【身份来源】本次未提供角色卡资料——画面中如有点名角色，请按规范 3.5 节"
+               "用你自己的知识写全量身份锚定（规范英文名+作品、只写有把握的特征、全局一致）。\n")
             + (f"\n{lora_ref}\n" if lora_ref else "")
             + (_lang_tail + "\n" if _lang_tail else "")
         )
@@ -4379,6 +4381,13 @@ class ComfyUIDrawPlugin(Star):
                 return ""
             if _r and _r.strip():
                 logger.info(f"【MOSS】 {_why}，改写结果: {_r[:160]}")
+                # 多人 Layout 但没绑角色卡：身份由 LLM 自身知识生成（规范 3.5 节纪律兜底）。
+                # 给一条提示——想更稳可去角色卡页补外观锚点，但不强制、不阻断。
+                if self._looks_moss_layout(_r) and not self._moss_char_context(positive):
+                    logger.info(
+                        "【MOSS】 多人 Layout 未绑定角色卡，角色外观由模型知识生成；"
+                        "若与原著有偏差，可在「角色卡」页为该角色添加外观锚点后重试"
+                    )
                 return _r
             return ""
 
