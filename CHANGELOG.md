@@ -2,6 +2,38 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.94（兼容 MOSS-Image 8 步加速模板：修 StringConcatenate 拼接提示词的写入点 + 底模库新增 Moss-Image）
+
+需求：用户上传 MOSS-Image（复旦 OpenMOSS）8 步加速模板
+（logs/moss-image-8步加速.json）。模板主体是经典结构（UNETLoader →
+ModelSamplingAuraFlow shift5 → 内置 DMD 8 步 LoRA → KSampler），但正向提示词
+走 `StringConcatenate` 拼接：`PrimitiveStringMultiline(固定质量词) + delimiter +
+PrimitiveStringMultiline(主体提示词)` → CLIPTextEncode。
+
+Bug：文本写入点上溯停在拼接节点上，唯一的字符串字段是 `delimiter`（", "）——
+用户提示词会被写进分隔符，最终出图提示词变成「质量词+用户词+主体词」全串在
+一起（实测落点 `StringConcatenate.delimiter`）。
+
+修复（`workflow_parser.py` `_resolve_text_write_node`）：识别字符串拼接节点
+（类名含 concatenate/concat，或 string+combine/merge/join/append）时不停留，
+沿其字符串连线上溯并取**最后一条**（拼接把可变内容拼在末尾，即「主体提示词」
+那路），落到真正的文本源节点。注入后最终提示词 = 固定质量词 + 用户提示词，
+拼接结构原样保留。已按官方 USERGUIDE_ZH 核对口径：自然语言与 Tag 混合、
+英文优先、Tag 序 Quality→Score→Meta→Year→Character→Series→Artist→General、
+Euler + shift 5、SFT 基座 CFG 3.0（≥50 步）/ DMD 8 步走 CFG 1、宽高 16 的
+倍数、总像素 1M/1.5M/2M 最佳。
+
+底模库（`basemodel_store.py` `DEFAULT_BASEMODELS`）：新增 **Moss-Image**
+（keywords moss/moss_image/mossimage，natural 风格，英文优先）。新装自动播种；
+已有安装到底模库页点「补齐」即可获得，之后上传该模板会自动关联到底模
+（`moss_image_sft_int8_convrot.safetensors` → Moss-Image）。
+
+模板其余能力实测：内置 DMD LoRA 保护（用户 LoRA 只新增不覆写）、
+AuraFlow 穿透回溯主模、种子/步数/cfg/宽高/负向/放大注入全部正常。
+
+测试：`test_workflow_v7.py` 新增第 22 组（拼接写入点 + 底模关联断言），
+22 组全过；抠图/放大/多参图回归无变化。
+
 ## v7.7.93（兼容 ComfyOrg Qwen-Image 2.1 Turbo 图生图模板 + 修 latent 走切换节点的宽高注入缺陷）
 
 需求：用户上传 ComfyOrg 的 Qwen-Image 2.1 Turbo **图生图** 模板

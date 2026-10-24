@@ -315,12 +315,14 @@ def test_basemodel_defaults():
     rows = bs.list_all()
     assert len(rows) == len(DEFAULT_BASEMODELS), (len(rows), len(DEFAULT_BASEMODELS))
     names = {r["name"] for r in rows}
-    for must in ("anima", "Qwen Image 2.1", "boogu（编辑/加字）", "z-image-turbo", "Pony", "NoobAI"):
+    for must in ("anima", "Qwen Image 2.1", "boogu（编辑/加字）", "z-image-turbo", "Pony", "NoobAI",
+                 "Moss-Image"):
         assert must in names, must
     # 关键默认项与解析出的模型文件名能自动关联
     assert bs.match_model("miaomiaoHarem_anima16.safetensors")["name"] == "anima"
     assert bs.match_model("qwen_image_2.1_int8_convrot.safetensors")["name"] == "Qwen Image 2.1"
     assert bs.match_model("boogu-edit-turbo-dit-Q4_0.gguf")["name"] == "boogu（编辑/加字）"
+    assert bs.match_model("moss_image_sft_int8_convrot.safetensors")["name"] == "Moss-Image"
     # 删掉一条后：init 不重复播种（空库才播）；reseed 只补缺
     target = next(r for r in rows if r["name"] == "anima")
     assert bs.delete(target["id"]) is None
@@ -696,6 +698,61 @@ def test_custom_stack_i2i_runtime():
     print("== 21. 自定义采样链图生图运行时（参考图/尺寸开关/多参/种子/LoRA/放大） OK")
 
 
+# v7.7.94：MOSS-Image 8 步加速模板（正向提示词走 StringConcatenate 拼接）
+WF_MOSS_CONCAT = {
+    "1": {"class_type": "UNETLoader",
+          "inputs": {"unet_name": "moss_image_sft_int8_convrot.safetensors"}},
+    "2": {"class_type": "CLIPTextEncode", "inputs": {"text": ["20", 0], "clip": ["17", 0]}},
+    "3": {"class_type": "CLIPTextEncode",
+          "inputs": {"text": "worst quality, bad anatomy", "clip": ["17", 0]}},
+    "4": {"class_type": "EmptyFlux2LatentImage", "inputs": {"width": 816, "height": 1216}},
+    "6": {"class_type": "ModelSamplingAuraFlow",
+          "inputs": {"shift": 5, "sampling": "flow", "model": ["1", 0]}},
+    "7": {"class_type": "KSampler", "inputs": {
+        "seed": 517401598123470, "steps": 8, "cfg": 1, "sampler_name": "euler",
+        "scheduler": "sgm_uniform", "denoise": 1, "model": ["21", 0],
+        "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["4", 0]}},
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["22", 0]}},
+    "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "moss", "images": ["8", 0]}},
+    "17": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3.5_9b.safetensors"}},
+    "18": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "best quality, highres"}},
+    "19": {"class_type": "PrimitiveStringMultiline",
+           "inputs": {"value": "masterpiece, 1girl, solo, cat ears"}},
+    "20": {"class_type": "StringConcatenate",
+           "inputs": {"string_a": ["18", 0], "string_b": ["19", 0], "delimiter": ", "}},
+    "21": {"class_type": "LoraLoaderModelOnly",
+           "inputs": {"lora_name": "MOSS-Image-SFT-8-steps-dmd.safetensors",
+                      "strength_model": 0.7, "model": ["6", 0]}},
+    "22": {"class_type": "VAELoader", "inputs": {"vae_name": "flux2-vae_small.safetensors"}},
+}
+
+
+def test_parse_moss_concatenate():
+    """MOSS-Image 模板：正向走 StringConcatenate，写入点必须落到主体提示词源
+    节点（PrimitiveStringMultiline.value），绝不能是 delimiter（v7.7.94）。"""
+    roles, errs = parse_workflow(WF_MOSS_CONCAT)
+    assert not errs, errs
+    pos = roles["positive"]
+    assert pos["node"] == "19" and pos["field"] == "value", pos
+    assert pos["class_type"] == "PrimitiveStringMultiline"
+    assert "1girl" in pos["default_text"]
+    assert roles["negative"]["node"] == "3" and roles["negative"]["field"] == "text"
+    assert roles["latent"]["node"] == "4" and roles["latent"]["default_width"] == 816
+    assert roles["model_src"] == "1" and roles["model_file"] == "moss_image_sft_int8_convrot.safetensors"
+    assert roles["lora_nodes"] == ["21"] and roles["model_patch_nodes"] == ["6"]
+    assert roles["builtin_loras"][0]["name"] == "MOSS-Image-SFT-8-steps-dmd.safetensors"
+    assert roles["clip_src"] == "17"
+    sd = roles["sampler_defaults"]
+    assert sd["steps"] == 8 and sd["cfg"] == 1 and sd["sampler_name"] == "euler", sd
+    # 注入后：固定质量词原样保留，只换主体（拼接结构不被破坏）
+    p = json.loads(json.dumps(WF_MOSS_CONCAT))
+    wb.set_text_node(p, pos["node"], pos["field"], "1boy, standing in rain")
+    assert p["19"]["inputs"]["value"] == "1boy, standing in rain"
+    assert p["20"]["inputs"]["delimiter"] == ", "
+    assert p["20"]["inputs"]["string_b"] == ["19", 0]
+    print("== 22. MOSS-Image 拼接提示词写入点（StringConcatenate → 主体词源） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -718,4 +775,5 @@ if __name__ == "__main__":
     test_custom_stack_rejects()
     test_parse_custom_stack_i2i()
     test_custom_stack_i2i_runtime()
-    print("\n基础工作流体系测试全部通过（21 组）")
+    test_parse_moss_concatenate()
+    print("\n基础工作流体系测试全部通过（22 组）")

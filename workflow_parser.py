@@ -165,6 +165,23 @@ def _resolve_text_write_node(nodes: dict, link: tuple[str, int] | None,
                 cur = _lk
                 continue
             # 生效分支既不是字面量也不是连线 → 落到下面通用逻辑
+        # 字符串拼接节点（StringConcatenate 等，v7.7.94）：拼接器本身不是写入点——
+        # 它唯一的可写字段是 delimiter 这类结构字段，把提示词写进去会拼进分隔符
+        # （MOSS-Image 模板实测：正向落点变成 StringConcatenate.delimiter=", "，
+        # 出图提示词变成「质量词+用户词+主体词」全串在一起）。沿它的字符串连线
+        # 上溯，取**最后一条**（拼接通常把可变内容拼在末尾，如「固定质量词 +
+        # 主体提示词」的 string_b），落到真正的文本源节点（PrimitiveString
+        # Multiline.value 这类）——固定质量词原样保留，只换主体。
+        _ctn = _ct(node)
+        _is_combiner = (
+            "concatenate" in _ctn or "concat" in _ctn
+            or ("string" in _ctn and any(h in _ctn for h in ("combine", "merge", "join", "append")))
+        )
+        if _is_combiner:
+            _links = [lk for lk in (_link(v) for v in inputs.values()) if lk]
+            if _links:
+                cur = _links[-1]
+                continue
         field = _find_text_field(node, exclude=exclude, prefer_neg=prefer_neg)
         if field:
             return cur[0], field
