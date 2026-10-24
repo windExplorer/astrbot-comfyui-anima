@@ -2,6 +2,33 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.93（兼容 ComfyOrg Qwen-Image 2.1 Turbo 图生图模板 + 修 latent 走切换节点的宽高注入缺陷）
+
+需求：用户上传 ComfyOrg 的 Qwen-Image 2.1 Turbo **图生图** 模板
+（logs/【ComfyOrg】qw21-turbo-i2i.json）。解析本身已能通过（自定义链 +
+LoadImage → kind=img2img），但暴露一个**通用缺陷**：
+
+`latent_image` 指向 `ComfySwitchNode`（参考图 latent / EmptyLatentImage 二选一，
+Qwen 2.1 Edit 与这个 Turbo i2i 模板都是这个结构）时，宽高注入点记的是**开关节点**
+——它没有 width/height 字段。v7.7.39 的「尺寸来源开关」只负责拨开关，注入目标
+一直是错的：用户显式传尺寸 → 开关拨到 EmptyLatentImage 侧，宽高却写进开关节点，
+自定义尺寸静默失效。
+
+修复（`workflow_parser.py` 宽高节点解析）：latent_image 落点是切换节点时，
+解析到 `EmptyLatentImage` 那一侧作为宽高注入点（两侧都不是时保持原样，
+行为不变）。这个修复同时惠及既有 Qwen 2.1 Edit 模板（tests 的 QWEN_MULTI）。
+
+真实 i2i 模板全链路实测通过：参考图注入 LoadImage（编码器 `images.image_1`
+与 BatchImagesNode 双下游自动跟上）、尺寸开关识别/拨动/宽高写入、多参图
+扩节点、种子随机、cfg、LoRA（穿 QwenImage21Cache 改接）、放大链注入、
+正/负向提示词。图生图口径与 t2i 一致：提示词/LoRA/放大/种子/宽高可注入，
+步数/调度器/重绘幅度不可（ManualSigmas 调度表），请求了会告警不静默
+（v7.7.92 已覆盖步数/cfg/种子，本版补 denoise 告警）。
+
+测试：`test_workflow_v7.py` 新增 20/21 两组（i2i 解析 + i2i 运行时），
+扩充到 21 组；`test_multi_ref.py` 补 latent 开关解析回归断言；
+抠图/放大/多参图回归全过。
+
 ## v7.7.92（特有工作流覆盖注入「不静默失败」告警 + 口径确认）
 
 用户口径确认（2026-10-24）：特有工作流（如 ComfyOrg Qwen-Image 2.1 Turbo 模板）

@@ -705,6 +705,19 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
 
     # ---- 宽高节点（latent_image 上游，最好为 EmptyLatentImage）----
     lat_link = _link(s_inputs.get("latent_image"))
+    # v7.7.93：latent_image 指向切换节点时，解析到「可写宽高」的那一侧。
+    # Qwen 2.1 Edit 与 ComfyOrg Turbo i2i 模板用 ComfySwitchNode 在
+    # 「参考图 latent（编码器输出，尺寸跟随参考图）」与「EmptyLatentImage
+    # （自定义尺寸）」之间二选一——开关本身没有 width/height 字段，拿它当
+    # 宽高注入点的话自定义尺寸静默失效（v7.7.39 的尺寸开关只负责拨开关，
+    # 注入目标一直是错的）。两侧都不是 EmptyLatentImage 时保持原样。
+    if lat_link and lat_link[0] in nodes and "switch" in _ct(nodes[lat_link[0]]):
+        _sw_in = nodes[lat_link[0]].get("inputs") or {}
+        for _k in ("on_true", "on_false"):
+            _lk = _link(_sw_in.get(_k))
+            if _lk and _lk[0] in nodes and "emptylatentimage" in _ct(nodes[_lk[0]]):
+                lat_link = _lk
+                break
     if not lat_link or lat_link[0] not in nodes:
         errors.append("无法从采样器的 latent_image 输入定位空 latent 节点（宽高注入位置）。")
     else:

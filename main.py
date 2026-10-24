@@ -8733,6 +8733,12 @@ class ComfyUIDrawPlugin(Star):
         if denoise is not None and denoise >= 0:
             if workflow_builder.set_denoise(prompt, denoise):
                 logger.info(f"本次 denoise: {denoise}")
+            else:
+                # v7.7.93：填了重绘幅度却写不进去（如 ComfyOrg Turbo i2i 模板走
+                # ManualSigmas 调度表，没有 denoise 字段）→ 明确告警，不静默失败。
+                logger.warning(
+                    f"【denoise】 未生效：工作流里没有带 denoise 字段的采样器节点（请求 {denoise}）"
+                )
 
         # 注入采样器参数：steps（步数）/ cfg（CFG 引导系数）
         # 「不注入」开关（steps_off / cfg_off=true）或配置值无效/非正 → 沿用工作流文件原值。

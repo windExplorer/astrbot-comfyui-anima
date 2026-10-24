@@ -593,6 +593,109 @@ def test_custom_stack_rejects():
     print("== 19. 自定义采样链异常拒绝（连线断/多引导器） OK")
 
 
+# v7.7.93：ComfyOrg Qwen-Image 2.1 Turbo **图生图** 模板（自定义链 + 参考图 +
+# latent 走切换节点：on_false=编码器 latent（跟随参考图）/ on_true=EmptyLatentImage）
+WF_CUSTOM_STACK_I2I = {
+    "461": {"class_type": "SaveImageAdvanced",
+            "inputs": {"filename_prefix": "q", "format": "png", "images": ["459:457", 0]}},
+    "470": {"class_type": "LoadImage", "inputs": {"image": "ref.png"}},
+    "459:451": {"class_type": "UNETLoader",
+                "inputs": {"unet_name": "qwen_image_2.1_turbo_int8.safetensors"}},
+    "459:453": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_8b.safetensors"}},
+    "459:454": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_vae.safetensors"}},
+    "459:456": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 1024}},
+    "459:457": {"class_type": "VAEDecode", "inputs": {"samples": ["459:505", 0], "vae": ["459:454", 0]}},
+    "459:468": {"class_type": "ComfySwitchNode",
+                "inputs": {"switch": False, "on_false": ["459:474", 2], "on_true": ["459:456", 0]}},
+    "459:469": {"class_type": "QwenImage21Cache", "inputs": {"model": ["459:451", 0]}},
+    "459:474": {"class_type": "TextEncodeQwenImage21",
+                "inputs": {"prompt": ["459:480", 0], "negative_prompt": "", "resolution": 0,
+                           "clip": ["459:453", 0], "images.image_1": ["470", 0],
+                           "vae": ["459:454", 0]}},
+    "459:477": {"class_type": "CLIPLoader", "inputs": {"clip_name": "pe.safetensors"}},
+    "459:479": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "system"}},
+    "459:480": {"class_type": "PreviewAny", "inputs": {"source": ["459:484", 0]}},
+    "459:484": {"class_type": "ComfySwitchNode",
+                "inputs": {"switch": False, "on_false": "转成动漫风格", "on_true": ["459:500", 0]}},
+    "459:485": {"class_type": "BatchImagesNode", "inputs": {"images.image0": ["470", 0]}},
+    "459:500": {"class_type": "TextGenerate",
+                "inputs": {"prompt": "转成动漫风格", "clip": ["459:477", 0],
+                           "system_prompt": ["459:479", 0], "image": ["459:485", 0]}},
+    "459:502": {"class_type": "ManualSigmas", "inputs": {"sigmas": "1.0, 0.5, 0"}},
+    "459:503": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+    "459:504": {"class_type": "RandomNoise", "inputs": {"noise_seed": 891836227295375}},
+    "459:505": {"class_type": "SamplerCustomAdvanced",
+                "inputs": {"noise": ["459:504", 0], "guider": ["459:507", 0],
+                           "sampler": ["459:503", 0], "sigmas": ["459:502", 0],
+                           "latent_image": ["459:468", 0]}},
+    "459:507": {"class_type": "CFGGuider",
+                "inputs": {"cfg": 1, "model": ["459:469", 0], "positive": ["459:474", 0],
+                           "negative": ["459:474", 1]}},
+}
+
+
+def test_parse_custom_stack_i2i():
+    """自定义采样链图生图：kind/image_node/multi_image/latent 开关解析（v7.7.93）。"""
+    roles, errs = parse_workflow(WF_CUSTOM_STACK_I2I)
+    assert not errs, errs
+    assert roles["kind"] == "img2img" and roles["image_node"] == "470"
+    assert roles["multi_image"]["node"] == "459:474" and roles["multi_image"]["count"] == 1
+    # latent 走切换节点 → 必须解析到 EmptyLatentImage 侧（自定义尺寸的写入点）
+    lat = roles["latent"]
+    assert lat["node"] == "459:456" and lat["default_width"] == 1024, lat
+    # 正/负向与 t2i 同口径
+    assert roles["positive"]["node"] == "459:484" and roles["positive"]["field"] == "on_false"
+    assert roles["negative"]["node"] == "459:474" and roles["negative"]["field"] == "negative_prompt"
+    assert roles["model_src"] == "459:451" and roles["save"]["node"] == "461"
+    print("== 20. 自定义采样链图生图解析（latent 开关 → EmptyLatentImage） OK")
+
+
+def test_custom_stack_i2i_runtime():
+    """自定义采样图生图运行时：参考图注入 / 尺寸开关 / 多参图 / 种子 / LoRA / 放大。"""
+    roles, errs = parse_workflow(WF_CUSTOM_STACK_I2I)
+    assert not errs, errs
+
+    # 参考图注入 LoadImage（编码器 images.image_1 与 BatchImagesNode 都挂在它下游）
+    p = json.loads(json.dumps(WF_CUSTOM_STACK_I2I))
+    wb.set_image_node(p, roles["image_node"], "up_abc.png")
+    assert p["470"]["inputs"]["image"] == "up_abc.png"
+    assert p["459:474"]["inputs"]["images.image_1"] == ["470", 0]
+
+    # 尺寸来源开关：识别 + 拨到自定义尺寸 + 宽高写进 EmptyLatentImage
+    sw = wb.find_size_switch(p)
+    assert sw and sw["node"] == "459:468" and sw["empty_side"] == "on_true", sw
+    wb.set_size_switch(p, sw, True)
+    lat = roles["latent"]
+    wb.set_number_node(p, lat["node"], "width", 768)
+    wb.set_number_node(p, lat["node"], "height", 1344)
+    assert p["459:468"]["inputs"]["switch"] is True
+    assert p["459:456"]["inputs"]["width"] == 768 and p["459:456"]["inputs"]["height"] == 1344
+
+    # 多参考图：2 张 → 复制 LoadImage 新路接 images.image_2
+    p2 = json.loads(json.dumps(WF_CUSTOM_STACK_I2I))
+    ids = wb.prepare_multi_image_refs(p2, roles, ["a.png", "b.png"])
+    assert ids and len(ids) == 2 and ids[0] == "470", ids
+    assert "images.image_2" in p2["459:474"]["inputs"]
+
+    # 种子 / LoRA / 放大 / 提示词（与 t2i 同口径）
+    p3 = json.loads(json.dumps(WF_CUSTOM_STACK_I2I))
+    assert wb.randomize_seed(p3, 777)
+    assert p3["459:504"]["inputs"]["noise_seed"] == 777
+    en = wb.apply_loras(p3, [{"name": "L", "enabled": True, "weight": 0.7,
+                              "model_name": "x.safetensors"}],
+                        active_map={"L": None}, anchor=roles["model_src"], model_only=True)
+    assert en == ["L"], en
+    assert p3["459:469"]["inputs"]["model"][0] not in ("459:451",)
+    new_apply = wb.inject_upscale(p3, roles["save"]["node"], "4x.pth")
+    assert new_apply and p3["461"]["inputs"]["images"] == [new_apply, 0]
+    pos, neg = roles["positive"], roles["negative"]
+    wb.set_text_node(p3, pos["node"], pos["field"], "把背景换成雪地")
+    wb.set_text_node(p3, neg["node"], neg["field"], "worst quality")
+    assert p3[pos["node"]]["inputs"][pos["field"]] == "把背景换成雪地"
+    assert p3[neg["node"]]["inputs"][neg["field"]] == "worst quality"
+    print("== 21. 自定义采样链图生图运行时（参考图/尺寸开关/多参/种子/LoRA/放大） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -613,4 +716,6 @@ if __name__ == "__main__":
     test_custom_stack_runtime()
     test_custom_stack_switch_branch()
     test_custom_stack_rejects()
-    print("\n基础工作流体系测试全部通过（19 组）")
+    test_parse_custom_stack_i2i()
+    test_custom_stack_i2i_runtime()
+    print("\n基础工作流体系测试全部通过（21 组）")

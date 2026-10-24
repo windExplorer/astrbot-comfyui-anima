@@ -89,7 +89,11 @@ def test_parse_multi_image():
     assert mi and mi["node"] == "459:474" and mi["count"] == 1, mi
     assert mi["inputs"] == ["images.image_1"], mi
     assert roles.get("pre_scale", {}).get("node") == "477", roles.get("pre_scale")
-    print("== 1. 解析器 multi_image 标识（qwen2.1 图生图） OK")
+    # v7.7.93：latent_image 走 ComfySwitchNode 时，宽高注入点必须解析到
+    # EmptyLatentImage 侧（开关本身没有 width/height，拿它当注入点自定义尺寸会失效）
+    assert roles["latent"]["node"] == "459:456", roles["latent"]
+    assert roles["latent"]["default_width"] == 1024, roles["latent"]
+    print("== 1. 解析器 multi_image 标识 + latent 开关解析（qwen2.1 图生图） OK")
 
 
 def test_prepare_multi_image_refs():
