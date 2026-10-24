@@ -160,13 +160,18 @@ def randomize_seed(prompt: dict, seed: int | None = None) -> list[int]:
     默认 ComfyUI 工作流会写死一个固定 seed，导致同一提示词每次出图完全一致。
     本函数在每次提交前随机设置 seed（或按传入的 seed 固定），覆盖 KSampler 的
     `seed` 与 KSamplerAdvanced 的 `noise_seed` 输入。返回实际被设置的种子列表。
+
+    v7.7.91：匹配范围扩到类名含 `noise` 的节点（RandomNoise）——
+    「CFGGuider + SamplerCustomAdvanced」自定义采样链的种子就在 RandomNoise.
+    noise_seed 上（SamplerCustomAdvanced 本体没有 seed 字段），不认它每次出图
+    都会完全重复。对经典工作流无影响（它们没有这类节点）。
     """
     seeds: list[int] = []
     for node in prompt.values():
         if not isinstance(node, dict):
             continue
         cls = (node.get("class_type") or "").lower()
-        if "sampler" not in cls:
+        if "sampler" not in cls and "noise" not in cls:
             continue
         inputs = node.setdefault("inputs", {})
         # 每个采样器节点各自取一个种子（固定时统一使用传入值）
@@ -197,6 +202,8 @@ def get_sampler_defaults(prompt: dict) -> dict:
     某个参数在所有采样器节点都缺失时为 None。
     v7.4.8：补上 sampler_name / scheduler —— 出图卡片的「采样器 / 调度器」胶囊
     一直靠它取值，此前漏提导致这两枚胶囊永远不显示。
+    v7.7.91：匹配范围扩到类名含 `guider` 的节点（CFGGuider）——自定义采样链的
+    cfg 在引导器上，否则卡片上 CFG 胶囊不显示。经典工作流无这类节点，行为不变。
     """
     out: dict = {
         "steps": None, "cfg": None, "denoise": None,
@@ -206,7 +213,7 @@ def get_sampler_defaults(prompt: dict) -> dict:
         if not isinstance(node, dict):
             continue
         cls = (node.get("class_type") or "").lower()
-        if "sampler" not in cls:
+        if "sampler" not in cls and "guider" not in cls:
             continue
         inputs = node.get("inputs") or {}
         if out["steps"] is None and "steps" in inputs:
@@ -244,13 +251,17 @@ def set_sampler_params(prompt: dict, steps=None, cfg=None, denoise=None) -> bool
     只修改 inputs 中**已存在**对应字段的采样器节点（如 KSampler）；
     节点缺该字段（如某些定制采样器）则跳过不报错。参数传 None 表示不修改。
     返回是否至少修改了一个节点。
+
+    v7.7.91：匹配范围扩到类名含 `guider` 的节点（CFGGuider）——自定义采样链的
+    cfg 就在引导器上（SamplerCustomAdvanced 本体没有 cfg 字段），不认它 cfg
+    覆盖静默失效。经典工作流没有这类节点，行为不变。
     """
     changed = False
     for node in prompt.values():
         if not isinstance(node, dict):
             continue
         cls = (node.get("class_type") or "").lower()
-        if "sampler" not in cls:
+        if "sampler" not in cls and "guider" not in cls:
             continue
         inputs = node.setdefault("inputs", {})
         if steps is not None and "steps" in inputs:

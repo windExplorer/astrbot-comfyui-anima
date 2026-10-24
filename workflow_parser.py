@@ -149,11 +149,26 @@ def _resolve_text_write_node(nodes: dict, link: tuple[str, int] | None,
     while cur and cur[0] in nodes and cur[0] not in seen:
         seen.add(cur[0])
         node = nodes[cur[0]]
+        inputs = node.get("inputs") or {}
+        # 切换节点（ComfySwitchNode 等，v7.7.91）：只认**当前生效**的那条分支。
+        # Qwen-Image 2.1 Turbo 模板里提示词走「ComfySwitchNode → PreviewAny → 编码器」，
+        # switch=false 时生效分支是 on_false（字面量文本），switch=true 时是 on_true
+        # （连到 TextGenerate）。旧逻辑无脑沿第一条连线上溯，会把提示词写进未生效分支，
+        # 界面上毫无变化——这里按 switch 当前值选分支，字面量即写入点、连线继续上溯。
+        if "switch" in _ct(node) and ("on_true" in inputs or "on_false" in inputs):
+            _branch = "on_true" if inputs.get("switch", False) else "on_false"
+            _bv = inputs.get(_branch)
+            if isinstance(_bv, str) and _bv.strip() and not _is_resource_field(_branch, node):
+                return cur[0], _branch
+            _lk = _link(_bv)
+            if _lk:
+                cur = _lk
+                continue
+            # 生效分支既不是字面量也不是连线 → 落到下面通用逻辑
         field = _find_text_field(node, exclude=exclude, prefer_neg=prefer_neg)
         if field:
             return cur[0], field
         # 无字符串输入框：沿偏好顺序找第一条上游连线继续走
-        inputs = node.get("inputs") or {}
         nxt = None
         for pref in ("text", "prompt", "positive", "string", "instruction", "caption"):
             if pref in inputs:
@@ -173,6 +188,59 @@ def _is_sampler(node: dict) -> bool:
     """采样器判定：类名含 sampler 且同时有 model/positive 输入。"""
     inputs = node.get("inputs") or {}
     return "sampler" in _ct(node) and "model" in inputs and "positive" in inputs
+
+
+def _is_guider(node: dict) -> bool:
+    """引导器判定：类名含 guider 且带 model/positive 输入（CFGGuider / BasicGuider）。
+
+    ComfyOrg 的 Qwen-Image 2.1 Turbo 官方模板用「CFGGuider + SamplerCustomAdvanced」
+    组合采样：model/positive/negative 全挂在引导器上，采样器本体只拿
+    guider/noise/sampler/sigmas/latent_image——经典判定下一个采样器都数不到，
+    会被误判成「0 个采样器」直接拒绝。v7.7.91 起把这种组合识别为自定义采样链。
+    """
+    inputs = node.get("inputs") or {}
+    return "guider" in _ct(node) and "model" in inputs and "positive" in inputs
+
+
+def _custom_sampler_stack(nodes: dict) -> tuple[dict | None, list[str]]:
+    """识别「CFGGuider + SamplerCustomAdvanced」自定义采样链（v7.7.91）。
+
+    返回 ({"guider","sampler","noise","select","sigmas"}, [])；识别不到返回
+    (None, [])（调用方按原逻辑报错），结构异常返回 (None, [错误…])。
+    只在没有经典采样器节点时调用，既有工作流的解析路径完全不受影响。
+
+    字段说明：
+      guider  —— CFGGuider：model/positive/negative 都挂在它上面；
+      sampler —— SamplerCustomAdvanced：latent_image 在它上面；
+      noise   —— RandomNoise：种子（noise_seed）真正的所在地；
+      select  —— KSamplerSelect：采样器名（sampler_name）真正的所在地；
+      sigmas  —— ManualSigmas：步数调度表（无 steps 字段可写，仅留档）。
+    """
+    guiders = [nid for nid, n in nodes.items() if _is_guider(n)]
+    # 采样器本体：类名含 sampler 且吃 guider 输入（SamplerCustomAdvanced 等）
+    customs = [
+        nid for nid, n in nodes.items()
+        if "sampler" in _ct(n) and "guider" in (n.get("inputs") or {})
+    ]
+    if not guiders or not customs:
+        return None, []
+    if len(guiders) > 1 or len(customs) > 1:
+        return None, [
+            f"检测到 {len(customs)} 个自定义采样器与 {len(guiders)} 个引导器节点。"
+            "多阶段工作流暂不支持，请拆分后再传。"
+        ]
+    sid, gid = customs[0], guiders[0]
+    s_in = nodes[sid].get("inputs") or {}
+    g_link = _link(s_in.get("guider"))
+    if not g_link or g_link[0] != gid:
+        return None, [
+            f"自定义采样器 {sid} 的 guider 输入没有连到引导器节点 {gid}，连线异常，拒绝入库。"
+        ]
+    stack: dict = {"guider": gid, "sampler": sid}
+    for key, field in (("noise", "noise"), ("select", "sampler"), ("sigmas", "sigmas")):
+        lk = _link(s_in.get(field))
+        stack[key] = lk[0] if lk and lk[0] in nodes else ""
+    return stack, []
 
 
 def _is_lora(node: dict) -> bool:
@@ -541,29 +609,51 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
 
     # ---- 采样器：必须恰好 1 个 ----
     samplers = [nid for nid, n in nodes.items() if _is_sampler(n)]
+    # v7.7.91：没有经典采样器时，先试「CFGGuider + SamplerCustomAdvanced」自定义采样链
+    # （ComfyOrg Qwen-Image 2.1 Turbo 官方模板即此结构）。经典路径一个字节都没动，
+    # 既有工作流的解析结果完全不变；自定义链也走同一套后续逻辑（正负向/宽高/保存/
+    # 主模/LoRA 全部复用），只是输入来源换成「引导器 + 采样器本体」两个节点。
+    custom_stack = None
+    if not samplers:
+        custom_stack, _cs_errors = _custom_sampler_stack(nodes)
+        if _cs_errors:
+            return None, _cs_errors
     # v7.7.1：采样器不是 1 个时，先试「纯放大 / 纯处理」工作流；
     # v7.7.12：把**单步采样器型**也纳入（SeedVR2 3B 这类：有 KSampler(steps=1)，
     # 但条件来自 SeedVR2Conditioning，链上没有任何文本编码器）。
     # 判定很严 —— 必须有图输入 + 保存节点 + 完全没有文本编码器 + 采样器的正/负向
     # 确实定位不到可写文本框，所以不会把「丢了采样器的出图工作流」误收成放大类。
-    if len(samplers) <= 1:
+    # 自定义采样链是出图工作流，不参与放大旁路
+    if not custom_stack and len(samplers) <= 1:
         _up_roles, _up_errors = _parse_upscale(nodes)
         if _up_roles is not None:
             return _up_roles, []
         if _up_errors:
             return None, _up_errors
-    if len(samplers) != 1:
+    if len(samplers) != 1 and not custom_stack:
         errors.append(
             f"要求恰好 1 个采样器节点（含 model/positive 输入），实际 {len(samplers)} 个：{samplers or '无'}。"
             "多阶段工作流暂不支持，请拆分后再传。"
         )
         return None, errors
-    sampler_id = samplers[0]
-    sampler = nodes[sampler_id]
-    s_inputs = sampler.get("inputs") or {}
+    if custom_stack:
+        # 自定义采样链：model/positive/negative 取引导器，latent_image 取采样器本体。
+        # roles["sampler"] 指向 **KSamplerSelect**（sampler_name 的所在地，
+        # 即采样器覆盖唯一有意义的写入目标），链路全貌存 roles["custom_stack"]。
+        g_in = nodes[custom_stack["guider"]].get("inputs") or {}
+        s_in = nodes[custom_stack["sampler"]].get("inputs") or {}
+        s_inputs = {**g_in, "latent_image": s_in.get("latent_image")}
+        sampler_id = custom_stack.get("select") or custom_stack["guider"]
+    else:
+        sampler_id = samplers[0]
+        sampler = nodes[sampler_id]
+        s_inputs = sampler.get("inputs") or {}
 
     # ---- 正向 / 负向编码节点 + 字段名 ----
     roles: dict = {"sampler": sampler_id}
+    if custom_stack:
+        # 链路全貌留档（详情展示 / 运行时按需取 noise/select/sigmas 节点）
+        roles["custom_stack"] = dict(custom_stack)
     pos_link = _link(s_inputs.get("positive"))
     neg_link = _link(s_inputs.get("negative"))
     if not pos_link:
@@ -779,6 +869,34 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     # ---- 采样器默认参数 ----
     steps = cfg = denoise = None
     s_in = s_inputs
+    if custom_stack:
+        # 自定义采样链（v7.7.91）：参数散落在三个节点上，逐一到场——
+        #   cfg          → CFGGuider.cfg（已并入 s_inputs，下面按老规矩读）
+        #   sampler_name → KSamplerSelect.sampler_name
+        #   seed         → RandomNoise.noise_seed
+        #   steps/denoise/scheduler：步数走 ManualSigmas 调度表，没有可写字段，
+        #   一律记 None（出图时「改了才注入」自然跳过，不会写坏调度表）。
+        _sel_in = (nodes.get(custom_stack.get("select") or "", {}) or {}).get("inputs") or {}
+        _noise_in = (nodes.get(custom_stack.get("noise") or "", {}) or {}).get("inputs") or {}
+        try:
+            cfg = float(s_in["cfg"]) if "cfg" in s_in else None
+        except (TypeError, ValueError):
+            pass
+        roles["sampler_defaults"] = {
+            "steps": None,
+            "cfg": cfg,
+            "denoise": None,
+            "sampler_name": _sel_in.get("sampler_name") if isinstance(_sel_in.get("sampler_name"), str) else None,
+            "scheduler": None,
+            "seed": _noise_in.get("noise_seed") if isinstance(_noise_in.get("noise_seed"), (int, float)) else None,
+        }
+        roles["subgraph_ids"] = [k for k in nodes if ":" in str(k)]
+        for key, label in (("positive", "正向"), ("negative", "负向"), ("latent", "宽高"), ("save", "保存")):
+            if key not in roles:
+                errors.append(f"未能定位{label}节点。")
+        if errors:
+            return None, errors
+        return roles, []
     try:
         steps = int(s_in["steps"]) if "steps" in s_in else None
     except (TypeError, ValueError):

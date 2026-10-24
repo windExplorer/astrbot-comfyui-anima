@@ -2,6 +2,50 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.91（解析器兼容自定义采样链：CFGGuider + SamplerCustomAdvanced）
+
+需求：用户上传 ComfyOrg 官方的 Qwen-Image 2.1 Turbo 模板
+（logs/【ComfyOrg】qw21-turbo-t2i.json）被拒：「要求恰好 1 个采样器节点
+（含 model/positive 输入），实际 0 个」。
+
+根因：该模板用「CFGGuider + SamplerCustomAdvanced」组合采样——
+`model/positive/negative` 全挂在 CFGGuider 上，SamplerCustomAdvanced 本体只拿
+`guider/noise/sampler/sigmas/latent_image`。经典判定 `_is_sampler`（类名含
+sampler 且带 model/positive）两头落空 → 数到 0 个采样器 → 拒绝。种子在
+RandomNoise.noise_seed、采样器名在 KSamplerSelect.sampler_name，也都不是
+「类名含 sampler」的节点。
+
+兼容方案（经典路径零改动，既有工作流解析结果逐字节不变）：
+
+1. 解析器 `workflow_parser.py`：
+   - 新增 `_is_guider` / `_custom_sampler_stack`：**仅当经典采样器为 0 个时**
+     才尝试识别自定义采样链（1 个吃 guider 输入的 sampler 类节点 + 1 个
+     CFGGuider，且 guider 输入确实连到该引导器）；多引导器/多采样器/连线断
+     都给明确错误，不静默带病入库。
+   - 识别成功后走**同一套后续逻辑**：model/positive/negative 取引导器、
+     latent_image 取采样器本体，正负向/宽高/保存/主模（穿透 QwenImage21Cache
+     回溯 UNETLoader）/LoRA/清理全部复用。`roles["custom_stack"]` 留档
+     （guider/sampler/noise/select/sigmas），`roles["sampler"]` 指向
+     KSamplerSelect（sampler 覆盖唯一有意义的写入目标）。
+   - `sampler_defaults` 按节点归位：cfg←引导器、sampler_name←选择器、
+     seed←噪声节点；steps/denoise/scheduler 无字段可写记 None
+     （绝不写坏 ManualSigmas 调度表）。
+   - 文本写入点上溯遇切换节点（ComfySwitchNode）时按 `switch` **当前值**
+     选分支：false→on_false 字面量（即写入点），true→沿 on_true 连到
+     TextGenerate.prompt。旧逻辑无脑沿第一条连线上溯，会把提示词写进
+     未生效分支、界面毫无变化。
+2. 运行时 `workflow_builder.py`（三处类名匹配扩展，只增不改）：
+   - `randomize_seed` 认类名含 `noise` 的节点 → RandomNoise.noise_seed
+     会被随机化/固定（否则自定义链每次出图完全重复，fixed_seed 也失效）；
+   - `set_sampler_params` 认类名含 `guider` 的节点 → CFGGuider.cfg 覆盖生效；
+   - `get_sampler_defaults` 同样认 guider → 出图卡片 CFG 胶囊有值。
+   经典工作流没有这两类节点，行为不变。
+
+验证：真实模板文件全链路通过（解析无错；正/负向/宽高/种子/cfg/采样器名
+注入全部落到正确节点）；`tests/test_workflow_v7.py` 扩充到 19 组
+（新增：自定义链解析、运行时手术、switch=true 分支、异常拒绝），
+既有 15 组 + 抠图/放大/底模回归全部通过。
+
 ## v7.7.90（出图工作流列表新增「导出 JSON」）
 
 需求：v7.7.89 给了 LoRA 库与基础工作流库导出，但「工作流」页（出图工作流，

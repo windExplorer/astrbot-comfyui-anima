@@ -80,6 +80,40 @@ WF_NO_UPSCALE = {k: v for k, v in WF_QWEN_SUBGRAPH.items() if k != "473"} | {
     "473": {"class_type": "SaveImage", "inputs": {"filename_prefix": "q", "images": ["471:457", 0]}},
 }
 
+# v7.7.91：ComfyOrg Qwen-Image 2.1 Turbo 官方模板结构（CFGGuider + SamplerCustomAdvanced）
+WF_CUSTOM_STACK = {
+    "461": {"class_type": "SaveImageAdvanced",
+            "inputs": {"filename_prefix": "q", "format": "png", "images": ["459:457", 0]}},
+    "459:451": {"class_type": "UNETLoader",
+                "inputs": {"unet_name": "qwen_image_2.1_turbo_int8.safetensors", "weight_dtype": "default"}},
+    "459:452": {"class_type": "TextEncodeQwenImage21",
+                "inputs": {"prompt": ["459:472", 0], "negative_prompt": "", "resolution": 1024,
+                           "clip": ["459:453", 0]}},
+    "459:453": {"class_type": "CLIPLoader",
+                "inputs": {"clip_name": "qwen3vl_8b.safetensors", "type": "qwen_image"}},
+    "459:454": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_vae.safetensors"}},
+    "459:456": {"class_type": "EmptyLatentImage", "inputs": {"width": 704, "height": 1200, "batch_size": 1}},
+    "459:457": {"class_type": "VAEDecode", "inputs": {"samples": ["459:486", 0], "vae": ["459:454", 0]}},
+    "459:471": {"class_type": "TextGenerate",
+                "inputs": {"prompt": "LLM 改写分支", "clip": ["459:473", 0],
+                           "system_prompt": ["459:475", 0]}},
+    "459:472": {"class_type": "PreviewAny", "inputs": {"source": ["459:474", 0]}},
+    "459:473": {"class_type": "CLIPLoader", "inputs": {"clip_name": "pe.safetensors"}},
+    "459:474": {"class_type": "ComfySwitchNode",
+                "inputs": {"switch": False, "on_false": "静态提示词", "on_true": ["459:471", 0]}},
+    "459:475": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "system"}},
+    "459:484": {"class_type": "ManualSigmas", "inputs": {"sigmas": "1.0, 0.5, 0"}},
+    "459:486": {"class_type": "SamplerCustomAdvanced",
+                "inputs": {"noise": ["459:488", 0], "guider": ["459:489", 0], "sampler": ["459:487", 0],
+                           "sigmas": ["459:484", 0], "latent_image": ["459:456", 0]}},
+    "459:487": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+    "459:488": {"class_type": "RandomNoise", "inputs": {"noise_seed": 1076580714197350}},
+    "459:489": {"class_type": "CFGGuider",
+                "inputs": {"cfg": 1, "model": ["459:490", 0], "positive": ["459:452", 0],
+                           "negative": ["459:452", 1]}},
+    "459:490": {"class_type": "QwenImage21Cache", "inputs": {"model": ["459:451", 0]}},
+}
+
 
 def test_parse_std():
     roles, errs = parse_workflow(WF_STD)
@@ -461,6 +495,104 @@ def test_negative_shared_with_positive():
     print("== 14. 负向/正向共用写点（ConditioningZeroOut）标记 + 出图跳过 OK")
 
 
+def test_parse_custom_stack():
+    """自定义采样链（CFGGuider + SamplerCustomAdvanced，v7.7.91）：ComfyOrg
+    Qwen-Image 2.1 Turbo 官方模板即此结构，经典判定下「0 个采样器」被拒。"""
+    roles, errs = parse_workflow(WF_CUSTOM_STACK)
+    assert not errs, errs
+    cs = roles["custom_stack"]
+    assert cs == {"guider": "459:489", "sampler": "459:486", "noise": "459:488",
+                  "select": "459:487", "sigmas": "459:484"}, cs
+    # roles["sampler"] 指向 KSamplerSelect（sampler_name 的唯一可写目标）
+    assert roles["sampler"] == "459:487", roles["sampler"]
+    # 正/负向：负向在一体编码器的 negative_prompt；正向沿 switch→PreviewAny→编码器
+    # 上溯到**当前生效分支**（switch=false → on_false 字面量）
+    assert roles["positive"] == {"node": "459:474", "field": "on_false",
+                                 "class_type": "ComfySwitchNode", "default_text": "静态提示词"}
+    assert roles["negative"]["node"] == "459:452" and roles["negative"]["field"] == "negative_prompt"
+    assert not roles["negative"].get("shared_with_positive")
+    # 宽高 / 保存 / 主模（穿透 QwenImage21Cache 回溯到 UNETLoader）
+    assert roles["latent"]["node"] == "459:456" and roles["latent"]["default_width"] == 704
+    assert roles["save"]["node"] == "461" and roles["save"]["class_type"] == "SaveImageAdvanced"
+    assert roles["model_src"] == "459:451" and roles["model_file"] == "qwen_image_2.1_turbo_int8.safetensors"
+    assert roles["model_patch_nodes"] == ["459:490"]
+    assert roles["kind"] == "t2i"
+    # 默认参数：cfg 取引导器、sampler_name 取选择器、种子取噪声节点；
+    # steps/denoise/scheduler 无字段可写 → None（不写坏 ManualSigmas 调度表）
+    sd = roles["sampler_defaults"]
+    assert sd == {"steps": None, "cfg": 1.0, "denoise": None, "sampler_name": "euler",
+                  "scheduler": None, "seed": 1076580714197350}, sd
+    print("== 16. 自定义采样链解析（CFGGuider + SamplerCustomAdvanced） OK")
+
+
+def test_custom_stack_runtime():
+    """自定义采样链的运行时手术：种子/cfg/采样器名必须写到真正的节点上。"""
+    roles, errs = parse_workflow(WF_CUSTOM_STACK)
+    assert not errs, errs
+
+    # 种子：RandomNoise.noise_seed（SamplerCustomAdvanced 本体没有 seed 字段）
+    p = json.loads(json.dumps(WF_CUSTOM_STACK))
+    seeds = wb.randomize_seed(p, 424242)
+    assert seeds == [424242], seeds
+    assert p["459:488"]["inputs"]["noise_seed"] == 424242
+
+    # cfg：CFGGuider.cfg
+    p2 = json.loads(json.dumps(WF_CUSTOM_STACK))
+    assert wb.set_sampler_params(p2, cfg=2.5)
+    assert p2["459:489"]["inputs"]["cfg"] == 2.5
+
+    # 采样器名：KSamplerSelect.sampler_name
+    p3 = json.loads(json.dumps(WF_CUSTOM_STACK))
+    assert wb.set_sampler_node(p3, roles["sampler"], "dpmpp_2m", "")
+    assert p3["459:487"]["inputs"]["sampler_name"] == "dpmpp_2m"
+
+    # 卡片参数：cfg / sampler_name 都要能取到
+    d = wb.get_sampler_defaults(WF_CUSTOM_STACK)
+    assert d["cfg"] == 1 and d["sampler_name"] == "euler", d
+
+    # 正/负向/宽高注入（通用节点手术，与经典工作流同一条路径）
+    p4 = json.loads(json.dumps(WF_CUSTOM_STACK))
+    pos, neg, lat = roles["positive"], roles["negative"], roles["latent"]
+    wb.set_text_node(p4, pos["node"], pos["field"], "1girl")
+    wb.set_text_node(p4, neg["node"], neg["field"], "worst quality")
+    assert p4[pos["node"]]["inputs"][pos["field"]] == "1girl"
+    assert p4[neg["node"]]["inputs"][neg["field"]] == "worst quality"
+    p4[lat["node"]]["inputs"]["width"] = 768
+    assert p4[lat["node"]]["inputs"]["width"] == 768
+    print("== 17. 自定义采样链运行时手术（种子/cfg/采样器名/提示词/宽高） OK")
+
+
+def test_custom_stack_switch_branch():
+    """切换节点分支：switch=true 时正向写入点必须是 TextGenerate.prompt（生效分支）。"""
+    wf = json.loads(json.dumps(WF_CUSTOM_STACK))
+    wf["459:474"]["inputs"]["switch"] = True
+    roles, errs = parse_workflow(wf)
+    assert not errs, errs
+    assert roles["positive"]["node"] == "459:471" and roles["positive"]["field"] == "prompt"
+    assert roles["positive"]["default_text"] == "LLM 改写分支"
+    print("== 18. 切换节点按生效分支定位写入点 OK")
+
+
+def test_custom_stack_rejects():
+    """自定义采样链的结构异常也要明确拒绝，不静默带病入库。"""
+    # 引导器没连到采样器上
+    wf = json.loads(json.dumps(WF_CUSTOM_STACK))
+    wf["459:486"]["inputs"]["guider"] = ["459:999", 0]
+    roles, errs = parse_workflow(wf)
+    assert roles is None and any("guider" in e for e in errs), errs
+    # 两个引导器 → 多阶段拒绝
+    wf2 = json.loads(json.dumps(WF_CUSTOM_STACK))
+    wf2["459:491"] = {"class_type": "CFGGuider",
+                      "inputs": {"cfg": 1, "model": ["459:490", 0],
+                                 "positive": ["459:452", 0], "negative": ["459:452", 1]}}
+    roles2, errs2 = parse_workflow(wf2)
+    assert roles2 is None and any("多阶段" in e for e in errs2), errs2
+    # 经典工作流不受影响（双采样器照旧拒绝）
+    roles3, errs3 = parse_workflow(WF_MULTI_SAMPLER)
+    assert roles3 is None and errs3
+    print("== 19. 自定义采样链异常拒绝（连线断/多引导器） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -477,4 +609,8 @@ if __name__ == "__main__":
     test_sampler_defaults_extract()
     test_negative_shared_with_positive()
     test_import_same_name_different_file()
-    print("\n基础工作流体系测试全部通过（15 组）")
+    test_parse_custom_stack()
+    test_custom_stack_runtime()
+    test_custom_stack_switch_branch()
+    test_custom_stack_rejects()
+    print("\n基础工作流体系测试全部通过（19 组）")
