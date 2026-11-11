@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 
 try:  # 包内加载（AstrBot 以 astrbot_plugin_comfyui_anima.workflow_store 加载）
-    from .workflow_parser import parse_workflow
+    from .workflow_parser import PARSER_VERSION, parse_workflow
 except ImportError:  # 脚本/单文件加载兜底
-    from workflow_parser import parse_workflow
+    from workflow_parser import PARSER_VERSION, parse_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +104,11 @@ class WorkflowStore:
             "image": "TEXT DEFAULT ''",
             "description": "TEXT DEFAULT ''",
             "basemodel_id": "INTEGER NOT NULL DEFAULT 0",
+            # v7.7.99：记录该行注记由哪个解析器版本算出（0/缺失 = 老数据）
+            "parser_ver": "INTEGER NOT NULL DEFAULT 0",
         })
         conn.commit()
+        self._reparse_outdated()
 
     @staticmethod
     def _row_to_dict(row, with_json: bool = False) -> dict:
@@ -133,7 +136,89 @@ class WorkflowStore:
         row = conn.execute(
             "SELECT * FROM base_workflows WHERE id=?", (int(wf_id),)
         ).fetchone()
-        return self._row_to_dict(row, with_json) if row else None
+        if not row:
+            return None
+        rec = self._row_to_dict(row, with_json)
+        # v7.7.99：注记由旧版解析器算出时**就地重算**再返回。
+        # 出图（含第三方插件调用）走的就是这里，所以规则升级后第一次出图就会拿到
+        # 正确节点，不会出现「提示词写到旧节点、日志一切正常、画面不理会描述」。
+        if with_json and self._is_stale(rec):
+            rec = self._reparse_record(rec)
+        return rec
+
+    # ---- 解析注记版本（v7.7.99）---------------------------------------- #
+    @staticmethod
+    def _is_stale(rec: dict) -> bool:
+        try:
+            return int(rec.get("parser_ver") or 0) < PARSER_VERSION
+        except (TypeError, ValueError):
+            return True
+
+    def _reparse_record(self, rec: dict) -> dict:
+        """按当前解析器重算一条记录的注记并写库，返回刷新后的记录副本。"""
+        wf_id = int(rec.get("id") or 0)
+        try:
+            prompt = json.loads(rec.get("wf_json") or "{}")
+        except Exception as e:
+            logger.warning(f"【基础工作流】 自动重解析失败（JSON 无法解析）: {e}")
+            return rec
+        roles, errors = parse_workflow(prompt)
+        now = time.time()
+        try:
+            conn = self._conn_get()
+            conn.execute(
+                "UPDATE base_workflows SET roles_json=?, parse_ok=?, parse_msg=?, "
+                "parser_ver=?, updated_at=? WHERE id=?",
+                (json.dumps(roles or {}, ensure_ascii=False), 0 if errors else 1,
+                 "；".join(errors), PARSER_VERSION, now, wf_id),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"【基础工作流】 自动重解析写库失败: {e}")
+        out = dict(rec)
+        out["roles"] = roles or {}
+        out["parse_ok"] = not errors
+        out["parse_msg"] = "；".join(errors)
+        out["parser_ver"] = PARSER_VERSION
+        out["updated_at"] = now
+        return out
+
+    def _reparse_outdated(self) -> None:
+        """启动时把存量记录一次性升到当前解析器版本（v7.7.99）。
+
+        只处理 parser_ver 落后的行；解析规则没变时（版本相同）一次 UPDATE 都不做。
+        """
+        try:
+            conn = self._conn_get()
+            rows = conn.execute(
+                "SELECT id, parser_ver FROM base_workflows"
+            ).fetchall()
+            stale = [
+                int(r["id"]) for r in rows
+                if int((r["parser_ver"] if r["parser_ver"] is not None else 0)) < PARSER_VERSION
+            ]
+        except Exception as e:
+            logger.warning(f"【基础工作流】 解析版本检查失败（忽略）: {e}")
+            return
+        if not stale:
+            return
+        done = 0
+        for _id in stale:
+            try:
+                row = self._conn_get().execute(
+                    "SELECT * FROM base_workflows WHERE id=?", (_id,)
+                ).fetchone()
+                if not row:
+                    continue
+                self._reparse_record(self._row_to_dict(row, True))
+                done += 1
+            except Exception as e:
+                logger.warning(f"【基础工作流】 重解析 #{_id} 失败: {e}")
+        if done:
+            logger.info(
+                f"【基础工作流】 解析器升级（v{PARSER_VERSION}）→ 已自动重解析 "
+                f"{done} 条存量工作流（节点注记已刷新，无需手动点「重新解析」）"
+            )
 
     # ------------------------------------------------------------------ #
     def match_by_filename(self, file_name: str) -> dict | None:
@@ -247,10 +332,10 @@ class WorkflowStore:
         if row:
             conn.execute(
                 """UPDATE base_workflows SET file_name=?, stored_file=?, sha256=?, wf_json=?,
-                   roles_json=?, parse_ok=?, parse_msg=?, updated_at=? WHERE id=?""",
+                   roles_json=?, parse_ok=?, parse_msg=?, parser_ver=?, updated_at=? WHERE id=?""",
                 (original_filename or "", stored_name, sha, json_text,
                  json.dumps(roles or {}, ensure_ascii=False), 0 if errors else 1,
-                 "；".join(errors), now, row["id"]),
+                 "；".join(errors), PARSER_VERSION, now, row["id"]),
             )
             wf_id = int(row["id"])
             updated = True
@@ -258,11 +343,11 @@ class WorkflowStore:
         else:
             cur = conn.execute(
                 """INSERT INTO base_workflows (name, file_name, stored_file, sha256, wf_json,
-                   roles_json, parse_ok, parse_msg, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   roles_json, parse_ok, parse_msg, parser_ver, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (name, original_filename or "", stored_name, sha, json_text,
                  json.dumps(roles or {}, ensure_ascii=False), 0 if errors else 1,
-                 "；".join(errors), now, now),
+                 "；".join(errors), PARSER_VERSION, now, now),
             )
             wf_id = int(cur.lastrowid)
             msg = (f"同名工作流已存在，已新增为「{name}」" if renamed else "已新增基础工作流")
@@ -305,23 +390,25 @@ class WorkflowStore:
             return str(e)
 
     def reparse(self, wf_id: int) -> tuple[dict | None, str | None]:
-        """用当前版本的解析器重跑存量记录（解析逻辑升级后用）。"""
-        rec = self.get(wf_id, with_json=True)
-        if not rec:
+        """用当前版本的解析器重跑存量记录（手动「重新解析」按钮）。
+
+        v7.7.99：改为直读原始行再走 `_reparse_record`（顺带写 parser_ver）——
+        此前经 `get(with_json=True)` 拿记录，而 get 现在会对落后版本自动重算，
+        等于同一条解析跑两遍。
+        """
+        row = self._conn_get().execute(
+            "SELECT * FROM base_workflows WHERE id=?", (int(wf_id),)
+        ).fetchone()
+        if not row:
             return None, "记录不存在"
+        rec = self._row_to_dict(row, with_json=True)
         try:
-            prompt = json.loads(rec.get("wf_json") or "{}")
+            json.loads(rec.get("wf_json") or "{}")
         except Exception as e:
             return None, f"JSON 解析失败: {e}"
-        roles, errors = parse_workflow(prompt)
-        conn = self._conn_get()
-        conn.execute(
-            "UPDATE base_workflows SET roles_json=?, parse_ok=?, parse_msg=?, updated_at=? WHERE id=?",
-            (json.dumps(roles or {}, ensure_ascii=False), 0 if errors else 1,
-             "；".join(errors), time.time(), int(wf_id)),
-        )
-        conn.commit()
-        return roles, (None if not errors else "；".join(errors))
+        fresh = self._reparse_record(rec)
+        err = fresh.get("parse_msg") or None
+        return (fresh.get("roles") or None), err
 
     def delete(self, wf_id: int, referenced_names: list[str] | None = None) -> str | None:
         """删除。referenced_names 非空（有实例引用）时拒绝删除（删除保护）。"""

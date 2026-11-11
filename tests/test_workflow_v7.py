@@ -25,7 +25,7 @@ def _load_mod(name, path):
 
 
 wb = _load_mod("wb_v7", os.path.join(REPO, "workflow_builder.py"))
-from workflow_parser import parse_workflow  # noqa: E402
+from workflow_parser import PARSER_VERSION, parse_workflow  # noqa: E402
 from workflow_store import WorkflowStore  # noqa: E402
 
 # ------------------------------------------------------------------ #
@@ -830,6 +830,50 @@ def test_parse_qwen21_edit_sample():
     print("== 23. 真实 Qwen2.1 Edit 模板（尺寸开关默认关 / CLIP 源 / 写入点/运行时） OK")
 
 
+def test_parser_version_autoreparse():
+    """解析规则升级后存量记录自动重算 + 写入点体检（v7.7.99）。
+
+    背景：基础工作流库把 roles 存进 DB，出图（含第三方插件调用）直接读那份注记。
+    规则升级后老注记仍指向旧节点（历史事故：提示词写到连线/未生效分支上），
+    表现为「画面完全不理提示词、日志却正常」。这里验证两道防线：
+      ① 注记版本落后 → 读记录时自动重算；
+      ② 兜底：写入点是连线/节点不存在 → 运行时告警（不再静默）。
+    """
+    tmp = Path(tempfile.mkdtemp())
+    st = WorkflowStore(tmp)
+    wf_id, roles, err = st.import_json("q", json.dumps(WF_CUSTOM_STACK_I2I), "q.json")
+    assert err is None and roles and int(st.get(wf_id)["parser_ver"]) == PARSER_VERSION
+
+    # 模拟旧解析器留下的**错误注记**：正向指向编码器 prompt（那是连线，不是文本框）
+    conn = st._conn_get()
+    bad = {"positive": {"node": "459:474", "field": "prompt"},
+           "negative": {"node": "459:474", "field": "negative_prompt"}}
+    conn.execute(
+        "UPDATE base_workflows SET roles_json=?, parser_ver=0 WHERE id=?",
+        (json.dumps(bad), wf_id),
+    )
+    conn.commit()
+    rec = st.get(wf_id, with_json=True)
+    assert rec["roles"]["positive"]["node"] == "459:484", rec["roles"]["positive"]
+    assert rec["roles"]["positive"]["field"] == "on_false", rec["roles"]["positive"]
+    assert int(rec["parser_ver"]) == PARSER_VERSION
+
+    # 写入点体检：连线 / 节点不存在都要报出来，正常字面量框要通过
+    p = json.loads(json.dumps(WF_CUSTOM_STACK_I2I))
+    ok, why = wb.inspect_text_target(p, "459:474", "prompt")
+    assert not ok and "连线" in why, why
+    assert not wb.inspect_text_target(p, "459:999", "text")[0]
+    ok2, why2 = wb.inspect_text_target(p, "459:484", "on_false")
+    assert ok2, why2
+
+    # 启动迁移：落后记录在 store 重新打开时被补齐
+    conn.execute("UPDATE base_workflows SET parser_ver=0 WHERE id=?", (wf_id,))
+    conn.commit()
+    st2 = WorkflowStore(tmp)
+    assert int(st2.get(wf_id)["parser_ver"]) == PARSER_VERSION
+    print("== 24. 解析器版本自动重解析 + 写入点体检（防提示词写错节点） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -854,4 +898,5 @@ if __name__ == "__main__":
     test_custom_stack_i2i_runtime()
     test_parse_moss_concatenate()
     test_parse_qwen21_edit_sample()
-    print("\n基础工作流体系测试全部通过（23 组）")
+    test_parser_version_autoreparse()
+    print("\n基础工作流体系测试全部通过（24 组）")

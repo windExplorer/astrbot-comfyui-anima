@@ -8472,9 +8472,23 @@ class ComfyUIDrawPlugin(Star):
         # 此时保留工作流 JSON 内固化好的提示词原值，绝不用空串覆盖。
         if positive:
             logger.info(f"正向提示词: {positive}")
+            _pos_field = (wf.get("positive_field") or "").strip() or "text"
+            # v7.7.99：写入点体检——`set_text_node` 塞错地方也返回 True，
+            # 「提示词写错节点」历史上就是这么静默过去的（画面完全不理会描述、
+            # 日志却只有一行「正向提示词: xxx」）。这里至少把异常喊出来，
+            # 并提示重解析，避免第三方调用时更难定位。
+            _ok, _why = workflow_builder.inspect_text_target(
+                prompt, wf.get("positive_node"), _pos_field
+            )
+            if not _ok:
+                logger.warning(
+                    f"【提示词】 ⚠ 正向写入点可疑（节点 {wf.get('positive_node')}"
+                    f".{_pos_field}）：{_why} → 本次提示词可能不生效。"
+                    f"基础工作流条目 #{wf.get('base_id') or '旧版'} 建议在「基础工作流」页点"
+                    f"「重新解析」后重试。"
+                )
             workflow_builder.set_text_node(
-                prompt, wf.get("positive_node"),
-                (wf.get("positive_field") or "").strip() or "text", positive
+                prompt, wf.get("positive_node"), _pos_field, positive
             )
         if negative:
             # v7.7.4：负向与正向落在同一写入点时**不能写**——工作流拿 ConditioningZeroOut(正向)
@@ -8486,9 +8500,17 @@ class ComfyUIDrawPlugin(Star):
                 )
             else:
                 logger.info(f"负向提示词: {negative}")
+                _neg_field = (wf.get("negative_field") or "").strip() or "text"
+                _nok, _nwhy = workflow_builder.inspect_text_target(
+                    prompt, wf.get("negative_node"), _neg_field
+                )
+                if not _nok:
+                    logger.warning(
+                        f"【提示词】 ⚠ 负向写入点可疑（节点 {wf.get('negative_node')}"
+                        f".{_neg_field}）：{_nwhy} → 本次负向提示词可能不生效。"
+                    )
                 workflow_builder.set_text_node(
-                    prompt, wf.get("negative_node"),
-                    (wf.get("negative_field") or "").strip() or "text", negative
+                    prompt, wf.get("negative_node"), _neg_field, negative
                 )
 
         # 注入宽高（宽高同属一个节点）；图生图时尺寸由参考图决定，跳过注入

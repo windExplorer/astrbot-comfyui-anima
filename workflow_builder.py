@@ -47,6 +47,36 @@ def set_text_node(
     return True
 
 
+def inspect_text_target(
+    prompt: dict, node_id, input_name: str
+) -> tuple[bool, str]:
+    """检查提示词写入点是否可用，返回 ``(可写?, 说明)``（v7.7.99）。
+
+    为什么需要它：`set_text_node` 只是「往字典里塞个键」，塞错地方也返回 True，
+    图上没有任何变化、日志也一切正常——历史上「提示词写错节点」就是这么静默过去的
+    （写进连线、写进没人读的分支、节点 ID 失效都是同一个症状）。
+
+    三种判定：
+      · 节点不存在 → (False, "节点不存在")；
+      · 该字段是**连线**（如误指到编码器的 prompt 输入，那里接的是上游节点）→
+        (False, "该输入是连线（← X），写入会断开上游")；
+      · 其余（字面量 / 尚未出现的可选输入）→ (True, "写入点正常")。
+    """
+    node = _get_node(prompt, node_id)
+    if node is None or not isinstance(node, dict):
+        return False, "节点不存在（工作流可能已更新，建议到「基础工作流」重解析）"
+    if not str(input_name or "").strip():
+        return False, "写入框名为空"
+    val = (node.get("inputs") or {}).get(input_name)
+    lk = val if (isinstance(val, list) and len(val) >= 2 and not isinstance(val[0], (dict, list))) else None
+    if lk:
+        return False, (
+            f"该输入是连线（← {lk[0]}[{lk[1]}]），写入字符串会断开上游，"
+            f"多半是把写入点指向了编码器/中转节点"
+        )
+    return True, "写入点正常"
+
+
 def set_image_node(
     prompt: dict, node_id, image_tuple: list, input_name: str = "image"
 ) -> bool:
