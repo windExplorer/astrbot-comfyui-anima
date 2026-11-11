@@ -773,6 +773,63 @@ def test_parse_moss_concatenate():
     print("== 22. MOSS-Image 拼接提示词写入点（StringConcatenate → 主体词源） OK")
 
 
+# v7.7.98：仓库里的真实 Qwen-Image 2.1 Turbo **Edit** 模板
+# （workflow/qwen2.1-turbo-edit-api.json，含 LLM 提示词增强分支 + 尺寸来源开关）
+QWEN21_EDIT_FILE = os.path.join(REPO, "workflow", "qwen2.1-turbo-edit-api.json")
+
+
+def test_parse_qwen21_edit_sample():
+    """真实 Qwen2.1 Edit 模板：尺寸开关（文件里是关）/ CLIP 源 / 各写入点（v7.7.98）。"""
+    if not os.path.isfile(QWEN21_EDIT_FILE):
+        print("== 23. 真实 Qwen2.1 Edit 模板（样例文件缺失，跳过） SKIP")
+        return
+    with open(QWEN21_EDIT_FILE, encoding="utf-8") as f:
+        wf = json.load(f)
+    roles, errs = parse_workflow(wf)
+    assert not errs, errs
+    assert roles["kind"] == "img2img" and roles["image_node"] == "470"
+    # 正向：开关的 on_false 字面量（switch=false 时的生效分支，LLM 增强分支在 on_true）
+    pos = roles["positive"]
+    assert pos["node"] == "459:484" and pos["field"] == "on_false", pos
+    assert roles["negative"]["node"] == "459:474" and roles["negative"]["field"] == "negative_prompt"
+    # 宽高注入点 = 开关的自定义尺寸侧
+    assert roles["latent"]["node"] == "459:456" and roles["latent"]["default_width"] == 832
+    # 尺寸来源开关：默认关（跟随参考图），自定义侧是 EmptyLatentImage
+    ss = roles["size_switch"]
+    assert ss["node"] == "459:468" and ss["field"] == "switch" and ss["default"] is False, ss
+    assert ss["empty_side"] == "on_true" and ss["custom_node"] == "459:456", ss
+    assert ss["custom_class"] == "EmptyLatentImage" and ss["ref_node"] == "459:474", ss
+    # clip_src 兜底：TextEncodeQwenImage21 类名不含 clip/text/encode，仍要定位到 CLIPLoader
+    assert roles["clip_src"] == "459:453", roles.get("clip_src")
+    assert roles["model_src"] == "459:451"
+    assert roles["model_file"] == "qwen_image_2.1_turbo_int8_convrot.safetensors"
+    assert roles["save"]["class_type"] == "SaveImageAdvanced"
+    assert roles["sampler"] == "459:503" and roles["custom_stack"]["guider"] == "459:507"
+    assert roles["sampler_defaults"]["cfg"] == 1 and roles["sampler_defaults"]["steps"] is None
+
+    # 运行时：开关关 → 不写 EmptyLatentImage；开 → 拨开关并写入宽高
+    # 多参节点选中条件节点而非聚合节点（BatchImagesNode 也带 images.image0）：
+    # 交换顺序后仍然必须选编码器，不能靠 JSON 键顺序
+    mi = wb.find_multi_image_node({"459:485": wf["459:485"], "459:474": wf["459:474"]})
+    assert mi["node"] == "459:474" and mi["count"] == 1, mi
+    assert wb.find_multi_image_node({"459:485": wf["459:485"]})["node"] == "459:485"
+    p = json.loads(json.dumps(wf))
+    sw = wb.find_size_switch(p)
+    assert sw and sw["node"] == "459:468" and sw["empty_side"] == "on_true", sw
+    wb.set_size_switch(p, sw, False)
+    wb.set_text_node(p, pos["node"], pos["field"], "PROMPT_A")
+    wb.set_text_node(p, roles["negative"]["node"], roles["negative"]["field"], "NEG_A")
+    assert p["459:484"]["inputs"]["switch"] is False
+    assert p["459:484"]["inputs"]["on_false"] == "PROMPT_A"
+    assert p["459:474"]["inputs"]["negative_prompt"] == "NEG_A"
+    wb.set_size_switch(p, sw, True)
+    wb.set_number_node(p, roles["latent"]["node"], "width", 1024)
+    wb.set_number_node(p, roles["latent"]["node"], "height", 1024)
+    assert p["459:468"]["inputs"]["switch"] is True
+    assert p["459:456"]["inputs"]["width"] == 1024 and p["459:456"]["inputs"]["height"] == 1024
+    print("== 23. 真实 Qwen2.1 Edit 模板（尺寸开关默认关 / CLIP 源 / 写入点/运行时） OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -796,4 +853,5 @@ if __name__ == "__main__":
     test_parse_custom_stack_i2i()
     test_custom_stack_i2i_runtime()
     test_parse_moss_concatenate()
-    print("\n基础工作流体系测试全部通过（22 组）")
+    test_parse_qwen21_edit_sample()
+    print("\n基础工作流体系测试全部通过（23 组）")

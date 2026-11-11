@@ -2,6 +2,63 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.7.98（Qwen2.1 Turbo Edit 模板：尺寸开关入库 + 新建工作流可配置，默认关）
+
+需求：用户上传了 ComfyOrg 的 **Qwen-Image 2.1 Turbo Edit** API 工作流
+（`workflow/qwen2.1-turbo-edit-api.json`），要求核对插件能否解析并使用，并把工作流里
+那个「尺寸开关」解析出来——目前文件里是**关**的，希望以后能在「新建工作流」里配置：
+开走自定义尺寸，关就走工作流自身逻辑，默认关。
+
+解析实测（用真实文件跑 `parse_workflow` + 各注入函数，结论是**能用**）：
+
+| 角色 | 结果 |
+| --- | --- |
+| 正向提示词 | `459:484.on_false`（ComfySwitchNode；`switch=false` 的生效分支，`on_true` 连的是 LLM 提示词增强 `TextGenerate`） |
+| 负向提示词 | `459:474.negative_prompt`（`TextEncodeQwenImage21` 一体编码器） |
+| 参考图 | `470 LoadImage` → `509 ImageScaleToTotalPixels(1.25MP)`（预处理缩放也已识别） |
+| 宽高注入点 | `459:456 EmptyLatentImage`（开关的自定义尺寸侧） |
+| 尺寸开关 | `459:468 ComfySwitchNode`，`switch=false` → 编码器 latent（跟随参考图） |
+| 采样链 | CFGGuider `459:507` + SamplerCustomAdvanced `459:505`（cfg=1、euler、8 步 ManualSigmas） |
+| 保存 | `461 SaveImageAdvanced` |
+
+同时明确该模板的**不可覆盖项**（本来就没有对应字段，插件会告警而不是硬改）：
+步数与调度器（走 `ManualSigmas` 字符串调度表）、重绘幅度（无 denoise 字段）。
+
+本次改动：
+
+1. **尺寸开关入库**（`workflow_parser.py` 新增 `_find_size_switch`）：解析出
+   `roles["size_switch"] = {node, field, default, empty_side, custom_node/custom_class,
+   ref_node/ref_class}`，`default` 记录 JSON 里的当前值，供表单提示；与
+   `workflow_builder.find_size_switch` 同规则（两处必须一致）。
+2. **新建工作流可配置**（`_conf_schema.json` + `WorkflowsView.vue` 尺寸 tab）：新增
+   「尺寸开关（自定义尺寸）」布尔项 `size_switch`，默认关；旁边显示基础工作流里开关
+   节点与文件当前状态，没有开关的工作流该项禁用。
+3. **运行时以配置为准**（`main.py` 尺寸决策三段兼容）：
+   配置=true → 恒拨向 EmptyLatentImage（默认宽高/用户传参都生效）；
+   配置=false → 恒跟随工作流自身逻辑，尺寸请求忽略并记日志；
+   条目缺该键（历史数据）→ 沿用 v7.7.39 的「显式传尺寸才拨」旧行为，不破坏老工作流。
+   `_load_from_base` 会打一行【尺寸】日志，说明基础图开关状态与本条目的配置。
+4. **CLIP 源兜底**：`TextEncodeQwenImage21` 类名不含 clip/text/encode，旧规则一个都
+   命中不了 → `clip_src` 恒为 None（LoRA 完整模式拿不到 clip 锚点）。现在第一轮
+   定位失败时改按「谁吃 `clip` 输入」反推，与类名解耦。
+5. **多参图选中条件节点而非聚合节点**（`workflow_builder.find_multi_image_node`）：
+   `images.image*` 这个字段名 `BatchImagesNode` 也在用（喂 LLM 增强的
+   `TextGenerate.image`）。旧逻辑槽位相同时**只靠 JSON 键顺序**决胜负——导出顺序一变
+   就会选中聚合节点，多张参考图被接进没人读的分支，采样只看得到图 1（表现为「多图
+   不生效」）。改为「编码/条件节点优先 → 槽位多的优先 → 顺序兜底」，解析器侧的
+   `multi_image` 标识同步同规则。
+6. **顺带修复一处必炸的 NameError**（`main.py` LoRA 补全分支）：`lib_keys = list(lib.keys())`
+   里的 `lib` 在 `_do_draw` 里根本不存在（只在 `_loras_of` 内定义）。用户点名的 LoRA
+   既不在工作流、也不在全局库时，这行会直接 NameError 炸掉整次出图，本该给出的
+   「库里没有这个 LoRA」提示永远看不到。已改为 `self._lora_lib_index()`。
+   由 `tests/test_static_lint.py`（pyflakes）发现。
+
+测试：`tests/test_workflow_v7.py` 新增第 23 组——直接读仓库里的真实模板，断言
+正/负向写入点、宽高注入点、尺寸开关（默认关/自定义侧/参考图侧）、`clip_src`、
+保存节点、采样链与默认参数，并验证「开关关→不写 EmptyLatentImage、开关开→拨动并
+写入 1024」以及 `BatchImagesNode` 顺序在前时仍选中编码器。23 组全过；
+`test_multi_ref.py`、`test_size_helpers.py`、pyflakes 静态检查（11 文件）全过。
+
 ## v7.7.97（MOSS 身份来源分层：未绑角色卡时由 LLM 知识自动补全，danbooru 路线说明）
 
 用户反馈：MOSS 多人场景为什么要求先绑角色卡，能不能 LLM 自动获取、或用

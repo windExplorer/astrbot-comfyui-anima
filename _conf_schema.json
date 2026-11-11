@@ -514,6 +514,12 @@
             "hint": "开启后忽略用户传参与比例关键词，恒用工作流默认宽高。默认关。图生图不适用。",
             "default": false
           },
+          "size_switch": {
+            "type": "bool",
+            "description": "尺寸开关（自定义尺寸）",
+            "hint": "针对基础工作流里的「尺寸来源开关」（ComfySwitchNode + EmptyLatentImage 二选一，如 Qwen 2.1 Edit 模板）。开：拨开关走 EmptyLatentImage，用默认宽高/用户传参，可自定义尺寸；关（默认）：跟随工作流自身逻辑（如按参考图定尺寸），尺寸请求一律忽略。基础工作流没有该开关时此项无效。旧条目缺该键时按「显式传尺寸才拨」的旧行为处理。",
+            "default": false
+          },
           "default_steps": {
             "type": "int",
             "description": "默认采样步数（steps）",

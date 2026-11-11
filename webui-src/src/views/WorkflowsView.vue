@@ -501,6 +501,18 @@
                   <span class="form-hint">基础工作流：无此限制（非节点参数，仅插件侧裁剪）</span>
                 </n-form-item>
               </div>
+              <!-- v7.7.98：尺寸来源开关（基础工作流里的 ComfySwitchNode） -->
+              <n-form-item label="尺寸开关（自定义尺寸）">
+                <n-space :size="8" align="center">
+                  <n-switch v-model:value="editForm.size_switch" :disabled="!baseSizeSwitch" />
+                  <n-tag size="small" :bordered="false">{{ baseSizeSwitchHint }}</n-tag>
+                </n-space>
+                <span class="form-hint">
+                  开：采样走 EmptyLatentImage，用下方默认宽高 / 用户传参，可自定义尺寸；
+                  关（默认）：跟随工作流自身逻辑（如 Qwen 2.1 Edit 按参考图定尺寸），尺寸请求一律忽略。
+                  基础工作流里没有这类开关时该项无效（文生图工作流本来就吃宽高）。
+                </span>
+              </n-form-item>
               <n-form-item label="禁止改变默认宽高">
                 <n-switch v-model:value="editForm.lock_size" />
                 <span class="form-hint">开启后忽略用户传参与比例关键词，恒用默认宽高（图生图不适用）</span>
@@ -863,6 +875,13 @@ const baseLatentHint = computed(() => {
   }
   return lat.node ? "基础工作流：宽高由连线控制（未固化数值）" : "基础工作流：未解析到宽高节点";
 });
+/** 基础工作流里的「尺寸来源开关」（v7.7.98，ComfySwitchNode + EmptyLatentImage 二选一） */
+const baseSizeSwitch = computed<any>(() => baseDefaults.value?.size_switch || null);
+const baseSizeSwitchHint = computed(() => {
+  const s = baseSizeSwitch.value;
+  if (!s) return "基础工作流：无尺寸开关（宽高直写 EmptyLatentImage）";
+  return `基础工作流：节点 ${s.node}，文件当前${s.default ? "开（自定义尺寸）" : "关（跟随参考图）"}`;
+});
 // 放大模型下拉（配置项页 kind=upscale_model）+ 基础图当前模型兜底
 const upscaleModelOptions = computed(() => {
   const opts = (upscaleOptions.value || []).map((o: any) => ({
@@ -901,6 +920,7 @@ function resetSize() {
   editForm.max_width = "";
   editForm.max_height = "";
   editForm.lock_size = false;
+  editForm.size_switch = false;   // v7.7.98：恢复默认 = 尺寸跟随工作流自身逻辑
   sizeTouched.value = false;  // 恢复默认 = 重新允许基础工作流值覆盖
   const lat = baseDefaults.value?.latent || {};
   if (lat.default_width) editForm.default_width = lat.default_width;
@@ -1524,6 +1544,10 @@ function openForm(idx: number, prefill?: any) {
     max_height: w.max_height || "",
     // v7.0.18：最高支持尺寸档位（旧数据缺省=2k，与后端默认一致）
     max_size_tier: w.max_size_tier || "2k",
+    // v7.7.98：尺寸开关（基础工作流的 ComfySwitchNode）。默认关=跟随工作流自身逻辑，
+    // 只有显式 true 才走 EmptyLatentImage。（历史条目没有该键时后端按「未配置」处理，
+    // 即沿用 v7.7.39 的「显式传尺寸才拨」旧行为；一旦在表单里保存过，就以此处为准）
+    size_switch: w.size_switch === true,
     lock_size: !!w.lock_size,
     image_node: w.image_node || "",
     max_refs: Number(w.max_refs) > 0 ? Number(w.max_refs) : 0,

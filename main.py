@@ -7669,6 +7669,22 @@ class ComfyUIDrawPlugin(Star):
         wf["_upscale_chain_nodes"] = up.get("chain_nodes") or []
         wf["_upscale_image_source"] = up.get("image_source") or ""
         wf["_cleanup_nodes"] = roles.get("cleanup_nodes") or []
+        # v7.7.98：尺寸来源开关（基础图解析结果）——只做留档与日志，不覆盖用户配置
+        _ssw = roles.get("size_switch") or {}
+        wf["_base_size_switch"] = _ssw
+        if _ssw:
+            _cfg_sw = wf.get("size_switch")
+            _cfg_label = (
+                "开（自定义尺寸）" if _cfg_sw is True
+                else "关（跟随工作流逻辑）" if _cfg_sw is False
+                else "未配置（沿用旧行为：显式传尺寸才拨）"
+            )
+            logger.info(
+                f"【尺寸】 基础工作流「{rec.get('name')}」自带尺寸来源开关"
+                f"（节点 {_ssw.get('node')}，文件当前="
+                f"{'自定义尺寸' if _ssw.get('default') else '跟随参考图'}）"
+                f"→ 本条目配置={_cfg_label}"
+            )
         sd = roles.get("sampler_defaults") or {}
         wf["_base_sampler_defaults"] = sd
         # 底模信息（供日志/摘要）
@@ -8485,12 +8501,32 @@ class ComfyUIDrawPlugin(Star):
         # v7.7.39：图生图「尺寸来源开关」——用户**显式**传了尺寸（--w/--h 或比例词）且工作流
         # 有 ComfySwitchNode 这类开关时，拨开关走 EmptyLatentImage（自定义尺寸生效）；
         # 没传 → 开关保持/写回 false，尺寸=参考图（多图=图1）。无开关的工作流行为不变。
+        # v7.7.98：开关改为工作流上的**显式配置**（`size_switch`，默认关），配置到位时以它为准：
+        #   开 → 恒走 EmptyLatentImage（默认宽高 / 用户传参都生效）；
+        #   关 → 恒跟随工作流自身逻辑（参考图 latent），用户传尺寸也不拨开关。
+        # 旧条目没有该键（None）→ 完全沿用 v7.7.39 的「显式传尺寸才拨」行为，向后兼容。
         _size_sw = workflow_builder.find_size_switch(prompt) if init_images else None
         _explicit_size = bool(width or height)
         _ratio_wh, _tier_req = self._resolve_ratio_size(_ratio_src, width, height)
         if _ratio_wh is not None:
             _explicit_size = True
-        _custom_size = bool(init_images and _size_sw and _explicit_size)
+        _cfg_size_sw = wf.get("size_switch")
+        if not isinstance(_cfg_size_sw, bool):
+            _cfg_size_sw = None
+        if _cfg_size_sw is not None and _size_sw:
+            _custom_size = bool(init_images and _cfg_size_sw)
+            if not _cfg_size_sw and _explicit_size:
+                logger.info(
+                    "【宽高】 「尺寸开关」已关闭（工作流配置）→ 跟随基础工作流自身逻辑"
+                    "（尺寸取参考图），本次尺寸请求忽略"
+                )
+        else:
+            _custom_size = bool(init_images and _size_sw and _explicit_size)
+            if _cfg_size_sw and not _size_sw:
+                logger.info(
+                    "【宽高】 「尺寸开关」已开启，但基础工作流里没有尺寸来源开关"
+                    "（ComfySwitchNode + EmptyLatentImage），该配置不生效"
+                )
         _dw = int(wf.get("default_width", 512) or 512)
         _dh = int(wf.get("default_height", 512) or 512)
         _max_tier = _tier_key_norm(wf.get("max_size_tier")) or _SIZE_TIER_DEFAULT
@@ -8752,7 +8788,11 @@ class ComfyUIDrawPlugin(Star):
                         f"（工作流未预引用；文件={lib_l.get('model_name')}）"
                     )
                 else:
-                    lib_keys = list(lib.keys())
+                    # v7.7.98 修复：这里原本写 `lib.keys()`，而 `lib` 在本函数里根本
+                    # 没有定义（只在 _loras_of 里存在）——一旦用户点名的 LoRA 既不在
+                    # 工作流里、也不在全局库里，这行会直接 NameError 炸掉整次出图，
+                    # 本该给出的「库里没有这个 LoRA」提示永远看不到。
+                    lib_keys = list(self._lora_lib_index().keys())
                     logger.warning(
                         f"【LoRA 提示】本次请求启用「{cmd_name}」，但工作流未引用且全局 LoRA 库"
                         f"里也找不到该名称。请先在全局「LoRA 库」配置「{cmd_name}」并填好"

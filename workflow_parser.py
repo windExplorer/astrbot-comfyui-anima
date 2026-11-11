@@ -201,6 +201,60 @@ def _resolve_text_write_node(nodes: dict, link: tuple[str, int] | None,
     return None
 
 
+def _find_size_switch(nodes: dict) -> dict | None:
+    """识别图生图的「尺寸来源开关」（v7.7.98）。
+
+    Qwen 2.1 Edit 这类工作流把采样器的 latent_image 挂在一个 ComfySwitchNode 上：
+    `switch=false` 走参考图编码出的 latent（尺寸跟参考图，工作流自己的逻辑），
+    `switch=true` 走 EmptyLatentImage（插件注入的宽高才生效）。
+
+    判定与 `workflow_builder.find_size_switch` 完全同规则（两边必须一致）：
+    `switch` 输入是布尔，且 `on_true`/`on_false` 两路连线**恰好一路**指向
+    EmptyLatentImage 类节点（自定义尺寸侧），另一路是别的节点（参考图侧）。
+
+    返回 {"node","field","default","empty_side","custom_node","custom_class",
+          "ref_node","ref_class"}；识别不到返回 None。
+    `default` 是**工作流文件里当前的开关状态**——解析时原样记下，供「新建工作流」
+    表单展示（关=跟随工作流逻辑，开=插件自定义尺寸）。
+    """
+    for nid, node in nodes.items():
+        if not isinstance(node, dict):
+            continue
+        ins = node.get("inputs") or {}
+        sw = ins.get("switch")
+        if not isinstance(sw, bool):
+            continue
+        sides: dict = {}
+        ok = True
+        for k in ("on_true", "on_false"):
+            lk = _link(ins.get(k))
+            if not lk or lk[0] not in nodes:
+                ok = False
+                break
+            sides[k] = "emptylatentimage" in _ct(nodes[lk[0]])
+        if not ok or sides["on_true"] == sides["on_false"]:
+            continue
+        custom_side = "on_true" if sides["on_true"] else "on_false"
+        ref_side = "on_false" if custom_side == "on_true" else "on_true"
+        c_link = _link(ins.get(custom_side))
+        r_link = _link(ins.get(ref_side))
+        if not c_link or not r_link:
+            continue
+        c_node = nodes[c_link[0]]
+        r_node = nodes[r_link[0]]
+        return {
+            "node": str(nid),
+            "field": "switch",
+            "default": bool(sw),
+            "empty_side": custom_side,
+            "custom_node": str(c_link[0]),
+            "custom_class": c_node.get("class_type") or "",
+            "ref_node": str(r_link[0]),
+            "ref_class": r_node.get("class_type") or "",
+        }
+    return None
+
+
 def _is_sampler(node: dict) -> bool:
     """采样器判定：类名含 sampler 且同时有 model/positive 输入。"""
     inputs = node.get("inputs") or {}
@@ -757,6 +811,26 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
             roles["latent"]["default_width"] = None
             roles["latent"]["default_height"] = None
 
+    # ---- 尺寸来源开关（v7.7.98）----
+    # 与「宽高节点」是两件事：latent 解析的是「自定义尺寸往哪写」，这里记的是
+    # 「到底听谁的尺寸」。开关关着（Qwen 2.1 Edit 模板默认）→ 尺寸跟参考图，
+    # 插件注入的宽高根本没人读；只有打开开关才轮到 EmptyLatentImage。
+    _ssw = _find_size_switch(nodes)
+    if _ssw:
+        roles["size_switch"] = _ssw
+        if not roles.get("latent") or str(roles["latent"].get("node")) != _ssw["custom_node"]:
+            # latent 指向的不是自定义尺寸侧（比如开关嵌套在别的链上）：以开关为准
+            if not roles.get("latent"):
+                roles["latent"] = {
+                    "node": _ssw["custom_node"],
+                    "class_type": _ssw["custom_class"],
+                    "width_field": "width",
+                    "height_field": "height",
+                    "size_locked": False,
+                    "default_width": None,
+                    "default_height": None,
+                }
+
     # ---- 保存节点：优先 SaveImageExtended ----
     save_nodes = [nid for nid, n in nodes.items() if "saveimage" in _ct(n)]
     if not save_nodes:
@@ -822,6 +896,15 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
             cv = _link((n.get("inputs") or {}).get("clip"))
             if cv:
                 clip_srcs.add(cv[0])
+    if not clip_srcs:
+        # v7.7.98 兜底：类名不含 clip/text/encode 的编码节点（如
+        # TextEncodeQwenImage21 —— 名字里只有 textencode+qwenimage）第一轮一个也
+        # 命中不了，clip_src 会一直是 None。这里改按「谁吃 clip 输入」反推，
+        # 与节点类名彻底解耦（新增节点名也照样能定位）。
+        for nid, n in nodes.items():
+            cv = _link((n.get("inputs") or {}).get("clip"))
+            if cv and cv[0] in nodes:
+                clip_srcs.add(cv[0])
     roles["clip_src"] = sorted(clip_srcs)[0] if clip_srcs else None
 
     # ---- 图生图能力 ----
@@ -881,20 +964,28 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     # 如 TextEncodeQwenImage21 的 `images.image_N` 动态输入：一个输入=一路参考图，
     # 提示词里的「图N」即对应第 N 路。kind 不变（仍 img2img），仅加标识供
     # 多图注入（workflow_builder.prepare_multi_image_refs）与 WebUI「多参图生图」标签用。
+    # v7.7.98：`images.image*` 也出现在聚合/预览节点上（Qwen 2.1 Edit 的
+    # BatchImagesNode → TextGenerate.image），按「编码/条件节点优先、其次槽位多的」
+    # 来选，不能靠 JSON 键顺序（与 workflow_builder.find_multi_image_node 同规则）。
+    _mi_rank: tuple | None = None
     for nid, n in nodes.items():
         _ins = n.get("inputs") or {}
         _img_keys = sorted(
-            (k for k in _ins if str(k).startswith("images.image")),
-            key=lambda k: int(str(k).rsplit("_", 1)[-1]) if str(k).rsplit("_", 1)[-1].isdigit() else 0,
+            (str(k) for k in _ins if str(k).startswith("images.image")),
+            key=lambda k: int(k.rsplit("_", 1)[-1]) if k.rsplit("_", 1)[-1].isdigit() else 0,
         )
-        if _img_keys:
+        if not _img_keys:
+            continue
+        _ctn_mi = _ct(n)
+        _rank = (1 if ("encode" in _ctn_mi or "condition" in _ctn_mi) else 0, len(_img_keys))
+        if _mi_rank is None or _rank > _mi_rank:
             roles["multi_image"] = {
                 "node": nid,
                 "class_type": n.get("class_type") or "",
                 "count": len(_img_keys),
                 "inputs": _img_keys,
             }
-            break
+            _mi_rank = _rank
 
     # ---- 采样器默认参数 ----
     steps = cfg = denoise = None

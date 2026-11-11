@@ -1038,9 +1038,18 @@ def _ref_chain_to_loader(prompt: dict, link) -> list[str]:
 def find_multi_image_node(prompt: dict) -> "dict | None":
     """找条件节点上的 `images.image_N` 动态输入（多参考图，如 TextEncodeQwenImage21）。
 
-    返回 {"node": 节点ID, "count": 现有路数, "inputs": [按N排序的输入名]}；没有返回 None。
+    返回 {"node": 节点ID, "class_type": 类名, "count": 现有路数,
+          "inputs": [按N排序的输入名]}；没有返回 None。
+
+    v7.7.98：`images.image*` 这个字段名不止条件节点会用——Qwen 2.1 Edit 模板里的
+    `BatchImagesNode`（喂给 LLM 提示词增强的 `TextGenerate.image`）也叫这名。
+    旧逻辑「谁的槽位多就选谁，一样多就选 JSON 里靠前的那个」在两者槽位相同的情况下
+    **只靠键顺序决胜负**：一旦导出顺序变了就会选中聚合节点，多张参考图全被接进
+    一个没人读的分支 → 采样只看得到图 1（用户侧表现就是「多图不生效」）。
+    现在先按「是不是编码/条件节点」排序，再看槽位数量，最后才看顺序。
     """
     best: dict | None = None
+    best_rank: tuple | None = None
     for nid, node in prompt.items():
         if not isinstance(node, dict):
             continue
@@ -1049,8 +1058,17 @@ def find_multi_image_node(prompt: dict) -> "dict | None":
             continue
         ks.sort(key=lambda k: int(str(k).rsplit("_", 1)[-1])
                 if str(k).rsplit("_", 1)[-1].isdigit() else 0)
-        if best is None or len(ks) > best["count"]:
-            best = {"node": str(nid), "count": len(ks), "inputs": ks}
+        ct = str(node.get("class_type") or "").lower()
+        cond = 1 if ("encode" in ct or "condition" in ct) else 0
+        rank = (cond, len(ks))
+        if best_rank is None or rank > best_rank:
+            best = {
+                "node": str(nid),
+                "class_type": node.get("class_type") or "",
+                "count": len(ks),
+                "inputs": ks,
+            }
+            best_rank = rank
     return best
 
 
