@@ -20098,6 +20098,12 @@ class ComfyUIDrawPlugin(Star):
         seed: int = 0,
         image: str = "",
         denoise: float = -1,
+        # v7.8.0：图生图也收顶层宽高（与 comfyui_draw 对齐）。只对带「尺寸来源开关」
+        # 的工作流（如 Qwen 2.1 Edit）生效——普通图生图的 latent 来自参考图编码，
+        # 宽高本来就不参与，传了也只是被忽略（日志有说明）。prompts 逐项的
+        # width/height 优先于这两个顶层值。
+        width: int = 0,
+        height: int = 0,
         count: int = 0,
         prompts: list = None,
         source: str = "",
@@ -20107,8 +20113,6 @@ class ComfyUIDrawPlugin(Star):
         silent: bool | None = None,
         raw_prompt: bool = False,
         # v7.7.100：与 comfyui_draw 同一套「尺寸开关」覆盖（不写进 Args 段，LLM 不可见）。
-        # comfyui_img2img 没有顶层 width/height，尺寸请写进 prompts 的每一项
-        # （{"prompt": "...", "width": 832, "height": 1216}）。
         custom_size: bool | None = None,
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
@@ -20174,6 +20178,9 @@ class ComfyUIDrawPlugin(Star):
             seed(number): 随机种子，0/不填=每次随机；用户要"固定/复现"时传具体数字。
             image(string): 参考图 URL；多数情况插件自动从消息提取，无需传。
             denoise(number): 降噪/重绘强度（0~1）；不传或 -1=工作流默认。用户问"改多少/像不像原图"时传。
+            width(number): 输出宽度（16 的倍数最佳）。仅带「尺寸来源开关」的工作流（如 Qwen 图像编辑）生效；
+                用户明确要求尺寸/比例（"竖版""9:16""1216 宽"）时与 height 一起传。
+            height(number): 输出高度，同 width。
             count(number): 【恒为 1，一般不用传】张数由 prompts 条数决定；传大于 1 会被拦回。
             prompts(array): 多条出图项，**要几个效果就传几条**，每条各出 1 张（每条写【不同】变换）。
                 ① 字符串数组：["转成水彩", "转成油画"]（"三个效果各来 2 张"→ 6 条）。
@@ -20483,8 +20490,9 @@ class ComfyUIDrawPlugin(Star):
             _seq2 += 1
             # per-item 参数：缺省回落全局参数（图生图默认不传 width/height）
             _item_lora_map2 = plugin._parse_llm_loras(_item2["loras"]) if _item2["loras"] else lora_map
-            _item_w2 = _item2["width"] or None
-            _item_h2 = _item2["height"] or None
+            # v7.8.0：逐项宽高回落到顶层 width/height（prompts 逐项优先）
+            _item_w2 = _item2["width"] or width
+            _item_h2 = _item2["height"] or height
             _item_denoise2 = _item2["denoise"] if _item2["denoise"] >= 0 else denoise
             # v7.7.100：尺寸开关三态（逐项 > 调用级 > 工作流配置）
             _item_csize2 = _item2.get("custom_size")
