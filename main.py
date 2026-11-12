@@ -20097,6 +20097,9 @@ class ComfyUIDrawPlugin(Star):
         loras: list = None,
         seed: int = 0,
         image: str = "",
+        # v7.8.1：多图参考（Qwen 2.1 等多图工作流用；外部插件可一次传多张）。
+        # 与 image 同时存在时按「image 在前、images 依次在后」合并，去重。
+        images: list = None,
         denoise: float = -1,
         # v7.8.0：图生图也收顶层宽高（与 comfyui_draw 对齐）。只对带「尺寸来源开关」
         # 的工作流（如 Qwen 2.1 Edit）生效——普通图生图的 latent 来自参考图编码，
@@ -20177,6 +20180,9 @@ class ComfyUIDrawPlugin(Star):
                 确认无匹配或用户明确不要时才留空（留空用配置里默认启用的 LoRA）。
             seed(number): 随机种子，0/不填=每次随机；用户要"固定/复现"时传具体数字。
             image(string): 参考图 URL；多数情况插件自动从消息提取，无需传。
+            images(array[string]): 多张参考图（可选，与 image 合并去重）。仅在用户明确要「多图参考」
+                （同一角色正/侧/背多视角、物品 + 场景等多素材）时传；多数工作流最多 3 张，
+                超出按工作流上限截断，只有支持多图的工作流（如 Qwen 2.1 编辑）才会逐张注入。
             denoise(number): 降噪/重绘强度（0~1）；不传或 -1=工作流默认。用户问"改多少/像不像原图"时传。
             width(number): 输出宽度（16 的倍数最佳）。仅带「尺寸来源开关」的工作流（如 Qwen 图像编辑）生效；
                 用户明确要求尺寸/比例（"竖版""9:16""1216 宽"）时与 height 一起传。
@@ -20348,6 +20354,21 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"【取图】 image 参数下载成功: {p}")
             else:
                 logger.warning(f"【取图】 image 参数下载失败: {img_url}")
+
+        # ①b v7.8.1：images 多图参考（外部插件 / LLM 多图意图）。
+        # 顺序 = image 在前、images 依次在后（多图工作流里「图1/图2/图3」按此对应）。
+        for _raw in (images or []):
+            _one = str(_raw or "").strip()
+            if not _one:
+                continue
+            _p = await _image_to_local_path(_one)
+            if _p:
+                if _p not in init_images:
+                    init_images.append(_p)
+                got_explicit_image = True
+                logger.info(f"【取图】 images 参数第 {len(init_images)} 张: {_p}")
+            else:
+                logger.warning(f"【取图】 images 参数里这张解析失败: {_one!r}")
 
         if not got_explicit_image:
             # ② 从事件中自动提取图片（仅在未通过 image 参数显式拿到图时才探测）。

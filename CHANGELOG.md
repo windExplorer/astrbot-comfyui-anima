@@ -2,6 +2,27 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.1（comfyui_img2img 支持多图参考：images 参数）
+
+需求（用户）：萌萌今日老婆的 WebUI 参考图多选（角色详情 / 试画台）要一次喂多张
+（同一角色正面 / 侧面 / 背面，靠 Qwen 2.1 等多图工作流生成三视图）。萌绘内部
+`_do_draw` 早就支持多张 `init_images`（默认上限 3，`img2img_max_refs` 可调 1~8，
+`TextEncodeQwenImage21` 的 `images.image_N` 会逐路注入），缺的只是
+`comfyui_img2img` 这个跨插件入口——签名只有单值 `image`。
+
+改动：
+
+1. `llm_img2img` 新增 `images: list`（`array[string]`）：与 `image` 合并去重，
+   顺序 = `image` 在前、`images` 依次在后（多图工作流里「图1/图2/图3」按此对应）。
+   Args 段同步登记（LLM 也能在用户明确要多图参考时使用）。
+2. 解析失败的条目逐张 WARN 跳过，不影响其余图；拿到任一张就视为「显式图生图」，
+   不再从事件里兜底取图（与单图 `image` 的行为一致）。
+3. 上限仍走原有逻辑：工作流条目 `max_refs` 优先，否则全局 `img2img_max_refs`
+   （默认 3），超出截断并提示。
+
+兼容：旧调用方只传 `image` 完全不受影响；旧版萌绘（< v7.8.1）收到 `images`
+会报 TypeError，萌萌今日老婆侧已做「降级单图重试」，不会把出图打挂。
+
 ## v7.8.0（comfyui_img2img 补顶层 width/height，与 comfyui_draw 契约对齐）
 
 需求（用户）：萌萌今日老婆插件要在图生图时生成三视图/四视图底稿（横版/方形构图），
