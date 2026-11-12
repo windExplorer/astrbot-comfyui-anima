@@ -874,6 +874,41 @@ def test_parser_version_autoreparse():
     print("== 24. 解析器版本自动重解析 + 写入点体检（防提示词写错节点） OK")
 
 
+def test_dynamic_size_switch_and_limits():
+    """v7.7.100：尺寸开关「三态决策」+ 全局尺寸硬上限（纯函数）。"""
+    d = wb.decide_custom_size
+
+    # 没有尺寸来源开关 / 不是图生图 → 一律不自定义（无可拨之物）
+    assert d(True, True, False, True, True) == (False, "")
+    assert d(True, True, True, False, True) == (False, "")
+
+    # ① 调用方传参最优先：可临时打开，也可临时关闭
+    assert d(False, True, True, True, False) == (True, "调用方传参")
+    assert d(True, False, True, True, True) == (False, "调用方传参")
+
+    # ② 其次工作流配置（默认值）
+    assert d(True, None, True, True, False)[0] is True
+    assert d(False, None, True, True, True)[0] is False
+    assert d(True, None, True, True, False)[1] == "工作流配置（默认值）"
+
+    # ③ 旧条目（缺该键）→ 显式传尺寸才拨（v7.7.39 行为不变）
+    assert d(None, None, True, True, False)[0] is False
+    assert d(None, None, True, True, True)[0] is True
+
+    c = wb.clamp_size
+    # 未设置上限 / 未超限 → 原样返回（不改用户给的精确尺寸）
+    assert c(1024, 1024) == (1024, 1024, "")
+    assert c(1000, 1000, max_side=4000, max_mp=8)[0:2] == (1000, 1000)
+    # 最长边超限 → 等比收缩并对齐 16
+    w, h, why = c(4096, 2048, max_side=2048)
+    assert (w, h) == (2048, 1024) and why, (w, h, why)
+    # 总像素超限 → 按平方根收缩，且结果真的在预算内、仍对齐 16
+    w2, h2, why2 = c(2048, 2048, max_mp=2.0)
+    assert w2 == h2 and w2 % 16 == 0 and w2 * h2 <= 2_000_000 and "MP" in why2, (w2, h2, why2)
+    assert c(2048, 2048, max_mp=2.0, align=8)[0] % 8 == 0
+    print("== 25. 尺寸开关三态决策 + 全局尺寸硬上限 OK")
+
+
 if __name__ == "__main__":
     test_parse_std()
     test_parse_reject_multi_sampler()
@@ -899,4 +934,5 @@ if __name__ == "__main__":
     test_parse_moss_concatenate()
     test_parse_qwen21_edit_sample()
     test_parser_version_autoreparse()
-    print("\n基础工作流体系测试全部通过（24 组）")
+    test_dynamic_size_switch_and_limits()
+    print("\n基础工作流体系测试全部通过（25 组）")

@@ -1146,6 +1146,60 @@ def set_size_switch(prompt: dict, sw: dict, enable: bool) -> bool:
     return True
 
 
+def decide_custom_size(
+    cfg_switch, req_switch, has_switch: bool,
+    is_img2img: bool, explicit_size: bool,
+) -> tuple[bool, str]:
+    """决定「本次出图是否走自定义尺寸」（v7.7.100），返回 ``(是否自定义, 依据)``。
+
+    三态优先级（越靠前越优先）：
+      ① `req_switch`（调用方本次显式传的 custom_size）——第三方插件可临时开关；
+      ② `cfg_switch`（工作流条目上的「尺寸开关」，只是**默认值**）；
+      ③ 旧行为：图生图里**显式传了尺寸**才拨开关（v7.7.39，兼容无该配置的老条目）。
+
+    前提：工作流里必须真的存在尺寸来源开关（`has_switch`），且本次是图生图——
+    否则「自定义尺寸」没有可拨的东西（文生图的宽高本来就直写 EmptyLatentImage）。
+    """
+    if not is_img2img or not has_switch:
+        return False, ""
+    if isinstance(req_switch, bool):
+        return req_switch, "调用方传参"
+    if isinstance(cfg_switch, bool):
+        return cfg_switch, "工作流配置（默认值）"
+    return bool(explicit_size), "旧行为（显式传尺寸才拨）"
+
+
+def clamp_size(
+    w: int, h: int, max_side: int = 0, max_mp: float = 0.0, align: int = 16,
+) -> tuple[int, int, str]:
+    """按「全局硬上限」等比收缩尺寸，返回 ``(w, h, 说明)``（v7.7.100）。
+
+    - `max_side`：最长边上限（px，0=不限）；
+    - `max_mp`：总像素上限（MP，0=不限）——显存占用与总像素最相关；
+    - 只在**超限时**收缩（等比、向下对齐到 `align` 的倍数、不低于 64），
+      没超限时原样返回（不改变用户/工作流给的精确尺寸）。
+    """
+    out_w, out_h = int(w or 0), int(h or 0)
+    if out_w <= 0 or out_h <= 0:
+        return out_w, out_h, ""
+    a = max(1, int(align or 1))
+    factor = 1.0
+    notes: list[str] = []
+    if max_side and max_side > 0 and max(out_w, out_h) > max_side:
+        factor = min(factor, float(max_side) / float(max(out_w, out_h)))
+        notes.append(f"最长边≤{int(max_side)}")
+    if max_mp and max_mp > 0:
+        _budget = float(max_mp) * 1_000_000.0
+        if float(out_w) * float(out_h) > _budget:
+            factor = min(factor, (max(_budget, 1.0) / (float(out_w) * float(out_h))) ** 0.5)
+            notes.append(f"总像素≤{float(max_mp):g}MP")
+    if factor >= 1.0:
+        return out_w, out_h, ""
+    nw = max(64, int(round(out_w * factor / a)) * a)
+    nh = max(64, int(round(out_h * factor / a)) * a)
+    return nw, nh, "、".join(notes)
+
+
 def prepare_multi_image_refs(
     prompt: dict, roles: dict, image_names: list[str]
 ) -> "list[str | None] | None":

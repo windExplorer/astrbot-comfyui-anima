@@ -861,6 +861,25 @@ def _coerce_bool_flag(value, default: bool = False) -> bool:
     return default
 
 
+def _coerce_opt_bool(value) -> bool | None:
+    """三态布尔（v7.7.100）：None / 无法识别 → None（= 不表态，交给配置决定）。
+
+    用于 `custom_size` 这类「本次调用可选覆盖」的参数：只有明确写了 true/false
+    才生效，空串、"auto"、"默认" 等都按「未传」处理，避免第三方误传字符串把
+    工作流配置顶掉。
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("", "none", "null", "auto", "default", "默认", "跟随"):
+        return None
+    if s in ("1", "true", "yes", "y", "on", "是", "开", "真"):
+        return True
+    if s in ("0", "false", "no", "n", "off", "否", "关", "假"):
+        return False
+    return None
+
+
 def _coerce_llm_tool_value(ann, v):
     """按参数注解粗略矫正 LLM 传参类型：数字传成字符串、数组/对象传成 JSON 字符串等。"""
     if v is None:
@@ -7861,6 +7880,12 @@ class ComfyUIDrawPlugin(Star):
         noise_schedule: str | None = None,
         stats: dict | None = None,
         raw_prompt: bool = False,
+        # v7.7.100：本次调用临时覆盖工作流的「尺寸开关」。
+        #   None  = 用工作流条目上的配置（默认关）
+        #   True  = 本次走 EmptyLatentImage（自定义尺寸，需给得出宽高）
+        #   False = 本次强制跟随工作流自身逻辑（参考图尺寸）
+        # 供第三方插件按需开关，不用改工作流配置。
+        custom_size: bool | None = None,
     ):
         # raw_prompt（v7.7.46）：调用方声明「提示词已由它自己的 LLM 润色 + 翻译完成」时，
         # 本次出图完全跳过本插件的 LLM 处理（Anima/Qwen 改写、翻译兜底、短描述扩写），
@@ -8527,6 +8552,8 @@ class ComfyUIDrawPlugin(Star):
         #   开 → 恒走 EmptyLatentImage（默认宽高 / 用户传参都生效）；
         #   关 → 恒跟随工作流自身逻辑（参考图 latent），用户传尺寸也不拨开关。
         # 旧条目没有该键（None）→ 完全沿用 v7.7.39 的「显式传尺寸才拨」行为，向后兼容。
+        # v7.7.100：配置只是**默认值**，调用方可用 `custom_size=True/False` 临时覆盖
+        # （第三方插件按需开自定义尺寸，不必改工作流配置）。
         _size_sw = workflow_builder.find_size_switch(prompt) if init_images else None
         _explicit_size = bool(width or height)
         _ratio_wh, _tier_req = self._resolve_ratio_size(_ratio_src, width, height)
@@ -8535,22 +8562,38 @@ class ComfyUIDrawPlugin(Star):
         _cfg_size_sw = wf.get("size_switch")
         if not isinstance(_cfg_size_sw, bool):
             _cfg_size_sw = None
-        if _cfg_size_sw is not None and _size_sw:
-            _custom_size = bool(init_images and _cfg_size_sw)
-            if not _cfg_size_sw and _explicit_size:
-                logger.info(
-                    "【宽高】 「尺寸开关」已关闭（工作流配置）→ 跟随基础工作流自身逻辑"
-                    "（尺寸取参考图），本次尺寸请求忽略"
-                )
-        else:
-            _custom_size = bool(init_images and _size_sw and _explicit_size)
-            if _cfg_size_sw and not _size_sw:
-                logger.info(
-                    "【宽高】 「尺寸开关」已开启，但基础工作流里没有尺寸来源开关"
-                    "（ComfySwitchNode + EmptyLatentImage），该配置不生效"
-                )
+        _custom_size, _sw_src = workflow_builder.decide_custom_size(
+            _cfg_size_sw, custom_size, bool(_size_sw),
+            bool(init_images), _explicit_size,
+        )
+        _custom_size = bool(init_images and _custom_size)
+        if _custom_size:
+            logger.info(
+                f"【宽高】 自定义尺寸：开（依据={_sw_src}）"
+                + ("——调用方本次指定" if _sw_src == "调用方传参" else "")
+            )
+        elif _size_sw and (_cfg_size_sw is False or custom_size is False):
+            logger.info(
+                "【宽高】 自定义尺寸：关（依据="
+                + (_sw_src or ("调用方传参" if custom_size is False else "工作流配置（默认值）"))
+                + "）→ 跟随工作流自身逻辑（尺寸取参考图），本次尺寸请求忽略"
+            )
+        elif custom_size is True and not _size_sw:
+            logger.info(
+                "【宽高】 调用方要求自定义尺寸，但基础工作流里没有尺寸来源开关"
+                "（ComfySwitchNode + EmptyLatentImage）→ 该要求不生效"
+            )
         _dw = int(wf.get("default_width", 512) or 512)
         _dh = int(wf.get("default_height", 512) or 512)
+        # v7.7.100：调用方**显式**打开自定义尺寸时必须给得出尺寸——没传宽高/比例词就用
+        # 工作流条目的默认宽高（那也是配置者定下的尺寸），连默认值都没有才拒绝出图，
+        # 避免「打开了却没人知道该用多大」的静默不一致。
+        if custom_size is True and _size_sw and init_images \
+                and not _explicit_size \
+                and not (int(wf.get("default_width") or 0) and int(wf.get("default_height") or 0)):
+            logger.warning("【宽高】 已开启自定义尺寸，但未传宽高且工作流条目没有默认宽高 → 拒绝出图")
+            await self._send(event, "这条工作流开启了自定义尺寸，但没给出尺寸（宽高/比例词都没传）哦～")
+            return
         _max_tier = _tier_key_norm(wf.get("max_size_tier")) or _SIZE_TIER_DEFAULT
         if _ratio_wh is not None:
             w, h = _ratio_wh
@@ -8612,6 +8655,24 @@ class ComfyUIDrawPlugin(Star):
                         f"【宽高】 超出最大限制（max={_maxw}x{_maxh}），按比例缩放: {w}x{h} -> {_nw}x{_nh}"
                     )
                     w, h = _nw, _nh
+        # v7.7.100：**全局硬上限**（配置 → 尺寸：最长边 / 总像素），最后一道边界——
+        # 无论尺寸来自调用方传参、比例词、还是工作流默认，超限一律等比收缩，
+        # 避免第三方传个 4096×4096 直接把显存打爆。
+        if w and h:
+            try:
+                _gside = int(float(str(self._cfg("size_max_side", 0) or 0)))
+            except (TypeError, ValueError):
+                _gside = 0
+            try:
+                _gmp = float(str(self._cfg("size_max_mp", 0) or 0))
+            except (TypeError, ValueError):
+                _gmp = 0.0
+            _gw, _gh, _gwhy = workflow_builder.clamp_size(w, h, _gside, _gmp, _SIZE_ALIGN)
+            if _gwhy:
+                logger.info(
+                    f"【宽高】 超出全局硬上限（{_gwhy}），等比收缩: {w}x{h} -> {_gw}x{_gh}"
+                )
+                w, h = _gw, _gh
         # resolution_mode 决定宽高的注入范围（默认 single，与旧行为逐字一致）：
         #   single：仅注入 resolution_node；留空则自动探测「第一个」EmptyLatentImage
         #   all   ：注入「所有」EmptyLatentImage —— 多 latent 串联工作流前后各有一个
@@ -15335,6 +15396,8 @@ class ComfyUIDrawPlugin(Star):
                     "height": _h_v,
                     "denoise": _dn,
                     "seed": _sd,
+                    # v7.7.100：逐项可覆盖「尺寸开关」（None=跟随工作流默认/全局参数）
+                    "custom_size": _coerce_opt_bool(x.get("custom_size")),
                 })
             else:
                 out.append({
@@ -15346,6 +15409,7 @@ class ComfyUIDrawPlugin(Star):
                     "height": 0,
                     "denoise": -1,
                     "seed": 0,
+                    "custom_size": None,
                 })
         return [i for i in out if i["prompt"]]
 
@@ -16167,6 +16231,10 @@ class ComfyUIDrawPlugin(Star):
         noise_schedule: str = "",
         silent: bool | None = None,
         raw_prompt: bool = False,
+        # v7.7.100 跨插件契约：本次调用的「尺寸开关」覆盖（同样刻意不写进 Args 段，
+        # LLM 不可见，避免它自作主张改尺寸）。None=用工作流配置；True=本次自定义尺寸
+        # （需给出 width/height 或比例词，否则用工作流默认宽高）；False=强制跟随参考图。
+        custom_size: bool | None = None,
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
@@ -16553,6 +16621,8 @@ class ComfyUIDrawPlugin(Star):
         _ext = _is_external_call(source, external)
         _raw_prompt = _coerce_bool_flag(raw_prompt, False)
         _silent = _coerce_bool_flag(silent, _ext)
+        # v7.7.100：本次调用的「尺寸开关」覆盖（None=用工作流条目上的默认配置）
+        _csize = _coerce_opt_bool(custom_size)
         if _silent or _raw_prompt:
             logger.info(
                 f"【第三方调用】 silent={_silent} raw_prompt={_raw_prompt} source={source or '(空)'}"
@@ -17283,6 +17353,10 @@ class ComfyUIDrawPlugin(Star):
             _item_w = _item["width"] or width
             _item_h = _item["height"] or height
             _item_denoise = _item["denoise"] if _item["denoise"] >= 0 else denoise
+            # v7.7.100：尺寸开关的三态——逐项 > 调用级 > None（用自己的工作流配置）
+            _item_csize = _item.get("custom_size")
+            if _item_csize is None:
+                _item_csize = _csize
             async for node, p in plugin._wrap_silent(
                 plugin._do_draw(
                     event,
@@ -17318,6 +17392,8 @@ class ComfyUIDrawPlugin(Star):
                     # 多张时避免同一句话被重复 N 遍。
                     caption=(caption if not img_paths else ""),
                     stats=_draw_stats,
+                    # v7.7.100：本次调用临时覆盖「尺寸开关」（None=用工作流配置）
+                    custom_size=_item_csize,
                 ),
                 event, _silent,
             ):
@@ -20030,6 +20106,10 @@ class ComfyUIDrawPlugin(Star):
         caption: str = "",
         silent: bool | None = None,
         raw_prompt: bool = False,
+        # v7.7.100：与 comfyui_draw 同一套「尺寸开关」覆盖（不写进 Args 段，LLM 不可见）。
+        # comfyui_img2img 没有顶层 width/height，尺寸请写进 prompts 的每一项
+        # （{"prompt": "...", "width": 832, "height": 1216}）。
+        custom_size: bool | None = None,
     ):
         """使用 ComfyUI 基于一张参考图生成 / 变换图片并返回给用户。
 
@@ -20117,6 +20197,8 @@ class ComfyUIDrawPlugin(Star):
         _ext = _is_external_call(source, external)
         _raw_prompt = _coerce_bool_flag(raw_prompt, False)
         _silent = _coerce_bool_flag(silent, _ext)
+        # v7.7.100：本次调用的「尺寸开关」覆盖（None=用工作流条目上的默认配置）
+        _csize = _coerce_opt_bool(custom_size)
         if _silent or _raw_prompt:
             logger.info(
                 f"【第三方调用】 silent={_silent} raw_prompt={_raw_prompt} source={source or '(空)'}"
@@ -20364,11 +20446,13 @@ class ComfyUIDrawPlugin(Star):
                 "height": _it["height"],
                 "denoise": _it["denoise"],
                 "seed": _it["seed"],
+                "custom_size": _it.get("custom_size"),
             })
         if not _plan2:
             _plan2 = [{
                 "prompt": _items2[0]["prompt"], "wf": global_resolved_wf,
                 "loras": None, "width": 0, "height": 0, "denoise": -1, "seed": 0,
+                "custom_size": _items2[0].get("custom_size"),
             }]
         logger.info(
             f"【工具·llm_img2img】 出图计划：{len(_plan2)} 项、共 {len(_plan2)} 张"
@@ -20402,6 +20486,10 @@ class ComfyUIDrawPlugin(Star):
             _item_w2 = _item2["width"] or None
             _item_h2 = _item2["height"] or None
             _item_denoise2 = _item2["denoise"] if _item2["denoise"] >= 0 else denoise
+            # v7.7.100：尺寸开关三态（逐项 > 调用级 > 工作流配置）
+            _item_csize2 = _item2.get("custom_size")
+            if _item_csize2 is None:
+                _item_csize2 = _csize
             async for node, p in plugin._wrap_silent(
                 plugin._do_draw(
                     event,
@@ -20422,6 +20510,8 @@ class ComfyUIDrawPlugin(Star):
                     # 图文消息：配文只加在【第一张】图上，多张时避免同一句话重复 N 遍
                     caption=(caption if not img_paths else ""),
                     stats=_draw_stats2,
+                    # v7.7.100：本次调用临时覆盖「尺寸开关」（None=用工作流配置）
+                    custom_size=_item_csize2,
                 ),
                 event, _silent,
             ):
