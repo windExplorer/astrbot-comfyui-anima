@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.2（参考图归档只复制、不搬走调用方源文件）
+
+问题（跨插件）：萌萌今日老婆 v0.11.0 的多图参考图生图，生成完成后它
+`data/refs/` 里的参考图**全部消失**（绑定还在、卡片显示「文件丢失」）。根因在
+本插件：`image_store.archive_image` 是「移动转正」语义，落盘用
+`os.replace(src, dest)`——第三方插件把参考图路径传进来时，源图直接被搬进本插件
+图库 `refs/YYYY-MM/<sha>.png`。
+
+改动：
+
+1. `archive_image` 新增 `keep_src`（默认 False = 保持原行为）：为 True 时用
+   `shutil.copy2` 落盘，**保留调用方源文件**。
+2. 图生图 / 图片放大 / 抠图三处**参考图**归档（`source=SRC_USER`）统一传
+   `keep_src=True`；成品图（`SRC_GEN`）仍「移动转正」，不额外占空间。
+3. `tests/test_image_store_today.py` 新增 keep_src 用例（复制保留源 / 默认仍移动）。
+
+兼容：第三方调用方无需改参数，升级本插件后它们的参考图不会再被搬走；群聊里
+自己下载的临时图依旧是移动转正，temp 目录照常 24h 清理。
+
 ## v7.8.1（comfyui_img2img 支持多图参考：images 参数）
 
 需求（用户）：萌萌今日老婆的 WebUI 参考图多选（角色详情 / 试画台）要一次喂多张

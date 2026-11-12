@@ -8280,7 +8280,14 @@ class ComfyUIDrawPlugin(Star):
                             continue
                         # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回；
                         # 必须带 user_id，否则该图成为"无主图"会串给其他用户。
-                        _final = self.gallery.archive_image(_ri, source=SRC_USER, user_id=user_id, user_name=user_name, session_id=(getattr(event, "session_id", "") or ""))
+                        _final = self.gallery.archive_image(
+                            _ri, source=SRC_USER, user_id=user_id,
+                            user_name=user_name,
+                            session_id=(getattr(event, "session_id", "") or ""),
+                            # v7.8.2：参考图只复制归档，不能把调用方（第三方插件）
+                            # 数据目录里的源图 os.replace 搬走
+                            keep_src=True,
+                        )
                         # archive_image 现返回归档后路径，反算 sha 作为 ref_sha256（入库/回填用）
                         _sha = _sha256_of(_final) if _final else None
                         if _sha and ref_sha256 is None:
@@ -11383,7 +11390,7 @@ class ComfyUIDrawPlugin(Star):
                             _ref_final = self.gallery.archive_image(
                                 src, source=SRC_USER, user_id=_uid,
                                 user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
-                                session_id=_sid,
+                                session_id=_sid, keep_src=True,
                             )
                             if _ref_final:
                                 _ref_sha = _sha256_of(_ref_final) or ""
@@ -12095,7 +12102,7 @@ class ComfyUIDrawPlugin(Star):
                             _ref_final = self.gallery.archive_image(
                                 src, source=SRC_USER, user_id=_uid,
                                 user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
-                                session_id=_sid,
+                                session_id=_sid, keep_src=True,
                             )
                             if _ref_final:
                                 _ref_sha = _sha256_of(_ref_final) or ""

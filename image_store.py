@@ -606,6 +606,9 @@ class ImageStore:
         status: int = 0,
         on_dedup=None,
         nsfw_pre=None,
+        # v7.8.2：只复制、不搬走源文件。第三方插件（如萌萌今日老婆）把参考图
+        # 传进来时，源图在它自己的数据目录里，os.replace 会直接把它的图搬走。
+        keep_src: bool = False,
     ) -> str | None:
         """归档一张图（移动转正，内容寻址去重）。
 
@@ -718,11 +721,15 @@ class ImageStore:
                 pass
             return src_path
 
-        # 新图：落盘（移动转正）
+        # 新图：落盘（移动转正；keep_src=True 时只复制，保留调用方的源文件）
         ext = _ext_of(src_path)
         dest = self._path_for(sha, ext, source)
         try:
-            os.replace(src_path, dest)
+            if keep_src:
+                import shutil
+                shutil.copy2(src_path, dest)
+            else:
+                os.replace(src_path, dest)
         except OSError:
             # 跨盘或权限问题：回退复制
             try:

@@ -52,6 +52,25 @@ def test_today_count():
     print("== 今日出图数（全部用户 / 参考图不计 / 去重 / 跨天） OK")
 
 
+def test_keep_src():
+    """v7.8.2：keep_src=True 时归档只复制，不搬走调用方的源文件。
+
+    背景：萌萌今日老婆把 data/refs/ 里的参考图传进来做图生图，旧实现
+    archive_image 用 os.replace「移动转正」，生成完它的参考图就全没了。
+    """
+    tmp = Path(tempfile.mkdtemp())
+    st = ImageStore(tmp, cfg={"enabled": True})
+    keep = _png(tmp, "outer_ref.png", (10, 120, 200))
+    out = st.archive_image(keep, source=SRC_REF, prompt="ref", keep_src=True)
+    assert out and Path(keep).is_file(), "keep_src=True 不应移动源文件"
+    # 默认仍是移动转正（萌绘自己 temp/ 里的图）
+    own = _png(tmp, "own_temp.png", (10, 200, 120))
+    out2 = st.archive_image(own, source=SRC_GEN, prompt="p")
+    assert out2 and not Path(own).is_file(), "默认应移动转正"
+    print("== 参考图归档 keep_src（只复制、不搬走源文件） OK")
+
+
 if __name__ == "__main__":
     test_today_count()
+    test_keep_src()
     print("今日出图数测试通过")
