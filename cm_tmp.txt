@@ -1,7 +1,0 @@
-feat: comfyui_img2img 支持 images 多图参考（v7.8.1）
-
-- llm_img2img 新增 images 参数（array[string]），与 image 合并去重；顺序=image 在前、images 依次在后
-- 内部 _do_draw 本就支持多图（默认上限 3，Qwen 2.1 的 images.image_N 会逐路注入），此前缺的只是跨插件入口
-- 解析失败逐张 WARN 跳过；拿到任一张即视为显式图生图，不再从事件兜底取图
-- 兼容：旧调用方只传 image 不受影响；旧版萌绘收到 images 会 TypeError，由调用方降级单图重试
-- 重新构建前端（版本注入 v7.8.1）并打包 dist/astrbot_plugin_comfyui_anima_v7.8.1.zip
