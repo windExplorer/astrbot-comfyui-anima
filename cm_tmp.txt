@@ -1,0 +1,8 @@
+发布 v7.8.3：外部插件调用的图库归属改记插件名
+
+- 现象（跨插件）：萌萌今日老婆批量补的立绘，在萌绘图库里显示的作者是某个 QQ 用户，而不是「萌萌今日老婆」。
+- 根因：_do_draw 归档成品图时统一用 event.get_sender_id() 当作者。外部插件传进来的 event 只是「凑巧触发了这条命令的用户消息」，与谁产出的图无关，于是插件生成的图全挂在抽签那位名下。
+- 修复：_do_draw 新增 external 参数；为真时作者记 plugin:<source> / user_name=source，不再读发送者 QQ。llm_draw 主循环、llm_draw 续画循环、llm_img2img 三处调用点均传入 _ext。
+- 参考图归档共用同一份 user_id 变量，外部调用传入的参考图同样归到插件名下。
+- 守卫：新增 tests/test_external_actor.py（_do_draw 声明 external、外部分支不读 get_sender_id、三处调用点都传 external=_ext）。
+- 验证：pytest tests/test_external_actor.py tests/test_third_party_flags.py 共 8 passed（test_boost_skip_llm 为既有环境性失败，与本次无关）；已打包 v7.8.3。

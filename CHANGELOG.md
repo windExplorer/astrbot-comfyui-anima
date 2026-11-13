@@ -2,6 +2,28 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.3（外部插件调用的图库归属：记插件而非触发用户）
+
+问题（跨插件）：萌萌今日老婆通过本插件批量补立绘后，图库里这些图显示的作者是
+**某个 QQ 用户**，而不是「萌萌今日老婆」。根因：`_do_draw` 归档成品图时统一用
+`event.get_sender_id()` 当作者——外部插件传进来的 event 只是「凑巧触发了这条
+命令的用户消息」，与谁产出的图无关，于是插件生成的图全挂在了抽签那位名下。
+
+改动：
+- `_do_draw` 新增 `external: bool = False`。为真时作者记
+  `user_id = "plugin:<source>"` / `user_name = source`（如「萌萌今日老婆」），
+  不再读发送者 QQ；原生指令 / 触发器 / 剧情链路行为不变。
+- `llm_draw` 主循环、`llm_draw` 续画循环、`llm_img2img` 三处调用点均把
+  `_ext`（`_is_external_call(source, external)` 的结果）传下去，少一处就会漏。
+- 同一份 `user_id` 变量也用于参考图归档（配合 v7.8.2 的 `keep_src`），所以
+  外部调用传入的参考图同样归到插件名下，不会在「用户」列表里留下触发者。
+
+验证：
+- 新增 `tests/test_external_actor.py`（`_do_draw` 声明 external、外部分支不读
+  `get_sender_id`、三处调用点都传 `external=_ext`）。
+- `pytest tests/test_external_actor.py tests/test_third_party_flags.py`：8 passed
+  （`test_boost_skip_llm` 为既有环境性失败，与本次改动无关）。
+
 ## v7.8.2（参考图归档只复制、不搬走调用方源文件）
 
 问题（跨插件）：萌萌今日老婆 v0.11.0 的多图参考图生图，生成完成后它

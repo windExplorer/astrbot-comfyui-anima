@@ -7886,6 +7886,10 @@ class ComfyUIDrawPlugin(Star):
         #   False = 本次强制跟随工作流自身逻辑（参考图尺寸）
         # 供第三方插件按需开关，不用改工作流配置。
         custom_size: bool | None = None,
+        # v7.8.3：外部插件调用（external=True）。图库归属改记插件来源，
+        # 不记触发这条消息的 QQ 用户——否则「萌萌今日老婆」批量补的立绘
+        # 在图库里全挂在抽签那位用户名下，看不出是哪个插件产的图。
+        external: bool = False,
     ):
         # raw_prompt（v7.7.46）：调用方声明「提示词已由它自己的 LLM 润色 + 翻译完成」时，
         # 本次出图完全跳过本插件的 LLM 处理（Anima/Qwen 改写、翻译兜底、短描述扩写），
@@ -7925,9 +7929,16 @@ class ComfyUIDrawPlugin(Star):
         # 图生图参考图的 sha256（归档成品图时回填到 ref_sha256 字段）
         ref_sha256 = None
         # 用户标识（成品图归档用）：用 get_sender_id() 取真实用户ID，避免归档成"无主图"
-        user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
-        user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
-        user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
+        # v7.8.3：外部插件调用不记触发者 QQ —— 这类调用的 event 只是"凑巧触发
+        # 了这条命令的用户消息"，与"谁产出的图"无关。改记 `plugin:<source>`，
+        # 图库里就能看到「萌萌今日老婆」，而不是某个群友。
+        if external:
+            user_id = f"plugin:{str(source or 'external').strip() or 'external'}"
+            user_name = str(source or "外部插件").strip() or "外部插件"
+        else:
+            user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
+            user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
+            user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
         # 绘图权限总闸（白名单优先，再黑名单）。白名单启用时只看白名单，
         # 未启用/空则走黑名单。两者互斥：白名单内用户即便在黑名单也放行。
         if self._is_whitelist_active():
@@ -17401,6 +17412,8 @@ class ComfyUIDrawPlugin(Star):
                     stats=_draw_stats,
                     # v7.7.100：本次调用临时覆盖「尺寸开关」（None=用工作流配置）
                     custom_size=_item_csize,
+                    # v7.8.3：外部插件调用 → 图库归属记插件来源
+                    external=_ext,
                 ),
                 event, _silent,
             ):
@@ -17593,6 +17606,8 @@ class ComfyUIDrawPlugin(Star):
                         denoise=_item_denoise,
                         notify_pending=False, source=source,
                         raw_prompt=raw_prompt,
+                        # v7.8.3：外部插件调用 → 图库归属记插件来源
+                        external=_ext,
                     ),
                     event, silent,
                 ):
@@ -20548,6 +20563,8 @@ class ComfyUIDrawPlugin(Star):
                     stats=_draw_stats2,
                     # v7.7.100：本次调用临时覆盖「尺寸开关」（None=用工作流配置）
                     custom_size=_item_csize2,
+                    # v7.8.3：外部插件调用 → 图库归属记插件来源
+                    external=_ext,
                 ),
                 event, _silent,
             ):
