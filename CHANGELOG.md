@@ -2,6 +2,27 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.5（外部调用不再因为构造发送链而崩溃）
+
+问题（跨插件）：萌萌今日老婆批量补图报
+「萌绘侧生成失败：绘图工具执行时出错（AttributeError）：
+'_HeadlessEvent' object has no attribute 'chain_result'」。
+
+根因：v7.8.4 让「外部调用 + 无会话事件」走无头桩继续出图，但 `_do_draw`
+出图后仍会无条件构造一次发送消息链（`event.chain_result(...)`）——那是
+AstrBot 真实事件才有的接口，桩上没有，于是 AttributeError 把整张图打挂。
+
+改动：
+- 两条出图链路（ComfyUI `_do_draw`、第三方平台 `_do_draw_nai_style`）都接收
+  `external`，为真时**直接 `yield None, 路径`、跳过发送链构造**。外部插件本来
+  就由调用方自己发图，外层 `is_external` 分支只取路径、不会发送。
+- 无头桩补齐 `chain_result` / `plain_result` / `image_result` / `set_result`
+  四个接口作为双保险：其它分支若仍走到，也不会再 AttributeError。
+
+验证：
+- `tests/test_external_actor.py` 新增两条（桩具备 chain API、两条链路都有旁路）。
+- `pytest tests/test_external_actor.py`：7 passed。
+
 ## v7.8.4（外部插件调用无会话事件时不再报错）
 
 问题（跨插件）：萌萌今日老婆的批量补图报

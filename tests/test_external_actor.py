@@ -53,3 +53,22 @@ def test_headless_event_not_remembered():
     assert 'getattr(event, "_is_headless", False)' in SRC, (
         "无头桩不能写进 _last_event，否则会污染原生调用的兜底"
     )
+
+
+def test_headless_event_has_chain_api():
+    """桩必须能应答「构造回复链」的接口。
+
+    v7.8.5 实测：缺 chain_result 会直接 AttributeError，整张图打挂
+    （`'_HeadlessEvent' object has no attribute 'chain_result'`）。
+    """
+    assert "def chain_result(" in SRC
+    assert "def set_result(" in SRC
+    assert "def plain_result(" in SRC
+
+
+def test_external_skips_send_chain():
+    """外部调用不该走到发送链：ComfyUI 与第三方平台两条链路都要旁路。"""
+    assert SRC.count("if external:") >= 2, "两条出图链路都要有 external 分支"
+    assert SRC.count("yield None, _send_img_path") >= 2, (
+        "旁路分支要把路径 yield 出去（Node 传 None，外层只取路径不发图）"
+    )

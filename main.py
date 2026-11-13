@@ -681,6 +681,25 @@ class _HeadlessEvent:
     def stop_event(self):
         return None
 
+    # AstrBot 的 AstrMessageEvent 有一批「构造回复链」的接口。外部调用虽然
+    # 由调用方自己发图（不该走到这里），但 _do_draw 内部会无条件构造一次
+    # 发送链，桩必须能应答，否则就是一个 AttributeError 把整张图打挂
+    # （v7.8.5 实测：'_HeadlessEvent' object has no attribute 'chain_result'）。
+    def chain_result(self, chain=None, *args, **kwargs):
+        try:
+            return MessageChain(list(chain or []))
+        except Exception:
+            return None
+
+    def plain_result(self, text="", *args, **kwargs):
+        return self.chain_result([])
+
+    def image_result(self, url="", *args, **kwargs):
+        return self.chain_result([])
+
+    def set_result(self, result=None):
+        return None
+
     async def send(self, *args, **kwargs):
         return None
 
@@ -7134,6 +7153,8 @@ class ComfyUIDrawPlugin(Star):
         noise_schedule: str | None = None,
         artist: str = "",
         stats: dict | None = None,
+        # v7.8.5：外部插件调用（由调用方自己发图），与 _do_draw 同口径
+        external: bool = False,
     ):
         """第三方平台（NAI / OpenAI 兼容 / 自定义）出图。yield 契约与 _do_draw 一致。
         cfg/steps/sampler/noise_schedule/artist 为 LLM 工具可临时覆盖的平台生图参数（None/空=用平台 defaults）。"""
@@ -7546,6 +7567,11 @@ class ComfyUIDrawPlugin(Star):
                 continue
 
             # 发送（图文消息 caption 与 ComfyUI 链路同构）
+            if external:
+                # v7.8.5：外部插件调用由调用方自己发图——跳过发送链构造，
+                # 不再依赖只有真实会话事件才有的 event.chain_result。
+                yield None, _send_img_path
+                continue
             _cap_text = ""
             _cap_src = ""
             if self._cfg_image_caption().get("enabled", True):
@@ -8050,6 +8076,7 @@ class ComfyUIDrawPlugin(Star):
                 cfg=cfg, steps=steps, sampler=sampler, noise_schedule=noise_schedule,
                 artist=artist,
                 stats=stats,
+                external=external,
             ):
                 yield _pn, _pp
             return
@@ -9839,7 +9866,12 @@ class ComfyUIDrawPlugin(Star):
                             # v7.7.48：AI 没填 caption（很常见）→ 用配置的默认配文兜底，
                             # 否则图片消息里一个字都没有，用户看到的仍像「图 + 另一条文字」。
                             _cap_text, _cap_src = self._fallback_caption()
-                    if not _nsfw_blocked:
+                    if external:
+                        # v7.8.5：外部插件调用由调用方自己发图——这里不构造发送链，
+                        # 也就不依赖只有真实会话事件才有的 event.chain_result。
+                        # Node 传 None，外层 is_external 分支只取路径、不会发送。
+                        yield None, _send_img_path
+                    elif not _nsfw_blocked:
                         if _cap_text:
                             _cap_result = event.chain_result(
                                 self._maybe_at_prefix(
