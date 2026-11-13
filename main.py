@@ -645,6 +645,49 @@ def _is_external_call(source: str = "", external: bool = False) -> bool:
     return bool(external) or str(source or "").strip() == SOURCE_COMPANION_PLUGIN
 
 
+class _HeadlessEvent:
+    """外部插件调用没有会话事件时的最小桩（v7.8.4）。
+
+    背景：萌萌今日老婆的批量补图是后台任务，没有可传的聊天事件；它的合成桩
+    在部分 AstrBot 版本上构造失败会变成 None，于是本插件入口的
+    `isinstance(event, AstrMessageEvent)` 校验不过、退回 `_last_event` 又是空，
+    直接回「未能获取到会话事件」——外部调用本来就不需要会话，没必要卡这里。
+
+    桩只提供「安全读空值」与空实现的 send：外部调用不发消息、不取参考图、
+    权限判定已放行，event 只被 getattr 安全读取。带 `_is_headless` 标记，
+    `_do_draw` 不会把它写进 `_last_event`（避免污染原生调用的兜底）。
+    """
+    _is_headless = True
+    session_id = ""
+    unified_msg_origin = ""
+    message_str = ""
+    message_obj = None
+
+    def get_sender_id(self):
+        return ""
+
+    def get_sender_name(self):
+        return ""
+
+    def get_group_id(self):
+        return ""
+
+    def get_platform_name(self):
+        return ""
+
+    def is_admin(self):
+        return False
+
+    def stop_event(self):
+        return None
+
+    async def send(self, *args, **kwargs):
+        return None
+
+    async def send_message(self, *args, **kwargs):
+        return None
+
+
 def _resolve_emoji_type(emoji_type: str, emoji_id) -> str:
     """解析表情回应要使用的 emoji_type。
 
@@ -7911,7 +7954,10 @@ class ComfyUIDrawPlugin(Star):
         _ratio_src = self._ratio_source_text(event, positive)
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         # （v7.6.2：同时按会话存一份，跨会话兜底会被 _last_event_for 拒绝）
-        self._remember_last_event(event)
+        # v7.8.4：无头桩（外部插件调用）不记——写进去会把原生调用的兜底
+        # 事件替换成一个 session_id 为空的空壳，反而更容易报「取不到会话」。
+        if not getattr(event, "_is_headless", False):
+            self._remember_last_event(event)
         # 出图计时起点（用于生成完成后的耗时报告）
         _draw_start = time.time()
         # [TRACE] 绘图 LLM 调用链路追踪：为本会话本次绘图生成唯一 trace_id，
@@ -16664,7 +16710,12 @@ class ComfyUIDrawPlugin(Star):
                 f"（sid={getattr(event, 'session_id', '') or '空'}）——若发错会话请反馈此日志"
             )
         if event is None:
-            return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
+            if _ext:
+                # v7.8.4：外部插件调用本来就没有会话事件，用无头桩继续
+                event = _HeadlessEvent()
+                logger.info("【绘图·入口】 外部插件调用无会话事件，按无头模式继续")
+            else:
+                return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /draw 指令绘图。"
 
         # 诊断日志：记录工具路径解析到的 user/group，便于排查「指令能出、LLM 无权限」类不对称
         _dbg_uid, _dbg_gid = plugin._event_ids(event)
@@ -20255,7 +20306,12 @@ class ComfyUIDrawPlugin(Star):
                 f"（sid={getattr(event, 'session_id', '') or '空'}）——若发错会话请反馈此日志"
             )
         if event is None:
-            return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
+            if _ext:
+                # v7.8.4：外部插件调用本来就没有会话事件，用无头桩继续
+                event = _HeadlessEvent()
+                logger.info("【图生图·入口】 外部插件调用无会话事件，按无头模式继续")
+            else:
+                return "⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令。"
 
         # ── 单轮出图闸门（v5.0）───────────────────────────────────────
         # 与 comfyui_draw 同一套：本轮已成功出图 / 已失败重试达到上限就收尾。

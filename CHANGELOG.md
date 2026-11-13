@@ -2,6 +2,27 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.4（外部插件调用无会话事件时不再报错）
+
+问题（跨插件）：萌萌今日老婆的批量补图报
+「⚠️ 绘图工具未能获取到会话事件，请稍后重试，或直接使用 /img2img 指令」。
+根因：批量补图是后台任务，没有聊天事件可传；它会给一个合成事件，但该桩在部分
+AstrBot 版本上构造失败就是 None。本插件入口要求
+`isinstance(event, AstrMessageEvent)`，不成立就退回 `plugin._last_event`——刚重启
+或长期没人说话时那个也是空，于是直接返回上面那句错误。外部调用本来就不需要会话
+（不发消息、不取参考图、权限已放行）。
+
+改动：
+- 新增 `_HeadlessEvent`：只提供空值与空实现 `send` 的最小桩，带 `_is_headless` 标记。
+- `llm_draw` / `llm_img2img` 两处入口：`event is None` 且 `_ext` 为真时改用该桩
+  继续出图（打 info 日志）；非外部调用仍然返回原来那句提醒。
+- `_do_draw` 不把无头桩写进 `_last_event`——否则原生调用的兜底事件会被替换成
+  `session_id` 为空的空壳，反而更容易出现「取不到会话」。
+
+验证：
+- `tests/test_external_actor.py` 新增三条（桩存在、两个入口都兜底、桩不进 `_last_event`）。
+- `pytest tests/test_external_actor.py`：5 passed。
+
 ## v7.8.3（外部插件调用的图库归属：记插件而非触发用户）
 
 问题（跨插件）：萌萌今日老婆通过本插件批量补立绘后，图库里这些图显示的作者是

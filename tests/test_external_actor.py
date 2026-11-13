@@ -33,3 +33,23 @@ def test_all_tool_entrypoints_forward_external():
     assert SRC.count("external=_ext") >= 3, (
         "llm_draw 主循环 / 续画循环 / llm_img2img 三处都要传 external=_ext"
     )
+
+
+def test_external_call_without_event_is_allowed():
+    """外部插件后台调用没有会话事件时，不许直接回「未能获取到会话事件」。"""
+    assert "class _HeadlessEvent" in SRC, "缺少无头事件桩"
+    assert SRC.count("event = _HeadlessEvent()") >= 2, (
+        "comfyui_draw / comfyui_img2img 两个入口都要兜底"
+    )
+    # 兜底必须只在外部调用时启用：原生链路仍要求真实事件。
+    # 以两条报错文案为锚点，往前看 400 字符内有没有 `if _ext:` 分支。
+    for tail in ("直接使用 /draw 指令绘图", "直接使用 /img2img 指令"):
+        assert tail in SRC, tail
+        seg = SRC.split(tail, 1)[0][-400:]
+        assert "if _ext:" in seg, f"event 为空时应先判断外部调用：{tail}"
+
+
+def test_headless_event_not_remembered():
+    assert 'getattr(event, "_is_headless", False)' in SRC, (
+        "无头桩不能写进 _last_event，否则会污染原生调用的兜底"
+    )
