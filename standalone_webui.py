@@ -1011,6 +1011,17 @@ class StandaloneWebUI:
             ok = g.purge(sha)
             self._oplog_add("gallery_purge", "图库彻底删除", ref_sha=sha)
             return _ok({"msg": "已彻底删除" if ok else "未找到该图"})
+        if path == "/gallery/batch":
+            body = await request.json() if request.body_exists else {}
+            action = str((body.get("action") or "") if isinstance(body, dict) else "").strip()
+            shas = body.get("shas", []) if isinstance(body, dict) else []
+            if action not in ("delete", "restore", "purge"):
+                return _err("未知批量操作")
+            if not isinstance(shas, list) or not shas:
+                return _err("缺少 shas")
+            res = g.batch_op(action, shas)
+            self._oplog_add("gallery_batch", f"图库批量{action}", ref_sha=f"{res.get('ok', 0)}/{res.get('total', 0)}")
+            return _ok(res)
         if path == "/gallery/tags":
             body = await request.json() if request.body_exists else {}
             sha = (body.get("sha") or "") if isinstance(body, dict) else ""

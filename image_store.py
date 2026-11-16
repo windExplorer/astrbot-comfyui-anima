@@ -2231,6 +2231,39 @@ class ImageStore:
             logger.warning(f"[图库] 删除记录失败: {e}")
             return False
 
+    def batch_op(self, action: str, shas: list) -> dict:
+        """批量操作（WebUI 图库批量选择）。逐个复用单张方法，返回逐项结果。
+
+        action: delete(移入回收站) / restore(恢复) / purge(彻底删除)。
+        返回 {ok, failed, total, failed_shas}，其中 failed_shas 含每个失败 sha，
+        前端可据此提示（例如收藏图不可删除）。单张异常不会中断整批。
+        """
+        valid = ("delete", "restore", "purge")
+        if action not in valid:
+            return {"ok": 0, "failed": 0, "total": 0, "failed_shas": [], "error": "未知批量操作"}
+        fn = {"delete": self.delete, "restore": self.restore, "purge": self.purge}[action]
+        ok = 0
+        failed_shas: list[str] = []
+        seen: set[str] = set()
+        for raw in shas or []:
+            sha = str(raw or "").strip()
+            if not sha or sha in seen:
+                continue
+            seen.add(sha)
+            try:
+                done = bool(fn(sha))
+            except Exception as e:
+                logger.warning(f"[图库] 批量 {action} 单张失败 sha={sha[:12]}: {e}")
+                done = False
+            if done:
+                ok += 1
+            else:
+                failed_shas.append(sha)
+        total = ok + len(failed_shas)
+        if total:
+            logger.info(f"[图库] 批量 {action}：成功 {ok}/{total}" + (f"，失败 {len(failed_shas)}" if failed_shas else ""))
+        return {"ok": ok, "failed": len(failed_shas), "total": total, "failed_shas": failed_shas}
+
     def stats(self) -> dict:
         if not _HAS_SQLITE:
             return {"enabled": False}

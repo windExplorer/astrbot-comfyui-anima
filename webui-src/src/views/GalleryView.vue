@@ -117,27 +117,63 @@
         </n-tooltip>
         <span v-if="scanState.running" class="scan-progress">检测中 {{ scanState.done }}/{{ scanState.total || "?" }}</span>
         <span v-else-if="scanState.finished_at" class="scan-progress scan-done">上次检测 {{ scanState.done }} 张，NSFW {{ scanState.nsfw }}</span>
+        <n-button size="small" :type="selectMode ? 'warning' : 'default'" @click="toggleSelectMode">
+          {{ selectMode ? "退出批量" : "批量操作" }}
+        </n-button>
         <span class="count">{{ total ? total + " 条" : "" }}</span>
       </div>
     </Teleport>
+
+    <!-- 批量操作条：仅在批量模式显示，回收站与普通视图提供不同操作 -->
+    <div v-if="selectMode" class="batch-bar">
+      <n-checkbox :checked="images.length > 0 && selected.size === images.length" @update:checked="(v: boolean) => v ? selectAllVisible() : clearSelection()">全选本页</n-checkbox>
+      <span class="batch-count">已选 <b>{{ selected.size }}</b> / {{ images.length }} 张（仅当前页）</span>
+      <template v-if="activeTab === 'trash'">
+        <n-button size="small" type="info" :disabled="!selected.size || batching" :loading="batching" @click="runBatch('restore')">批量恢复</n-button>
+        <n-popconfirm :show-icon="false" positive-text="彻底删除" negative-text="取消" @positive-click="runBatch('purge')">
+          <template #trigger>
+            <n-button size="small" type="error" :disabled="!selected.size || batching" :loading="batching">批量彻底删除</n-button>
+          </template>
+          已选 {{ selected.size }} 张，彻底删除后不可恢复，确定吗？
+        </n-popconfirm>
+      </template>
+      <template v-else>
+        <n-popconfirm :show-icon="false" positive-text="删除" negative-text="取消" @positive-click="runBatch('delete')">
+          <template #trigger>
+            <n-button size="small" type="error" :disabled="!selected.size || batching" :loading="batching">批量删除</n-button>
+          </template>
+          已选 {{ selected.size }} 张，确定移入回收站吗？（收藏图无法删除）
+        </n-popconfirm>
+      </template>
+      <n-button size="small" quaternary @click="clearSelection">清空选择</n-button>
+      <n-button size="small" quaternary @click="toggleSelectMode">退出</n-button>
+    </div>
 
     <div class="gal-scroll">
       <n-spin :show="searching">
         <div class="gal-grid">
           <n-empty v-if="!searching && !images.length" :description="activeTab === 'trash' ? '回收站为空' : '请输入关键词搜索或直接浏览图库'" style="padding:60px" />
-          <div v-for="img in images" :key="img.sha || img.sha256" class="gal-item" @click="openDetail(img)">
+          <div
+            v-for="img in images"
+            :key="img.sha || img.sha256"
+            class="gal-item"
+            :class="{ 'gal-selected': selectMode && isSelected(img), 'gal-selecting': selectMode }"
+            @click="onItemClick(img)"
+          >
             <img :src="thumbCache[img.sha || img.sha256] || placeholder" :alt="truncate(img.prompt, 20)" loading="lazy" :class="{ 'nsfw-blur': isNsfwBlurred(img) }" @error="onThumbError(img)" />
             <div v-if="isNsfwBlurred(img)" class="gal-nsfw-mask">
               <span>🔞</span>
-              <span class="gal-nsfw-tip">点击查看</span>
+              <span class="gal-nsfw-tip">{{ selectMode ? "点选" : "点击查看" }}</span>
             </div>
             <div class="gal-item-overlay">
               <span v-if="img.starred" class="gal-star">★</span>
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
             </div>
+            <!-- 批量模式：左上角勾选框 -->
+            <div v-if="selectMode" class="gal-check" :class="{ on: isSelected(img) }">{{ isSelected(img) ? "✓" : "" }}</div>
             <span v-if="img.user_name" class="gal-user" :title="img.user_name">{{ cutName(img.user_name) }}</span>
-            <!-- 右上角操作：普通视图=收藏/删除(移回收站)；回收站视图=恢复/彻底删除 -->
-            <div class="gal-actions">
+            <!-- 右上角操作：普通视图=收藏/删除(移回收站)；回收站视图=恢复/彻底删除。批量模式下隐藏 -->
+            <div v-if="!selectMode" class="gal-actions">
               <template v-if="activeTab === 'trash'">
                 <button
                   class="gal-act gal-restore-btn"
@@ -178,7 +214,7 @@
             </div>
             <!-- 封面未加载/加载失败时，hover 显示重载按钮 -->
             <button
-              v-if="!thumbCache[img.sha || img.sha256]"
+              v-if="!selectMode && !thumbCache[img.sha || img.sha256]"
               class="gal-reload"
               :title="thumbFailed[img.sha || img.sha256] ? '封面加载失败，点击重新加载' : '点击重新加载封面'"
               :disabled="reloading[img.sha || img.sha256]"
@@ -252,6 +288,59 @@ const thumbCache = reactive<Record<string, string>>({});
 // 记录封面加载失败的 sha；reloading 记录正在重载中的 sha（用于按钮状态）
 const thumbFailed = reactive<Record<string, boolean>>({});
 const reloading = reactive<Record<string, boolean>>({});
+
+// 批量操作：selectMode 开关；selected 存选中的完整 sha；batching 防止重复提交
+const selectMode = ref(false);
+const selected = ref<Set<string>>(new Set());
+const batching = ref(false);
+function itemSha(img: any): string { return img?.sha || img?.sha256 || ""; }
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  selected.value = new Set();
+}
+function isSelected(img: any): boolean { return selected.value.has(itemSha(img)); }
+function toggleSelect(img: any) {
+  const sha = itemSha(img);
+  if (!sha) return;
+  const next = new Set(selected.value);
+  if (next.has(sha)) next.delete(sha); else next.add(sha);
+  selected.value = next;
+}
+function selectAllVisible() {
+  selected.value = new Set(images.value.map(itemSha).filter(Boolean));
+}
+function clearSelection() {
+  selected.value = new Set();
+}
+function onItemClick(img: any) {
+  if (selectMode.value) toggleSelect(img);
+  else openDetail(img);
+}
+// 执行批量操作；action: delete(移回收站)/restore(恢复)/purge(彻底删除)
+async function runBatch(action: string) {
+  const shas = Array.from(selected.value);
+  if (!shas.length) { message.warning("请先选择图片"); return; }
+  batching.value = true;
+  try {
+    const res: any = await apiPost("gallery/batch", { action, shas });
+    const ok = res?.ok ?? 0;
+    const failed = res?.failed ?? 0;
+    const verb = action === "delete" ? "移入回收站" : action === "restore" ? "恢复" : "彻底删除";
+    if (failed > 0) {
+      message.warning(`已${verb} ${ok} 张，${failed} 张失败（收藏图不可删除或记录已不存在）`, { duration: 5000 });
+    } else {
+      message.success(`已${verb} ${ok} 张`);
+    }
+    selected.value = new Set();
+    selectMode.value = false;
+    doSearch(page.value);
+    loadStats();
+  } catch (e: any) {
+    message.error(e.message || "批量操作失败");
+  } finally {
+    batching.value = false;
+  }
+}
 
 const placeholder = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 const typeOptions = [
@@ -432,6 +521,8 @@ function onThumbError(img: any) {
 async function doSearch(p: number) {
   searching.value = true;
   page.value = p;
+  // 结果集变化（翻页/搜索/切 tab）时清空已选，避免跨页误删
+  if (selected.value.size) selected.value = new Set();
   try {
     const data = await apiGet("gallery/search", {
       keyword: search.value.trim(),
@@ -813,6 +904,21 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 .count { color: var(--text-sub); font-size: 12px; }
+/* 批量操作条 */
+.batch-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(255, 143, 179, 0.14), rgba(126, 182, 255, 0.14));
+  border: 1px solid rgba(255, 143, 179, 0.3);
+  flex: 0 0 auto;
+}
+.batch-count { font-size: 13px; color: var(--text-main); }
+.batch-count b { color: #ff6f9c; font-size: 15px; }
 /* 图片网格滚动区：占满剩余空间，内部滚动，分页器固定底部 */
 .gal-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
 .gal-grid {
@@ -836,6 +942,31 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 .gal-item:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(255, 143, 179, 0.18); }
 .gal-item img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s; }
 .gal-item:hover img { transform: scale(1.05); }
+/* 批量选择态 */
+.gal-item.gal-selecting:hover { transform: none; }
+.gal-item.gal-selected {
+  border-color: #ff6f9c;
+  box-shadow: 0 0 0 2px #ff6f9c, 0 6px 18px rgba(255, 111, 156, 0.35);
+}
+.gal-item.gal-selected img { transform: scale(0.94); opacity: 0.78; }
+.gal-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.35);
+  color: transparent;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+.gal-check.on { background: #ff6f9c; border-color: #ff6f9c; color: #fff; }
 .gal-item-overlay {
   position: absolute;
   top: 8px;

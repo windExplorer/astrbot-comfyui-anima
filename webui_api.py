@@ -24,6 +24,7 @@
 - /gallery/trash  回收站列表
 - /gallery/restore 从回收站恢复
 - /gallery/purge  彻底删除(回收站内)
+- /gallery/batch  批量操作(delete/restore/purge)
 - /gallery/tags   添加标签
 """
 
@@ -2694,6 +2695,30 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"彻底删除失败: {e}")
 
+    async def gallery_batch(self):
+        """批量操作：delete(移入回收站) / restore(恢复) / purge(彻底删除)。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            action = str(payload.get("action", "")).strip()
+            shas = payload.get("shas", [])
+            if action not in ("delete", "restore", "purge"):
+                return error_response("未知批量操作")
+            if not isinstance(shas, list) or not shas:
+                return error_response("缺少 shas")
+            res = g.batch_op(action, shas)
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_batch", f"图库批量{action}", ref_sha=f"{res.get('ok', 0)}/{res.get('total', 0)}")
+            except Exception:
+                pass
+            return json_response(res)
+        except Exception as e:
+            return error_response(f"批量操作失败: {e}")
+
     async def gallery_tags(self):
         g = self._gallery()
         if g is None:
@@ -3686,6 +3711,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/trash", _h("gallery_trash"), ["GET"], "图库回收站"),
         (f"{prefix}/gallery/restore", _h("gallery_restore"), ["POST"], "图库恢复"),
         (f"{prefix}/gallery/purge", _h("gallery_purge"), ["POST"], "图库彻底删除"),
+        (f"{prefix}/gallery/batch", _h("gallery_batch"), ["POST"], "图库批量操作"),
         (f"{prefix}/gallery/tags", _h("gallery_tags"), ["POST"], "图库打标签"),
         (f"{prefix}/gallery/backup", _h("backup_db"), ["GET"], "备份图库数据库"),
         (f"{prefix}/stats/ranking", _h("stats_ranking"), ["GET"], "用户生图排行"),

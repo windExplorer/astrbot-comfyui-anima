@@ -2,6 +2,24 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.8（图库批量操作：批量删除/恢复/彻底删除）
+
+需求：WebUI 图库加批量选择，能一次删多张；回收站也支持批量恢复与彻底删除。
+
+实现：
+- `image_store.py` 新增 `batch_op(action, shas)`：逐张复用现有 `delete`/`restore`/
+  `purge`，收集 `{ok, failed, total, failed_shas}`，单张异常不中断整批、sha 去重。
+  收藏图按既有规则拒绝删除，计入 failed_shas 供前端提示。
+- 新路由 `gallery/batch`（POST，body `{action, shas}`）：内嵌通道 `webui_api.py` 与
+  独立通道 `standalone_webui.py`（用户主力）两条都加，避免独立 WebUI 404。
+- `GalleryView.vue`：工具栏加「批量操作」开关；开启后卡片点选（勾选框+高亮），
+  批量条提供「全选本页/清空/退出」+ 按视图区分的操作（普通=批量删除移回收站；
+  回收站=批量恢复/批量彻底删除，均二次确认）。翻页/搜索/切 tab 自动清空已选，
+  避免跨页误删；结果按 ok/failed 分别提示。
+- 自检 `tests/test_gallery_batch.py`（真 SQLite）：10 项全过，覆盖删除（含收藏图
+  拒绝）、恢复、彻底删除、去重、空 shas、未知 action。批量操作的手动二次确认
+  由前端 n-popconfirm 承担，UI 已验证随构建通过。
+
 ## v7.8.7（图库筛选与多参考图三处修复）
 
 问题（WebUI 图库）：
