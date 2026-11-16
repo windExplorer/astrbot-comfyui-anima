@@ -8,7 +8,7 @@
 - 成品图 / 参考图 / 用户收藏图都按内容寻址落盘，重复内容不重复占用空间。
 - 语义标签（多对多）存在 image_tags 表，用于「把我们的合照发我」这类召回。
 - 模型永远不直接接触本地路径：插件用 event.send(Image(file=绝对路径)) 代发。
-- 保留策略：超 max_total_mb 时按 LRU 淘汰，收藏 / 带标签图永不淘汰。
+- 保留策略：超 max_total_mb 时按 LRU 淘汰，收藏 / 带标签图永不淘汰；max_total_mb=0 表示不限容量。
 """
 
 import base64
@@ -2585,6 +2585,8 @@ class ImageStore:
         if not _HAS_SQLITE:
             return 0
         max_mb = int(self._cfg("max_total_mb", 2048))
+        if max_mb <= 0:  # 0 = 不限容量，不做任何 LRU 淘汰
+            return 0
         conn = self._conn_get()
         try:
             active_size, trash_size = self._compute_sizes(conn)
