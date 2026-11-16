@@ -6,15 +6,25 @@
         <button v-if="canNav" class="iv-nav iv-nav-prev" :disabled="navPrevDisabled" @click="onNav(-1)" aria-label="上一张">‹</button>
         <div v-if="canNav" class="iv-counter">{{ navIndex + 1 }} / {{ navTotal }}</div>
         <!-- 图片区：点击图片之外的空白（含图四周留白）关闭 -->
-        <div class="iv-imgs" :data-pair="isPair ? '1' : '0'" @click="onClose">
-          <!-- 参考图（图生图源图） -->
-          <figure v-if="isPair" class="iv-fig">
+        <div class="iv-imgs" :data-pair="isPair ? '1' : '0'" :data-mref="isMultiRef ? '1' : '0'" @click="onClose">
+          <!-- 参考图（图生图源图）：单张沿用原布局；多张时横向排布 -->
+          <figure v-if="isPair && !isMultiRef" class="iv-fig">
             <div class="iv-imgwrap">
               <img v-if="refSrc" :src="refSrc" alt="参考图" @click="swapPair" />
               <div v-else class="iv-loading">加载参考图…</div>
             </div>
             <figcaption class="iv-cap ref">参考图{{ refDim ? ` ${refDim}` : "" }}</figcaption>
           </figure>
+          <!-- 多张参考图：并排缩略，点击可交换到主图位 -->
+          <div v-if="isPair && isMultiRef" class="iv-refs">
+            <figure v-for="(r, i) in refSrcs" :key="i" class="iv-fig iv-fig-ref">
+              <div class="iv-imgwrap">
+                <img v-if="r.src" :src="r.src" :alt="`参考图${i + 1}`" @click="swapPair(i)" />
+                <div v-else class="iv-loading">参考图{{ i + 1 }}…</div>
+              </div>
+              <figcaption class="iv-cap ref">参考图{{ i + 1 }}{{ r.dim ? ` ${r.dim}` : "" }}</figcaption>
+            </figure>
+          </div>
           <!-- 结果图 -->
           <figure class="iv-fig">
             <div class="iv-imgwrap">
@@ -163,6 +173,8 @@ interface ViewerImage {
   sha?: string;
   sha256?: string;
   ref_sha256?: string;
+  /** 多张参考图 sha（逗号串由后端提供，前端拆分为数组） */
+  ref_sha256s?: string[];
   source?: string;
   is_img2img?: boolean;
   prompt?: string;
@@ -238,7 +250,21 @@ const refDim = computed(() => {
   const m = refMeta.value;
   return m && m.w && m.h ? `${m.w}×${m.h}` : "";
 });
+// v7.8.7：多张参考图。ref_sha256 为逗号串（单张时是裸 sha），此处拆成数组。
+// 每张 { src, dim }，与单图路径的 refSrc/refMeta 并存，互不影响。
+const refSrcs = ref<Array<{ src: string; dim: string }>>([]);
+// 从 sha 串/数组拆出参考图 sha 列表（去空；单张返回 1 项）
+function refShaList(raw: string | string[] | undefined | null): string[] {
+  if (Array.isArray(raw)) return raw.map((s) => String(s || "").trim()).filter(Boolean);
+  if (!raw) return [];
+  return String(raw).split(",").map((s: string) => s.trim()).filter(Boolean);
+}
 const item = ref<ViewerImage | null>(null);
+// 当前主图对应的参考图 sha 列表（优先 prop，其次 item 元数据）
+const currentRefShas = computed(() =>
+  refShaList(props.refSha || (item.value && (item.value as any).ref_sha256s) || (item.value && item.value.ref_sha256))
+);
+const isMultiRef = computed(() => currentRefShas.value.length > 1);
 // 生成详情弹窗（触发词/提示词/负面词）：独立 teleport 到 body，z-index 高于大图(9999)避免被遮挡
 const showDetail = ref(false);
 // 手机端信息抽屉折叠状态：默认收起（先看大图，想看详情再展开），关闭查看器时复位
@@ -283,6 +309,9 @@ watch(
 );
 
 const isPair = computed(() => {
+  if (isMultiRef.value) {
+    return Boolean(mainSrc.value && refSrcs.value.some((r) => r.src));
+  }
   const rs = props.refSha || (item.value && item.value.ref_sha256);
   return Boolean(rs && mainSrc.value && refSrc.value);
 });
@@ -437,25 +466,34 @@ async function onDownload() {
   }
 }
 
-async function loadRef(rs: string) {
-  refSrc.value = "";
-  refMeta.value = null;
+// 加载单张参考图，返回 { src, dim }（内嵌页带尺寸，独立模式仅直链）
+async function fetchRef(rs: string): Promise<{ src: string; dim: string }> {
   try {
     // 独立模式：用直链 URL（拿不到 meta，尺寸标签留空）
     if (isStandaloneMode()) {
-      refSrc.value = standaloneImgUrl(rs, 900);
-      return;
+      return { src: standaloneImgUrl(rs, 900), dim: "" };
     }
     // 内嵌页：参考图展示尺寸较小，用更小的 size 进一步减小体积；
     // meta 里带参考图的图库记录（w/h），顺手存下来显示尺寸（v7.7.22）
     const data = await apiGet("gallery/image", { sha: rs, meta: 1, size: 900 });
     if (data && data.data_url) {
-      refSrc.value = data.data_url;
-      refMeta.value = data.meta || null;
+      const m = data.meta;
+      return { src: data.data_url, dim: m && m.w && m.h ? `${m.w}×${m.h}` : "" };
     }
   } catch (e) {
-    refSrc.value = "";
-    refMeta.value = null;
+    // 加载失败按空处理，不影响其它参考图
+  }
+  return { src: "", dim: "" };
+}
+
+async function loadRef(rs: string) {
+  refSrc.value = "";
+  refMeta.value = null;
+  const got = await fetchRef(rs);
+  refSrc.value = got.src;
+  if (got.dim) {
+    const [w, h] = got.dim.split("×");
+    refMeta.value = { w: Number(w), h: Number(h) };
   }
 }
 
@@ -468,16 +506,39 @@ watch(
     item.value = props.item || null;
     mainSrc.value = "";
     refSrc.value = "";
+    refMeta.value = null;
+    refSrcs.value = [];
     const tasks: Promise<void>[] = [loadMain(sha)];
-    const ref = rs || (item.value && item.value.ref_sha256);
-    if (ref) tasks.push(loadRef(String(ref)));
+    // v7.8.7：多参考图走批量；单参考图沿用原路径（refSrc/refMeta）
+    const shas = refShaList(rs || (item.value && (item.value as any).ref_sha256s) || (item.value && item.value.ref_sha256));
+    if (shas.length > 1) {
+      tasks.push(
+        Promise.all(shas.map((s) => fetchRef(s))).then((got) => {
+          refSrcs.value = got;
+        })
+      );
+    } else if (shas.length === 1) {
+      tasks.push(loadRef(shas[0]));
+    }
     await Promise.all(tasks);
   },
   { immediate: true }
 );
 
-function swapPair() {
+function swapPair(index?: number) {
   // 点击参考图/结果图标签时可交换主次（参考图也可以作为主图查看）
+  // v7.8.7：多参考图模式传 index，把第 index 张参考图换到主图位
+  if (index != null && index >= 0 && index < refSrcs.value.length) {
+    const m = mainSrc.value;
+    mainSrc.value = refSrcs.value[index].src;
+    refSrcs.value[index].src = m;
+    // 尺寸跟着图走：主图尺寸与参考图尺寸对调
+    const mw = Number(item.value?.w) || 0, mh = Number(item.value?.h) || 0;
+    const rdim = refSrcs.value[index].dim;
+    refSrcs.value[index].dim = mw && mh ? `${mw}×${mh}` : "";
+    item.value = rdim ? { ...(item.value || {}), w: Number(rdim.split("×")[0]), h: Number(rdim.split("×")[1]) } : item.value;
+    return;
+  }
   const m = mainSrc.value;
   mainSrc.value = refSrc.value;
   refSrc.value = m;
@@ -796,6 +857,21 @@ function onPurge(it: any) { emit("purge", it); }
 .iv-imgs[data-pair="1"] .iv-fig { flex: 1 1 50%; min-width: 0; max-width: 50%; }
 .iv-imgs[data-pair="1"] .iv-imgwrap { max-height: calc(100vh - 90px); }
 .iv-imgs[data-pair="1"] .iv-imgwrap img { max-width: 100%; max-height: calc(100vh - 100px); }
+/* 多张参考图：左侧参考图列可横向滚动，每张缩略图等宽；右侧结果图仍占约一半 */
+.iv-refs {
+  flex: 1 1 50%;
+  max-width: 50%;
+  min-width: 0;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+}
+.iv-refs .iv-fig-ref { flex: 0 0 auto; width: clamp(120px, 16vw, 220px); }
+.iv-refs .iv-imgwrap { width: 100%; max-height: calc(100vh - 190px); }
+.iv-refs .iv-imgwrap img { max-width: 100%; max-height: calc(100vh - 200px); }
+.iv-imgs[data-mref="1"] > .iv-fig:last-child { flex: 1 1 50%; max-width: 50%; }
 .iv-loading {
   color: rgba(255, 255, 255, 0.6);
   padding: 40px;
@@ -1083,6 +1159,12 @@ function onPurge(it: any) { emit("purge", it); }
   .iv-imgs[data-pair="1"] .iv-fig { flex: 1 1 50%; min-width: 0; max-width: 100%; min-height: 0; }
   .iv-imgs[data-pair="1"] .iv-imgwrap { height: 100%; }
   .iv-imgs[data-pair="1"] .iv-imgwrap img { max-height: 100%; }
+  /* 多参考图：移动端参考图列横向滚动、固定高度，结果图仍占一半 */
+  .iv-imgs[data-mref="1"] > .iv-fig:last-child { flex: 1 1 50%; max-width: 100%; }
+  .iv-refs { flex: 0 0 34%; max-width: 100%; width: 100%; height: 34%; overflow-x: auto; align-items: stretch; }
+  .iv-refs .iv-fig-ref { width: clamp(110px, 34vw, 180px); }
+  .iv-refs .iv-imgwrap { height: 100%; max-height: 100%; }
+  .iv-refs .iv-imgwrap img { max-height: 100%; }
 
   /* 底部抽屉：绝对定位覆盖在图片下方，半透明毛玻璃；展开高度受限（≤46vh），默认收起只露把手 */
   .iv-info {

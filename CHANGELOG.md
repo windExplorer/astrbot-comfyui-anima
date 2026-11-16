@@ -2,6 +2,32 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.7（图库筛选与多参考图三处修复）
+
+问题（WebUI 图库）：
+1. 筛选「图生图」后分页器消失；
+2. 筛选「参考图」列表为空；
+3. 一次出图传多张参考图，大图查看器只显示第一张。
+
+根因：
+- `search()` 对 img2img 用 `is_img2img=1`，但 `count_search()` 直接按
+  `source='img2img'` 过滤——图生图成品图 `source` 其实是 `gen`，计数恒为 0，
+  前端 `total=0` 就把分页器隐藏了。
+- 参考图归档时写的是 `source='user'`（`SRC_REF` 导入后从未使用），而筛选按
+  `source='ref'` 查，必然为空；统计里的「参考图」也恒为 0。
+- `ref_sha256` 是单值列，主链路只把第一张参考图的 sha 写进去，查看器也只加载
+  一个 refSha，一对多被压成单值。
+
+改动：
+- `image_store.py` 新增 `type_filter_sql()` 供 `search` / `count_search` 共用，
+  根治两处口径漂移：img2img 按 `is_img2img=1`、ref 同时命中 `source IN ('ref','user')`。
+  分页器与「N 条」统计恢复，「参考图」能看到已归档的图。
+- 参考图 sha 支持多张：`main.py` 归档时逐张收集、逗号拼接、去重写入 `ref_sha256`
+  （单张仍是裸 sha，旧数据与所有下游调用天然兼容）。
+- `ImageViewer.vue`：新增多参考图模式（`ref_sha256` 逗号串拆数组、并行加载、
+  横向缩略并排、点击任一张可换到主图位），单参考图路径完全不变。
+- 自检 `tests/test_gallery_filters_refs.py` 10 项全过（筛选口径 + 多 sha 拼接）。
+
 ## v7.8.6（图库容量支持设为 0 表示不限）
 
 问题：图库容量上限 `gallery.max_total_mb` 的配置面板滑块下限是 128MB、上限 20480MB

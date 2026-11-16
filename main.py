@@ -7999,7 +7999,9 @@ class ComfyUIDrawPlugin(Star):
             f"来源={source or '(原生)'} 图生图={is_img2img}"
         )
         # 图生图参考图的 sha256（归档成品图时回填到 ref_sha256 字段）
-        ref_sha256 = None
+        # v7.8.7：支持多张参考图，用逗号分隔拼接全部 sha；旧版只保留第一张。
+        # 单张时仍是裸 sha，与历史数据 / 下游（_record_failed、viewer）天然兼容。
+        ref_sha256 = ""
         # 用户标识（成品图归档用）：用 get_sender_id() 取真实用户ID，避免归档成"无主图"
         # v7.8.3：外部插件调用不记触发者 QQ —— 这类调用的 event 只是"凑巧触发
         # 了这条命令的用户消息"，与"谁产出的图"无关。改记 `plugin:<source>`，
@@ -8373,9 +8375,10 @@ class ComfyUIDrawPlugin(Star):
                             keep_src=True,
                         )
                         # archive_image 现返回归档后路径，反算 sha 作为 ref_sha256（入库/回填用）
+                        # v7.8.7：逐张拼接，多参考图全部记录（逗号分隔），去重避免同一张重复占位
                         _sha = _sha256_of(_final) if _final else None
-                        if _sha and ref_sha256 is None:
-                            ref_sha256 = _sha
+                        if _sha and _sha not in ref_sha256.split(","):
+                            ref_sha256 = (ref_sha256 + "," if ref_sha256 else "") + _sha
                         logger.info(f"【图库】 已归档参考图: {_ri} -> {_final}")
                 except Exception as _re:
                     logger.warning(f"【图库】 参考图归档失败（不影响出图）: {_re}")

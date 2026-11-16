@@ -39,6 +39,25 @@ SRC_GEN = "gen"  # 本插件生图成品
 SRC_REF = "ref"  # 图生图参考图
 SRC_USER = "user"  # 用户发来/收藏的图
 
+# ref_sha256 支持多个 sha（图生图多参考图），用逗号分隔；旧数据是单个 sha，天然兼容
+REF_SHA_SEP = ","
+
+
+def type_filter_sql(type: str | None) -> tuple[str, list]:
+    """search / count_search 共用的 type 过滤片段，避免两处口径漂移。
+
+    - img2img：成品图 source 仍是 gen，按 is_img2img=1 过滤（不能按 source）。
+    - ref：参考图归档时写的是 source=user（见 main.py），故 ref/user 合并命中。
+    - gen / user：按 source 精确匹配。
+    """
+    if not type:
+        return "", []
+    if type == "img2img":
+        return " AND is_img2img=1", []
+    if type == "ref":
+        return " AND source IN (?,?)", [SRC_REF, SRC_USER]
+    return " AND source=?", [type]
+
 # NSFW 检测器懒加载导入（兼容「相对导入 / 绝对导入」两种插件加载方式）
 _NSFW_DET_MODULE = None
 
@@ -1730,9 +1749,9 @@ class ImageStore:
         if tag and tag.strip():
             sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
             args.append(tag.strip())
-        if type:
-            sql += " AND source=?"
-            args.append(type)
+        _tfsql, _tfargs = type_filter_sql(type)
+        sql += _tfsql
+        args += _tfargs
         if starred_only:
             sql += " AND starred=1"
         if user_filter and user_filter.strip():
@@ -1815,14 +1834,9 @@ class ImageStore:
         if tag and tag.strip():
             sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
             args.append(tag.strip())
-        if type:
-            # type=img2img 按「图生图」过滤（is_img2img=1），因为图生图成品图的
-            # source 仍是 gen，不能用 source 匹配；其余 gen/ref/user 按 source 过滤。
-            if type == "img2img":
-                sql += " AND is_img2img=1"
-            else:
-                sql += " AND source=?"
-                args.append(type)
+        _tfsql, _tfargs = type_filter_sql(type)
+        sql += _tfsql
+        args += _tfargs
         if starred_only:
             sql += " AND starred=1"
         if user_filter and user_filter.strip():
