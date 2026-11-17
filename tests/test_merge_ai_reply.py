@@ -95,7 +95,7 @@ def _source() -> str:
 def _load(names: tuple[str, ...], ns_extra: dict | None = None) -> dict:
     src = _source()
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     def _hook_register(_name):
         def deco(fn):
             return fn

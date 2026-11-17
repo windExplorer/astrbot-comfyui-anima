@@ -41,7 +41,7 @@ def _load(want_methods: set[str], want_modfuncs: set[str], want_consts: set[str]
         elif isinstance(node, ast.Assign) and any(
                 getattr(t, "id", "") in want_consts for t in node.targets):
             exec(textwrap.dedent(ast.get_source_segment(src, node) or ""), ns)  # noqa: S102
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     for node in cls.body:
         if isinstance(node, _FUNCS) and node.name in want_methods:
             seg = ast.get_source_segment(src, node) or ""
@@ -90,7 +90,9 @@ class _FakePlugin:
         return self.provider
 
     # --- 被替换的 LLM 扩写（免网络） ---
-    async def _enhance_prompt_llm(self, positive, *, style="tags"):
+    # v7.8.19：真 _boost_positive 会传 lora_ref（v7.5.x 下传），
+    # 桩缺它会 TypeError 被产品宽 except 吞掉 → 扩写标签全丢。
+    async def _enhance_prompt_llm(self, positive, *, style="tags", lora_ref=""):
         self.enhance_calls += 1
         if isinstance(self._enrich, Exception):
             raise self._enrich

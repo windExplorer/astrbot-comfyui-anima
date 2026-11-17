@@ -54,7 +54,7 @@ def _load() -> dict:
         elif isinstance(node, ast.Assign) and any(
                 getattr(t, "id", "") in _WANT_CONSTS for t in node.targets):
             exec(textwrap.dedent(ast.get_source_segment(src, node) or ""), ns)  # noqa: S102
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     for node in cls.body:
         if isinstance(node, _FUNCS) and node.name in _WANT_METHODS:
             seg = ast.get_source_segment(src, node) or ""

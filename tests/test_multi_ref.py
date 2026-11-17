@@ -27,7 +27,7 @@ def _load_main_funcs(want: set[str]) -> dict:
     """从 main.py 摘类方法（静态）单独执行（main 依赖 astrbot 运行时装不了）。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns = {"re": re}
     for node in cls.body:
         if isinstance(node, ast.FunctionDef) and node.name in want:

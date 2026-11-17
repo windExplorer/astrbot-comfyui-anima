@@ -36,7 +36,7 @@ class _Log:
 def _load_helpers(want: set[str]) -> dict:
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")   # main.py 带 BOM
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns: dict = {"re": re, "logger": _Log()}
     for node in cls.body:
         if not isinstance(node, ast.FunctionDef) or node.name not in want:

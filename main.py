@@ -453,6 +453,34 @@ def _decide_wait_timeout(
     return timeout, per_extra, max_timeout, hard_cap, squeezed, interval
 
 
+def _merge_active_loras(*, loras_cfg, raw_hits: dict, lora_map) -> dict | None:
+    """v7.8.19：从 `_do_draw` 抽出的本次启用 LoRA 合并（无 self / 无 await / 无 IO）。
+
+    顺序：工作流默认启用（权重 None）→ 用户原话命中 → 显式指定 `lora_map` 覆盖。
+    原话已点名同系列（互相包含，如「娜娜莉」与「娜娜莉2」）时忽略 LLM 指定的那个，
+    避免两个版本一起注入。返回 None 表示本次没有启用任何 LoRA。
+    """
+    merged: dict[str, float | None] = {}
+    for lora in loras_cfg:
+        nm = (lora.get("name") or "").strip()
+        if nm and lora.get("enabled"):
+            merged[nm] = None
+    merged.update(raw_hits)
+    if lora_map is not None:
+        for nm, w in lora_map.items():
+            nm = (nm or "").strip()
+            if not nm:
+                continue
+            if nm not in raw_hits and any(
+                nm != h and (nm.lower() in h.lower() or h.lower() in nm.lower())
+                for h in raw_hits
+            ):
+                logger.info(f"【LoRA】 用户原话已点名同系列 LoRA，忽略 LLM 指定的「{nm}」")
+                continue
+            merged[nm] = w
+    return merged or None
+
+
 # 放大模型名里的倍率：`4x-UltraSharp.pth`（数字在前）或 `RealESRGAN_x2plus.pth`（x 在前）
 _UPSCALE_FACTOR_RE_A = re.compile(r"(?<![0-9.])(\d{1,2}(?:\.\d)?)\s*x", re.IGNORECASE)
 _UPSCALE_FACTOR_RE_B = re.compile(r"x\s*(\d{1,2}(?:\.\d)?)(?![0-9])", re.IGNORECASE)
@@ -8943,33 +8971,14 @@ class ComfyUIDrawPlugin(Star):
         #   ③ 关键字匹配：仅当开启配置 `lora_keyword_auto` 时，额外用每条 LoRA 的
         #      「关键字」字段匹配用户原话（默认关闭，避免泛化词误挂）；
         #   ④ 显式指定（/draw --名称、LLM 的 loras 参数）：叠加在 ①~③ 之上并覆盖权重。
-        merged: dict[str, float | None] = {}
-        for lora in loras_cfg:
-            nm = (lora.get("name") or "").strip()
-            if nm and lora.get("enabled"):
-                merged[nm] = None
+        # v7.8.19：启用合并抽成模块级纯函数 _merge_active_loras（原话命中的
+        # 计算仍在这里调 self 方法，结果作为参数传入，保持边界清晰）。
         _raw_hits = self._match_loras_by_raw_message(
             event, include_keywords=bool(self._cfg("lora_keyword_auto", False))
         )
-        merged.update(_raw_hits)
-        if lora_map is not None:
-            for nm, w in lora_map.items():
-                nm = (nm or "").strip()
-                if not nm:
-                    continue
-                # 原话优先：用户原话已点名了另一个「同系列」LoRA（互为包含关系，
-                # 如原话是「娜娜莉」而 LLM 填了「娜娜莉2」）→ 以用户原话为准，
-                # 忽略 LLM 这个，避免同系列两个版本一起上。
-                if nm not in _raw_hits and any(
-                    nm != h and (nm.lower() in h.lower() or h.lower() in nm.lower())
-                    for h in _raw_hits
-                ):
-                    logger.info(
-                        f"【LoRA】 用户原话已点名同系列 LoRA，忽略 LLM 指定的「{nm}」"
-                    )
-                    continue
-                merged[nm] = w
-        active_map = merged or None
+        active_map = _merge_active_loras(
+            loras_cfg=loras_cfg, raw_hits=_raw_hits, lora_map=lora_map
+        )
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
         # v7.6.2 可观测性：本次**没人点名**任何 LoRA，却因为「工作流默认启用项」带上了
         # （`/loraon` 或 WebUI 把某个角色 LoRA 设成了默认启用 → 之后**所有会话**用这个

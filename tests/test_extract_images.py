@@ -103,7 +103,7 @@ def _load_funcs(names: tuple, ns_extra: dict | None = None) -> dict:
     """从 main.py 原样抠出插件类里的方法定义再 exec —— 测的是磁盘上的真代码。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns = {"logger": _Log(), "Image": _Image, "Reply": _Reply, "CardImage": None, "os": os,
           "AstrMessageEvent": object}
     if ns_extra:

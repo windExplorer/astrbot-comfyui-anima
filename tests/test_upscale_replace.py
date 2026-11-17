@@ -24,7 +24,7 @@ def _load_plan():
     # main.py 带 UTF-8 BOM，用 utf-8-sig 读掉，否则 ast.parse 会报非法字符
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns: dict = {}
     for node in cls.body:
         if not isinstance(node, ast.FunctionDef) or node.name != "_upscale_replace_plan":

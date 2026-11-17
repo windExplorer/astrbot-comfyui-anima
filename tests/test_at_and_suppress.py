@@ -54,7 +54,7 @@ def _source() -> str:
 def _load_methods(names: tuple[str, ...], ns_extra: dict | None = None) -> dict:
     src = _source()
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns = {"logger": _Log(), "At": _FakeAt, "filter": _FakeFilter(),
           "time": __import__("time"), "random": __import__("random"),
           "AstrMessageEvent": object}
