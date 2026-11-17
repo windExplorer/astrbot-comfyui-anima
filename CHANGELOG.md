@@ -2,6 +2,29 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.13（大图传输收紧：回收站改缩略图，原图 base64 加 8MB 上限）
+
+问题：三处内联 base64 路径缺少体积约束：
+- `gallery_image?raw=1`（内嵌页下载原图）此前**没有任何上限**，直接读整张
+  归档图转 base64 塞进 JSON；
+- `_orig_data_url_sync` 默认上限 24MB，base64 放大约 1.33x → 约 32MB 字符串，
+  并发几路即可打满内存/带宽；
+- 两条通道的 `/gallery/trash` 把最多 200 张**原图**逐张转 base64 当缩略图
+  （3MB/张 → 600MB 读盘 + 800MB JSON），是本次最大的风险点。
+
+说明：独立 WebUI 的大图走 `/img/{sha}` 二进制直链，不经 base64；内嵌页因
+AstrBot 登录鉴权下 `<img>` 直链会 401，才需要内联 data URL。
+
+修复：
+- 新增 `_ORIG_B64_MAX = 8MB`；`_orig_data_url_sync` 默认改用该值，超限仍返回
+  None（调用方回退缩略图）。
+- `gallery_image?raw=1` 超限返回 413，提示改用独立 WebUI 下载原图。
+- 内嵌 `WebUIApi.gallery_trash` 与独立 `StandaloneWebUI` 的 trash 分支均改用
+  带 LRU 缓存的 300px 缩略图（`_thumb_cached`）；前端 `thumb` 字段仍是 data URL，
+  无需改动。
+- 新增 `tests/test_orig_size_guard.py`：AST 抠纯函数真测 8MB 边界，静态守卫
+  两条通道回收站不再读原图、raw 分支有上限。
+
 ## v7.8.12（HTTP 会话统一：共享池 + 卸载关闭，修掉热重载泄漏）
 
 问题：会话策略散在三个模块且各有缺陷：

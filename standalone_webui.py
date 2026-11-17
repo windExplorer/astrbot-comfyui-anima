@@ -1081,9 +1081,9 @@ class StandaloneWebUI:
                 sha = r.get("sha256", "")
                 p = g.path_of(sha)
                 if p and Path(p).exists():
-                    raw = await asyncio.to_thread(Path(p).read_bytes)
-                    mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-                    r["thumb"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                    # v7.8.13：与 webui_api 通道同步——回收站最多 200 条，
+                    # 逐张读原图转 base64 会把内存/带宽打满。改用带缓存的 300px 缩略图。
+                    r["thumb"] = await asyncio.to_thread(self._thumb_cached, p, 300) or ""
                 else:
                     r["thumb"] = ""
             return _ok(rows)

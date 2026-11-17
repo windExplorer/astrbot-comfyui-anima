@@ -60,6 +60,12 @@ except Exception:  # pragma: no cover
 # 的插件页面桥接会把请求发到错误路径（全部 404 / 前端永远加载中）。
 PLUGIN_NAME = "astrbot_plugin_comfyui_anima"
 
+# 原图转 data URL 的硬上限（v7.8.13）：base64 放大约 1.33x，8MB → 约 11MB 字符串。
+# 独立 WebUI 的大图走 /img/{sha} 直链不经 base64；此限制只影响内嵌页（AstrBot
+# 登录鉴权下 <img> 直链会 401，只能内联）。原 24MB 上限放大后约 32MB，
+# 并发几路即可把内存/带宽打满。
+_ORIG_B64_MAX = 8 * 1024 * 1024
+
 # 路由方法表（v6.0.0）：`register_web_api` 注册时填充，键为含插件名前缀的完整路径，
 # 值为允许的 HTTP 方法。独立 WebUI 通道（standalone_webui）复用它做方法校验。
 ROUTE_METHODS: "dict[str, list[str]]" = {}
@@ -991,11 +997,13 @@ class WebUIApi:
             return None
 
     @staticmethod
-    def _orig_data_url_sync(path: Path, max_bytes: int = 24 * 1024 * 1024) -> tuple[str, str] | None:
+    def _orig_data_url_sync(path: Path, max_bytes: int = _ORIG_B64_MAX) -> tuple[str, str] | None:
         """读**原图**整字节并编码 data URL（不缩放），供「查看大图」使用。
 
-        超过 `max_bytes`（默认 24MB）返回 None——调用方回退缩略图，避免一次性
-        把超大文件 base64 进内存把页面卡死。
+        超过 `max_bytes`（默认 8MB）返回 None——调用方回退缩略图，避免一次性
+        把超大文件 base64 进内存把页面卡死。base64 会放大约 1.33x，
+        8MB 原图对应约 11MB 字符串；原 24MB 上限会放大到 32MB，
+        并发几路就能把内存/带宽打满。
         """
         try:
             if Path(path).stat().st_size > max_bytes:
@@ -2480,6 +2488,18 @@ class WebUIApi:
                     # 供前端「下载原图」按钮取归档原图字节。
                     raw_mode = request.query.get("raw", "0") == "1"
                     if raw_mode:
+                        # v7.8.13：这条路径以内联 base64 返回归档原图，此前**没有任何**
+                        # 体积上限——超大图会读满内存再放大 1.33x 塞进 JSON。超限直接
+                        # 拒绝，提示改用独立 WebUI 的 /img/{sha} 直链（不经 base64）。
+                        try:
+                            _raw_size = Path(path).stat().st_size
+                        except Exception:
+                            _raw_size = 0
+                        if _raw_size > _ORIG_B64_MAX:
+                            return error_response(
+                                "原图超过 8 MB，无法在内嵌页以 base64 下载；请使用独立 WebUI 下载原图",
+                                status_code=413,
+                            )
                         _raw = await asyncio.to_thread(Path(path).read_bytes)
                         _raw_mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
                         data_url = f"data:{_raw_mime};base64,{base64.b64encode(_raw).decode('ascii')}"
@@ -2644,9 +2664,10 @@ class WebUIApi:
                 try:
                     p = g.path_of(sha)
                     if p and Path(p).exists():
-                        raw = await asyncio.to_thread(Path(p).read_bytes)
-                        mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-                        r["thumb"] = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+                        # v7.8.13：这里最多 200 条，逐张读**原图**转 base64
+                        # （3MB/张 → 600MB 读盘 + 800MB JSON）。改用带 LRU 缓存的
+                        # 300px 缩略图，字段仍是 data URL，前端无需改动。
+                        r["thumb"] = await asyncio.to_thread(_thumb_cached, p, 300) or ""
                     else:
                         r["thumb"] = ""
                 except Exception:
