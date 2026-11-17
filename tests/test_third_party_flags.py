@@ -202,7 +202,9 @@ class _FakeBoostSelf:
     def _should_enhance(self, out, style, cfg, known_names=(), draw_start=0.0):
         return True, "测试强制扩写"
 
-    async def _enhance_prompt_llm(self, out, style="unknown"):
+    # v7.8.17：真 _boost_positive 会传 lora_ref（CHANGELOG v7.5.x 下传），
+    # 桩缺这个参数 → TypeError 被产品的宽 except 吞掉 → enhance_calls 恒为 0。
+    async def _enhance_prompt_llm(self, out, style="unknown", lora_ref=""):
         self.enhance_calls += 1
         return out + ", cinematic lighting"
 

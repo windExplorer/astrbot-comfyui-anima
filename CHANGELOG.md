@@ -2,6 +2,28 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.17（测试基线修复：桩签名滞后导致的 9 项既有失败）
+
+背景：v7.8.16 修好三个 AST 测试的 ClassDef 定位后，暴露出 9 项既有失败——
+经逐项核查，**全部是测试桩滞后于产品演进，产品代码零问题**：
+
+- v7.8.4 新增 `_HeadlessEvent` 后，多个测试用「第一个 ClassDef」定位插件类，
+  拿到的是空壳类（v7.8.16 已修三个，本轮补齐 `test_refine_fallback.py` 两处）；
+- v7.5.x 起各 `_rewrite_*` / `_enhance_prompt_llm` 统一新增 `lora_ref` 参数，
+  测试桩停在旧签名 → `TypeError` 被产品代码的宽 `except` 吞掉 → 静默返回原文，
+  表现为「Qwen 规范没走」「提示词没扩写」等假失败；
+- `_resolve_prompt_plan` 会调 `self._is_moss_image(wf)`，桩缺该方法同样被吞异常，
+  导致所有场景退化成 `legacy` 分支。
+
+修复（只改测试桩，不动断言、不动 `main.py`）：
+- `test_prompt_lang_contract.py`：补 `_is_moss_image` 与 5 个 `lora_ref` 形参；
+- `test_third_party_flags.py`：补 `_enhance_prompt_llm(..., lora_ref="")`；
+- `test_refine_fallback.py`：两处 ClassDef 定位改按类名，补 `_is_moss_image`
+  与 4 个 `lora_ref` 形参。
+
+验证：三个文件 + `test_size_helpers` / `test_draw_size_decision` 全部通过，
+测试基线恢复全绿。产品行为未变。
+
 ## v7.8.16（拆函数第一刀：尺寸决策抽成纯函数）
 
 背景：`_do_draw` 约 2142 行、`llm_draw` 约 1345 行，是「改一处容易炸全链路」的根源。

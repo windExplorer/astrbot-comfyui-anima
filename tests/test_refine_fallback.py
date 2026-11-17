@@ -36,7 +36,8 @@ class _Log:
 def _load_refine():
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.17：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     fn = next(n for n in cls.body
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "_llm_refine_prompt")
     ns = {"logger": _Log(), "re": re}
@@ -73,7 +74,13 @@ class FakeSelf:
         # 真逻辑 = 「底模是 Qwen 家族」+「提示词里有设定板意图」；意图判定用真身的正则
         return bool(self.qwen and self._is_char_sheet_request(text))
 
-    async def _rewrite_to_char_sheet_llm(self, text):
+    # v7.8.17：真 _resolve_prompt_plan 会调 self._is_moss_image(wf)，桩缺它会
+    # AttributeError 被 except 吞 → plan 退化成 legacy，Qwen/自然语言的分支全不进。
+    def _is_moss_image(self, wf):
+        return False
+
+    # v7.8.17：真身各 _rewrite_* 已统一带 lora_ref，桩缺它会 TypeError 被产品 except 吞掉。
+    async def _rewrite_to_char_sheet_llm(self, text, lora_ref=""):
         self.sheet_calls += 1
         if not self.sheet_ok:
             raise RuntimeError("设定板改写未配置可用模型")
@@ -83,22 +90,22 @@ class FakeSelf:
     def _has_chinese(text):
         return any("\u4e00" <= ch <= "\u9fff" for ch in (text or ""))
 
-    async def _rewrite_to_anima_llm(self, text):
+    async def _rewrite_to_anima_llm(self, text, lora_ref=""):
         self.rewrite_calls += 1
         if not self.rewrite_ok:
             raise RuntimeError("LLM 改写未配置可用模型")
         return "1girl, solo, masterpiece" if text else ""
 
-    async def _rewrite_to_real_llm(self, text):
+    async def _rewrite_to_real_llm(self, text, lora_ref=""):
         self.rewrite_calls += 1
         if not self.rewrite_ok:
             raise RuntimeError("LLM 清理未配置可用模型")
         return "写实中文清理结果"
 
-    async def _rewrite_to_qwen_llm(self, text, *, edit_mode=False, lang=""):
-        # ★签名必须与真身一致：v7.7.54 起真身多了 lang=（底模优先语种）参数。
-        # 少了它会 TypeError → 被 _try_qwen 的 except 吞掉 → 静默回退翻译，
-        # 于是第 ⑨ 例（第三方 + Qwen 文生图）看起来像"没走 Qwen 规范"（2026-10-13 查明）。
+    async def _rewrite_to_qwen_llm(self, text, *, edit_mode=False, lang="", lora_ref=""):
+        # ★签名必须与真身一致：v7.7.54 起多了 lang=（底模优先语种），
+        # v7.5.x 又统一加了 lora_ref=。少任一个都会 TypeError → 被 _try_qwen
+        # 的 except 吞掉 → 静默回退翻译（2026-10-13 / 2026-11-17 两次查明）。
         self.qwen_calls += 1
         self.qwen_edit_flag = edit_mode
         self.qwen_lang = lang
@@ -124,7 +131,8 @@ def _load_class_members(names: tuple[str, ...], literals: tuple[str, ...] = ()) 
     """摘取 main.py 里某个类的若干方法 + 类级常量（测试用真实逻辑，不复制一份）。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.17：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns = {"logger": _Log(), "re": re, "Path": Path, "__file__": str(ROOT / "main.py")}
     out: dict = {}
     for node in cls.body:
@@ -286,7 +294,8 @@ def test_char_sheet_doc_and_context():
     """规范文档读取 + 用户点名的角色卡资料会带进设定板改写输入。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.17：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     fn_doc = next(n for n in cls.body
                   if isinstance(n, ast.FunctionDef) and n.name == "_char_sheet_skill_text")
     fn_ctx = next(n for n in cls.body
@@ -328,7 +337,8 @@ def test_qwen_skill_doc():
     """Qwen 规范文档必须真的能被读到（否则悄悄退回内置精简规则，用户以为在用 skill）。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.17：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     fn = next(n for n in cls.body
               if isinstance(n, ast.FunctionDef) and n.name == "_qwen_skill_text")
     attrs = {}

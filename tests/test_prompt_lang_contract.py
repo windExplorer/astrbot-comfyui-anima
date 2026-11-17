@@ -112,26 +112,34 @@ class FakeSelf:
         self.translate_calls += 1
         return "TRANSLATED-EN-TAGS"
 
-    async def _rewrite_to_qwen_llm(self, text, *, edit_mode=False, lang=""):
+    # v7.8.17：真 _resolve_prompt_plan 会调 self._is_moss_image(wf)，
+    # 桩缺这个方法 → AttributeError 被 except 吞 → 所有场景退化成 legacy。
+    # 测试用的 base 都不含 moss，恒 False 与真判定一致。
+    def _is_moss_image(self, wf):
+        return False
+
+    # v7.8.17：main.py 各 _rewrite_* 已统一带 lora_ref 参数（见 CHANGELOG
+    # v7.5.x 的 lora_ref 下传），桩签名滞后会让 TypeError 被产品 except 吞成原文。
+    async def _rewrite_to_qwen_llm(self, text, *, edit_mode=False, lang="", lora_ref=""):
         self.qwen_calls += 1
         self.qwen_lang = lang
         self.qwen_edit = edit_mode
         return f"QWEN(lang={lang!r},edit={edit_mode})"
 
-    async def _rewrite_to_natural_llm(self, text, lang="中文"):
+    async def _rewrite_to_natural_llm(self, text, lang="中文", lora_ref=""):
         self.natural_calls += 1
         self.natural_lang = lang
         return f"NATURAL(lang={lang!r})"
 
-    async def _rewrite_to_real_llm(self, text):
+    async def _rewrite_to_real_llm(self, text, lora_ref=""):
         self.real_calls += 1
         return "REAL-CN"
 
-    async def _rewrite_to_anima_llm(self, text):
+    async def _rewrite_to_anima_llm(self, text, lora_ref=""):
         self.anima_calls += 1
         return "ANIMA-EN"
 
-    async def _rewrite_to_char_sheet_llm(self, text):
+    async def _rewrite_to_char_sheet_llm(self, text, lora_ref=""):
         self.sheet_calls += 1
         return "SHEET-CN"
 
