@@ -2,6 +2,21 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.18（拆函数第二刀：等待超时决策抽成纯函数）
+
+改动：
+- 从 `_do_draw` 抽出等待超时计算（原 9616-9640）为模块级纯函数
+  `_decide_wait_timeout`（无 self / 无 await / 无 IO）：`squeeze_fn` 传
+  `_wait_timeout_with_budget` 真静态方法，配置项由调用方读好后传入；
+  `hard_cap` 一并返回供日志使用，避免重复读配置。
+- 新增 `tests/test_wait_timeout_decision.py`：AST 抠出真实新函数与真 squeeze
+  方法，800 组固定种子随机参数对拍全部返回值（含预算收紧标志与轮询间隔）。
+- 顺带修复 `tests/test_wait_for_result.py` 的同类 ClassDef 定位问题
+  （v7.8.4 引入 `_HeadlessEvent` 后拿到空壳类，第 6 项 StopIteration）。
+
+验证：800 组对拍、`test_wait_for_result` 6 项、第一刀对拍、
+`test_third_party_flags` 全过。产品行为未变。
+
 ## v7.8.17（测试基线修复：桩签名滞后导致的 9 项既有失败）
 
 背景：v7.8.16 修好三个 AST 测试的 ClassDef 定位后，暴露出 9 项既有失败——

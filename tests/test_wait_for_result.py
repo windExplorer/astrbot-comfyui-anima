@@ -112,7 +112,8 @@ def test_wait_budget_helper():
 
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")   # main.py 带 BOM
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.18：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     node = next(n for n in cls.body
                 if isinstance(n, ast.FunctionDef) and n.name == "_wait_timeout_with_budget")
     seg = ast.get_source_segment(src, node) or ""

@@ -424,6 +424,35 @@ def _decide_draw_size(
     return w, h, _wh_src
 
 
+def _decide_wait_timeout(
+    *,
+    base_timeout: int,
+    queue_extra_timeout,
+    max_draw_timeout,
+    hard_cap: int,
+    ahead: int,
+    elapsed_pre: float,
+    poll_interval,
+    squeeze_fn,
+) -> tuple[int, int, int, int, bool, int]:
+    """v7.8.18：从 `_do_draw` 抽出的等待超时决策（无 self / 无 await / 无 IO）。
+
+    `squeeze_fn` 传 `ComfyUIDrawPlugin._wait_timeout_with_budget`（staticmethod），
+    所以这里不需要 self；配置项由调用方读好后传入。
+    返回 (timeout, per_extra, max_timeout, hard_cap, squeezed, interval)。
+    """
+    per_extra = int(queue_extra_timeout or 0) or base_timeout
+    max_timeout = int(max_draw_timeout or 0) or (base_timeout + 30 * base_timeout)
+    _calc = min(max_timeout, base_timeout + ahead * per_extra)
+    # 原代码此处另算过 min(_calc, hard_cap)，但下一行立即被 squeeze_fn 覆盖；
+    # 保留该计算只为逐字等价，结果不参与返回值。
+    if hard_cap > 0:
+        _ = min(_calc, hard_cap)
+    timeout, squeezed = squeeze_fn(_calc, hard_cap, elapsed_pre)
+    interval = max(1, int(poll_interval or 2))
+    return timeout, per_extra, max_timeout, hard_cap, squeezed, interval
+
+
 # 放大模型名里的倍率：`4x-UltraSharp.pth`（数字在前）或 `RealESRGAN_x2plus.pth`（x 在前）
 _UPSCALE_FACTOR_RE_A = re.compile(r"(?<![0-9.])(\d{1,2}(?:\.\d)?)\s*x", re.IGNORECASE)
 _UPSCALE_FACTOR_RE_B = re.compile(r"x\s*(\d{1,2}(?:\.\d)?)(?![0-9])", re.IGNORECASE)
@@ -9613,31 +9642,26 @@ class ComfyUIDrawPlugin(Star):
                 # 等待出图：动态超时 = 基础超时 + 前面排队任务累加预估耗时。
                 # 排得越靠后，前面任务越多，等待就越久，故按 ahead 逐任务累加，
                 # 避免排在长队后面的任务因固定超时过早被误判为失败。
-                base_timeout = int(self._cfg("draw_timeout", 120))
-                # 每个前面排队任务额外累加的秒数；默认按"每个任务都要完整基础超时"保守估算
-                per_extra = int(self._cfg("queue_extra_timeout", 0)) or base_timeout
-                max_timeout = int(self._cfg("max_draw_timeout", 0)) or (base_timeout + 30 * base_timeout)
-                # 单张等待硬上限（v7.4.10 起可配置，默认 100）：必须 < AstrBot 框架「工具调用超时」
-                # （默认 120 秒），确保 ComfyUI 层先超时报错返回、工具正常 return，框架永不
-                # wait_for 取消我们（否则会打断正在 await 的 event.send、破坏 bot WS 连接致卡死）。
-                # 若已把 AstrBot 的「工具调用超时」调大（插件建议 300 秒），请把本值同步调大
-                # （略小于框架值）；设 0 = 不限制（仅建议纯指令 / 伴侣插件场景）。
-                _hard_cap = int(self._cfg("draw_wait_hard_cap", 100) or 0)
-                _calc = min(max_timeout, base_timeout + ahead * per_extra)
-                timeout = min(_calc, _hard_cap) if _hard_cap > 0 else _calc
-                # ★v7.5.4：硬上限是**整次请求**的预算，不是「只算等待」——LLM 改写/翻译、
-                # 参考图上传、提交这些前置耗时也在这个预算里。此前只掐等待时长，前面一慢
-                # （如 LLM 翻译 30s + 等待 100s = 130s > 框架 120s），等待用满后还没发出
-                # 超时提示，协程就被框架硬取消 → 用户看到的是「再也不提示超时」。
-                # 这里按「已耗时 + 预留发消息时间」收紧等待，保证提示一定发得出去。
+                # v7.8.18：等待超时决策抽成模块级纯函数 _decide_wait_timeout。
+                # 硬上限必须 < 框架「工具调用超时」、整次请求预算（含前置耗时）
+                # 的设计理由见 _wait_timeout_with_budget 的 docstring（v7.5.4 事故）。
                 _elapsed_pre = time.time() - _draw_start
-                timeout, _squeezed = self._wait_timeout_with_budget(_calc, _hard_cap, _elapsed_pre)
+                timeout, per_extra, max_timeout, _hard_cap, _squeezed, interval = (
+                    _decide_wait_timeout(
+                        base_timeout=int(self._cfg("draw_timeout", 120)),
+                        queue_extra_timeout=self._cfg("queue_extra_timeout", 0),
+                        max_draw_timeout=self._cfg("max_draw_timeout", 0),
+                        hard_cap=int(self._cfg("draw_wait_hard_cap", 100) or 0),
+                        ahead=ahead, elapsed_pre=_elapsed_pre,
+                        poll_interval=self._cfg("queue_poll_interval", 2),
+                        squeeze_fn=self._wait_timeout_with_budget,
+                    )
+                )
                 if _squeezed:
                     logger.info(
                         f"【队列】 本次已耗时 {_elapsed_pre:.0f}s，等待超时按预算收紧为 {timeout}s"
                         f"（硬上限 {_hard_cap}s，预留 {_WAIT_SEND_RESERVE}s 发超时提示）"
                     )
-                interval = max(1, int(self._cfg("queue_poll_interval", 2)))
                 logger.info(
                     f"【队列】 本次等待超时 {timeout}s"
                     f"（基础 {base_timeout}s + 排队 {ahead}×{per_extra}s，动态上限 {max_timeout}s，"
