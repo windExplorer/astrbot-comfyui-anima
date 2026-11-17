@@ -2,6 +2,24 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.9（热重载清单补齐：workflow_parser 不再跑旧解析规则）
+
+问题：`workflow_parser.py` 在打包清单 `build_zip.ps1` 里，却不在 `main.py` 的
+`importlib.reload` 依赖列表中。从旧版本热更新上来的实例，`sys.modules` 里始终是
+首次加载的旧解析器——即使改了节点定位规则（正/负向写入点、LoRA/CLIP 锚点、图输入等），
+`workflow_store.py` 仍按库里的旧 `roles` 注记定点改写工作流，出图错位且没有任何日志提示。
+这与 v7.7.67 的 `prompt_guard.py` 漏重载是同一类事故。
+
+根因：重载列表是手写元组，新增顶层模块时只记得同步打包清单、漏了重载列表；
+且 `importlib.reload` 不级联依赖，reload `workflow_store` 不会连带重载它 import 的
+`workflow_parser`。仅靠注释里的历史教训防不住下一次。
+
+修复：
+- `main.py` 依赖重载列表补上 `workflow_parser`，按依赖顺序排在 `workflow_store` 之前。
+- 新增 `tests/test_module_lists.py`：从磁盘真实顶层 `.py` 反推，校验
+  「重载列表 / 打包清单 / 磁盘文件」三方一致，并反向检查清单里已不存在的模块残留。
+  实测模拟漏掉 `workflow_parser` 时守卫会报错，不是空跑。
+
 ## v7.8.8（图库批量操作：批量删除/恢复/彻底删除）
 
 需求：WebUI 图库加批量选择，能一次删多张；回收站也支持批量恢复与彻底删除。

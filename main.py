@@ -1843,7 +1843,12 @@ class ComfyUIDrawPlugin(Star):
             for _dep_name in (
                 "webui_api", "standalone_webui",
                 "platform_store", "nai_client",
-                "comfyui_client", "workflow_builder",
+                "comfyui_client",
+                # v7.8.9：workflow_parser 是 workflow_store 的被依赖方（解析注记的来源），
+                # 此前漏在重载列表外——改了节点定位规则后热更新仍跑旧解析器，
+                # 基础工作流库存的是旧注记，出图定点改写会错位且无感知。
+                "workflow_parser",
+                "workflow_builder",
                 # v7.7.67：prompt_guard 此前漏在重载列表外，热更新后跑的仍是旧提示词护栏
                 "prompt_guard",
                 "danbooru_client", "image_store",
