@@ -2,6 +2,33 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.11（图库列表：删掉逐行冗余计数，索引方案实测回退已撤销）
+
+问题：`gallery_list` / `favorites_list` 的 SELECT 各带两个相关子查询算 `lc`/`fc`，
+但这两个值既不参与排序（前者按 `created_at`、后者按 `f.created_at`），
+`_row_to_dict` 也不读——紧随其后的 `_share_enrich` 已用 `IN (...) GROUP BY`
+批量算过 `like_count` / `favorite_count`。3000 张图下等于每次列表请求
+白跑约 6000 次索引查找。
+
+根因：早期从 `world_list` 复制时没做区分——`world_list` 的热度排序
+`ORDER BY (lc+fc) DESC` 确实需要 `lc`/`fc`，另两个列表不需要。
+
+探索中被否决的方案（保留结论，避免以后重试）：
+- 给 `images` 加 `(deleted,status,created_at,sha256)`、
+  `(user_id,deleted,status,created_at)` 和 `image_favorites(user_id,created_at)`
+  复合索引：EXPLAIN 显示 TEMP B-TREE 消失，但 3000 张图 A/B（预热+交替+中位数）
+  实测 `search` 慢 4.4~4.7x、`favorites_list` 慢 8.7x——更宽的索引让 SQLite
+  放弃原本更优的 `idx_images_created` / `idx_images_user`。
+- `world_list` 热度排序改聚合后 LEFT JOIN：省掉逐行子查询，但派生表每次全扫
+  点赞/收藏表，实测慢 16%；原相关子查询有 `sha256` 索引、每行只需两次查找。
+
+修复：
+- `gallery_list` / `favorites_list` 删掉 `lc`/`fc` 子查询，计数仍由 `_share_enrich`
+  填充，前端字段不变。A/B 实测 `gallery_list` 快约 22%，其余场景持平。
+- 新增 `tests/test_gallery_lists.py`：真库校验热度排序、计数填充、`owner_is_me`，
+  并静态守卫两个列表不得再加回逐行计数子查询。
+- 在索引创建处留下实测结论注释，防止看到 TEMP B-TREE 就盲加索引。
+
 ## v7.8.10（检索条件收敛：计数与列表共用一个 WHERE builder）
 
 问题：`count_search` 与 `search` 的十余个过滤条件逐行复制，只共用了 `type_filter_sql`。

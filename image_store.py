@@ -326,6 +326,11 @@ class ImageStore:
         _ddl("idx_images_created", "CREATE INDEX IF NOT EXISTS idx_images_created ON images(created_at)")
         _ddl("idx_images_session", "CREATE INDEX IF NOT EXISTS idx_images_session ON images(session_id)")
         _ddl("idx_tags_tag", "CREATE INDEX IF NOT EXISTS idx_tags_tag ON image_tags(tag)")
+        # v7.8.11 实测：这里曾加过 (deleted,status,created_at,sha256) 与
+        # (user_id,deleted,status,created_at) 复合索引，EXPLAIN 看着更漂亮
+        # （TEMP B-TREE 消失），但 3000 张图 A/B 实测 search 慢 4.7x、
+        # favorites_list 慢 8.7x——更宽的索引让 SQLite 放弃了原本更优的
+        # idx_images_created / idx_images_user。保留旧索引，不要再加。
         # 分享站：点赞（按用户+时间记录，不只计数）
         _ddl(
             "image_likes 表",
@@ -373,6 +378,8 @@ class ImageStore:
         )
         _ddl("idx_likes_sha", "CREATE INDEX IF NOT EXISTS idx_likes_sha ON image_likes(sha256)")
         _ddl("idx_fav_sha", "CREATE INDEX IF NOT EXISTS idx_fav_sha ON image_favorites(sha256)")
+        # v7.8.11 实测：(user_id, created_at) 复合索引虽消掉 favorites_list 的
+        # TEMP B-TREE，但 A/B 慢 8.7x，已撤销。保留 idx_fav_user 即可。
         _ddl("idx_share_user", "CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)")
         # 迁移：分享令牌单 IP 绑定列（旧库无此列时 ALTER，已有则跳过）
         try:
@@ -1480,6 +1487,9 @@ class ImageStore:
             pass
         rows = []
         try:
+            # v7.8.11：试过改成聚合后 LEFT JOIN（省掉逐行相关子查询），
+            # A/B 实测反而慢 16%——派生表要每次全扫点赞/收藏表，而原相关子查询
+            # 有 sha256 索引、每行只需两次查找。保留原写法。
             sql = (
                 "SELECT i.*, "
                 "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
@@ -1511,12 +1521,10 @@ class ImageStore:
             pass
         rows = []
         try:
-            sql = (
-                "SELECT i.*, "
-                "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
-                "(SELECT COUNT(*) FROM image_favorites f WHERE f.sha256=i.sha256) AS fc "
-                f"{base} ORDER BY i.created_at DESC LIMIT ? OFFSET ?"
-            )
+            # v7.8.11：这里的 lc/fc 既没参与排序，_row_to_dict 也不读，
+            # 而 _share_enrich 已批量算过 like_count/favorite_count——原子查询纯冗余，
+            # 3000 张图下 6000 次索引查找，直接删掉。
+            sql = f"SELECT i.* {base} ORDER BY i.created_at DESC LIMIT ? OFFSET ?"
             rows = conn.execute(sql, args + [int(limit), int(offset)]).fetchall()
         except Exception as e:
             logger.warning(f"[图库] 图库列表失败: {e}")
@@ -1543,12 +1551,9 @@ class ImageStore:
             pass
         rows = []
         try:
-            sql = (
-                "SELECT i.*, "
-                "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
-                "(SELECT COUNT(*) FROM image_favorites f2 WHERE f2.sha256=i.sha256) AS fc "
-                f"{base} ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
-            )
+            # v7.8.11：同 gallery_list，lc/fc 冗余（排序用 f.created_at，
+            # 计数由 _share_enrich 批量算），删掉逐行子查询。
+            sql = f"SELECT i.* {base} ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
             rows = conn.execute(sql, args + [int(limit), int(offset)]).fetchall()
         except Exception as e:
             logger.warning(f"[图库] 收藏列表失败: {e}")
