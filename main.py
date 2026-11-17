@@ -552,13 +552,14 @@ except ImportError:
     StarTools = None
 
 try:
-    from . import comfyui_client, danbooru_client, translate_client, workflow_builder
+    from . import comfyui_client, danbooru_client, translate_client, workflow_builder, http_session
 except ImportError:
     # 兼容非包环境（如本地测试直接运行本模块）
     import comfyui_client
     import danbooru_client
     import translate_client
     import workflow_builder
+    import http_session
 
 try:
     from . import quota_store
@@ -1841,6 +1842,9 @@ class ComfyUIDrawPlugin(Star):
             # 首次加载的旧代码，导致「前端是新版、生图链路是旧版」的隐蔽错位。
             # 顺序按依赖关系（被依赖者在前）。
             for _dep_name in (
+                # v7.8.12：会话池排最前（被依赖者在前）。池状态挂在 aiohttp 模块上，
+                # reload 本模块只重建函数定义、不会丢连接或泄漏旧池。
+                "http_session",
                 "webui_api", "standalone_webui",
                 "platform_store", "nai_client",
                 "comfyui_client",
@@ -2154,6 +2158,13 @@ class ComfyUIDrawPlugin(Star):
         try:
             if getattr(self, "gallery", None) is not None:
                 self.gallery.close()
+        except Exception:
+            pass
+        # 关闭共享 HTTP 会话池（v7.8.12）：此前 nai_client 的进程级单例从不关闭，
+        # 每次热重载都会泄漏一个连接池。池状态挂在 aiohttp 上、跨 reload 存活，
+        # 所以只需在这里统一关一次。
+        try:
+            await http_session.close_all()
         except Exception:
             pass
         # 移除 WebUI 日志 handler，避免重复安装/内存泄漏

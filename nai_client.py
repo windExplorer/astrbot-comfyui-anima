@@ -41,24 +41,15 @@ _RETRY_STATUS = (408, 429, 502, 503, 504)
 
 _DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=120, connect=60)
 
-# 进程级共享会话：复用连接池（TCP/TLS keep-alive），避免每次请求都重新握手。
-# 此前每个请求（含每次重试）都新建 ClientSession，无连接复用——高延迟网络下
-# 每张图要多花 1~3 秒在 TCP+TLS 握手上。trust_env=True 使 HTTP(S)_PROXY/
-# NO_PROXY 等系统代理环境变量生效（aiohttp 默认忽略，走代理环境的部署会直连
-# 超时→退避重试，表现为「莫名慢」）。
-_SHARED_SESSION: "aiohttp.ClientSession | None" = None
+try:  # v7.8.12：会话统一由 http_session 池管理（跨热重载、卸载时统一关闭）
+    from . import http_session
+except ImportError:  # 脚本/单文件加载兜底
+    import http_session
 
 
 def _shared_session() -> aiohttp.ClientSession:
-    global _SHARED_SESSION
-    s = _SHARED_SESSION
-    if s is not None and not s.closed:
-        return s
-    _SHARED_SESSION = aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(limit=8, ttl_dns_cache=300, enable_cleanup_closed=True),
-        trust_env=True,
-    )
-    return _SHARED_SESSION
+    """兼容旧调用点：从共享池取 trust_env=True 的会话（代理环境变量生效）。"""
+    return http_session.get_session(trust_env=True)
 
 
 class PlatformError(RuntimeError):

@@ -2,6 +2,37 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.12（HTTP 会话统一：共享池 + 卸载关闭，修掉热重载泄漏）
+
+问题：会话策略散在三个模块且各有缺陷：
+- `nai_client.py` 的进程级 `_SHARED_SESSION` 复用连接，但全文没有 close 路径——
+  每次热重载都会泄漏一个连接池（内部模块 reload 重建模块级变量）；
+- `danbooru_client.py` / `translate_client.py` 每次请求新建 ClientSession，
+  而这两个客户端在 `main.py` 里每次调用都新建实例（无缓存），连接毫无复用；
+- `webui_api.py` 等处的每请求会话是低频操作且 `async with` 自动关闭，无泄漏，不动。
+
+根因：缺少统一的会话生命周期管理，且「共享」与「配置隔离」没分开——
+headers / timeout / proxy 随用户与端点变化，塞进 session 构造会串味
+（典型事故：上一个请求的 Bearer token 被带到下一个不同用户的请求上）。
+
+修复：
+- 新增 `http_session.py`：按 `trust_env` 分桶的共享池（走代理的 NAI 用 True、
+  本地 Danbooru / 翻译服务用 False）；headers / timeout / proxy 一律走请求级参数；
+  池挂在 `aiohttp` 模块对象上，跨 `importlib.reload` 保留同一批连接，
+  既复用连接也不泄漏旧池；带 event loop 感知，loop 变了就换会话。
+- 三个客户端接入共享池；`main.py` 热重载列表加 `http_session`（首位），
+  `terminate()` 调 `close_all()` 统一关闭；`build_zip.ps1` includeList 同步。
+
+实测踩坑（保留结论，别再踩）：
+- 跨 loop 的旧会话不能直接同步调 `TCPConnector.close()`——aiohttp 3.x 里它是
+  coroutine，会产生 "was never awaited" RuntimeWarning；改用
+  `loop.create_task(session.close())` + done callback 消费异常。
+- 跨 `asyncio.run` 复用会话会抛 `Event loop is closed`（`test_logic.py` 实测命中），
+  所以池必须记 loop。
+- `test_logic.py` 末尾补 `close_all()`，否则独立脚本退出时报未关闭会话。
+- 新增 `tests/test_http_session.py`：分桶复用 / reload 存活 / 跨 loop 换会话 /
+  统一关闭 / 三客户端接入 / 三处清单齐全，全通过。
+
 ## v7.8.11（图库列表：删掉逐行冗余计数，索引方案实测回退已撤销）
 
 问题：`gallery_list` / `favorites_list` 的 SELECT 各带两个相关子查询算 `lc`/`fc`，

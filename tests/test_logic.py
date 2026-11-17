@@ -19,6 +19,7 @@ import workflow_builder
 import comfyui_client
 import danbooru_client
 import translate_client
+import http_session
 from mock_comfyui import start_mock
 
 WF_PATH = os.path.join(HERE, "sample_workflow.json")
@@ -313,5 +314,8 @@ if __name__ == "__main__":
     asyncio.run(test_integration())
     asyncio.run(test_danbooru())
     asyncio.run(test_translate_api())
+    # v7.8.12：danbooru / translate 改用共享会话池后，独立测试脚本需自行清理，
+    # 否则进程退出时 aiohttp 报 "Unclosed client session"（生产由 main.terminate 关闭）。
+    asyncio.run(http_session.close_all())
     test_ratio_size()
     print("\n全部测试通过 ✅")

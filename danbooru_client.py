@@ -13,6 +13,11 @@
 import aiohttp
 import re
 
+try:  # v7.8.12：共享会话池（timeout 走请求级，不进 session 构造）
+    from . import http_session
+except ImportError:
+    import http_session
+
 # 只转义「未转义」的括号，避免重复转义时已存在的 \( \) 被破坏。
 _PAREN_RE = re.compile(r"(?<!\\)([()])")
 
@@ -63,12 +68,12 @@ class DanbooruClient:
             "top_k": self.top_k,
         }
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    self.base_url + self.api_path, json=payload
-                ) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
+            session = http_session.get_session(trust_env=False)
+            async with session.post(
+                self.base_url + self.api_path, json=payload, timeout=self.timeout
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
         except Exception as e:
             raise RuntimeError(f"Danbooru 标签服务器请求失败: {e}") from e
 

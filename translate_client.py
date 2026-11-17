@@ -7,6 +7,11 @@
 
 import aiohttp
 
+try:  # v7.8.12：共享会话池（headers/timeout 走请求级，不进 session 构造）
+    from . import http_session
+except ImportError:
+    import http_session
+
 
 class TranslateApiClient:
     def __init__(
@@ -78,12 +83,15 @@ class TranslateApiClient:
             else:
                 kwargs["data"] = params
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.request(
-                    self.method, url, **kwargs
-                ) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
+            # headers 已在 kwargs（每次请求独立），timeout 也放请求级，
+            # 避免不同端点的配置串进共享 session。
+            kwargs["timeout"] = self.timeout
+            session = http_session.get_session(trust_env=False)
+            async with session.request(
+                self.method, url, **kwargs
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
         except Exception as e:
             raise RuntimeError(f"翻译接口请求失败: {e}") from e
 
