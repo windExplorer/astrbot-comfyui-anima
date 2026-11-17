@@ -9655,9 +9655,10 @@ class ComfyUIDrawPlugin(Star):
                 # 硬上限必须 < 框架「工具调用超时」、整次请求预算（含前置耗时）
                 # 的设计理由见 _wait_timeout_with_budget 的 docstring（v7.5.4 事故）。
                 _elapsed_pre = time.time() - _draw_start
+                base_timeout = int(self._cfg("draw_timeout", 120))
                 timeout, per_extra, max_timeout, _hard_cap, _squeezed, interval = (
                     _decide_wait_timeout(
-                        base_timeout=int(self._cfg("draw_timeout", 120)),
+                        base_timeout=base_timeout,
                         queue_extra_timeout=self._cfg("queue_extra_timeout", 0),
                         max_draw_timeout=self._cfg("max_draw_timeout", 0),
                         hard_cap=int(self._cfg("draw_wait_hard_cap", 100) or 0),
@@ -17779,8 +17780,9 @@ class ComfyUIDrawPlugin(Star):
                         denoise=_item_denoise,
                         notify_pending=False, source=source,
                         raw_prompt=raw_prompt,
-                        # v7.8.3：外部插件调用 → 图库归属记插件来源
-                        external=_ext,
+                        # v7.8.20：续画分支此前误用 _ext（本作用域未定义，
+                        # pyflakes 实测 NameError）→ 与 llm_draw 入口同规则现场判定。
+                        external=_is_external_call(source),
                     ),
                     event, silent,
                 ):

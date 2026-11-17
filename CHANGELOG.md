@@ -2,6 +2,30 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.20（紧急修复：v7.8.18 拆函数把 base_timeout 抽走导致所有绘图崩溃）
+
+问题（用户 2026-11-18 实报）：星语等所有跨插件调用绘图全部失败，
+萌绘日志：`[llm_draw] 工具执行异常 … NameError: name 'base_timeout' is not defined`。
+
+根因：v7.8.18 把等待超时计算抽成 `_decide_wait_timeout` 时，`base_timeout` 变成
+纯函数内部局部变量，但 `_do_draw` 调用点后面那条【队列】日志仍在引用它。
+**测试盲区**：三刀的对拍测试都只验证抽出的纯函数本身，没有验证调用点上下文
+是否还引用被移走的内部变量；而 `test_static_lint.py`（pyflakes 抓 undefined name）
+本该拦住——但我在 v7.8.18/v7.8.19 发布前**没跑它**。
+
+修复：
+- `_do_draw` 调用点恢复 `base_timeout` 局部变量（传给纯函数并供日志使用）。
+- 顺带修 pyflakes 同批抓出的既有 bug：`_draw_continue`（续画分支）里
+  `external=_ext` 的 `_ext` 在本作用域未定义，改为 `_is_external_call(source)`。
+  该 bug 只在「一次要求 N 张、超单批上限转后台续画」且外部插件调用时触发。
+
+验证：`pyflakes main.py` 零 undefined name；三刀 800 组对拍全过；
+跨插件契约 13 项全过。
+
+**发布纪律（重要）**：拆函数/改结构后，发布前**必须**跑
+`uv run --no-project --python 3.12 --with pyflakes python -m pyflakes main.py`，
+不能只跑对拍测试——对拍覆盖不到调用点的悬空引用。
+
 ## v7.8.19（拆函数第三刀：LoRA 启用合并抽成纯函数；测试基线全绿）
 
 改动：
