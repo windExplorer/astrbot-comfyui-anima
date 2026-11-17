@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.15（并发审计结论 + 五个零覆盖模块补测）
+
+调查：此前代码审查列出的 7 处「共享状态无锁」（`_last_events`、`_server_pending`、
+`_force_draw_marks`、`_draw_run_state`、`_unl_users_set`、`_share_tokens_mem` 等），
+经逐点核查**全部不需要加锁**：
+- 两条 WebUI 通道都跑在 AstrBot 主 event loop（`standalone_webui` 用 `AppRunner`
+  与 AstrBot 共用事件循环，未新建线程）；
+- 这些状态的读写方法都是同步 `def`、内部零 `await`，GIL 下不会被其他协程穿插；
+- 约 40 处 `asyncio.to_thread` 全是文件 I/O / NSFW 推理，没有一处碰上述状态。
+强行加 `asyncio.Lock` 反而要把同步方法改成 async、制造新 await 点与死锁面。
+
+需要守住的两条变更红线：`_local_queue_ahead` → `_local_queue_add` 之间不要插入
+`await`；`_share_tokens_mem` 相关方法不要改成 async 或搬进线程池。
+
+补测：新增 `tests/test_uncovered_modules.py`，覆盖此前只有清单守卫、零行为断言的
+5 个模块：`platform_store` 六个纯函数、`quota_store` 时间对齐与计数、
+`token_store` 桶键与写入、`oplog_store` 写入/查询与 extra 解析、
+`nsfw_detector` 阈值钳制与假分类器判定。纯标准库 + 临时目录，不依赖网络与真实模型。
+
 ## v7.8.14（独立 WebUI 回收站：彻底去掉无人读取的 thumb 生成）
 
 问题：v7.8.13 把两条通道回收站列表的「原图内联编码」改成「300px 缩略图内联编码」，
