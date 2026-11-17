@@ -53,7 +53,8 @@ def _source() -> str:
 
 
 def _cls(tree):
-    return next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.16：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    return next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
 
 
 def _base_ns() -> dict:

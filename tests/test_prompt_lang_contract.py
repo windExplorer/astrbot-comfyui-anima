@@ -65,7 +65,8 @@ def _load_real_defs() -> dict:
     """从 main.py 原样抠出真代码（含新增的 _looks_english）——测的是磁盘上的实现。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.16：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     ns = {"logger": _Log(), "re": re}
     for node in cls.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in WANT_FUNCS:

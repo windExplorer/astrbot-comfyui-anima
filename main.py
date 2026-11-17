@@ -329,6 +329,101 @@ def _budget_ratio(budget: float, w: int, h: int) -> float:
         return 1.0
 
 
+def _decide_draw_size(
+    *,
+    ratio_wh,
+    tier_req: str,
+    width,
+    height,
+    default_w: int,
+    default_h: int,
+    lock_size: bool,
+    init_images: bool,
+    custom_size: bool,
+    max_size_tier,
+    ratio_src: str,
+    positive: str,
+    max_width,
+    max_height,
+    max_side: int,
+    max_mp: float,
+) -> tuple[int, int, str]:
+    """v7.8.16：从 `_do_draw` 抽出的纯尺寸决策，四层顺序与文案逐字保留。
+
+    无 self / 无 await / 无 IO —— 两处 self._cfg 全局上限由调用方读好后传入。
+    返回 (w, h, wh_src)；其余中间量都是函数内部局部，无人消费。
+    """
+    _dw, _dh = default_w, default_h
+    _max_tier = _tier_key_norm(max_size_tier) or _SIZE_TIER_DEFAULT
+    if ratio_wh is not None:
+        w, h = ratio_wh
+        _wh_src = "比例预设（用户原话命中，覆盖工作流默认）"
+    elif width or height:
+        w = width or _dw
+        h = height or _dh
+        _wh_src = "用户显式传参"
+    else:
+        w, h = _dw, _dh
+        _wh_src = "工作流默认（default_width/height，未配置则兜底 512）"
+    if tier_req:
+        _w0, _h0 = w, h
+        w, h = _scale_size_to_tier(w, h, tier_req)
+        _wh_src += f" + 档位 {_tier_label(tier_req)}（{_w0}x{_h0}→{w}x{h}）"
+    # ② 禁止改变尺寸（lock_size）优先级最高：恒用工作流默认宽高
+    if lock_size and not init_images:
+        if (w, h) != (_dw, _dh):
+            logger.info(
+                f"【宽高】 已锁定工作流默认尺寸（lock_size），忽略 {_wh_src} -> {_dw}x{_dh}"
+            )
+        w, h = _dw, _dh
+        _wh_src = "锁定工作流默认尺寸（lock_size，忽略用户/比例/档位）"
+    # ③ 最高支持档位上限
+    _cw, _ch, _capped = _cap_size_to_tier(w, h, _max_tier)
+    if _capped:
+        logger.info(
+            f"【宽高】 超出工作流「最高支持档位 {_tier_label(_max_tier)}」，等比降级: {w}x{h} -> {_cw}x{_ch}"
+        )
+        w, h = _cw, _ch
+        _wh_src += f" + 档位上限降级({_tier_label(_max_tier)})"
+    logger.info(
+        f"【宽高】 决策：{_wh_src} -> {w}x{h}"
+        f"（比例={ratio_wh and f'{ratio_wh[0]}x{ratio_wh[1]}' or '无'}；"
+        f"档位词={_tier_label(tier_req) if tier_req else '无'}；"
+        f"用户传参={width},{height}；工作流默认={_dw},{_dh}；"
+        f"最高支持档位={_tier_label(_max_tier)}；"
+        f"匹配文本来源={'用户原话' if ratio_src != (positive or '') else '画面描述(退回)'}"
+        f"={(ratio_src or '')[:60]!r}）"
+    )
+    # ④ 最大宽/高（留空=不限制）；图生图非自定义尺寸时跳过
+    if (not init_images or custom_size) and (w and h):
+        def _wh_limit(v):
+            s = str(v or "").strip()
+            return int(s) if s.isdigit() and int(s) > 0 else None
+        _maxw, _maxh = _wh_limit(max_width), _wh_limit(max_height)
+        if _maxw or _maxh:
+            _factor = min(
+                (_maxw / w) if _maxw else 1.0,
+                (_maxh / h) if _maxh else 1.0,
+                1.0,
+            )
+            if _factor < 1.0:
+                _nw = max(64, int(round(w * _factor / 8)) * 8)
+                _nh = max(64, int(round(h * _factor / 8)) * 8)
+                logger.info(
+                    f"【宽高】 超出最大限制（max={_maxw}x{_maxh}），按比例缩放: {w}x{h} -> {_nw}x{_nh}"
+                )
+                w, h = _nw, _nh
+    # 全局硬上限（最后一道边界）
+    if w and h:
+        _gw, _gh, _gwhy = workflow_builder.clamp_size(w, h, max_side, max_mp, _SIZE_ALIGN)
+        if _gwhy:
+            logger.info(
+                f"【宽高】 超出全局硬上限（{_gwhy}），等比收缩: {w}x{h} -> {_gw}x{_gh}"
+            )
+            w, h = _gw, _gh
+    return w, h, _wh_src
+
+
 # 放大模型名里的倍率：`4x-UltraSharp.pth`（数字在前）或 `RealESRGAN_x2plus.pth`（x 在前）
 _UPSCALE_FACTOR_RE_A = re.compile(r"(?<![0-9.])(\d{1,2}(?:\.\d)?)\s*x", re.IGNORECASE)
 _UPSCALE_FACTOR_RE_B = re.compile(r"x\s*(\d{1,2}(?:\.\d)?)(?![0-9])", re.IGNORECASE)
@@ -8704,85 +8799,26 @@ class ComfyUIDrawPlugin(Star):
             logger.warning("【宽高】 已开启自定义尺寸，但未传宽高且工作流条目没有默认宽高 → 拒绝出图")
             await self._send(event, "这条工作流开启了自定义尺寸，但没给出尺寸（宽高/比例词都没传）哦～")
             return
-        _max_tier = _tier_key_norm(wf.get("max_size_tier")) or _SIZE_TIER_DEFAULT
-        if _ratio_wh is not None:
-            w, h = _ratio_wh
-            _wh_src = "比例预设（用户原话命中，覆盖工作流默认）"
-        elif width or height:
-            w = width or _dw
-            h = height or _dh
-            _wh_src = "用户显式传参"
-        else:
-            w, h = _dw, _dh
-            _wh_src = "工作流默认（default_width/height，未配置则兜底 512）"
-        # 档位缩放（比例定长宽比、档位定像素量）
-        if _tier_req:
-            _w0, _h0 = w, h
-            w, h = _scale_size_to_tier(w, h, _tier_req)
-            _wh_src += f" + 档位 {_tier_label(_tier_req)}（{_w0}x{_h0}→{w}x{h}）"
-        # ② 禁止改变尺寸（lock_size）优先级最高：恒用工作流默认宽高
-        if wf.get("lock_size") and not init_images:
-            if (w, h) != (_dw, _dh):
-                logger.info(
-                    f"【宽高】 已锁定工作流默认尺寸（lock_size），忽略 {_wh_src} -> {_dw}x{_dh}"
-                )
-            w, h = _dw, _dh
-            _wh_src = "锁定工作流默认尺寸（lock_size，忽略用户/比例/档位）"
-        # ③ 最高支持档位上限
-        _cw, _ch, _capped = _cap_size_to_tier(w, h, _max_tier)
-        if _capped:
-            logger.info(
-                f"【宽高】 超出工作流「最高支持档位 {_tier_label(_max_tier)}」，等比降级: {w}x{h} -> {_cw}x{_ch}"
-            )
-            w, h = _cw, _ch
-            _wh_src += f" + 档位上限降级({_tier_label(_max_tier)})"
-        logger.info(
-            f"【宽高】 决策：{_wh_src} -> {w}x{h}"
-            f"（比例={_ratio_wh and f'{_ratio_wh[0]}x{_ratio_wh[1]}' or '无'}；"
-            f"档位词={_tier_label(_tier_req) if _tier_req else '无'}；"
-            f"用户传参={width},{height}；工作流默认={_dw},{_dh}；"
-            f"最高支持档位={_tier_label(_max_tier)}；"
-            f"匹配文本来源={'用户原话' if _ratio_src != (positive or '') else '画面描述(退回)'}"
-            f"={(_ratio_src or '')[:60]!r}）"
+        # v7.8.16：四层尺寸决策抽成模块级纯函数 _decide_draw_size（下面的
+        # resolution_mode 注入 / MOSS / 输入尺寸计算一概不动）。
+        # 两处 self._cfg 全局上限仍在此读取（含原异常处理），再作为参数传入。
+        try:
+            _max_side_cfg = int(float(str(self._cfg("size_max_side", 0) or 0)))
+        except (TypeError, ValueError):
+            _max_side_cfg = 0
+        try:
+            _max_mp_cfg = float(str(self._cfg("size_max_mp", 0) or 0))
+        except (TypeError, ValueError):
+            _max_mp_cfg = 0.0
+        w, h, _wh_src = _decide_draw_size(
+            ratio_wh=_ratio_wh, tier_req=_tier_req, width=width, height=height,
+            default_w=_dw, default_h=_dh, lock_size=bool(wf.get("lock_size")),
+            init_images=bool(init_images), custom_size=bool(_custom_size),
+            max_size_tier=wf.get("max_size_tier"), ratio_src=_ratio_src,
+            positive=positive, max_width=wf.get("max_width"),
+            max_height=wf.get("max_height"), max_side=_max_side_cfg,
+            max_mp=_max_mp_cfg,
         )
-        # v7.0.2：最大宽高限制（max_width/max_height，留空=不限制）——
-        # 超限按比例等比缩到限内并对齐 8 的倍数；v7.7.39：图生图「自定义尺寸」时同样适用。
-        if (not init_images or _custom_size) and (w and h):
-            def _wh_limit(key: str):
-                v = str(wf.get(key) or "").strip()
-                return int(v) if v.isdigit() and int(v) > 0 else None
-            _maxw, _maxh = _wh_limit("max_width"), _wh_limit("max_height")
-            if _maxw or _maxh:
-                _factor = min(
-                    (_maxw / w) if _maxw else 1.0,
-                    (_maxh / h) if _maxh else 1.0,
-                    1.0,
-                )
-                if _factor < 1.0:
-                    _nw = max(64, int(round(w * _factor / 8)) * 8)
-                    _nh = max(64, int(round(h * _factor / 8)) * 8)
-                    logger.info(
-                        f"【宽高】 超出最大限制（max={_maxw}x{_maxh}），按比例缩放: {w}x{h} -> {_nw}x{_nh}"
-                    )
-                    w, h = _nw, _nh
-        # v7.7.100：**全局硬上限**（配置 → 尺寸：最长边 / 总像素），最后一道边界——
-        # 无论尺寸来自调用方传参、比例词、还是工作流默认，超限一律等比收缩，
-        # 避免第三方传个 4096×4096 直接把显存打爆。
-        if w and h:
-            try:
-                _gside = int(float(str(self._cfg("size_max_side", 0) or 0)))
-            except (TypeError, ValueError):
-                _gside = 0
-            try:
-                _gmp = float(str(self._cfg("size_max_mp", 0) or 0))
-            except (TypeError, ValueError):
-                _gmp = 0.0
-            _gw, _gh, _gwhy = workflow_builder.clamp_size(w, h, _gside, _gmp, _SIZE_ALIGN)
-            if _gwhy:
-                logger.info(
-                    f"【宽高】 超出全局硬上限（{_gwhy}），等比收缩: {w}x{h} -> {_gw}x{_gh}"
-                )
-                w, h = _gw, _gh
         # resolution_mode 决定宽高的注入范围（默认 single，与旧行为逐字一致）：
         #   single：仅注入 resolution_node；留空则自动探测「第一个」EmptyLatentImage
         #   all   ：注入「所有」EmptyLatentImage —— 多 latent 串联工作流前后各有一个

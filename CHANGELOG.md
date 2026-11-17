@@ -2,6 +2,30 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.16（拆函数第一刀：尺寸决策抽成纯函数）
+
+背景：`_do_draw` 约 2142 行、`llm_draw` 约 1345 行，是「改一处容易炸全链路」的根源。
+按「先抽纯计算、后抽带 IO 的编排」推进，本轮只做风险最低的第一刀。
+
+改动：
+- 从 `_do_draw` 抽出 79 行四层尺寸决策为模块级纯函数 `_decide_draw_size`：
+  无 self / 无 await / 无 IO；两处 `self._cfg` 全局上限由调用方读好后传参。
+  档位 → `lock_size` → 档位上限 → max_w/h → 全局硬上限的顺序与所有 `_wh_src`
+  文案逐字保留。
+- 新增 `tests/test_draw_size_decision.py`：AST 抠出真实新函数，与抽取前逻辑对拍，
+  800 组固定种子随机参数比对 `(w, h, _wh_src)` 全等。
+
+顺带修复（既有问题，与本次拆分无关）：
+- v7.8.4 引入 `_HeadlessEvent` 后，三个 AST 测试用「第一个 ClassDef」定位插件类，
+  实际拿到的是 `_HeadlessEvent`，长期 KeyError 崩溃。改为按类名
+  `ComfyUIDrawPlugin` 精确定位：`test_size_helpers.py`、`test_prompt_lang_contract.py`、
+  `test_third_party_flags.py`。
+- 修好定位后暴露 2 组既有失败（不在本轮范围）：语种改写 8 项、提示词增强 1 项，
+  均为测试期望与当前实现不匹配，此前被 KeyError 掩盖。
+
+验证：800 组对拍、`test_workflow_v7` 25 组、`test_size_helpers`、`test_external_actor`
+7 项、`test_module_lists`、`test_orig_size_guard` 全过。
+
 ## v7.8.15（并发审计结论 + 五个零覆盖模块补测）
 
 调查：此前代码审查列出的 7 处「共享状态无锁」（`_last_events`、`_server_pending`、

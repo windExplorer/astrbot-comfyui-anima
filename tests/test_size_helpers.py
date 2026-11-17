@@ -31,7 +31,9 @@ def _load_helpers() -> dict:
     # main.py 带 UTF-8 BOM，用 utf-8-sig 读掉，否则 ast.parse 会报非法字符
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # v7.8.16：main.py 在 v7.8.4 新增了 _HeadlessEvent（排在插件类前面），
+    # 必须按类名精确定位，不能再用「第一个 ClassDef」。
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     want = {"_latent_size_of", "_images_size_of", "_upscale_measured_note"}
     ns = {"workflow_builder": workflow_builder, "logger": _Log(), "_PILImage": Image}
     for node in cls.body:
