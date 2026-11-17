@@ -39,12 +39,15 @@ def main():
     sql_a, args_a = image_store.type_filter_sql(None)
     check("None 不过滤", sql_a == "" and args_a == [], repr((sql_a, args_a)))
 
-    # count_search 与 search 必须用同一个函数（防止再次口径漂移）
+    # count_search 与 search 必须共用同一个 WHERE builder（防止再次口径漂移）。
+    # v7.8.10：此前断言两处直接调用 type_filter_sql；条件已整体收敛到
+    # build_search_where，断言跟着上移一层——两处都调 builder，builder 内仍调 type_filter_sql。
     import inspect
-    src = inspect.getsource(image_store.ImageStore.count_search)
-    check("count_search 调用共用过滤函数", "type_filter_sql(" in src)
-    src_s = inspect.getsource(image_store.ImageStore.search)
-    check("search 调用共用过滤函数", "type_filter_sql(" in src_s)
+    for _name in ("count_search", "search"):
+        _src = inspect.getsource(getattr(image_store.ImageStore, _name))
+        check(f"{_name} 调用共用 WHERE builder", "build_search_where(" in _src)
+    _src_b = inspect.getsource(image_store.build_search_where)
+    check("builder 内部复用 type_filter_sql", "type_filter_sql(" in _src_b)
 
     # 3. 多参考图 sha 拼接（复刻 main.py 归档处的语义）
     def collect(shas):

@@ -58,6 +58,74 @@ def type_filter_sql(type: str | None) -> tuple[str, list]:
         return " AND source IN (?,?)", [SRC_REF, SRC_USER]
     return " AND source=?", [type]
 
+
+def build_search_where(
+    *,
+    keyword: str = "",
+    type: str | None = None,
+    starred_only: bool = False,
+    trash: bool = False,
+    owner: str = "",
+    session=None,
+    user_filter: str = "",
+    nsfw: str = "",
+    tag: str = "",
+    platform: str = "",
+) -> tuple[str, list]:
+    """search / count_search 共用的完整 WHERE 条件（片段 + 参数）。
+
+    v7.8.10：此前两处逐行复制这些条件，只共用了 type_filter_sql。
+    历史事故（v6.0.0）：只给其中一处补了 is_global=1 → 「/图库 取图 <编号>」
+    取回的图与列表显示的不是同一张。所有过滤条件只在这里写一遍，从根本上
+    消除计数与列表、以及编号定位之间的口径漂移。
+    """
+    sql = ""
+    args: list = []
+    if trash:
+        sql += " AND deleted=?"
+        args.append(1)
+    else:
+        sql += " AND deleted=0"
+    # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
+    sql += " AND status=0"
+    if owner:
+        # 可见性：公开 / 全局 / 本人。与 _gidx_rank、get_by_global_no 同口径。
+        sql += " AND (is_public=1 OR is_global=1 OR user_id=?)"
+        args.append(owner)
+    if session:
+        # 仅缩小检索范围，不替代 owner 权限隔离。
+        sql += " AND (session_id=? OR is_public=1 OR is_global=1)"
+        args.append(session)
+    if keyword and keyword.strip():
+        kw = f"%{keyword.strip()}%"
+        sql += (
+            " AND (prompt LIKE ? OR prompt_raw LIKE ? OR workflow LIKE ?"
+            " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
+        )
+        args += [kw, kw, kw, kw]
+    if tag and tag.strip():
+        sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
+        args.append(tag.strip())
+    _tfsql, _tfargs = type_filter_sql(type)
+    sql += _tfsql
+    args += _tfargs
+    if starred_only:
+        sql += " AND starred=1"
+    if user_filter and user_filter.strip():
+        uf = f"%{user_filter.strip()}%"
+        sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
+        args += [uf, uf]
+    nsfw_f = str(nsfw or "").strip()
+    if nsfw_f == "0":
+        sql += " AND nsfw=0"
+    elif nsfw_f == "1":
+        sql += " AND nsfw=1"
+    if platform and platform.strip():
+        sql += " AND platform=?"
+        args.append(platform.strip())
+    return sql, args
+
+
 # NSFW 检测器懒加载导入（兼容「相对导入 / 绝对导入」两种插件加载方式）
 _NSFW_DET_MODULE = None
 
@@ -1720,52 +1788,13 @@ class ImageStore:
         conn = self._conn_get()
         sql = "SELECT COUNT(*) AS c FROM images WHERE 1=1"
         args: list = []
-        if trash:
-            sql += " AND deleted=?"
-            args.append(1)
-        else:
-            sql += " AND deleted=0"
-        # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
-        sql += " AND status=0"
-        if owner:
-            # v6.0.0：统一可见性口径（补 is_global=1）。`_gidx_rank` 算编号时把全局图
-            # 算进去了，而 count_search / search / get_by_global_no 没算 →
-            # 「/图库 取图 <编号>」按编号取回的图与列表里显示的不是同一张。
-            sql += " AND (is_public=1 OR is_global=1 OR user_id=?)"
-            args.append(owner)
-        if session:
-            # 会话范围过滤：非空时统计「当前会话内的图」「公开图(is_public=1)」或
-            # 「全局图(is_global=1)」。公开/全局图跨会话出现在列表/搜索里（开放到群聊/全局共享）。
-            # 仅作为检索范围缩小，不替代 owner 权限过滤。
-            sql += " AND (session_id=? OR is_public=1 OR is_global=1)"
-            args.append(session)
-        if keyword and keyword.strip():
-            kw = f"%{keyword.strip()}%"
-            sql += (
-                " AND (prompt LIKE ? OR prompt_raw LIKE ? OR workflow LIKE ?"
-                " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
-            )
-            args += [kw, kw, kw, kw]
-        if tag and tag.strip():
-            sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
-            args.append(tag.strip())
-        _tfsql, _tfargs = type_filter_sql(type)
-        sql += _tfsql
-        args += _tfargs
-        if starred_only:
-            sql += " AND starred=1"
-        if user_filter and user_filter.strip():
-            uf = f"%{user_filter.strip()}%"
-            sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
-            args += [uf, uf]
-        nsfw_f = str(nsfw or "").strip()
-        if nsfw_f == "0":
-            sql += " AND nsfw=0"
-        elif nsfw_f == "1":
-            sql += " AND nsfw=1"
-        if platform and platform.strip():
-            sql += " AND platform=?"
-            args.append(platform.strip())
+        _where, _wargs = build_search_where(
+            keyword=keyword, type=type, starred_only=starred_only, trash=trash,
+            owner=owner, session=session, user_filter=user_filter, nsfw=nsfw,
+            tag=tag, platform=platform,
+        )
+        sql += _where
+        args += _wargs
         try:
             row = conn.execute(sql, args).fetchone()
             return int(row["c"]) if row else 0
@@ -1802,55 +1831,13 @@ class ImageStore:
         conn = self._conn_get()
         sql = "SELECT * FROM images WHERE 1=1"
         args: list = []
-        if trash:
-            sql += " AND deleted=?"
-            args.append(1)
-        else:
-            sql += " AND deleted=0"
-        # 画廊不展示失败项目（失败记录 status=1 / ext='fail'）
-        sql += " AND status=0"
-        # 可见性过滤：公开图(is_public=1)所有人可见；私有图仅本人。
-        # 历史无主图（user_id 为空）不对普通用户暴露，仅管理员（owner 为空/全库模式）可见。
-        # owner 为空（管理员/全库/库维护场景）不过滤。
-        if owner:
-            # v6.0.0：统一可见性口径（补 is_global=1）。`_gidx_rank` 算编号时把全局图
-            # 算进去了，而 count_search / search / get_by_global_no 没算 →
-            # 「/图库 取图 <编号>」按编号取回的图与列表里显示的不是同一张。
-            sql += " AND (is_public=1 OR is_global=1 OR user_id=?)"
-            args.append(owner)
-        if session:
-            # 会话范围过滤：非空时检索「当前会话内的图」「公开图(is_public=1)」或
-            # 「全局图(is_global=1)」。公开/全局图跨会话出现在列表/搜索里（开放到群聊/全局共享）。
-            # 仅缩小检索范围，不替代 owner（user_id）权限隔离。
-            sql += " AND (session_id=? OR is_public=1 OR is_global=1)"
-            args.append(session)
-        if keyword and keyword.strip():
-            kw = f"%{keyword.strip()}%"
-            sql += (
-                " AND (prompt LIKE ? OR prompt_raw LIKE ? OR workflow LIKE ?"
-                " OR sha256 IN (SELECT sha256 FROM image_tags WHERE tag LIKE ?))"
-            )
-            args += [kw, kw, kw, kw]
-        if tag and tag.strip():
-            sql += " AND EXISTS (SELECT 1 FROM image_tags t WHERE t.sha256=images.sha256 AND t.tag=?)"
-            args.append(tag.strip())
-        _tfsql, _tfargs = type_filter_sql(type)
-        sql += _tfsql
-        args += _tfargs
-        if starred_only:
-            sql += " AND starred=1"
-        if user_filter and user_filter.strip():
-            uf = f"%{user_filter.strip()}%"
-            sql += " AND (user_id LIKE ? OR user_name LIKE ?)"
-            args += [uf, uf]
-        nsfw_f = str(nsfw or "").strip()
-        if nsfw_f == "0":
-            sql += " AND nsfw=0"
-        elif nsfw_f == "1":
-            sql += " AND nsfw=1"
-        if platform and platform.strip():
-            sql += " AND platform=?"
-            args.append(platform.strip())
+        _where, _wargs = build_search_where(
+            keyword=keyword, type=type, starred_only=starred_only, trash=trash,
+            owner=owner, session=session, user_filter=user_filter, nsfw=nsfw,
+            tag=tag, platform=platform,
+        )
+        sql += _where
+        args += _wargs
         sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"
         args.append(int(limit))
         args.append(int(offset))

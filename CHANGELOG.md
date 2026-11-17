@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.10（检索条件收敛：计数与列表共用一个 WHERE builder）
+
+问题：`count_search` 与 `search` 的十余个过滤条件逐行复制，只共用了 `type_filter_sql`。
+v6.0.0 曾只给其中一处补 `is_global=1`，导致「`/图库 取图 <编号>`」按编号取回的图
+与列表里显示的不是同一张。两处注释都记着这次事故——说明先前只修了那一处，
+没有消除「同一规则写两遍」的根因，下次新增过滤条件仍会漂移。
+
+根因：可见性、会话范围、关键词、标签、类型、收藏、用户、NSFW、平台等条件
+在两处各写一遍，任何一侧漏改都会让计数与列表（以及 `_gidx_rank` 编号定位）失配。
+
+修复：
+- `image_store.py` 新增 `build_search_where()`，一次性生成全部 WHERE 片段与参数；
+  `count_search` / `search` 均改为调用它，条件只保留一份。
+- 新增 `tests/test_search_filters.py`：把重构前的条件拼装原样留作参考实现，
+  逐字对拍生成的 SQL 与参数顺序；再用真 SQLite 造覆盖各维度的数据，
+  17 组条件断言 `count_search` 与 `search` 命中数一致。
+- `tests/test_gallery_filters_refs.py` 的静态断言跟着上移一层：
+  校验两处都调用 `build_search_where`，且 builder 内部仍复用 `type_filter_sql`。
+
 ## v7.8.9（热重载清单补齐：workflow_parser 不再跑旧解析规则）
 
 问题：`workflow_parser.py` 在打包清单 `build_zip.ps1` 里，却不在 `main.py` 的
