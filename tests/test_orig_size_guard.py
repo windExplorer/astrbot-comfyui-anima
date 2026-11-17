@@ -92,13 +92,14 @@ def test_no_fullsize_base64_in_trash():
     assert "read_bytes()" not in body, "内嵌通道回收站仍在读原图转 base64"
     assert "_thumb_cached" in body, "内嵌通道回收站未改用缓存缩略图"
 
-    # 独立通道：trash 分支同样改缩略图
+    # 独立通道（v7.8.14）：前端缩略图走 /img/{sha}/thumb 直链、不读 thumb 字段，
+    # 后端连缩略图都不该生成，而不是"改用缓存缩略图"。
     start = STANDALONE_SRC.index('if path == "/gallery/trash"')
     end = STANDALONE_SRC.index('if path == "/gallery/scan_nsfw"')
     seg = STANDALONE_SRC[start:end]
-    assert "read_bytes()" not in seg, "独立通道回收站仍在读原图转 base64"
-    assert "_thumb_cached" in seg, "独立通道回收站未改用缓存缩略图"
-    print("PASS 两条通道回收站均用缓存缩略图")
+    for token in ("read_bytes()", "base64", "_thumb_cached", 'r["thumb"]'):
+        assert token not in seg, f"独立通道回收站仍在生成无用数据: {token}"
+    print("PASS 内嵌用缓存缩略图 / 独立完全不生成 thumb")
 
 
 def test_raw_download_has_limit():

@@ -2,6 +2,24 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.14（独立 WebUI 回收站：彻底去掉无人读取的 thumb 生成）
+
+问题：v7.8.13 把两条通道回收站列表的「原图内联编码」改成「300px 缩略图内联编码」，
+止血但没根治。核对前端后发现新版 `GalleryView.vue` 的缩略图来自 `fetchThumb()`
+（`bridge.ts:382`）：独立模式直接返回 `/img/{sha}/thumb` 直链，`thumbCache`
+完全不读接口返回的 `thumb` 字段——后端每页生成 200 张缩略图仍是纯浪费。
+
+根因：两条 WebUI 通道的响应结构被强行保持一致，但前端取图方式本就不同——
+独立页用直链（`<img>` 可直接加载），内嵌页因 AstrBot 登录鉴权（直链会 401）
+才需要内联 data URL。
+
+修复：
+- 独立通道 `StandaloneWebUI` 的 `/gallery/trash` 直接返回 `search` 结果，
+  不再生成任何 `thumb`；内嵌通道 `WebUIApi.gallery_trash` 保留 300px 缓存缩略图。
+- `tests/test_orig_size_guard.py` 守卫升级：独立通道禁止出现 `read_bytes` /
+  内联编码 / `_thumb_cached` / `r["thumb"]`，内嵌通道仍须用缓存缩略图。
+- 回归 `test_character_webui.py` 109/109 通过。
+
 ## v7.8.13（大图传输收紧：回收站改缩略图，原图 base64 加 8MB 上限）
 
 问题：三处内联 base64 路径缺少体积约束：

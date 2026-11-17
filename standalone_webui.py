@@ -1076,17 +1076,12 @@ class StandaloneWebUI:
                             extra={"on": on})
             return _ok({"msg": msg if ok else "未找到该图"})
         if path == "/gallery/trash":
-            rows = g.search(trash=True, limit=200, offset=0)
-            for r in rows:
-                sha = r.get("sha256", "")
-                p = g.path_of(sha)
-                if p and Path(p).exists():
-                    # v7.8.13：与 webui_api 通道同步——回收站最多 200 条，
-                    # 逐张读原图转 base64 会把内存/带宽打满。改用带缓存的 300px 缩略图。
-                    r["thumb"] = await asyncio.to_thread(self._thumb_cached, p, 300) or ""
-                else:
-                    r["thumb"] = ""
-            return _ok(rows)
+            # v7.8.14：不再生成 thumb 字段。独立 WebUI 前端的缩略图走
+            # /img/{sha}/thumb 直链（bridge.ts 的 fetchThumb），根本不读这个字段；
+            # 此前最多 200 张逐张内联编码（先原图、后 300px 缩略图）都是纯浪费。
+            # 内嵌通道仍需内联数据URL（<img> 直链会被 AstrBot 登录鉴权挡成 401），
+            # 那边单独保留 300px 缩略图，两条通道不再强行一致。
+            return _ok(g.search(trash=True, limit=200, offset=0))
         if path == "/gallery/scan_nsfw":
             only = self._q(request, "only", "1") != "0"
             res = g.scan_nsfw_start(only_unchecked=only)
