@@ -176,6 +176,9 @@ export const studioApi = {
   discard: (id: string): Promise<any> => apiPost("studio/job/discard", { id }),
   /** ComfyUI 服务器队列概览（右栏「服务器状态」块，约 5s 轮询一次） */
   queue: (): Promise<{ servers: StudioQueueServer[] }> => apiGet("studio/queue", undefined, { timeout: 12000 }),
+  /** 采样器/调度器枚举（后端从 /object_info 的 KSampler 节点提取并缓存） */
+  samplers: (): Promise<{ samplers: string[]; schedulers: string[]; source: string }> =>
+    apiGet("studio/samplers", undefined, { timeout: 45000 }),
   /** 最近成品（图库直连，type=gen 只取生图成品） */
   recentGens: (size = 9): Promise<{ images: StudioGalleryItem[]; total: number }> =>
     apiGet("gallery/search", { page: 1, size, type: "gen" }, { timeout: 20000 }),

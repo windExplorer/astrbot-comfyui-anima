@@ -62,6 +62,9 @@ _ALLOWED_MIME_EXT = {
 
 _LLM_PROMPT_MODES = ("expand", "translate", "anima", "natural", "qwen_edit")
 
+# 采样器/调度器枚举缓存：{server_key: {samplers, schedulers}}（/object_info 很大，绝不反复拉）
+_SAMPLERS_CACHE: dict[str, dict] = {}
+
 
 # ────────────────────────────────────────────────────────────────── #
 # 内置提示词模板（首次初始化播种；reseed 补齐缺失项）
@@ -685,6 +688,63 @@ class StudioJobManager:
             "created_at": job.get("created_at"),
         }
 
+    async def samplers_list(self, force: bool = False) -> dict:
+        """采样器 / 调度器枚举（v7.9.5，右栏高级参数的下拉选项来源）。
+
+        从 ComfyUI `/object_info` 的 KSampler 类节点定义里提取 `sampler_name`
+        与 `scheduler` 的枚举列表——这是 ComfyUI 官方权威口径。逐台尝试直到
+        拿到；按服务器 key 模块级缓存（/object_info 响应体很大，绝不反复拉）。
+        """
+        servers = self.plugin._servers() if hasattr(self.plugin, "_servers") else []
+        try:
+            from .comfyui_client import ComfyUIClient
+        except ImportError:
+            from comfyui_client import ComfyUIClient
+        for s in servers:
+            name = str(s.get("name") or s.get("url") or "?")
+            try:
+                skey = self.plugin._server_key(s)
+            except Exception:
+                skey = name
+            cached = _SAMPLERS_CACHE.get(skey)
+            if cached is not None and not force:
+                return {**cached, "source": name}
+            client = None
+            try:
+                client = self.plugin._build_client(s)
+                info = await client.object_info()
+                samplers: list[str] = []
+                schedulers: list[str] = []
+                if isinstance(info, dict):
+                    for cid, node in info.items():
+                        if not isinstance(node, dict):
+                            continue
+                        ct = str(cid or node.get("class_type") or "").lower()
+                        if "ksampler" not in ct and "sampler" not in ct:
+                            continue
+                        req = ((node.get("input") or {}).get("required") or {})
+                        if not samplers and isinstance(req.get("sampler_name"), (list, tuple)) \
+                                and req["sampler_name"] and isinstance(req["sampler_name"][0], list):
+                            samplers = [str(x) for x in req["sampler_name"][0]]
+                        if not schedulers and isinstance(req.get("scheduler"), (list, tuple)) \
+                                and req["scheduler"] and isinstance(req["scheduler"][0], list):
+                            schedulers = [str(x) for x in req["scheduler"][0]]
+                        if samplers and schedulers:
+                            break
+                if samplers:
+                    payload = {"samplers": samplers, "schedulers": schedulers}
+                    _SAMPLERS_CACHE[skey] = payload
+                    return {**payload, "source": name}
+            except Exception as e:
+                logger.debug(f"【生图工作台】 服务器 {name} 采样器枚举获取失败: {e}")
+            finally:
+                if client is not None:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+        return {"samplers": [], "schedulers": [], "source": ""}
+
     async def queue_status(self) -> dict:
         """各 ComfyUI 服务器的队列概览（v7.9.4 右栏「服务器状态」块）。
 
@@ -844,7 +904,8 @@ class StudioManager:
             roles: dict | None = None
             if base_id.isdigit() and wf_store is not None:
                 try:
-                    rec = wf_store.get(int(base_id))
+                    # with_json：采样默认值缺失时要用原始 JSON 现场提取（见下）
+                    rec = wf_store.get(int(base_id), with_json=True)
                     roles = (rec or {}).get("roles") or {}
                 except Exception:
                     rec = None
@@ -878,6 +939,20 @@ class StudioManager:
                 w["base_name"] = str(rec.get("name") or "")
                 w["multi_image"] = bool(roles.get("multi_image"))
                 sd = roles.get("sampler_defaults") or {}
+                # v7.9.5：注记缺采样默认值时，用基础工作流原始 JSON 现场提取一次
+                # （workflow_builder.get_sampler_defaults 读的是节点当前值，最真实）
+                if not (sd.get("steps") or sd.get("cfg") or sd.get("denoise")):
+                    try:
+                        try:
+                            from . import workflow_builder as _wb
+                        except ImportError:
+                            import workflow_builder as _wb
+                        _prompt = json.loads(rec.get("wf_json") or "{}")
+                        _sd2 = _wb.get_sampler_defaults(_prompt) if _prompt else {}
+                        if _sd2:
+                            sd = {**{k: v for k, v in _sd2.items()}, **{k: v for k, v in sd.items() if v is not None}}
+                    except Exception as _sde:
+                        logger.debug(f"【生图工作台】 工作流「{w['name']}」采样默认值现场提取失败: {_sde}")
                 w["sampler_defaults"] = {
                     "steps": sd.get("steps"),
                     "cfg": sd.get("cfg"),
@@ -903,13 +978,15 @@ class StudioManager:
                 # 旧版条目回退 base_model 字段（_wf_base_model 同口径）
                 w["basemodel_name"] = str(entry.get("base_model") or "").strip()
 
-            # 可用 LoRA 名单：与聊天侧 _lora_matches_wf 同规则（底模族兼容）
+            # 可用 LoRA 名单：与聊天侧 _lora_matches_wf 同规则（底模族兼容）。
+            # v7.9.5：**不再按 enabled 过滤**——聊天侧 _lora_lookup 按名字匹配时
+            # 从不看 enabled，库条目没开这个开关（默认 False）≠ 不可用，
+            # 此前多加这一刀把整库滤空（用户实测：切几种底模工作流都是空）。
             try:
                 w["lora_names"] = [
                     str(l.get("name") or "").strip()
                     for l in plugin._lora_library()
                     if isinstance(l, dict)
-                    and l.get("enabled", False)
                     and str(l.get("name") or "").strip()
                     and plugin._lora_matches_wf(l, entry)
                 ]

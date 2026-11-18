@@ -92,15 +92,37 @@
     <!-- 高级 -->
     <n-collapse class="adv">
       <n-collapse-item title="高级（采样器覆盖）" name="adv">
-        <div class="ctrl-row">
-          <span class="ctrl-label">sampler</span>
-          <n-input :value="params.sampler" size="small" placeholder="如 euler / euler_ancestral（留空默认）" @update:value="(v: string) => (params.sampler = v)" />
+        <div class="ctrl-row adv-row">
+          <span class="ctrl-label">采样器</span>
+          <n-select
+            :value="params.sampler || null"
+            size="small"
+            filterable
+            tag
+            clearable
+            :options="samplerSelectOptions"
+            placeholder="留空用工作流默认"
+            style="flex: 1"
+            @update:value="(v: string | null) => (params.sampler = v || '')"
+          />
         </div>
-        <div class="ctrl-row">
-          <span class="ctrl-label">schedule</span>
-          <n-input :value="params.noise_schedule" size="small" placeholder="噪声调度（留空默认）" @update:value="(v: string) => (params.noise_schedule = v)" />
+        <div class="ctrl-row adv-row">
+          <span class="ctrl-label">调度器</span>
+          <n-select
+            :value="params.noise_schedule || null"
+            size="small"
+            filterable
+            tag
+            clearable
+            :options="schedulerSelectOptions"
+            placeholder="留空用工作流默认"
+            style="flex: 1"
+            @update:value="(v: string | null) => (params.noise_schedule = v || '')"
+          />
         </div>
-        <div class="ctrl-hint">需要基础工作流解析出采样器节点才生效；填错名字会被 ComfyUI 拒绝。</div>
+        <div class="ctrl-hint">
+          {{ samplerHint }}
+        </div>
       </n-collapse-item>
     </n-collapse>
 
@@ -128,10 +150,27 @@ const props = defineProps<{
   workflow: StudioWorkflow | null;
   tiers: StudioSizeTier[];
   ratios: StudioSizeRatio[];
+  /** 采样器枚举（ComfyUI /object_info 提取；空数组=未拿到，下拉可手输） */
+  samplerOptions?: string[];
+  /** 调度器枚举（同上） */
+  schedulerOptions?: string[];
 }>();
 
 const ratioSel = ref("");
 const tierSel = ref("");
+
+const samplerSelectOptions = computed(() =>
+  (props.samplerOptions || []).map((s) => ({ label: s, value: s }))
+);
+const schedulerSelectOptions = computed(() =>
+  (props.schedulerOptions || []).map((s) => ({ label: s, value: s }))
+);
+const samplerHint = computed(() => {
+  const n = (props.samplerOptions || []).length;
+  return n
+    ? `枚举来自 ComfyUI /object_info（${n} 个采样器），也可手动输入自定义值；留空用工作流默认。`
+    : "暂未拿到 ComfyUI 枚举（服务器未连上），可手动输入采样器/调度器名；留空用工作流默认。";
+});
 
 // v7.9.3：工作流实际参数（基础工作流解析注记的采样默认值），让「跟随默认」看得见
 const wfD = computed(() => props.workflow?.sampler_defaults || null);
@@ -251,6 +290,10 @@ watch(
 .ctrl-label { font-size: 12px; color: var(--text-sub); flex: none; width: 44px; }
 .ctrl-hint { font-size: 11px; color: var(--text-sub); opacity: 0.85; }
 .adv :deep(.n-collapse-item__header) { font-size: 12px; padding-top: 2px; padding-bottom: 2px; }
+.adv :deep(.n-collapse-item__content) { padding-top: 4px; }
+/* v7.9.5：高级区两行下拉之间留出间距 */
+.adv-row { margin-bottom: 10px; }
+.adv-row:last-of-type { margin-bottom: 8px; }
 .refine-row {
   display: flex;
   gap: 8px;

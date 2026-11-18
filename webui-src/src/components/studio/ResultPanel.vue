@@ -35,10 +35,18 @@
       <n-button size="small" quaternary @click="copyPrompt">📋 复制提示词</n-button>
     </div>
 
-    <!-- 会话成果条 -->
-    <div v-if="results.length" class="strip-wrap">
-      <div class="strip-label">本次会话（{{ results.length }} 张）</div>
-      <div class="strip">
+    <!-- 会话成果条（v7.9.5：支持单张移除与新建会话，仅页面级——成品仍在图库） -->
+    <div class="strip-wrap">
+      <div class="strip-label">
+        <span>本次会话（{{ results.length }} 张）</span>
+        <n-popconfirm @positive-click="emit('newSession')">
+          <template #trigger>
+            <n-button size="tiny" quaternary type="primary">🗑 新建会话</n-button>
+          </template>
+          清空本条列表并从头开始？（成品图仍保留在图库）
+        </n-popconfirm>
+      </div>
+      <div v-if="results.length" class="strip">
         <div
           v-for="(r, i) in results"
           :key="r.sha + i"
@@ -47,8 +55,10 @@
           @click="emit('pick', r)"
         >
           <img :src="urlMap[r.sha] || ''" class="strip-thumb" loading="lazy" />
+          <button class="strip-remove" title="从本条移除（不影响图库）" @click.stop="emit('remove', i)">×</button>
         </div>
       </div>
+      <div v-else class="strip-empty">还没有成果——出一张图，或从右侧「最近成品」挑一张接着改</div>
     </div>
   </div>
 </template>
@@ -75,6 +85,8 @@ const emit = defineEmits<{
   (e: "rerun"): void;
   (e: "useAsRef", sha: string): void;
   (e: "pick", r: { sha: string; params: Partial<StudioGenerateParams> | undefined; jobId: string }): void;
+  (e: "remove", index: number): void;
+  (e: "newSession"): void;
 }>();
 
 const message = useMessage();
@@ -197,9 +209,18 @@ async function copyPrompt() {
 .empty-sub { margin-top: 4px; font-size: 12px; color: var(--text-sub); }
 .canvas-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .strip-wrap { min-width: 0; flex: 0 0 auto; }
-.strip-label { font-size: 12px; color: var(--text-sub); margin-bottom: 6px; }
+.strip-label {
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .strip-item {
+  position: relative;
   flex: none;
   width: 74px;
   height: 74px;
@@ -209,6 +230,25 @@ async function copyPrompt() {
   cursor: pointer;
   transition: border-color 0.15s;
 }
+.strip-remove {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+  padding: 0;
+  display: none;
+}
+.strip-item:hover .strip-remove { display: block; }
+.strip-remove:hover { background: #e86f9c; }
+.strip-empty { font-size: 11px; color: var(--text-sub); line-height: 1.6; padding: 4px 0; }
 .strip-item.active, .strip-item:hover { border-color: var(--accent); }
 .strip-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 </style>

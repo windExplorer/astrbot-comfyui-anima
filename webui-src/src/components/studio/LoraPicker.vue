@@ -97,8 +97,9 @@ const allowedSet = computed(() => {
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
   const aset = allowedSet.value;
+  // v7.9.5：不再按 enabled 过滤——聊天侧 _lora_lookup 按名字匹配从不看它，
+  // 库条目没开开关 ≠ 不可用（此前这一刀把整库滤空）
   return props.loras.filter((l) => {
-    if (!l.enabled) return false;
     if (aset && !aset.has(l.name)) return false;
     if (!kw) return true;
     return (

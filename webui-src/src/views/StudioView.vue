@@ -45,6 +45,8 @@
             :workflow="selectedWorkflow"
             :tiers="ovTiers"
             :ratios="ovRatios"
+            :sampler-options="samplerOptions"
+            :scheduler-options="schedulerOptions"
           />
 
           <!-- 负向提示词固定在左栏最底（v7.9.3 用户口径） -->
@@ -75,6 +77,8 @@
           @rerun="rerun"
           @use-as-ref="useAsRef"
           @pick="onPick"
+          @remove="removeResult"
+          @new-session="newSession"
         />
         <div class="prompt-band">
           <PromptPanel
@@ -211,6 +215,20 @@ const recentTotal = ref(0);
 const recentLoading = ref(false);
 let tickCount = 0;
 
+// v7.9.5 高级参数下拉：采样器/调度器枚举（ComfyUI /object_info，后端已缓存）
+const samplerOptions = ref<string[]>([]);
+const schedulerOptions = ref<string[]>([]);
+
+async function fetchSamplers() {
+  try {
+    const d = await studioApi.samplers();
+    samplerOptions.value = d.samplers || [];
+    schedulerOptions.value = d.schedulers || [];
+  } catch {
+    /* 拿不到枚举就手输（hint 会说明） */
+  }
+}
+
 const tplShow = ref(false);
 const viewerShow = ref(false);
 const viewerSha = ref("");
@@ -247,17 +265,6 @@ const quickTemplates = computed(() =>
 const allowedLoraNames = computed(() => selectedWorkflow.value?.lora_names ?? null);
 
 // 切换工作流后，已选 LoRA 里不再兼容的自动移除（保留下次可用的）
-watch(selectedWf, () => {
-  const allowed = allowedLoraNames.value;
-  if (allowed === null || !loraSel.value.length) return;
-  const set = new Set(allowed);
-  const kept = loraSel.value.filter((s) => set.has(s.name));
-  if (kept.length !== loraSel.value.length) {
-    loraSel.value = kept;
-    message.info("已按新工作流的底模兼容性移除部分已选 LoRA");
-  }
-});
-
 const activeJob = computed(
   () => jobs.value.find((j) => j.state === "running" || j.state === "queued") || null
 );
@@ -288,6 +295,7 @@ async function loadAll() {
     overview.value = await studioApi.overview();
     ensureWorkflowSelected();
     ensureUrlsForVisible();
+    fetchSamplers();
   } catch (e: any) {
     loadErr.value = e?.message || "加载失败";
   } finally {
@@ -327,6 +335,27 @@ watch(selectedWf, (v, old) => {
   if (v && v !== old) {
     lsSet(`anima_studio_wf_${mode.value}`, v);
     applyWorkflowDefaults(false);
+    // v7.9.5：切工作流 = 新上下文，覆盖类参数一律回到「跟随工作流默认」，
+    // 让下方面板立即渲染出新工作流的实际参数（用户实测反馈：切了从来没变过）。
+    // 正向/负向提示词、种子、LLM 润色开关、LoRA 选择不重置。
+    p.steps = null;
+    p.cfg = null;
+    p.denoise = null;
+    p.sampler = "";
+    p.noise_schedule = "";
+    p.width = null;
+    p.height = null;
+    p.custom_size = null;
+    // 已选 LoRA 里不兼容新工作流的自动移除
+    const allowed = allowedLoraNames.value;
+    if (allowed !== null && loraSel.value.length) {
+      const set = new Set(allowed);
+      const kept = loraSel.value.filter((s) => set.has(s.name));
+      if (kept.length !== loraSel.value.length) {
+        loraSel.value = kept;
+        message.info("已按新工作流的底模兼容性移除部分已选 LoRA");
+      }
+    }
   }
 });
 
@@ -467,6 +496,27 @@ function persistSession() {
   } catch {
     /* 内存兜底由 storage 层处理 */
   }
+}
+
+// v7.9.5 会话管理：新建会话 / 单张移除（都只影响页面列表，成品仍在图库）
+function newSession() {
+  sessionResults.value = [];
+  processed.clear();
+  currentSha.value = "";
+  persistSession();
+  message.success("已新建会话（此前的成品仍保留在图库）");
+}
+
+function removeResult(index: number) {
+  if (index < 0 || index >= sessionResults.value.length) return;
+  const [removed] = sessionResults.value.splice(index, 1);
+  if (removed && currentSha.value === removed.sha) {
+    // 删的是当前展示的图 → 顺位切到下一张（若有）
+    const next = sessionResults.value[0];
+    currentSha.value = next?.sha || "";
+    if (currentSha.value) setCurrent(currentSha.value);
+  }
+  persistSession();
 }
 
 function restoreSession() {

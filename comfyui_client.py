@@ -86,6 +86,14 @@ class ComfyUIClient:
         """
         return await self._get("/queue")
 
+    async def object_info(self) -> dict:
+        """拉取 ComfyUI /object_info（全部节点定义，响应体较大）。
+
+        目前仅「在线生图工作台」用它提取采样器/调度器枚举；调用方必须自行
+        缓存结果，不要反复拉全量。
+        """
+        return await self._get("/object_info", timeout=30)
+
     async def interrupt(self) -> None:
         """请求 ComfyUI 中断当前正在执行的任务（POST /interrupt）。
 
