@@ -42,24 +42,24 @@
         <span class="pp-count">{{ tagCount }} 个标签</span>
       </div>
       <div class="pp-right">
-        <!-- v7.9.6：提交时润色改为提交前的主动开关（默认关）——在线生图的提示词
-             都是用户亲手确认的，被动润色反而是多余加工 -->
+        <!-- v7.9.7：润色是即用即点的动作按钮——点一下就按当前工作流风格自动选方式
+             （扩写/翻译/改写/编辑指令）就地改写输入框文本，无任何隐藏的提交后加工 -->
         <n-tooltip trigger="hover" placement="bottom-end">
           <template #trigger>
             <n-button
               size="small"
-              :type="llmRefine ? 'primary' : 'default'"
-              :ghost="llmRefine"
+              type="primary"
+              ghost
               class="pp-refine"
-              :class="{ 'pp-refine-off': !llmRefine }"
-              @click="emit('update:llmRefine', !llmRefine)"
+              :loading="refining"
+              :disabled="!llmReady || !positive.trim() || aiLoading"
+              @click="runAutoPolish"
             >
               🪄 润色
             </n-button>
           </template>
-          {{ llmRefine
-            ? "润色已开：提交后插件会按工作流风格自动翻译/改写（与聊天侧一致）"
-            : "润色已关：直接用输入框里的原文出图。点开则提交后由插件 LLM 再润色一轮" }}
+          一键润色：按当前工作流风格自动选择润色方式（扩写 / 翻译 / 改写 / 编辑指令），
+          就地改写输入框文本
         </n-tooltip>
         <n-button
           type="primary"
@@ -98,15 +98,12 @@ const props = defineProps<{
   /** 开始生图禁用态（父组件 genDisabled） */
   submitDisabled: boolean;
   submitting: boolean;
-  /** v7.9.6：提交时润色开关（默认关；提交前的主动决定） */
-  llmRefine: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "update:positive", v: string): void;
   (e: "openTemplates"): void;
   (e: "submit"): void;
-  (e: "update:llmRefine", v: boolean): void;
 }>();
 
 const message = useMessage();
@@ -172,6 +169,44 @@ async function runAi(mode: string) {
   }
 }
 
+// v7.9.7：🪄 一键润色（即用即点）——按当前工作流风格自动选润色方式，就地改写输入框文本
+const refining = ref(false);
+
+function autoPolishMode(): string {
+  // 多参考编辑类工作流 → 编辑指令；动漫/danbooru 底模 → 中文翻译为标签、英文标签扩写；
+  // 其余（真人向/未知）→ 中文改写为自然语言、英文标签扩写
+  if (props.mode === "img2img" && (props.refCount > 1 || props.workflow?.multi_image)) {
+    return "qwen_edit";
+  }
+  const hasCJK = /[\u4e00-\u9fff]/.test(props.positive);
+  if (props.workflow?.is_anima) {
+    return hasCJK ? "translate" : "expand";
+  }
+  return hasCJK ? "natural" : "expand";
+}
+
+async function runAutoPolish() {
+  const text = props.positive.trim();
+  if (!text || refining.value) return;
+  refining.value = true;
+  aiError.value = "";
+  const mode = autoPolishMode();
+  try {
+    const loraRef = props.selectedLoraNames.join(", ");
+    const d = await studioApi.llmPrompt(mode, text, loraRef);
+    if (d && d.text) {
+      emit("update:positive", d.text);
+      message.success(`已润色（${aiModeHint[mode] || "AI 润色"}）`);
+    } else {
+      aiError.value = "AI 没有返回内容";
+    }
+  } catch (e: any) {
+    aiError.value = e?.message || String(e);
+  } finally {
+    refining.value = false;
+  }
+}
+
 function appendTemplate(t: StudioTemplate) {
   const cur = props.positive.trimEnd();
   const sep = cur && !/[，,\s]$/.test(cur) ? ", " : cur ? " " : "";
@@ -201,7 +236,6 @@ function appendTemplate(t: StudioTemplate) {
 }
 .pp-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .pp-right { display: flex; align-items: center; gap: 10px; flex: none; }
-.pp-refine-off { color: var(--text-sub); }
 .pp-count { font-size: 11px; color: var(--text-sub); }
 .pp-submit { flex: none; min-width: 140px; }
 .pp-error {

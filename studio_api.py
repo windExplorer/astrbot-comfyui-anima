@@ -428,8 +428,8 @@ class StudioJobManager:
         custom_size = params.get("custom_size")
         if custom_size is not None:
             custom_size = bool(custom_size)
-        llm_refine = params.get("llm_refine")
-        llm_refine = True if llm_refine is None else bool(llm_refine)
+        # v7.9.7：llm_refine 概念移除——润色是提示词区里的即用即点动作按钮
+        # （用户点 🪄 就地改写输入框），提交永远用输入框最终文本（raw_prompt=True）。
 
         loras_in = params.get("loras") or []
         if not isinstance(loras_in, list):
@@ -479,7 +479,6 @@ class StudioJobManager:
             "sampler": sampler,
             "noise_schedule": noise_schedule,
             "custom_size": custom_size,
-            "llm_refine": llm_refine,
             "loras": loras,
             "ref_ids": ref_ids,
         }, None
@@ -527,7 +526,7 @@ class StudioJobManager:
         logger.info(
             f"【生图工作台】 任务 {job['id']} 开始：mode={clean['mode']} "
             f"workflow={clean['workflow']} loras={[l['name'] for l in clean['loras']]} "
-            f"refs={len(clean['ref_ids'])} llm_refine={clean['llm_refine']}"
+            f"refs={len(clean['ref_ids'])} raw_prompt=True"
         )
         try:
             init_images: list[str] = []
@@ -580,7 +579,9 @@ class StudioJobManager:
                 sampler=clean["sampler"] or None,
                 noise_schedule=clean["noise_schedule"] or None,
                 stats=stats,
-                raw_prompt=not clean["llm_refine"],
+                # v7.9.7：润色是提示词区里的即用即点动作，提交永远用输入框最终文本，
+                # 不再有隐藏的提交后二次加工
+                raw_prompt=True,
                 custom_size=clean["custom_size"],
                 external=True,
             )
@@ -682,7 +683,6 @@ class StudioJobManager:
                 "sampler": params.get("sampler"),
                 "noise_schedule": params.get("noise_schedule"),
                 "custom_size": params.get("custom_size"),
-                "llm_refine": params.get("llm_refine"),
                 "loras": params.get("loras"),
             },
             "created_at": job.get("created_at"),

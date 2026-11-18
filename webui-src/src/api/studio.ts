@@ -114,7 +114,6 @@ export interface StudioGenerateParams {
   sampler: string;
   noise_schedule: string;
   custom_size: boolean | null;
-  llm_refine: boolean;
   loras: StudioLoraSel[];
   ref_ids: string[];
 }
