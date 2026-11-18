@@ -27,7 +27,7 @@
         :min="64"
         :max="4096"
         :step="64"
-        placeholder="宽"
+        :placeholder="wfSizeLabel.w"
         style="flex: 1"
         @update:value="(v: number | null) => (params.width = v)"
       />
@@ -38,11 +38,12 @@
         :min="64"
         :max="4096"
         :step="64"
-        placeholder="高"
+        :placeholder="wfSizeLabel.h"
         style="flex: 1"
         @update:value="(v: number | null) => (params.height = v)"
       />
     </div>
+    <div v-if="wfSizeLabel.text" class="ctrl-hint">{{ wfSizeLabel.text }}</div>
     <div v-if="mode !== 't2i'" class="size-mode">
       <span class="ctrl-label">尺寸来源</span>
       <n-radio-group :value="params.custom_size" size="tiny" @update:value="(v: boolean | null) => (params.custom_size = v)">
@@ -56,20 +57,22 @@
     <div class="pp-head"><span class="pp-label">采样参数</span></div>
     <div class="ctrl-row">
       <span class="ctrl-label">步数</span>
-      <n-slider :value="params.steps ?? 20" :min="1" :max="60" :step="1" style="flex: 1" @update:value="(v: number) => (params.steps = v)" />
-      <n-input-number :value="params.steps" size="tiny" :min="1" :max="60" style="width: 76px" @update:value="(v: number | null) => (params.steps = v)" />
+      <n-slider :value="dispSteps" :min="1" :max="60" :step="1" style="flex: 1" @update:value="(v: number) => (params.steps = v)" />
+      <n-input-number :value="dispSteps" size="tiny" :min="1" :max="60" style="width: 76px" @update:value="(v: number | null) => (params.steps = v)" />
     </div>
     <div class="ctrl-row">
       <span class="ctrl-label">CFG</span>
-      <n-slider :value="params.cfg ?? 5" :min="0.5" :max="15" :step="0.5" style="flex: 1" @update:value="(v: number) => (params.cfg = v)" />
-      <n-input-number :value="params.cfg" size="tiny" :min="0.5" :max="15" :step="0.5" style="width: 76px" @update:value="(v: number | null) => (params.cfg = v)" />
+      <n-slider :value="dispCfg" :min="0.5" :max="15" :step="0.5" style="flex: 1" @update:value="(v: number) => (params.cfg = v)" />
+      <n-input-number :value="dispCfg" size="tiny" :min="0.5" :max="15" :step="0.5" style="width: 76px" @update:value="(v: number | null) => (params.cfg = v)" />
     </div>
     <div v-if="mode !== 't2i'" class="ctrl-row">
       <span class="ctrl-label">降噪</span>
-      <n-slider :value="params.denoise ?? 0.75" :min="0.1" :max="1" :step="0.05" style="flex: 1" @update:value="(v: number) => (params.denoise = v)" />
-      <n-input-number :value="params.denoise" size="tiny" :min="0.1" :max="1" :step="0.05" style="width: 76px" @update:value="(v: number | null) => (params.denoise = v)" />
+      <n-slider :value="dispDenoise" :min="0.1" :max="1" :step="0.05" style="flex: 1" @update:value="(v: number) => (params.denoise = v)" />
+      <n-input-number :value="dispDenoise" size="tiny" :min="0.1" :max="1" :step="0.05" style="width: 76px" @update:value="(v: number | null) => (params.denoise = v)" />
     </div>
-    <div class="ctrl-hint">留空/不调即用工作流默认值；改动只对本次生图生效。</div>
+    <div class="ctrl-hint">
+      {{ defaultsText }}
+    </div>
 
     <!-- 种子 -->
     <div class="ctrl-row">
@@ -129,6 +132,47 @@ const props = defineProps<{
 
 const ratioSel = ref("");
 const tierSel = ref("");
+
+// v7.9.3：工作流实际参数（基础工作流解析注记的采样默认值），让「跟随默认」看得见
+const wfD = computed(() => props.workflow?.sampler_defaults || null);
+
+const dispSteps = computed(() => {
+  const v = props.params.steps ?? wfD.value?.steps;
+  return v != null ? Math.round(v) : 20;
+});
+const dispCfg = computed(() => {
+  const v = props.params.cfg ?? wfD.value?.cfg;
+  return v != null ? v : 5;
+});
+const dispDenoise = computed(() => {
+  const v = props.params.denoise ?? wfD.value?.denoise;
+  return v != null ? v : 0.75;
+});
+
+const defaultsText = computed(() => {
+  const d = wfD.value;
+  if (!d || (d.steps == null && d.cfg == null && d.denoise == null)) {
+    return "未解析到工作流采样默认值，将用工作流节点当前值；改动只对本次生图生效。";
+  }
+  const parts: string[] = [];
+  if (d.steps != null) parts.push(`${Math.round(d.steps)} 步`);
+  if (d.cfg != null) parts.push(`CFG ${d.cfg}`);
+  if (d.denoise != null && props.mode !== "t2i") parts.push(`降噪 ${d.denoise}`);
+  if (d.sampler_name) parts.push(String(d.sampler_name));
+  return `工作流默认：${parts.join(" · ")}（不调即用；改动只对本次生图生效）`;
+});
+
+const wfSizeLabel = computed(() => {
+  const w = props.workflow?.default_width;
+  const h = props.workflow?.default_height;
+  if (props.params.width != null && props.params.height != null) {
+    return { w: "宽", h: "高", text: "" };
+  }
+  if (w && h) {
+    return { w: String(w), h: String(h), text: `跟随工作流默认 ${w}×${h}` };
+  }
+  return { w: "宽", h: "高", text: "" };
+});
 
 const ratioOptions = computed(() => [
   { label: "跟随工作流默认", value: "" },

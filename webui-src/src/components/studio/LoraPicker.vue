@@ -7,7 +7,9 @@
       </n-button>
     </div>
 
-    <div v-if="!filtered.length" class="lora-empty">没有匹配的 LoRA（库为空或已被过滤）</div>
+    <div v-if="!filtered.length" class="lora-empty">
+      {{ allowedSet !== null ? "当前工作流没有兼容的 LoRA（按底模筛选）" : "没有匹配的 LoRA（库为空或已被过滤）" }}
+    </div>
 
     <div class="lora-list">
       <div
@@ -64,8 +66,9 @@
         </div>
       </div>
     </div>
-    <div v-if="modelValue.length" class="lora-selected-hint">
-      已选 {{ modelValue.length }} 个 LoRA（触发词会自动追加到提示词）
+    <div v-if="modelValue.length || availableCount" class="lora-selected-hint">
+      已选 {{ modelValue.length }} 个 · 可用 {{ availableCount }} 个<template v-if="allowedSet !== null">（已按工作流底模筛选）</template>
+      <template v-if="modelValue.length">；触发词会自动追加到提示词</template>
     </div>
   </div>
 </template>
@@ -77,16 +80,26 @@ import type { StudioLora, StudioLoraSel } from "@/api/studio";
 const props = defineProps<{
   loras: StudioLora[];
   modelValue: StudioLoraSel[];
+  /** v7.9.3：当前工作流底模兼容的 LoRA 名单（后端按聊天侧同规则预筛）。
+   *  null = 未选工作流（不限制）；非空 = 只展示名单内的。 */
+  allowedNames?: string[] | null;
 }>();
 
 const emit = defineEmits<{ (e: "update:modelValue", v: StudioLoraSel[]): void }>();
 
 const keyword = ref("");
 
+const allowedSet = computed(() => {
+  if (props.allowedNames === null || props.allowedNames === undefined) return null;
+  return new Set(props.allowedNames);
+});
+
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
+  const aset = allowedSet.value;
   return props.loras.filter((l) => {
     if (!l.enabled) return false;
+    if (aset && !aset.has(l.name)) return false;
     if (!kw) return true;
     return (
       l.name.toLowerCase().includes(kw) ||
@@ -96,6 +109,8 @@ const filtered = computed(() => {
     );
   });
 });
+
+const availableCount = computed(() => filtered.value.length);
 
 function isSel(name: string): boolean {
   return props.modelValue.some((s) => s.name === name);

@@ -15,10 +15,18 @@ export interface StudioTemplate {
   sort_order: number;
 }
 
+export interface StudioSamplerDefaults {
+  steps?: number | null;
+  cfg?: number | null;
+  denoise?: number | null;
+  sampler_name?: string;
+  scheduler?: string;
+}
+
 export interface StudioWorkflow {
   name: string;
   enabled: boolean;
-  /** 基础工作流解析出的类型：t2i / img2img / upscale / null(未知，旧版内联) */
+  /** 基础工作流解析出的类型（waifu 同款三层口径：注记→fail-open→名字兜底） */
   kind: string | null;
   base_name: string;
   basemodel_name: string;
@@ -26,6 +34,7 @@ export interface StudioWorkflow {
   is_anima: boolean;
   /** 工作流带 TextEncodeQwenImage21 类多参考节点 */
   multi_image: boolean;
+  /** 绑定服务器的展示名（名字而非 key/ID；解析不到为空） */
   server_name: string;
   default_width: number | null;
   default_height: number | null;
@@ -37,6 +46,10 @@ export interface StudioWorkflow {
   aliases: string;
   image: string;
   description: string;
+  /** 基础工作流解析出的采样默认值（steps/cfg/denoise…），null=未解析到 */
+  sampler_defaults: StudioSamplerDefaults | null;
+  /** 按底模兼容性筛好的可用 LoRA 名单（与聊天侧 _lora_matches_wf 同规则） */
+  lora_names: string[];
 }
 
 export interface StudioLoraPreset {

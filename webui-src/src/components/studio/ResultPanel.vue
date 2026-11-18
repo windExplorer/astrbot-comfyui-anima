@@ -8,13 +8,15 @@
         class="canvas-img"
         @click="!busy && emit('view', currentSha)"
       />
-      <!-- 加载层 -->
+      <!-- 加载层（v7.9.3 重做：毛玻璃 + 自旋环 + 不确定进度条 + 分级文案） -->
       <div v-if="busy" class="canvas-loading">
-        <n-spin size="medium" />
-        <div class="loading-text">
-          {{ activeHint }}
-          <div v-if="activeElapsed" class="loading-elapsed">已用时 {{ activeElapsed }}s</div>
+        <div class="ring"></div>
+        <div class="ld-title">{{ queued ? "排队中" : "正在生成" }}</div>
+        <div class="ld-sub">
+          {{ queued ? "前面的任务画完就轮到这张" : "ComfyUI 正在绘制" }}
+          <template v-if="activeElapsed !== null"> · 已用时 {{ activeElapsed }}s</template>
         </div>
+        <div class="ld-bar"><div class="ld-bar-fill"></div></div>
       </div>
       <!-- 空态 -->
       <div v-else-if="!currentSha" class="canvas-empty">
@@ -79,6 +81,9 @@ const message = useMessage();
 const downloading = ref(false);
 const refing = ref(false);
 
+/** 当前忙态是排队还是绘制中（activeHint 由父组件按 activeJob.state 生成） */
+const queued = computed(() => props.activeHint.includes("排队"));
+
 async function download() {
   if (!props.currentSha) return;
   downloading.value = true;
@@ -116,28 +121,35 @@ async function copyPrompt() {
 </script>
 
 <style scoped>
-.result-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* v7.9.3：中间列弹性布局——画布占满除提示词区以外的全部高度 */
+.result-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
 .canvas {
   position: relative;
-  width: 100%;
-  min-height: 300px;
+  flex: 1 1 auto;
+  min-height: 160px;
   border-radius: 14px;
   border: 1px solid var(--border-color);
-  background:
-    color-mix(in srgb, var(--accent) 4%, var(--bg-panel));
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-panel));
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
 }
-.canvas.busy { min-height: 340px; }
 .canvas-img {
   max-width: 100%;
-  max-height: 62vh;
+  max-height: 100%;
   object-fit: contain;
   cursor: zoom-in;
   display: block;
 }
+/* 加载层：毛玻璃 + 自旋环 + 不确定进度条（v7.9.3 重做） */
 .canvas-loading {
   position: absolute;
   inset: 0;
@@ -146,16 +158,45 @@ async function copyPrompt() {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: color-mix(in srgb, var(--bg-body) 75%, transparent);
+  background: color-mix(in srgb, var(--bg-body) 45%, transparent);
+  backdrop-filter: blur(10px) saturate(1.05);
+  -webkit-backdrop-filter: blur(10px) saturate(1.05);
 }
-.loading-text { font-size: 13px; color: var(--text-main); }
-.loading-elapsed { font-size: 11px; color: var(--text-sub); margin-top: 4px; }
+.ring {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 4px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-top-color: var(--accent);
+  animation: ld-spin 0.9s linear infinite;
+}
+@keyframes ld-spin { to { transform: rotate(360deg); } }
+.ld-title { font-size: 15px; font-weight: 600; color: var(--text-main); }
+.ld-sub { font-size: 12px; color: var(--text-sub); }
+.ld-bar {
+  width: 180px;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.ld-bar-fill {
+  width: 38%;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  animation: ld-slide 1.4s ease-in-out infinite;
+}
+@keyframes ld-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(370%); }
+}
 .canvas-empty { text-align: center; padding: 40px 20px; }
 .empty-icon { font-size: 44px; }
 .empty-title { margin-top: 8px; font-size: 15px; font-weight: 600; color: var(--text-main); }
 .empty-sub { margin-top: 4px; font-size: 12px; color: var(--text-sub); }
 .canvas-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.strip-wrap { min-width: 0; }
+.strip-wrap { min-width: 0; flex: 0 0 auto; }
 .strip-label { font-size: 12px; color: var(--text-sub); margin-bottom: 6px; }
 .strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .strip-item {

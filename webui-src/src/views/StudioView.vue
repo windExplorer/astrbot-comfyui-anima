@@ -1,120 +1,110 @@
 <template>
   <div class="studio-view">
-    <n-alert v-if="loadErr" type="error" style="margin-bottom: 14px" closable>
+    <n-alert v-if="loadErr" type="error" style="margin-bottom: 12px" closable>
       {{ loadErr }}
       <n-button size="tiny" style="margin-left: 8px" @click="loadAll">重试</n-button>
     </n-alert>
 
-    <!-- v7.9.2：外壳 .app-shell/.app-content 都是 overflow:hidden，滚动必须由页面
-         内部管理（同 ConfigView 的 .cfg-scroll 模式），否则长页面滚不动 -->
-    <div class="studio-scroll">
-      <n-spin :show="loading && !overview">
-      <div class="studio-grid">
-        <!-- 左：生成配置 -->
-        <div class="col col-left">
-          <div class="panel">
-            <div class="mode-tabs">
-              <n-radio-group :value="mode" size="small" @update:value="onModeChange">
-                <n-radio-button value="t2i">✏️ 文生图</n-radio-button>
-                <n-radio-button value="img2img">🖼️ 图生图</n-radio-button>
-              </n-radio-group>
-            </div>
-
-            <template v-if="mode !== 't2i'">
-              <div class="sec-label">参考图（{{ refs.length }}/{{ maxRefs }}）</div>
-              <RefUploadPanel
-                ref="refPanel"
-                v-model="refs"
-                :max-refs="maxRefs"
-              />
-              <!-- v7.9.1：多参考并入图生图——参考图可放 1..N 张，是否走多参考注入
-                   由工作流能力自动决定（带 TextEncodeQwenImage21 类节点且 >1 张时） -->
-              <div class="sec-hint">
-                可放多张：工作流支持多参考时会按「图1」「图2」逐张注入（顺序即列表顺序），
-                提示词可直接引用；单图工作流取第一张。
-              </div>
-            </template>
-
-            <div class="sec-label">工作流</div>
-            <WorkflowPicker v-model="selectedWf" :workflows="ovWorkflows" :mode="mode" />
-
-            <div class="sec-label">LoRA（{{ loraSel.length }}）</div>
-            <LoraPicker v-model="loraSel" :loras="ovLoras" />
-
-            <div class="sec-label">生成参数</div>
-            <ParamsPanel
-              :params="p"
-              :mode="mode"
-              :workflow="selectedWorkflow"
-              :tiers="ovTiers"
-              :ratios="ovRatios"
-            />
-
-            <div class="gen-row">
-              <n-button
-                type="primary"
-                size="large"
-                block
-                :loading="submitting"
-                :disabled="genDisabled"
-                @click="submit"
-              >
-                🎨 开始生图
-              </n-button>
-            </div>
-            <div v-if="ovServers.length" class="server-line">
-              后端：<span v-for="s in ovServers" :key="s.name" class="chip dim">{{ s.name }}</span>
-            </div>
+    <!-- v7.9.3：左中右三栏一屏展示，不出页面滚动条（各栏内部按需滚动）。
+         左=配置（负向提示词在最底）；中=画布 + 聊天式正向提示词（开始生图在输入框右下）；
+         右=任务列表 -->
+    <div class="studio-grid">
+      <!-- 左：生成配置 -->
+      <div class="col col-left">
+        <div class="panel">
+          <div class="mode-tabs">
+            <n-radio-group :value="mode" size="small" @update:value="onModeChange">
+              <n-radio-button value="t2i">✏️ 文生图</n-radio-button>
+              <n-radio-button value="img2img">🖼️ 图生图</n-radio-button>
+            </n-radio-group>
           </div>
-        </div>
 
-        <!-- 中：画布 + 成果条 -->
-        <div class="col col-center">
-          <ResultPanel
-            :current-sha="currentSha"
-            :current-url="bigUrl"
-            :busy="activeCount > 0"
-            :active-hint="activeHint"
-            :active-elapsed="activeJob?.elapsed ?? null"
-            :results="sessionResults"
-            :url-map="thumbMap"
-            @view="openViewer"
-            @rerun="rerun"
-            @use-as-ref="useAsRef"
-            @pick="onPick"
+          <template v-if="mode !== 't2i'">
+            <div class="sec-label">参考图（{{ refs.length }}/{{ maxRefs }}）</div>
+            <RefUploadPanel
+              ref="refPanel"
+              v-model="refs"
+              :max-refs="maxRefs"
+            />
+            <div class="sec-hint">
+              可放多张：工作流支持多参考时会按「图1」「图2」逐张注入（顺序即列表顺序），
+              提示词可直接引用；单图工作流取第一张。
+            </div>
+          </template>
+
+          <div class="sec-label">工作流</div>
+          <WorkflowPicker v-model="selectedWf" :workflows="ovWorkflows" :mode="mode" />
+
+          <div class="sec-label">LoRA</div>
+          <LoraPicker v-model="loraSel" :loras="ovLoras" :allowed-names="allowedLoraNames" />
+
+          <div class="sec-label">生成参数</div>
+          <ParamsPanel
+            :params="p"
+            :mode="mode"
+            :workflow="selectedWorkflow"
+            :tiers="ovTiers"
+            :ratios="ovRatios"
           />
-        </div>
 
-        <!-- 右：任务 -->
-        <div class="col col-right">
-          <JobPanel
-            :jobs="jobs"
-            :url-map="thumbMap"
-            @discard="discardJob"
-            @interrupt="interruptAll"
-            @reuse="reuseParams"
-            @view="openViewer"
+          <!-- 负向提示词固定在左栏最底（v7.9.3 用户口径） -->
+          <div class="sec-label neg-head">
+            <span>负向提示词</span>
+            <n-button size="tiny" quaternary :disabled="!p.negative" @click="p.negative = ''">清空</n-button>
+          </div>
+          <n-input
+            v-model:value="p.negative"
+            type="textarea"
+            :rows="2"
+            placeholder="留空用工作流默认负向"
           />
         </div>
       </div>
 
-      <!-- 底：提示词区（全宽） -->
-      <div class="prompt-band">
-        <PromptPanel
-          :positive="p.positive"
-          :negative="p.negative"
-          :llm-ready="overview?.llm_ready ?? false"
-          :mode="mode"
-          :ref-count="refs.length"
-          :workflow="selectedWorkflow"
-          :quick-templates="quickTemplates"
-          :selected-lora-names="loraSel.map((s) => s.name)"
-          @update:positive="(v: string) => (p.positive = v)"
-          @update:negative="(v: string) => (p.negative = v)"
-          @open-templates="tplShow = true"
+      <!-- 中：画布 + 聊天式正向提示词 -->
+      <div class="col col-center">
+        <ResultPanel
+          :current-sha="currentSha"
+          :current-url="bigUrl"
+          :busy="activeCount > 0"
+          :active-hint="activeHint"
+          :active-elapsed="activeJob?.elapsed ?? null"
+          :results="sessionResults"
+          :url-map="thumbMap"
+          @view="openViewer"
+          @rerun="rerun"
+          @use-as-ref="useAsRef"
+          @pick="onPick"
+        />
+        <div class="prompt-band">
+          <PromptPanel
+            :positive="p.positive"
+            :llm-ready="overview?.llm_ready ?? false"
+            :mode="mode"
+            :ref-count="refs.length"
+            :workflow="selectedWorkflow"
+            :quick-templates="quickTemplates"
+            :selected-lora-names="loraSel.map((s) => s.name)"
+            :submit-disabled="genDisabled"
+            :submitting="submitting"
+            @update:positive="(v: string) => (p.positive = v)"
+            @open-templates="tplShow = true"
+            @submit="submit"
+          />
+        </div>
+      </div>
+
+      <!-- 右：任务 -->
+      <div class="col col-right">
+        <JobPanel
+          :jobs="jobs"
+          :url-map="thumbMap"
+          @discard="discardJob"
+          @interrupt="interruptAll"
+          @reuse="reuseParams"
+          @view="openViewer"
         />
       </div>
-      </n-spin>
     </div>
 
     <TemplateDrawer
@@ -213,8 +203,7 @@ const ovWorkflows = computed(() => overview.value?.workflows || []);
 const ovLoras = computed(() => overview.value?.loras || []);
 const ovTiers = computed(() => overview.value?.size_tiers?.tiers || []);
 const ovRatios = computed(() => overview.value?.size_tiers?.ratios || []);
-const ovServers = computed(() => overview.value?.servers || []);
-const maxRefs = computed(() => {
+const ovServers = computed(() => overview.value?.servers || []);const maxRefs = computed(() => {
   if (mode.value === "t2i") return 1;
   // v7.9.1：图生图 1..N 张（N=工作流条目 max_refs，缺省全局值）；
   // >1 张且工作流支持 multi_image 时自动走多参考注入
@@ -229,6 +218,22 @@ const selectedWorkflow = computed(
 const quickTemplates = computed(() =>
   (overview.value?.templates || []).filter((t) => t.enabled && !t.is_negative).slice(0, 8)
 );
+
+// v7.9.3：当前工作流底模兼容的 LoRA 名单（后端 overview 按聊天侧同规则预筛）。
+// null = 未选工作流时不限制（选了工作流就严格筛选）。
+const allowedLoraNames = computed(() => selectedWorkflow.value?.lora_names ?? null);
+
+// 切换工作流后，已选 LoRA 里不再兼容的自动移除（保留下次可用的）
+watch(selectedWf, () => {
+  const allowed = allowedLoraNames.value;
+  if (allowed === null || !loraSel.value.length) return;
+  const set = new Set(allowed);
+  const kept = loraSel.value.filter((s) => set.has(s.name));
+  if (kept.length !== loraSel.value.length) {
+    loraSel.value = kept;
+    message.info("已按新工作流的底模兼容性移除部分已选 LoRA");
+  }
+});
 
 const activeJob = computed(
   () => jobs.value.find((j) => j.state === "running" || j.state === "queued") || null
@@ -583,21 +588,26 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-height: 0;
 }
-/* 外壳 overflow:hidden，页面必须自带内部滚动区（对齐 ConfigView .cfg-scroll） */
-.studio-scroll {
+/* v7.9.3：左中右三栏一屏展示，不出页面滚动条（外壳本就 overflow:hidden）；
+   各栏内部按需滚动（左栏参数多时自身滚，任务列表自身滚） */
+.studio-grid {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
-  padding: 4px 4px 24px 2px;
-}
-.studio-grid {
   display: grid;
-  grid-template-columns: minmax(330px, 400px) minmax(0, 1fr) minmax(240px, 300px);
-  gap: 14px;
-  align-items: start;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr) minmax(230px, 290px);
+  gap: 12px;
+  align-items: stretch;
 }
-.col { min-width: 0; }
+.col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
   border-radius: 14px;
@@ -606,20 +616,29 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 12px;
 }
+.col-center { display: flex; flex-direction: column; }
+.prompt-band {
+  flex: 0 0 auto;
+  margin-top: 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 12px;
+}
 .mode-tabs { display: flex; }
 .mode-tabs :deep(.n-radio-button) { flex: 1; }
 .mode-tabs :deep(.n-radio-button__label) { width: 100%; text-align: center; }
-.sec-label { font-size: 13px; font-weight: 600; color: var(--text-main); margin-top: 2px; }
-.sec-hint { font-size: 11px; color: var(--text-sub); line-height: 1.5; margin-top: -6px; }
-.gen-row { margin-top: 4px; }
-.server-line {
-  font-size: 11px;
-  color: var(--text-sub);
+.sec-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-top: 2px;
   display: flex;
-  gap: 5px;
   align-items: center;
-  flex-wrap: wrap;
+  justify-content: space-between;
 }
+.sec-hint { font-size: 11px; color: var(--text-sub); line-height: 1.5; margin-top: -6px; }
+.neg-head { margin-top: 4px; }
 .chip {
   font-size: 10px;
   padding: 0 6px;
@@ -627,21 +646,17 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--text-main);
 }
-.chip.dim { background: color-mix(in srgb, var(--text-sub) 14%, transparent); color: var(--text-sub); }
-.prompt-band {
-  margin-top: 14px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 14px;
-  padding: 14px;
-}
 
 @media (max-width: 1080px) {
+  /* 移动端退回纵向堆叠：整页内部滚动 */
+  .studio-view { display: block; overflow-y: auto; }
   .studio-grid {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
   }
-  .col-center { order: 1; }
-  .col-left { order: 0; }
-  .col-right { order: 2; }
+  .col { display: block; }
+  .panel { overflow-y: visible; }
+  .col-center { display: flex; flex-direction: column; }
+  .prompt-band { margin-top: 10px; }
 }
 </style>

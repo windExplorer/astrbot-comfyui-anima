@@ -1,33 +1,6 @@
 <template>
   <div class="prompt-panel">
-    <!-- 正向提示词 -->
-    <div class="pp-head">
-      <span class="pp-label">正向提示词</span>
-      <span class="pp-count">{{ tagCount }} 个标签</span>
-      <div class="pp-ai">
-        <n-dropdown
-          trigger="click"
-          :options="aiOptions"
-          @select="runAi"
-          placement="bottom-end"
-        >
-          <n-button size="tiny" type="primary" ghost :loading="aiLoading" :disabled="!llmReady || !positive.trim()">
-            ✨ AI 生成
-          </n-button>
-        </n-dropdown>
-        <n-button size="tiny" @click="emit('openTemplates')">📚 模板库</n-button>
-        <n-button size="tiny" quaternary @click="emit('update:positive', '')" :disabled="!positive">清空</n-button>
-      </div>
-    </div>
-    <n-input
-      :value="positive"
-      type="textarea"
-      :rows="4"
-      :placeholder="positivePlaceholder"
-      @update:value="(v: string) => emit('update:positive', v)"
-    />
-
-    <!-- 快捷标签（取启用的正向模板前 8 个） -->
+    <!-- 快捷标签行（单行横向滚动，聊天输入框上沿风格） -->
     <div v-if="quickTemplates.length" class="pp-chips">
       <span class="chips-label">快捷：</span>
       <n-tag
@@ -43,18 +16,42 @@
       </n-tag>
     </div>
 
-    <!-- 负向提示词 -->
-    <div class="pp-head neg">
-      <span class="pp-label">负向提示词</span>
-      <n-button size="tiny" quaternary @click="emit('update:negative', '')" :disabled="!negative">清空</n-button>
-    </div>
     <n-input
-      :value="negative"
+      :value="positive"
       type="textarea"
-      :rows="2"
-      placeholder="不想要的内容（留空用工作流默认负向）"
-      @update:value="(v: string) => emit('update:negative', v)"
+      :rows="3"
+      :placeholder="positivePlaceholder"
+      @update:value="(v: string) => emit('update:positive', v)"
     />
+
+    <!-- 工具条：左侧 AI/模板/清空/计数，右侧开始生图（聊天窗口式，v7.9.3） -->
+    <div class="pp-toolbar">
+      <div class="pp-left">
+        <n-dropdown
+          trigger="click"
+          :options="aiOptions"
+          @select="runAi"
+          placement="top-start"
+        >
+          <n-button size="small" type="primary" ghost :loading="aiLoading" :disabled="!llmReady || !positive.trim()">
+            ✨ AI 生成
+          </n-button>
+        </n-dropdown>
+        <n-button size="small" @click="emit('openTemplates')">📚 模板库</n-button>
+        <n-button size="small" quaternary @click="emit('update:positive', '')" :disabled="!positive">清空</n-button>
+        <span class="pp-count">{{ tagCount }} 个标签</span>
+      </div>
+      <n-button
+        type="primary"
+        size="large"
+        class="pp-submit"
+        :disabled="submitDisabled"
+        :loading="submitting"
+        @click="emit('submit')"
+      >
+        🎨 开始生图
+      </n-button>
+    </div>
 
     <div v-if="aiError" class="pp-error">{{ aiError }}</div>
   </div>
@@ -67,7 +64,6 @@ import { useMessage } from "naive-ui";
 
 const props = defineProps<{
   positive: string;
-  negative: string;
   llmReady: boolean;
   /** 当前模式（v7.9.1 起只有 t2i / img2img，多参考并入图生图） */
   mode: "t2i" | "img2img";
@@ -78,12 +74,15 @@ const props = defineProps<{
   quickTemplates: StudioTemplate[];
   /** 已选 LoRA 名（作为 AI 生成时的参考上下文） */
   selectedLoraNames: string[];
+  /** 开始生图禁用态（父组件 genDisabled） */
+  submitDisabled: boolean;
+  submitting: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "update:positive", v: string): void;
-  (e: "update:negative", v: string): void;
   (e: "openTemplates"): void;
+  (e: "submit"): void;
 }>();
 
 const message = useMessage();
@@ -96,7 +95,6 @@ const tagCount = computed(() =>
 
 const positivePlaceholder = computed(() => {
   if (props.mode === "img2img") {
-    // v7.9.1：多参考并入图生图——多张参考图时提示「图N」引用写法
     if (props.refCount > 1) {
       return "描述画面与编辑要求；可用「图1」「图2」指代参考图（如：把图1的裙子换成图2的款式）";
     }
@@ -115,7 +113,6 @@ const aiOptions = computed(() => {
     { key: "anima", label: "改写为动漫提示词" },
     { key: "natural", label: "改写为自然语言描述（真人向）" },
   ];
-  // 编辑指令只对「多张参考图」或「带多参考节点的工作流」有意义
   if (props.mode === "img2img" && (props.refCount > 1 || props.workflow?.multi_image)) {
     opts.push({ key: "qwen_edit", label: "改写为图像编辑指令（多参考）", props: { style: "color: #e86f9c" } });
   }
@@ -161,20 +158,26 @@ function appendTemplate(t: StudioTemplate) {
 
 <style scoped>
 .prompt-panel { width: 100%; display: flex; flex-direction: column; gap: 8px; }
-.pp-head { display: flex; align-items: center; gap: 8px; }
-.pp-head.neg { margin-top: 2px; }
-.pp-label { font-size: 13px; font-weight: 600; color: var(--text-main); }
-.pp-count { font-size: 11px; color: var(--text-sub); }
-.pp-ai { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .pp-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   align-items: center;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
-.chips-label { font-size: 11px; color: var(--text-sub); }
-.pp-chip { cursor: pointer; font-size: 11px; }
+.chips-label { font-size: 11px; color: var(--text-sub); flex: none; }
+.pp-chip { cursor: pointer; font-size: 11px; flex: none; }
 .pp-chip:hover { background: var(--accent); color: #fff; }
+.pp-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pp-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.pp-count { font-size: 11px; color: var(--text-sub); }
+.pp-submit { flex: none; min-width: 140px; }
 .pp-error {
   font-size: 12px;
   color: #d05050;

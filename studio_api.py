@@ -733,6 +733,40 @@ class StudioManager:
         self.jobs = StudioJobManager(plugin)
 
     # ---- 引导数据（GET studio/overview）--------------------------- #
+    @staticmethod
+    def _wf_img2img_capable(entry: dict, roles: dict | None, base_id: str) -> bool:
+        """图生图能力判定（用户口径，与 waifu 插件 draw.workflow_img2img_capable 同一套）：
+        ① 手填 image_node 显式可用；② 绑定基础工作流 → 看解析注记里的图节点；
+        ③ 旧版未绑定 → 名字含「图生图」兜底。绑定但注记查询失败时按可用兜底（不误伤）。"""
+        if str(entry.get("image_node") or "").strip():
+            return True
+        if base_id:
+            if roles is None:
+                return True
+            return bool(str(roles.get("image_node") or "").strip())
+        return "图生图" in str(entry.get("name") or "")
+
+    def _resolve_server_display(self, entry: dict) -> str:
+        """工作流绑定的服务器展示名（用户口径：展示名字，不是 key/ID）。
+
+        绑定值优先按 `__template_key` 精确匹配（新版存 key），再按名字匹配
+        （旧版存的是名字，与 main._resolve_server 同序）；解析不到（服务器被删）
+        返回空串，前端不展示该角标。"""
+        ref = str(entry.get("server_key") or entry.get("server_name") or "").strip()
+        if not ref:
+            return ""
+        try:
+            servers = self.plugin._servers() or []
+            for s in servers:
+                if str(s.get("__template_key") or "").strip() == ref:
+                    return str(s.get("name") or ref)
+            for s in servers:
+                if str(s.get("name") or "").strip() == ref:
+                    return str(s.get("name") or ref)
+        except Exception:
+            pass
+        return ""
+
     def overview(self) -> dict:
         plugin = self.plugin
         wf_store = getattr(plugin, "workflow_store", None)
@@ -743,7 +777,8 @@ class StudioManager:
             w: dict = {
                 "name": str(entry.get("name") or "").strip(),
                 "enabled": bool(entry.get("enabled", True)),
-                "server_name": str(entry.get("server_name") or entry.get("server_key") or ""),
+                # v7.9.3：展示服务器「名字」而非 key/ID（按 __template_key→名字 双段解析）
+                "server_name": self._resolve_server_display(entry),
                 "default_width": entry.get("default_width") or None,
                 "default_height": entry.get("default_height") or None,
                 "default_positive": str(entry.get("default_positive") or "")[:600],
@@ -760,21 +795,59 @@ class StudioManager:
                 "prompt_style": "",
                 "is_anima": False,
                 "multi_image": False,
+                # v7.9.3：基础工作流解析出的采样默认值（UI 展示「工作流实际参数」用）
+                "sampler_defaults": None,
+                # v7.9.3：按底模兼容性筛好的可用 LoRA 名单（与聊天侧 _lora_matches_wf 同规则）
+                "lora_names": [],
             }
             if not w["name"]:
                 continue
             base_id = str(entry.get("base_id") or "").strip()
             rec = None
+            roles: dict | None = None
             if base_id.isdigit() and wf_store is not None:
                 try:
                     rec = wf_store.get(int(base_id))
+                    roles = (rec or {}).get("roles") or {}
                 except Exception:
                     rec = None
-            if rec:
-                roles = rec.get("roles") or {}
-                w["kind"] = roles.get("kind") or None
+                    roles = None
+
+            # ── 文生图 / 图生图识别（v7.9.3，waifu 同款三层口径）──────────
+            # 旧判定只看 roles.kind，注记查不到就标「未知」；新版：
+            if rec is not None:
+                if roles.get("kind") == "upscale":
+                    w["kind"] = "upscale"  # 纯放大图不进生图下拉
+                    capable = True
+                else:
+                    capable = bool(str(roles.get("image_node") or "").strip())
+                    w["kind"] = "img2img" if capable else "t2i"
+            elif base_id:
+                # 绑定了但查询失败（基础工作流被删/store 未就绪）：按可用兜底，不误伤
+                capable = True
+                w["kind"] = "img2img"
+            else:
+                # 旧版未绑定：手填 image_node → 现解析内联 JSON → 名字含「图生图」
+                legacy_roles = _legacy_wf_roles(plugin, entry, w["name"])
+                if str(entry.get("image_node") or "").strip():
+                    capable = True
+                elif legacy_roles is not None:
+                    capable = bool(str(legacy_roles.get("image_node") or "").strip())
+                else:
+                    capable = "图生图" in w["name"]
+                w["kind"] = "img2img" if capable else "t2i"
+
+            if rec is not None:
                 w["base_name"] = str(rec.get("name") or "")
                 w["multi_image"] = bool(roles.get("multi_image"))
+                sd = roles.get("sampler_defaults") or {}
+                w["sampler_defaults"] = {
+                    "steps": sd.get("steps"),
+                    "cfg": sd.get("cfg"),
+                    "denoise": sd.get("denoise"),
+                    "sampler_name": str(sd.get("sampler_name") or ""),
+                    "scheduler": str(sd.get("scheduler") or ""),
+                }
                 bm = None
                 bm_store = getattr(plugin, "basemodels", None)
                 bm_id = rec.get("basemodel_id")
@@ -789,9 +862,22 @@ class StudioManager:
                     w["is_anima"] = bool(
                         bm.get("prompt_style") == "danbooru" or bm.get("danbooru_ready")
                     )
-            else:
-                # 旧版内联 JSON 条目：现解析一次（有缓存），失败留 None（UI 归入 t2i 但标注未知）
-                w["kind"] = _legacy_workflow_kind(plugin, entry, w["name"])
+            if not w["basemodel_name"]:
+                # 旧版条目回退 base_model 字段（_wf_base_model 同口径）
+                w["basemodel_name"] = str(entry.get("base_model") or "").strip()
+
+            # 可用 LoRA 名单：与聊天侧 _lora_matches_wf 同规则（底模族兼容）
+            try:
+                w["lora_names"] = [
+                    str(l.get("name") or "").strip()
+                    for l in plugin._lora_library()
+                    if isinstance(l, dict)
+                    and l.get("enabled", False)
+                    and str(l.get("name") or "").strip()
+                    and plugin._lora_matches_wf(l, entry)
+                ]
+            except Exception as e:
+                logger.warning(f"【生图工作台】 工作流「{w['name']}」LoRA 兼容名单计算失败: {e}")
             workflows.append(w)
 
         loras: list[dict] = []
@@ -898,17 +984,20 @@ class StudioManager:
 
 
 # ────────────────────────────────────────────────────────────────── #
-# 旧版内联工作流的 kind 现解析（带缓存）
+# 旧版内联工作流的现解析（带缓存）
 # ────────────────────────────────────────────────────────────────── #
 
-_LEGACY_KIND_CACHE: dict[str, str | None] = {}
+_LEGACY_ROLES_CACHE: dict[str, dict | None] = {}
 
 
-def _legacy_workflow_kind(plugin, entry: dict, name: str) -> str | None:
+def _legacy_wf_roles(plugin, entry: dict, name: str) -> dict | None:
+    """旧版未绑定基础工作流的条目：现解析内联 workflow_json 拿注记（有缓存）。
+
+    解析失败 / 无 JSON 返回 None（调用方退回手填 image_node / 名字兜底口径）。"""
     key = str(entry.get("workflow_id") or name)
-    if key in _LEGACY_KIND_CACHE:
-        return _LEGACY_KIND_CACHE[key]
-    kind: str | None = None
+    if key in _LEGACY_ROLES_CACHE:
+        return _LEGACY_ROLES_CACHE[key]
+    roles: dict | None = None
     try:
         raw = entry.get("workflow_json")
         prompt = None
@@ -921,9 +1010,10 @@ def _legacy_workflow_kind(plugin, entry: dict, name: str) -> str | None:
                 from . import workflow_parser
             except ImportError:
                 import workflow_parser
-            roles, _errors = workflow_parser.parse_workflow(prompt)
-            kind = (roles or {}).get("kind")
+            parsed, errors = workflow_parser.parse_workflow(prompt)
+            if parsed and not errors:
+                roles = parsed
     except Exception as e:
-        logger.debug(f"【生图工作台】 旧版工作流「{name}」kind 解析失败: {e}")
-    _LEGACY_KIND_CACHE[key] = kind
-    return kind
+        logger.debug(f"【生图工作台】 旧版工作流「{name}」解析失败: {e}")
+    _LEGACY_ROLES_CACHE[key] = roles
+    return roles
