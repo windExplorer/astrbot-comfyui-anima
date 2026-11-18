@@ -685,6 +685,43 @@ class StudioJobManager:
             "created_at": job.get("created_at"),
         }
 
+    async def queue_status(self) -> dict:
+        """各 ComfyUI 服务器的队列概览（v7.9.4 右栏「服务器状态」块）。
+
+        逐台调 GET /queue 统计 running/pending 数量；单台失败不拖垮整体
+        （ok=False 前端显示「查询失败」）。middle-station 返回缺字段时按 0 处理。
+        """
+        servers = self.plugin._servers() if hasattr(self.plugin, "_servers") else []
+        try:
+            from .comfyui_client import ComfyUIClient
+        except ImportError:
+            from comfyui_client import ComfyUIClient
+        out: list[dict] = []
+        for s in servers:
+            name = str(s.get("name") or s.get("url") or "?")
+            running: int | None = None
+            pending: int | None = None
+            ok = False
+            client = None
+            try:
+                client = self.plugin._build_client(s)
+                q = await client.get_queue()
+                qrunning = q.get("queue_running") if isinstance(q, dict) else None
+                qpending = q.get("queue_pending") if isinstance(q, dict) else None
+                running = len(qrunning) if isinstance(qrunning, list) else 0
+                pending = len(qpending) if isinstance(qpending, list) else 0
+                ok = True
+            except Exception as e:
+                logger.debug(f"【生图工作台】 服务器 {name} 队列查询失败: {e}")
+            finally:
+                if client is not None:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+            out.append({"name": name, "running": running, "pending": pending, "ok": ok})
+        return {"servers": out}
+
     async def interrupt_all(self) -> dict:
         """尽力而为中断 ComfyUI 当前任务：对所有已配置服务器各发一次 /interrupt。
 

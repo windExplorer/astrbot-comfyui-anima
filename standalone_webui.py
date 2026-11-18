@@ -1405,6 +1405,7 @@ class StandaloneWebUI:
             "/studio/job": ("studio_job", "GET"),
             "/studio/job/discard": ("studio_job_discard", "POST"),
             "/studio/interrupt": ("studio_interrupt", "POST"),
+            "/studio/queue": ("studio_queue", "GET"),
             "/studio/llm_prompt": ("studio_llm_prompt", "POST"),
             "/studio/templates": ("studio_templates", "GET"),
             "/studio/templates/save": ("studio_templates_save", "POST"),

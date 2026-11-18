@@ -94,15 +94,27 @@
         </div>
       </div>
 
-      <!-- 右：任务 -->
+      <!-- 右：任务 + 服务器状态 + 最近成品（v7.9.4 三段化，提高空间利用率） -->
       <div class="col col-right">
         <JobPanel
+          class="rp-jobs"
           :jobs="jobs"
           :url-map="thumbMap"
           @discard="discardJob"
           @interrupt="interruptAll"
           @reuse="reuseParams"
           @view="openViewer"
+        />
+        <ServerStatus v-if="queueServers.length" :servers="queueServers" />
+        <RecentGallery
+          :items="recentItems"
+          :total="recentTotal"
+          :loading="recentLoading"
+          :url-map="thumbMap"
+          @view="openViewer"
+          @use-as-ref="useAsRef"
+          @pick="setCurrent"
+          @refresh="fetchRecent"
         />
       </div>
     </div>
@@ -135,13 +147,17 @@ import TemplateDrawer from "@/components/studio/TemplateDrawer.vue";
 import ParamsPanel from "@/components/studio/ParamsPanel.vue";
 import JobPanel from "@/components/studio/JobPanel.vue";
 import ResultPanel from "@/components/studio/ResultPanel.vue";
+import ServerStatus from "@/components/studio/ServerStatus.vue";
+import RecentGallery from "@/components/studio/RecentGallery.vue";
 import {
   studioApi,
   studioImg,
+  type StudioGalleryItem,
   type StudioGenerateParams,
   type StudioJob,
   type StudioLoraSel,
   type StudioOverview,
+  type StudioQueueServer,
   type StudioRefItem,
   type StudioTemplate,
 } from "@/api/studio";
@@ -187,6 +203,13 @@ const sessionResults = ref<Array<{ sha: string; params: Partial<StudioGeneratePa
 const currentSha = ref("");
 const thumbMap = reactive<Record<string, string>>({});
 const bigMap = reactive<Record<string, string>>({});
+
+// v7.9.4 右栏：服务器队列概览 + 图库最近成品
+const queueServers = ref<StudioQueueServer[]>([]);
+const recentItems = ref<StudioGalleryItem[]>([]);
+const recentTotal = ref(0);
+const recentLoading = ref(false);
+let tickCount = 0;
 
 const tplShow = ref(false);
 const viewerShow = ref(false);
@@ -349,8 +372,40 @@ async function refreshJobs() {
 }
 
 async function tick() {
-  if (activeCount.value > 0 || jobs.value.some((j) => j.state === "running" || j.state === "queued")) {
+  const active = activeCount.value > 0 || jobs.value.some((j) => j.state === "running" || j.state === "queued");
+  if (active) {
     await refreshJobs();
+  }
+  // v7.9.4：服务器队列概览——有任务时每 tick 跟随刷新，空闲时约 5s 一次
+  tickCount += 1;
+  if (active || tickCount % 3 === 0) {
+    fetchQueue();
+  }
+}
+
+// ── 右栏：服务器队列 + 最近成品（v7.9.4）─────────────────────────── //
+async function fetchQueue() {
+  try {
+    const d = await studioApi.queue();
+    queueServers.value = d.servers || [];
+  } catch {
+    /* 静默（服务器离线/超时按 ok=false 展示） */
+  }
+}
+
+async function fetchRecent() {
+  recentLoading.value = true;
+  try {
+    const d = await studioApi.recentGens(9);
+    recentItems.value = d.images || [];
+    recentTotal.value = d.total || 0;
+    for (const it of recentItems.value) {
+      if (it.sha) ensureUrl(it.sha, 400, thumbMap);
+    }
+  } catch {
+    /* 静默 */
+  } finally {
+    recentLoading.value = false;
   }
 }
 
@@ -369,7 +424,10 @@ async function collectDone() {
     }
   }
   if (sessionResults.value.length > 40) sessionResults.value = sessionResults.value.slice(0, 40);
-  if (changed) persistSession();
+  if (changed) {
+    persistSession();
+    fetchRecent(); // 新成品入库 → 右栏「最近成品」同步
+  }
 }
 
 function setCurrent(sha: string) {
@@ -554,19 +612,27 @@ function onPaste(e: ClipboardEvent) {
 }
 
 function onVisibility() {
-  if (document.visibilityState === "visible") refreshJobs();
+  if (document.visibilityState === "visible") {
+    refreshJobs();
+    fetchQueue();
+    fetchRecent();
+  }
 }
 
 // ── 生命周期 ────────────────────────────────────────────────────── //
 useRefresh(() => {
   loadAll();
   refreshJobs();
+  fetchQueue();
+  fetchRecent();
 });
 
 onMounted(() => {
   restoreSession();
   loadAll();
   refreshJobs();
+  fetchQueue();
+  fetchRecent();
   window.addEventListener("paste", onPaste);
   // 标签页从后台切回时立即刷一次：隐藏页的 setInterval 会被浏览器节流，
   // 只靠 1.6s 轮询会出现「切回来还显示生成中」的迟到状态。
@@ -646,6 +712,9 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--text-main);
 }
+/* v7.9.4 右栏三段：任务（弹性占满）+ 服务器状态 + 最近成品 */
+.col-right { gap: 10px; }
+.rp-jobs { flex: 1 1 auto; min-height: 0; }
 
 @media (max-width: 1080px) {
   /* 移动端退回纵向堆叠：整页内部滚动 */

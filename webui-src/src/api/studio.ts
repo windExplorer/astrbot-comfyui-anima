@@ -143,6 +143,26 @@ export interface StudioOverview {
   limits: { max_active: number; history_limit: number };
 }
 
+export interface StudioQueueServer {
+  name: string;
+  running: number | null;
+  pending: number | null;
+  ok: boolean;
+}
+
+export interface StudioGalleryItem {
+  sha?: string;
+  sha256?: string;
+  prompt?: string;
+  workflow?: string;
+  user_name?: string;
+  user_id?: string;
+  created_at?: number;
+  w?: number;
+  h?: number;
+  [k: string]: any;
+}
+
 export const studioApi = {
   overview: (): Promise<StudioOverview> => apiGet("studio/overview", undefined, { timeout: 30000 }),
   uploadRef: (dataUrl: string): Promise<{ ref_id: string }> =>
@@ -154,6 +174,11 @@ export const studioApi = {
   jobs: (limit = 30): Promise<{ jobs: StudioJob[] }> => apiGet("studio/jobs", { limit }),
   job: (id: string): Promise<StudioJob> => apiGet("studio/job", { id }),
   discard: (id: string): Promise<any> => apiPost("studio/job/discard", { id }),
+  /** ComfyUI 服务器队列概览（右栏「服务器状态」块，约 5s 轮询一次） */
+  queue: (): Promise<{ servers: StudioQueueServer[] }> => apiGet("studio/queue", undefined, { timeout: 12000 }),
+  /** 最近成品（图库直连，type=gen 只取生图成品） */
+  recentGens: (size = 9): Promise<{ images: StudioGalleryItem[]; total: number }> =>
+    apiGet("gallery/search", { page: 1, size, type: "gen" }, { timeout: 20000 }),
   /** 全局中断 ComfyUI 当前任务 —— 调用前必须二次确认 */
   interrupt: (): Promise<{ results: Record<string, boolean> }> =>
     apiPost("studio/interrupt", {}, { timeout: 30000 }),

@@ -3622,6 +3622,15 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"中断失败: {e}")
 
+    async def studio_queue(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            return json_response(await studio.jobs.queue_status())
+        except Exception as e:
+            return error_response(f"队列查询失败: {e}")
+
     async def studio_llm_prompt(self):
         try:
             studio = self._studio()
@@ -3980,6 +3989,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/studio/job", _h("studio_job"), ["GET"], "生图工作台任务状态"),
         (f"{prefix}/studio/job/discard", _h("studio_job_discard"), ["POST"], "生图工作台放弃任务"),
         (f"{prefix}/studio/interrupt", _h("studio_interrupt"), ["POST"], "中断 ComfyUI 当前任务"),
+        (f"{prefix}/studio/queue", _h("studio_queue"), ["GET"], "ComfyUI 服务器队列概览"),
         (f"{prefix}/studio/llm_prompt", _h("studio_llm_prompt"), ["POST"], "AI 生成/润色提示词"),
         (f"{prefix}/studio/templates", _h("studio_templates"), ["GET"], "提示词模板列表"),
         (f"{prefix}/studio/templates/save", _h("studio_templates_save"), ["POST"], "提示词模板保存"),

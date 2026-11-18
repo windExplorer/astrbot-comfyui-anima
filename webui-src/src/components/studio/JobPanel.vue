@@ -94,7 +94,7 @@ function modeLabel(mode?: string): string {
 </script>
 
 <style scoped>
-.job-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.job-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
 .job-head { display: flex; align-items: center; justify-content: space-between; }
 .job-title { font-size: 13px; font-weight: 600; color: var(--text-main); display: flex; align-items: center; }
 .job-empty {
@@ -107,7 +107,7 @@ function modeLabel(mode?: string): string {
   line-height: 1.6;
 }
 .job-empty-sub { margin-top: 4px; font-size: 11px; opacity: 0.8; }
-.job-list { display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow-y: auto; padding-right: 2px; }
+.job-list { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 2px; }
 .job-item {
   border: 1px solid var(--border-color);
   border-radius: 10px;
