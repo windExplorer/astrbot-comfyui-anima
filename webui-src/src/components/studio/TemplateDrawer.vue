@@ -8,22 +8,30 @@
         </div>
       </template>
 
+      <!-- v7.9.8：抽屉加宽 + 分类页签带计数 + 卡片双列网格 + 内容截断——一眼扫全。
+           ★必须用 n-tab-pane（插槽=面板内容）；原 n-tab 的插槽是页签 LABEL，
+           整个卡片网格被塞进了页签标签里——这就是此前样式怪异的根因 -->
       <n-tabs v-model:value="activeCat" type="line" size="small" animated>
-        <n-tab v-for="cat in categories" :key="cat" :name="cat" :tab="cat">
-          <div class="tpl-list">
-            <div v-for="t in byCategory(cat)" :key="t.id" class="tpl-item" :class="{ neg: t.is_negative }">
+        <n-tab-pane v-for="cat in categories" :key="cat" :name="cat" :tab="`${cat} ${byCategory(cat).length}`">
+          <div class="tpl-grid">
+            <div
+              v-for="t in byCategory(cat)"
+              :key="t.id"
+              class="tpl-card"
+              :class="{ neg: t.is_negative, disabled: !t.enabled }"
+            >
               <div class="tpl-row1">
-                <span class="tpl-name">{{ t.name }}</span>
+                <span class="tpl-name" :title="t.name">{{ t.name }}</span>
                 <span v-if="t.is_negative" class="chip warn">负向</span>
                 <span v-if="!t.enabled" class="chip dim">停用</span>
               </div>
-              <div class="tpl-content">{{ t.content }}</div>
+              <div class="tpl-content" :title="t.content">{{ t.content }}</div>
               <div v-if="!manage" class="tpl-actions">
                 <n-button size="tiny" type="primary" ghost @click="emit('use', t, t.is_negative ? 'append-neg' : 'append-pos')">
-                  {{ t.is_negative ? "加入负向" : "追加正向" }}
+                  {{ t.is_negative ? "加负向" : "追加" }}
                 </n-button>
-                <n-button size="tiny" @click="emit('use', t, t.is_negative ? 'replace-neg' : 'replace-pos')">
-                  {{ t.is_negative ? "设为负向" : "替换正向" }}
+                <n-button size="tiny" quaternary @click="emit('use', t, t.is_negative ? 'replace-neg' : 'replace-pos')">
+                  {{ t.is_negative ? "设负向" : "替换" }}
                 </n-button>
               </div>
               <div v-else class="tpl-actions">
@@ -37,31 +45,35 @@
               </div>
             </div>
           </div>
-        </n-tab>
+        </n-tab-pane>
       </n-tabs>
 
       <!-- 管理：新增/编辑表单 -->
       <div v-if="manage" class="tpl-form">
         <div class="tpl-form-title">{{ form.id ? "编辑模板" : "新增模板" }}</div>
         <n-form size="small" label-placement="top">
-          <n-form-item label="名称">
-            <n-input v-model:value="form.name" placeholder="如：黄昏逆光" />
-          </n-form-item>
-          <n-form-item label="分类">
-            <n-input v-model:value="form.category" placeholder="如：光影氛围" />
-          </n-form-item>
+          <n-grid :cols="2" :x-gap="12">
+            <n-form-item-gi label="名称">
+              <n-input v-model:value="form.name" placeholder="如：黄昏逆光" />
+            </n-form-item-gi>
+            <n-form-item-gi label="分类">
+              <n-input v-model:value="form.category" placeholder="如：光影氛围" />
+            </n-form-item-gi>
+          </n-grid>
           <n-form-item label="内容（提示词标签）">
             <n-input v-model:value="form.content" type="textarea" :rows="3" placeholder="sunset, backlighting, ..." />
           </n-form-item>
-          <n-form-item label="类型">
-            <n-radio-group v-model:value="formNegative">
-              <n-radio :value="false">正向</n-radio>
-              <n-radio :value="true">负向</n-radio>
-            </n-radio-group>
-          </n-form-item>
-          <n-form-item label="启用">
-            <n-switch v-model:value="formEnabled" />
-          </n-form-item>
+          <n-grid :cols="2" :x-gap="12">
+            <n-form-item-gi label="类型">
+              <n-radio-group v-model:value="formNegative">
+                <n-radio :value="false">正向</n-radio>
+                <n-radio :value="true">负向</n-radio>
+              </n-radio-group>
+            </n-form-item-gi>
+            <n-form-item-gi label="启用">
+              <n-switch v-model:value="formEnabled" />
+            </n-form-item-gi>
+          </n-grid>
           <div class="tpl-form-actions">
             <n-button size="small" type="primary" :loading="saving" :disabled="!form.name.trim() || !form.content.trim()" @click="save">
               保存
@@ -70,7 +82,7 @@
           </div>
         </n-form>
       </div>
-      <n-button v-if="manage && !form.id" size="small" block type="primary" ghost @click="resetForm(); formOpenForce = true" style="margin-bottom: 12px">
+      <n-button v-if="manage && !form.id" size="small" block type="primary" ghost @click="resetForm" style="margin-bottom: 12px">
         ＋ 新增模板
       </n-button>
     </n-drawer-content>
@@ -98,7 +110,6 @@ const manage = ref(false);
 const reseeding = ref(false);
 const saving = ref(false);
 const activeCat = ref("");
-const formOpenForce = ref(false);
 
 const form = reactive<{ id: number | null; name: string; category: string; content: string }>({
   id: null,
@@ -109,7 +120,8 @@ const form = reactive<{ id: number | null; name: string; category: string; conte
 const formNegative = ref(false);
 const formEnabled = ref(true);
 
-const drawerWidth = computed(() => (window.innerWidth < 640 ? "100%" : 420));
+// v7.9.8：加宽到 640（小屏仍占满），配合双列网格一眼扫全
+const drawerWidth = computed(() => (window.innerWidth < 720 ? "100%" : 640));
 
 const categories = computed(() => {
   const set: string[] = [];
@@ -196,17 +208,37 @@ async function reseed() {
 
 <style scoped>
 .tpl-head-actions { display: flex; gap: 6px; }
-.tpl-list { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
-.tpl-item {
+/* v7.9.8：双列卡片网格，模板一目了然 */
+.tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  padding-top: 10px;
+}
+.tpl-card {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   background: var(--bg-panel);
   padding: 10px 12px;
+  min-width: 0;
+  transition: border-color 0.15s;
+  display: flex;
+  flex-direction: column;
 }
-.tpl-item.neg { border-left: 3px solid #e0a07e; }
-.tpl-row1 { display: flex; align-items: center; gap: 6px; }
-.tpl-name { font-size: 13px; font-weight: 600; color: var(--text-main); }
+.tpl-card:hover { border-color: var(--accent); }
+.tpl-card.neg { border-left: 3px solid #e0a07e; }
+.tpl-card.disabled { opacity: 0.6; }
+.tpl-row1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tpl-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chip {
+  flex: none;
   font-size: 10px;
   padding: 0 6px;
   border-radius: 999px;
@@ -215,12 +247,18 @@ async function reseed() {
 }
 .chip.warn { background: #e0a07e; color: #fff; }
 .chip.dim { background: color-mix(in srgb, var(--text-sub) 14%, transparent); color: var(--text-sub); }
+/* 内容 3 行截断：卡片等高整齐，悬停 title 看全貌 */
 .tpl-content {
   margin-top: 6px;
   font-size: 12px;
   color: var(--text-sub);
-  line-height: 1.5;
-  word-break: break-all;
+  line-height: 1.55;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 1 1 auto;
 }
 .tpl-actions { margin-top: 8px; display: flex; gap: 6px; }
 .tpl-form {
