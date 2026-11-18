@@ -370,12 +370,20 @@ class StudioJobManager:
 
     # ---------------- 参数校验 ---------------- #
     def validate_params(self, params: dict) -> tuple[dict | None, str | None]:
-        """把前端参数清洗净化成提交给 _do_draw 的安全形态。"""
+        """把前端参数清洗净化成提交给 _do_draw 的安全形态。
+
+        v7.9.1：模式只有 t2i / img2img 两种——「多参考」并入图生图（多参考本就是
+        图生图的超集：`_do_draw` 拿到多张参考图时会自动探测工作流的 multi_image
+        节点决定注入方式，单图工作流则取第一张）。历史字面量 multi_ref 仍接受，
+        归一化为 img2img。
+        """
         if not isinstance(params, dict):
             return None, "参数必须是对象"
         mode = str(params.get("mode") or "t2i").strip()
         if mode not in ("t2i", "img2img", "multi_ref"):
             return None, f"不支持的模式: {mode}"
+        if mode == "multi_ref":
+            mode = "img2img"  # 归一化（旧会话存档兼容）
         workflow = str(params.get("workflow") or "").strip()
         if not workflow:
             return None, "请选择工作流"
@@ -449,11 +457,10 @@ class StudioJobManager:
         if not isinstance(ref_ids, list):
             return None, "ref_ids 必须是数组"
         ref_ids = [str(x).strip() for x in ref_ids if str(x).strip()]
-        if mode in ("img2img", "multi_ref") and not ref_ids:
-            return None, "该模式需要至少 1 张参考图"
-        if mode == "multi_ref" and len(ref_ids) < 2:
-            return None, "多参考模式至少需要 2 张参考图"
-        # 参考图数量上限在 _do_draw 内按工作流条目再裁一次（取前 N 张）
+        if mode == "img2img" and not ref_ids:
+            return None, "图生图需要至少 1 张参考图"
+        # 参考图数量上限在 _do_draw 内按工作流条目再裁一次（取前 N 张）；
+        # 1 张=普通图生图，>1 张且工作流支持 multi_image 时自动走多参考注入
 
         return {
             "mode": mode,
@@ -521,7 +528,9 @@ class StudioJobManager:
         )
         try:
             init_images: list[str] = []
-            if clean["mode"] in ("img2img", "multi_ref"):
+            if clean["mode"] == "img2img":
+                # v7.9.1：1..N 张全量交给 _do_draw——>1 张且工作流带 multi_image
+                # 节点时自动走多参考注入，单图工作流由 _do_draw 取第一张并记日志。
                 for rid in clean["ref_ids"]:
                     p = self.ref_path(rid)
                     if not p:
@@ -529,8 +538,6 @@ class StudioJobManager:
                             f"参考图（{rid}）已失效，请重新上传后再提交"
                         )
                     init_images.append(p)
-                if clean["mode"] == "img2img":
-                    init_images = init_images[:1]
 
             lora_map: dict[str, float | None] = {}
             lora_presets: dict[str, str] = {}

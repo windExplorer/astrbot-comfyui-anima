@@ -69,8 +69,10 @@ const props = defineProps<{
   positive: string;
   negative: string;
   llmReady: boolean;
-  /** 当前模式（决定是否提供「编辑指令」AI） */
-  mode: "t2i" | "img2img" | "multi_ref";
+  /** 当前模式（v7.9.1 起只有 t2i / img2img，多参考并入图生图） */
+  mode: "t2i" | "img2img";
+  /** 已上传的参考图数量（驱动多参考占位提示与 AI 菜单的编辑指令项） */
+  refCount: number;
   workflow: StudioWorkflow | null;
   /** 启用中的正向模板（快捷标签） */
   quickTemplates: StudioTemplate[];
@@ -93,8 +95,12 @@ const tagCount = computed(() =>
 );
 
 const positivePlaceholder = computed(() => {
-  if (props.mode === "multi_ref") {
-    return "描述画面与编辑要求；可用「图1」「图2」指代参考图（如：把图1的裙子换成图2的款式）";
+  if (props.mode === "img2img") {
+    // v7.9.1：多参考并入图生图——多张参考图时提示「图N」引用写法
+    if (props.refCount > 1) {
+      return "描述画面与编辑要求；可用「图1」「图2」指代参考图（如：把图1的裙子换成图2的款式）";
+    }
+    return "描述想要的改动或画面（参考图会注入工作流；再多放几张可走多参考）";
   }
   if (props.workflow && props.workflow.is_anima) {
     return "英文 Danbooru 风格标签，或用中文描述后点「AI：中文→标签」";
@@ -109,7 +115,8 @@ const aiOptions = computed(() => {
     { key: "anima", label: "改写为动漫提示词" },
     { key: "natural", label: "改写为自然语言描述（真人向）" },
   ];
-  if (props.mode === "multi_ref") {
+  // 编辑指令只对「多张参考图」或「带多参考节点的工作流」有意义
+  if (props.mode === "img2img" && (props.refCount > 1 || props.workflow?.multi_image)) {
     opts.push({ key: "qwen_edit", label: "改写为图像编辑指令（多参考）", props: { style: "color: #e86f9c" } });
   }
   return opts;

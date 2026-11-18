@@ -14,7 +14,6 @@
               <n-radio-group :value="mode" size="small" @update:value="onModeChange">
                 <n-radio-button value="t2i">✏️ 文生图</n-radio-button>
                 <n-radio-button value="img2img">🖼️ 图生图</n-radio-button>
-                <n-radio-button value="multi_ref">🧩 多参考</n-radio-button>
               </n-radio-group>
             </div>
 
@@ -25,8 +24,11 @@
                 v-model="refs"
                 :max-refs="maxRefs"
               />
-              <div v-if="mode === 'multi_ref'" class="sec-hint">
-                多参考模式下可在提示词里用「图1」「图2」指代各张参考图（顺序即下方列表顺序）。
+              <!-- v7.9.1：多参考并入图生图——参考图可放 1..N 张，是否走多参考注入
+                   由工作流能力自动决定（带 TextEncodeQwenImage21 类节点且 >1 张时） -->
+              <div class="sec-hint">
+                可放多张：工作流支持多参考时会按「图1」「图2」逐张注入（顺序即列表顺序），
+                提示词可直接引用；单图工作流取第一张。
               </div>
             </template>
 
@@ -100,6 +102,7 @@
           :negative="p.negative"
           :llm-ready="overview?.llm_ready ?? false"
           :mode="mode"
+          :ref-count="refs.length"
           :workflow="selectedWorkflow"
           :quick-templates="quickTemplates"
           :selected-lora-names="loraSel.map((s) => s.name)"
@@ -159,7 +162,7 @@ const loading = ref(false);
 const loadErr = ref("");
 const overview = ref<StudioOverview | null>(null);
 
-const mode = ref<"t2i" | "img2img" | "multi_ref">("t2i");
+const mode = ref<"t2i" | "img2img">("t2i");
 const selectedWf = ref("");
 const refs = ref<StudioRefItem[]>([]);
 const loraSel = ref<StudioLoraSel[]>([]);
@@ -209,8 +212,10 @@ const ovRatios = computed(() => overview.value?.size_tiers?.ratios || []);
 const ovServers = computed(() => overview.value?.servers || []);
 const maxRefs = computed(() => {
   if (mode.value === "t2i") return 1;
-  if (selectedWorkflow.value) return Math.max(2, selectedWorkflow.value.max_refs || 2);
-  return overview.value?.max_refs || 3;
+  // v7.9.1：图生图 1..N 张（N=工作流条目 max_refs，缺省全局值）；
+  // >1 张且工作流支持 multi_image 时自动走多参考注入
+  if (selectedWorkflow.value?.max_refs) return Math.max(1, selectedWorkflow.value.max_refs);
+  return Math.max(1, overview.value?.max_refs || 3);
 });
 
 const selectedWorkflow = computed(
@@ -236,7 +241,6 @@ const genDisabled = computed(() => {
   if (!selectedWf.value) return true;
   if (!p.positive.trim()) return true;
   if (mode.value === "img2img" && refs.value.length < 1) return true;
-  if (mode.value === "multi_ref" && refs.value.length < 2) return true;
   return false;
 });
 
@@ -292,6 +296,8 @@ watch(selectedWf, (v, old) => {
 });
 
 function onModeChange(m: any) {
+  // v7.9.1：multi_ref 并入 img2img（复用旧会话存档里的历史字面量时归一化）
+  if (m === "multi_ref") m = "img2img";
   mode.value = m;
   p.mode = m;
   if (m === "t2i") {
