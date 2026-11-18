@@ -3514,6 +3514,176 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"统计失败: {e}")
 
+    # -------------------------------------------------------------- #
+    # 在线生图工作台（v7.9.0，studio_api.py）：两条 WebUI 通道共用。
+    # 独立通道经 standalone_webui._api_studio 的 adapter 复用以下方法本体。
+    # -------------------------------------------------------------- #
+    def _studio(self):
+        studio = getattr(self.plugin, "studio", None)
+        if studio is None or studio.jobs is None:
+            return None
+        return studio
+
+    async def studio_overview(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            return json_response(studio.overview())
+        except Exception as e:
+            return error_response(f"读取生图工作台引导数据失败: {e}")
+
+    async def studio_upload_ref(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            body = await request.json(default={}) or {}
+            ref_id, err = studio.jobs.save_ref_data_url(str(body.get("data_url") or ""))
+            if err:
+                return error_response(err)
+            return json_response({"ref_id": ref_id, "msg": "参考图已上传"})
+        except Exception as e:
+            return error_response(f"参考图上传失败: {e}")
+
+    async def studio_upload_ref_gallery(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            body = await request.json(default={}) or {}
+            ref_id, err = studio.jobs.save_ref_from_gallery(str(body.get("sha") or ""))
+            if err:
+                return error_response(err)
+            return json_response({"ref_id": ref_id, "msg": "已从图库取作参考图"})
+        except Exception as e:
+            return error_response(f"参考图取用失败: {e}")
+
+    async def studio_generate(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            body = await request.json(default={}) or {}
+            job_id, err = studio.jobs.submit(body)
+            if err:
+                return error_response(err)
+            return json_response({"job_id": job_id, "msg": "任务已提交"})
+        except Exception as e:
+            return error_response(f"任务提交失败: {e}")
+
+    async def studio_jobs(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            try:
+                limit = int(request.query.get("limit", "30") or "30")
+            except (TypeError, ValueError):
+                limit = 30
+            return json_response({"jobs": studio.jobs.list_jobs(limit)})
+        except Exception as e:
+            return error_response(f"读取任务列表失败: {e}")
+
+    async def studio_job(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            job_id = (request.query.get("id", "") or "").strip()
+            job = studio.jobs.get(job_id)
+            if job is None:
+                return error_response("任务不存在或已过期")
+            return json_response(studio.jobs.serialize(job))
+        except Exception as e:
+            return error_response(f"读取任务状态失败: {e}")
+
+    async def studio_job_discard(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            body = await request.json(default={}) or {}
+            err = studio.jobs.discard(str(body.get("id") or ""))
+            if err:
+                return error_response(err)
+            return json_response({"msg": "已放弃等待"})
+        except Exception as e:
+            return error_response(f"放弃任务失败: {e}")
+
+    async def studio_interrupt(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            # 注意：ComfyUI /interrupt 是全局中断（可能打断非控制台任务），
+            # 前端必须先弹二次确认再调这里。
+            return json_response(await studio.jobs.interrupt_all())
+        except Exception as e:
+            return error_response(f"中断失败: {e}")
+
+    async def studio_llm_prompt(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            body = await request.json(default={}) or {}
+            text = await studio.llm_prompt(
+                str(body.get("mode") or ""),
+                str(body.get("text") or ""),
+                lora_ref=str(body.get("lora_ref") or ""),
+            )
+            return json_response({"text": text})
+        except ValueError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"AI 生成提示词失败: {e}")
+
+    async def studio_templates(self):
+        try:
+            studio = self._studio()
+            if studio is None or studio.store is None:
+                return error_response("模板库未就绪")
+            return json_response({"items": studio.store.list_templates()})
+        except Exception as e:
+            return error_response(f"读取模板失败: {e}")
+
+    async def studio_templates_save(self):
+        try:
+            studio = self._studio()
+            if studio is None or studio.store is None:
+                return error_response("模板库未就绪")
+            body = await request.json(default={}) or {}
+            tid, err = studio.store.save_template(body)
+            if err:
+                return error_response(err)
+            return json_response({"id": tid, "msg": "模板已保存"})
+        except Exception as e:
+            return error_response(f"模板保存失败: {e}")
+
+    async def studio_templates_delete(self):
+        try:
+            studio = self._studio()
+            if studio is None or studio.store is None:
+                return error_response("模板库未就绪")
+            body = await request.json(default={}) or {}
+            err = studio.store.delete_template(body.get("id"))
+            if err:
+                return error_response(err)
+            return json_response({"msg": "模板已删除"})
+        except Exception as e:
+            return error_response(f"模板删除失败: {e}")
+
+    async def studio_templates_reseed(self):
+        try:
+            studio = self._studio()
+            if studio is None or studio.store is None:
+                return error_response("模板库未就绪")
+            added = studio.store.reseed_defaults()
+            return json_response({"added": added, "msg": f"已补齐 {added} 条内置模板"})
+        except Exception as e:
+            return error_response(f"补齐模板失败: {e}")
+
 
 def _ext_of(mime: str) -> str:
     """根据 MIME 推断文件扩展名（用于 gallery_image 下载文件名）。"""
@@ -3801,6 +3971,20 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/story/session", _h("story_session_update"), ["POST"], "剧情档案更新"),
         (f"{prefix}/story/session/delete", _h("story_session_delete"), ["POST"], "剧情档案删除"),
         (f"{prefix}/story/stats", _h("story_stats"), ["GET"], "剧情档案统计"),
+        # 在线生图工作台（v7.9.0）：路由方法表会同步进独立通道的校验
+        (f"{prefix}/studio/overview", _h("studio_overview"), ["GET"], "生图工作台引导数据"),
+        (f"{prefix}/studio/upload_ref", _h("studio_upload_ref"), ["POST"], "生图工作台参考图上传"),
+        (f"{prefix}/studio/upload_ref_gallery", _h("studio_upload_ref_gallery"), ["POST"], "图库图片取作参考图"),
+        (f"{prefix}/studio/generate", _h("studio_generate"), ["POST"], "生图工作台提交任务"),
+        (f"{prefix}/studio/jobs", _h("studio_jobs"), ["GET"], "生图工作台任务列表"),
+        (f"{prefix}/studio/job", _h("studio_job"), ["GET"], "生图工作台任务状态"),
+        (f"{prefix}/studio/job/discard", _h("studio_job_discard"), ["POST"], "生图工作台放弃任务"),
+        (f"{prefix}/studio/interrupt", _h("studio_interrupt"), ["POST"], "中断 ComfyUI 当前任务"),
+        (f"{prefix}/studio/llm_prompt", _h("studio_llm_prompt"), ["POST"], "AI 生成/润色提示词"),
+        (f"{prefix}/studio/templates", _h("studio_templates"), ["GET"], "提示词模板列表"),
+        (f"{prefix}/studio/templates/save", _h("studio_templates_save"), ["POST"], "提示词模板保存"),
+        (f"{prefix}/studio/templates/delete", _h("studio_templates_delete"), ["POST"], "提示词模板删除"),
+        (f"{prefix}/studio/templates/reseed", _h("studio_templates_reseed"), ["POST"], "补齐内置提示词模板"),
     ]
     # v6.0.0：把「路径 → 允许的方法」落成模块级表，供独立 WebUI 通道复用做方法校验。
     # 背景：独立通道的 catch-all 路由对 GET/POST 一视同仁，而部分破坏性端点

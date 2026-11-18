@@ -789,6 +789,12 @@ g_session_workflow: dict[str, str] = {}
 # 这个组合从 ABI 里删掉。
 SOURCE_COMPANION_PLUGIN = "我会永远陪着你"
 
+# 在线生图工作台（studio_api，v7.9.0）：WebUI 控制台直接出图。同样走 external=True
+# （图库归属记 plugin:webui_studio、由 studio_api 的任务协程自收结果不发消息）；
+# 且 _do_draw 准入段对它放行——控制台有自己的独立访问口令，聊天白/黑名单与
+# 生图配额均不适用于管理端（口径见 docs/TODO-在线生图.md 第四节）。
+SOURCE_WEBUI_STUDIO = "webui_studio"
+
 
 def _is_external_call(source: str = "", external: bool = False) -> bool:
     """本次调用是否为「外部插件调用」：返回图片路径、由调用方自行发送图片。
@@ -1997,6 +2003,9 @@ class ComfyUIDrawPlugin(Star):
                 # v7.8.12：会话池排最前（被依赖者在前）。池状态挂在 aiohttp 模块上，
                 # reload 本模块只重建函数定义、不会丢连接或泄漏旧池。
                 "http_session",
+                # v7.9.0：在线生图工作台（被 webui_api/standalone_webui 经
+                # plugin.studio 间接使用，被依赖者在前）
+                "studio_api",
                 "webui_api", "standalone_webui",
                 "platform_store", "nai_client",
                 "comfyui_client",
@@ -2060,6 +2069,20 @@ class ComfyUIDrawPlugin(Star):
                 f"【初始化】 底模库实例重建失败（沿用旧实例；新默认底模可在「配置项」页点"
                 f"「补充默认底模」手动补齐）: {_re3}"
             )
+
+        # 在线生图工作台（v7.9.0）：模板库 + 任务管理器。在依赖模块 reload 之后创建，
+        # 确保热更新时拿到的是新代码的 StudioManager/StudioStore。
+        # WebUI 两条通道经 self.plugin.studio 间接访问，无需各自持有实例。
+        self.studio = None
+        try:
+            import importlib as _il4
+            _studio_mod = _il4.import_module(
+                f"{__package__}.studio_api" if __package__ else "studio_api"
+            )
+            self.studio = _studio_mod.StudioManager(self)
+            logger.info("【初始化】 在线生图工作台已就绪")
+        except Exception as e:
+            logger.warning(f"【初始化】 在线生图工作台初始化失败（在线生图页不可用）: {e}", exc_info=True)
 
         # WebUI 控制台：把本插件日志镜像进内存环形缓冲，供页面读取
         try:
@@ -8183,7 +8206,13 @@ class ComfyUIDrawPlugin(Star):
             user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
         # 绘图权限总闸（白名单优先，再黑名单）。白名单启用时只看白名单，
         # 未启用/空则走黑名单。两者互斥：白名单内用户即便在黑名单也放行。
-        if self._is_whitelist_active():
+        # v7.9.0：在线生图工作台（WebUI 控制台）放行——控制台有独立访问口令，
+        # 聊天白/黑名单不适用于管理端；且无头事件的 user/group 为空，白名单
+        # 启用时反而会被误拦。生图配额无需同款放行：_check_draw_limit 对
+        # 「未识别到用户」本来就跳过（头事件 user_id 为空 → 不受限）。
+        if external and str(source or "").strip() == SOURCE_WEBUI_STUDIO:
+            _perm_ok, _perm_reason = True, ""
+        elif self._is_whitelist_active():
             _perm_ok, _perm_reason = self._check_whitelist(event)
         else:
             _perm_ok, _perm_reason = self._check_blacklist(event)

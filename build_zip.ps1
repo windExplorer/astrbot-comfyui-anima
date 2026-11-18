@@ -48,6 +48,7 @@ $includeList = @(
     "_conf_schema.json",
     "main.py",
     "webui_api.py",
+    "studio_api.py",
     "comfyui_client.py",
     "http_session.py",
     "danbooru_client.py",

@@ -86,6 +86,17 @@ class ComfyUIClient:
         """
         return await self._get("/queue")
 
+    async def interrupt(self) -> None:
+        """请求 ComfyUI 中断当前正在执行的任务（POST /interrupt）。
+
+        注意：这是**全局**操作——中断的是该服务器正在跑的任意任务（可能不是
+        本次调用发起的那个）。目前仅「在线生图工作台」的停止按钮使用，调用方
+        必须先让用户二次确认。
+        """
+        session = await self._session_get()
+        async with session.post(self.base_url + "/interrupt") as resp:
+            resp.raise_for_status()
+
     async def queue_prompt(self, prompt: dict, client_id: str | None = None) -> dict:
         """提交工作流，返回 {"prompt_id": "...", ...}。
 

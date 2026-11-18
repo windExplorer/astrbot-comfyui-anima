@@ -875,6 +875,10 @@ class StandaloneWebUI:
         if path.startswith("/story/"):
             return await self._api_story(path, request)
 
+        # ---------- 在线生图工作台（v7.9.0，studio_api.py） ----------
+        if path == "/studio" or path.startswith("/studio/"):
+            return await self._api_studio(path, request)
+
         return _err("Not Found: " + path, status=404)
 
     # ------------------------------------------------------------------ #
@@ -1376,6 +1380,70 @@ class StandaloneWebUI:
                 webui_api.json_response = prev_ok if had_ok else None
                 webui_api.error_response = prev_err if had_err else None
         # 归一化 handler 返回的 dict
+        if isinstance(result, dict):
+            if result.get("__ok__") is not None:
+                if result["__ok__"]:
+                    return _ok(result.get("data"))
+                return _err(result.get("error") or "请求失败")
+            return _ok(result)
+        if isinstance(result, web.Response):
+            return result
+        return _ok(result)
+
+    async def _api_studio(self, path: str, request: web.Request) -> web.Response:
+        """独立版在线生图工作台端点（v7.9.0）。
+
+        与 _api_lora_translate 同套路：复用 WebUIApi 的实现（引用 webui_api
+        模块级 request），aiohttp 适配器 + 串行锁临时替换，保证两条通道行为一致。
+        """
+        handler = {
+            "/studio/overview": ("studio_overview", "GET"),
+            "/studio/upload_ref": ("studio_upload_ref", "POST"),
+            "/studio/upload_ref_gallery": ("studio_upload_ref_gallery", "POST"),
+            "/studio/generate": ("studio_generate", "POST"),
+            "/studio/jobs": ("studio_jobs", "GET"),
+            "/studio/job": ("studio_job", "GET"),
+            "/studio/job/discard": ("studio_job_discard", "POST"),
+            "/studio/interrupt": ("studio_interrupt", "POST"),
+            "/studio/llm_prompt": ("studio_llm_prompt", "POST"),
+            "/studio/templates": ("studio_templates", "GET"),
+            "/studio/templates/save": ("studio_templates_save", "POST"),
+            "/studio/templates/delete": ("studio_templates_delete", "POST"),
+            "/studio/templates/reseed": ("studio_templates_reseed", "POST"),
+        }.get(path)
+        if handler is None:
+            return _err("Not Found: " + path, status=404)
+        method_name, _expected = handler
+        if request.method.upper() != _expected:
+            return _err("Method Not Allowed", status=405)
+
+        adapter = self._AioReqAdapter(request)
+
+        def _ok_dict(payload):
+            return {"__ok__": True, "data": payload}
+
+        def _err_dict(msg, status_code=200):
+            return {"__ok__": False, "error": str(msg)}
+
+        async with self._request_lock:
+            had_req = hasattr(webui_api, "request")
+            prev_req = getattr(webui_api, "request", None)
+            had_ok = hasattr(webui_api, "json_response")
+            prev_ok = getattr(webui_api, "json_response", None)
+            had_err = hasattr(webui_api, "error_response")
+            prev_err = getattr(webui_api, "error_response", None)
+            try:
+                webui_api.request = adapter
+                webui_api.json_response = _ok_dict
+                webui_api.error_response = _err_dict
+                method = getattr(self._api, method_name, None)
+                if method is None:
+                    return _err("WebUIApi 缺少方法: " + method_name)
+                result = await method()
+            finally:
+                webui_api.request = prev_req if had_req else None
+                webui_api.json_response = prev_ok if had_ok else None
+                webui_api.error_response = prev_err if had_err else None
         if isinstance(result, dict):
             if result.get("__ok__") is not None:
                 if result["__ok__"]:

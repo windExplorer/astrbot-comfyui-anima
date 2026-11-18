@@ -15,6 +15,7 @@ import ShareView from "@/views/ShareView.vue";
 import ShareManageView from "@/views/ShareManageView.vue";
 import StoryView from "@/views/StoryView.vue";
 import CharacterView from "@/views/CharacterView.vue";
+import StudioView from "@/views/StudioView.vue";
 import LoginView from "@/views/LoginView.vue";
 import { authState, checkStandaloneAuth } from "@/composables/auth";
 import { isStandaloneMode } from "@/api/bridge";
@@ -27,6 +28,7 @@ const router = createRouter({
   routes: [
     { path: "/", redirect: "/config" },
     { path: "/login", name: "login", component: LoginView, meta: { title: "访问口令", public: true } },
+    { path: "/studio", name: "studio", component: StudioView, meta: { title: "在线生图" } },
     { path: "/config", name: "config", component: ConfigView, meta: { title: "配置" } },
     { path: "/logs", name: "logs", component: LogsView, meta: { title: "日志" } },
     { path: "/stats", name: "stats", component: StatsView, meta: { title: "统计" } },
