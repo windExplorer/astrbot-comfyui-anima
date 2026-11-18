@@ -36,7 +36,12 @@
           <WorkflowPicker v-model="selectedWf" :workflows="ovWorkflows" :mode="mode" />
 
           <div class="sec-label">LoRA</div>
-          <LoraPicker v-model="loraSel" :loras="ovLoras" :allowed-names="allowedLoraNames" />
+          <LoraPicker
+            v-model="loraSel"
+            :loras="ovLoras"
+            :allowed-names="allowedLoraNames"
+            :bound-names="selectedWorkflow?.bound_loras?.map((b) => b.name) ?? []"
+          />
 
           <div class="sec-label">生成参数</div>
           <ParamsPanel
@@ -345,11 +350,21 @@ watch(selectedWf, (v, old) => {
     p.width = null;
     p.height = null;
     p.custom_size = null;
-    // 已选 LoRA 里不兼容新工作流的自动移除
+    // v7.9.9：工作流自带的 LoRA（loras_text，出图时本就自动生效）自动勾选展示；
+    // 已选里不兼容新工作流的自动移除（自带的不受兼容过滤约束——作者绑定的为准）
+    const bound = selectedWorkflow.value?.bound_loras || [];
+    const boundNames = new Set(bound.map((b) => b.name));
+    const libMap = new Map(ovLoras.value.map((l) => [l.name, l]));
+    for (const b of bound) {
+      if (!b.name || loraSel.value.some((s) => s.name === b.name)) continue;
+      const lib = libMap.get(b.name);
+      const w = b.weight != null ? b.weight : lib?.weight != null ? lib.weight : 0.8;
+      loraSel.value.push({ name: b.name, weight: w, preset: "" });
+    }
     const allowed = allowedLoraNames.value;
     if (allowed !== null && loraSel.value.length) {
       const set = new Set(allowed);
-      const kept = loraSel.value.filter((s) => set.has(s.name));
+      const kept = loraSel.value.filter((s) => set.has(s.name) || boundNames.has(s.name));
       if (kept.length !== loraSel.value.length) {
         loraSel.value = kept;
         message.info("已按新工作流的底模兼容性移除部分已选 LoRA");

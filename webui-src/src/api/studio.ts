@@ -50,6 +50,8 @@ export interface StudioWorkflow {
   sampler_defaults: StudioSamplerDefaults | null;
   /** 按底模兼容性筛好的可用 LoRA 名单（与聊天侧 _lora_matches_wf 同规则） */
   lora_names: string[];
+  /** v7.9.9：工作流自带的 LoRA（loras_text，出图时本就自动生效；前端自动勾选展示） */
+  bound_loras: Array<{ name: string; weight: number | null }>;
 }
 
 export interface StudioLoraPreset {

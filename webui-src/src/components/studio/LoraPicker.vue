@@ -16,13 +16,14 @@
         v-for="l in filtered"
         :key="l.name"
         class="lora-row"
-        :class="{ selected: isSel(l.name) }"
+        :class="{ selected: isSel(l.name), bound: isBound(l.name) }"
       >
         <div class="lora-main" @click="toggle(l)">
-          <span class="sel-dot" :class="{ on: isSel(l.name) }">{{ isSel(l.name) ? "✓" : "" }}</span>
+          <span class="sel-dot" :class="{ on: isSel(l.name), lock: isBound(l.name) }">{{ isSel(l.name) ? (isBound(l.name) ? "🔒" : "✓") : "" }}</span>
           <div class="lora-info">
             <div class="lora-name">
               {{ l.name }}
+              <span v-if="isBound(l.name)" class="chip accent" title="工作流自带（loras_text），出图时自动生效，不可取消勾选">自带</span>
               <span v-if="l.starred" class="star">★</span>
               <span v-if="l.category" class="chip">{{ l.category }}</span>
               <span v-if="l.base_model" class="chip dim">{{ l.base_model }}</span>
@@ -66,9 +67,8 @@
         </div>
       </div>
     </div>
-    <div v-if="modelValue.length || availableCount" class="lora-selected-hint">
-      已选 {{ modelValue.length }} 个 · 可用 {{ availableCount }} 个<template v-if="allowedSet !== null">（已按工作流底模筛选）</template>
-      <template v-if="modelValue.length">；触发词会自动追加到提示词</template>
+    <div v-if="modelValue.length || availableCount || boundNames.length" class="lora-selected-hint">
+      已选 {{ modelValue.length }} 个 · 可用 {{ availableCount }} 个<template v-if="allowedSet !== null">（已按工作流底模筛选）</template><template v-if="boundNames.length"> · 工作流自带 {{ boundNames.length }} 个（自动勾选，不可取消，权重可调）</template><template v-if="modelValue.length">；触发词会自动追加到提示词</template>
     </div>
   </div>
 </template>
@@ -83,6 +83,9 @@ const props = defineProps<{
   /** v7.9.3：当前工作流底模兼容的 LoRA 名单（后端按聊天侧同规则预筛）。
    *  null = 未选工作流（不限制）；非空 = 只展示名单内的。 */
   allowedNames?: string[] | null;
+  /** v7.9.9：工作流自带的 LoRA（loras_text）——自动勾选、锁定不可取消、
+   *  不受兼容过滤约束（作者绑定为准），权重仍可调 */
+  boundNames?: string[];
 }>();
 
 const emit = defineEmits<{ (e: "update:modelValue", v: StudioLoraSel[]): void }>();
@@ -94,13 +97,20 @@ const allowedSet = computed(() => {
   return new Set(props.allowedNames);
 });
 
+const boundSet = computed(() => new Set(props.boundNames || []));
+
+function isBound(name: string): boolean {
+  return boundSet.value.has(name);
+}
+
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
   const aset = allowedSet.value;
   // v7.9.5：不再按 enabled 过滤——聊天侧 _lora_lookup 按名字匹配从不看它，
   // 库条目没开开关 ≠ 不可用（此前这一刀把整库滤空）
+  // v7.9.9：自带的 LoRA 免兼容过滤（作者绑定为准）
   return props.loras.filter((l) => {
-    if (aset && !aset.has(l.name)) return false;
+    if (aset && !aset.has(l.name) && !boundSet.value.has(l.name)) return false;
     if (!kw) return true;
     return (
       l.name.toLowerCase().includes(kw) ||
@@ -128,6 +138,8 @@ function selPreset(name: string): string {
 }
 
 function toggle(l: StudioLora) {
+  // v7.9.9：自带的 LoRA 锁定（出图时本就自动生效，取消勾选只会造成 UI 与实际不符）
+  if (isBound(l.name)) return;
   if (isSel(l.name)) {
     emit("update:modelValue", props.modelValue.filter((s) => s.name !== l.name));
   } else {
@@ -201,6 +213,10 @@ function presetOptions(l: StudioLora) {
   color: #fff;
 }
 .sel-dot.on { background: var(--accent); border-color: var(--accent); }
+.sel-dot.lock { font-size: 9px; }
+.lora-row.bound { border-left: 3px solid var(--accent); }
+.lora-row.bound .lora-main { cursor: default; }
+.chip.accent { background: var(--accent); color: #fff; }
 .lora-info { min-width: 0; flex: 1; }
 .lora-name {
   font-size: 13px;

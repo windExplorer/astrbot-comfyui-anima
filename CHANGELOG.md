@@ -2,6 +2,32 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.9.9（在线生图页：老版工作流参数读取对齐「读取文件中的采样器参数」+ 自带 LoRA 自动勾选展示）
+
+需求（用户 2026-11-19 两点反馈）：①新版工作流参数读取没问题，老版本工作流没读成功——
+参考老版工作流编辑弹窗的「读取文件中的采样器参数」就能获取到；②有的工作流本身就绑定了
+LoRA，应该自动勾选并展示出来。
+
+实现：
+- **老版工作流参数读取**（`studio_api.py`）：新增 `_load_legacy_prompt`——内联
+  `workflow_json` 优先，其次读 `workflow_dir/<workflow_name>.json` 文件（与
+  `webui_api._read_workflow_sampler_file` 同一文件口径），带缓存；overview 对未绑定
+  基础工作流的条目用它调 `workflow_builder.get_sampler_defaults` 现场提取
+  steps/cfg/denoise/sampler/scheduler，前端照常渲染「工作流默认：N 步 · CFG x」。
+  `_legacy_wf_roles`（图生图能力识别）同步改走统一加载器——文件口径的旧版条目
+  类型识别此前也是漏的。
+- **自带 LoRA 自动勾选**（`studio_api.py` + `LoraPicker.vue`）：overview 用
+  `_loras_of` 解析每条工作流的 `loras_text` 下发 `bound_loras`（name+weight）；
+  切换工作流时自动勾选进已选列表（权重=绑定值 > 库默认 > 0.8）。自带条目在
+  选择器里**锁定不可取消勾选**（🔒 + 「自带」角标——出图时它们本就经 loras_text
+  自动生效，取消勾选只会造成 UI 与实际不符）、权重仍可调（lora_map 覆盖），
+  且不受底模兼容过滤约束（作者绑定为准）；hint 行显示「工作流自带 N 个」。
+
+验证：后端单测（假 plugin 调真实 `overview()`）5 项全过——旧版文件工作流的
+28 步/CFG 7/dpmpp_2m/karras 读取成功、bound_loras=[自带画风×0.7]、新版绑定但基础
+工作流被删时 kind fail-open=img2img、兼容名单口径正确；桩冒烟确认自带 LoRA 自动勾选
+（🔒+角标+权重 0.7+hint）与 Old1 的参数渲染（512×768 / 28 步 · CFG 7 · dpmpp_2m）。
+
 ## v7.9.8（在线生图页：模板库抽屉重做——修「卡片塞进页签」的结构性 bug + 加宽双列一目了然）
 
 需求（用户 2026-11-19 反馈）：模板库样式有问题，抽屉加宽，要一目了然。

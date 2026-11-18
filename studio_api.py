@@ -978,6 +978,41 @@ class StudioManager:
                 # 旧版条目回退 base_model 字段（_wf_base_model 同口径）
                 w["basemodel_name"] = str(entry.get("base_model") or "").strip()
 
+            # v7.9.9：老版本工作流的采样参数——与老版编辑弹窗「读取文件中的采样器参数」
+            # 同逻辑（内联 workflow_json 或 workflow_dir/<workflow_name>.json →
+            # get_sampler_defaults 读节点当前值）。新版走上方解析注记分支，此处只补旧版。
+            if rec is None:
+                _lprompt = _load_legacy_prompt(plugin, entry, w["name"])
+                if _lprompt:
+                    try:
+                        try:
+                            from . import workflow_builder as _wb
+                        except ImportError:
+                            import workflow_builder as _wb
+                        _lsd = _wb.get_sampler_defaults(_lprompt)
+                        if _lsd and (_lsd.get("steps") or _lsd.get("cfg") or _lsd.get("denoise")
+                                     or _lsd.get("sampler_name") or _lsd.get("scheduler")):
+                            w["sampler_defaults"] = {
+                                "steps": _lsd.get("steps"),
+                                "cfg": _lsd.get("cfg"),
+                                "denoise": _lsd.get("denoise"),
+                                "sampler_name": str(_lsd.get("sampler_name") or ""),
+                                "scheduler": str(_lsd.get("scheduler") or ""),
+                            }
+                    except Exception as _lse:
+                        logger.debug(f"【生图工作台】 旧版工作流「{w['name']}」采样参数读取失败: {_lse}")
+
+            # v7.9.9：工作流自带的 LoRA（loras_text，出图时本就自动生效）——
+            # 前端自动勾选并展示「自带」角标
+            try:
+                w["bound_loras"] = [
+                    {"name": str(l.get("name") or "").strip(), "weight": l.get("weight")}
+                    for l in plugin._loras_of(entry)
+                    if isinstance(l, dict) and str(l.get("name") or "").strip()
+                ]
+            except Exception as e:
+                logger.warning(f"【生图工作台】 工作流「{w['name']}」自带 LoRA 解析失败: {e}")
+
             # 可用 LoRA 名单：与聊天侧 _lora_matches_wf 同规则（底模族兼容）。
             # v7.9.5：**不再按 enabled 过滤**——聊天侧 _lora_lookup 按名字匹配时
             # 从不看 enabled，库条目没开这个开关（默认 False）≠ 不可用，
@@ -1098,28 +1133,60 @@ class StudioManager:
 
 
 # ────────────────────────────────────────────────────────────────── #
-# 旧版内联工作流的现解析（带缓存）
+# 旧版工作流的现解析（带缓存）
 # ────────────────────────────────────────────────────────────────── #
 
+_LEGACY_PROMPT_CACHE: dict[str, dict | None] = {}
 _LEGACY_ROLES_CACHE: dict[str, dict | None] = {}
 
 
-def _legacy_wf_roles(plugin, entry: dict, name: str) -> dict | None:
-    """旧版未绑定基础工作流的条目：现解析内联 workflow_json 拿注记（有缓存）。
+def _load_legacy_prompt(plugin, entry: dict, name: str) -> dict | None:
+    """旧版工作流的有效 JSON（有缓存）。
 
-    解析失败 / 无 JSON 返回 None（调用方退回手填 image_node / 名字兜底口径）。"""
+    来源两选一：内联 `workflow_json` 优先；否则读
+    `workflow_dir/<workflow_name>.json` 文件——与老版编辑弹窗「读取文件中的
+    采样器参数」（webui_api._read_workflow_sampler_file）同一文件口径。
+    都拿不到返回 None。"""
     key = str(entry.get("workflow_id") or name)
-    if key in _LEGACY_ROLES_CACHE:
-        return _LEGACY_ROLES_CACHE[key]
-    roles: dict | None = None
+    if key in _LEGACY_PROMPT_CACHE:
+        return _LEGACY_PROMPT_CACHE[key]
+    prompt: dict | None = None
     try:
         raw = entry.get("workflow_json")
-        prompt = None
         if isinstance(raw, dict):
             prompt = raw
         elif isinstance(raw, str) and raw.strip():
             prompt = json.loads(raw)
-        if isinstance(prompt, dict) and prompt:
+        if not isinstance(prompt, dict) or not prompt:
+            wname = str(entry.get("workflow_name") or "").strip()
+            if wname:
+                wdir = getattr(plugin, "workflow_dir", None)
+                if wdir is not None:
+                    p = Path(wdir) / wname
+                    if not p.suffix:
+                        p = p.with_suffix(".json")
+                    if p.is_file():
+                        prompt = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug(f"【生图工作台】 旧版工作流「{name}」JSON 加载失败: {e}")
+        prompt = None
+    if not isinstance(prompt, dict) or not prompt:
+        prompt = None
+    _LEGACY_PROMPT_CACHE[key] = prompt
+    return prompt
+
+
+def _legacy_wf_roles(plugin, entry: dict, name: str) -> dict | None:
+    """旧版工作流的解析注记（有缓存）。
+
+    解析失败 / 拿不到 JSON 返回 None（调用方退回手填 image_node / 名字兜底口径）。"""
+    key = str(entry.get("workflow_id") or name)
+    if key in _LEGACY_ROLES_CACHE:
+        return _LEGACY_ROLES_CACHE[key]
+    roles: dict | None = None
+    prompt = _load_legacy_prompt(plugin, entry, name)
+    if prompt:
+        try:
             try:
                 from . import workflow_parser
             except ImportError:
@@ -1127,7 +1194,7 @@ def _legacy_wf_roles(plugin, entry: dict, name: str) -> dict | None:
             parsed, errors = workflow_parser.parse_workflow(prompt)
             if parsed and not errors:
                 roles = parsed
-    except Exception as e:
-        logger.debug(f"【生图工作台】 旧版工作流「{name}」解析失败: {e}")
+        except Exception as e:
+            logger.debug(f"【生图工作台】 旧版工作流「{name}」解析失败: {e}")
     _LEGACY_ROLES_CACHE[key] = roles
     return roles
