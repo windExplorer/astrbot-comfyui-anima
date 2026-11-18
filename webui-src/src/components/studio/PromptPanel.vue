@@ -24,7 +24,7 @@
       @update:value="(v: string) => emit('update:positive', v)"
     />
 
-    <!-- 工具条：左侧 AI/模板/清空/计数，右侧开始生图（聊天窗口式，v7.9.3） -->
+    <!-- 工具条：左侧 AI/模板/清空/计数，右侧润色开关+开始生图（聊天窗口式） -->
     <div class="pp-toolbar">
       <div class="pp-left">
         <n-dropdown
@@ -41,16 +41,37 @@
         <n-button size="small" quaternary @click="emit('update:positive', '')" :disabled="!positive">清空</n-button>
         <span class="pp-count">{{ tagCount }} 个标签</span>
       </div>
-      <n-button
-        type="primary"
-        size="large"
-        class="pp-submit"
-        :disabled="submitDisabled"
-        :loading="submitting"
-        @click="emit('submit')"
-      >
-        🎨 开始生图
-      </n-button>
+      <div class="pp-right">
+        <!-- v7.9.6：提交时润色改为提交前的主动开关（默认关）——在线生图的提示词
+             都是用户亲手确认的，被动润色反而是多余加工 -->
+        <n-tooltip trigger="hover" placement="bottom-end">
+          <template #trigger>
+            <n-button
+              size="small"
+              :type="llmRefine ? 'primary' : 'default'"
+              :ghost="llmRefine"
+              class="pp-refine"
+              :class="{ 'pp-refine-off': !llmRefine }"
+              @click="emit('update:llmRefine', !llmRefine)"
+            >
+              🪄 润色
+            </n-button>
+          </template>
+          {{ llmRefine
+            ? "润色已开：提交后插件会按工作流风格自动翻译/改写（与聊天侧一致）"
+            : "润色已关：直接用输入框里的原文出图。点开则提交后由插件 LLM 再润色一轮" }}
+        </n-tooltip>
+        <n-button
+          type="primary"
+          size="large"
+          class="pp-submit"
+          :disabled="submitDisabled"
+          :loading="submitting"
+          @click="emit('submit')"
+        >
+          🎨 开始生图
+        </n-button>
+      </div>
     </div>
 
     <div v-if="aiError" class="pp-error">{{ aiError }}</div>
@@ -77,12 +98,15 @@ const props = defineProps<{
   /** 开始生图禁用态（父组件 genDisabled） */
   submitDisabled: boolean;
   submitting: boolean;
+  /** v7.9.6：提交时润色开关（默认关；提交前的主动决定） */
+  llmRefine: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "update:positive", v: string): void;
   (e: "openTemplates"): void;
   (e: "submit"): void;
+  (e: "update:llmRefine", v: boolean): void;
 }>();
 
 const message = useMessage();
@@ -176,6 +200,8 @@ function appendTemplate(t: StudioTemplate) {
   gap: 10px;
 }
 .pp-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.pp-right { display: flex; align-items: center; gap: 10px; flex: none; }
+.pp-refine-off { color: var(--text-sub); }
 .pp-count { font-size: 11px; color: var(--text-sub); }
 .pp-submit { flex: none; min-width: 140px; }
 .pp-error {

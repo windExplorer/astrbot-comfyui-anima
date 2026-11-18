@@ -91,7 +91,9 @@
             :selected-lora-names="loraSel.map((s) => s.name)"
             :submit-disabled="genDisabled"
             :submitting="submitting"
+            :llm-refine="p.llm_refine"
             @update:positive="(v: string) => (p.positive = v)"
+            @update:llm-refine="(v: boolean) => (p.llm_refine = v)"
             @open-templates="tplShow = true"
             @submit="submit"
           />
@@ -196,10 +198,18 @@ const p = reactive<StudioGenerateParams>({
   sampler: "",
   noise_schedule: "",
   custom_size: null,
-  llm_refine: true,
+  // v7.9.6：提交时润色默认关（提示词都是用户亲手确认的，润色是提交前的主动决定），
+  // 偏好持久化在 localStorage，🪄 按钮切换
+  llm_refine: lsGet("anima_studio_llm_refine") === "1",
   loras: [],
   ref_ids: [],
 });
+
+// 润色偏好跟随开关写盘
+watch(
+  () => p.llm_refine,
+  (v) => lsSet("anima_studio_llm_refine", v ? "1" : "0")
+);
 
 const jobs = ref<StudioJob[]>([]);
 const processed = new Set<string>(); // 已把成果并入会话条的任务 id
@@ -581,7 +591,7 @@ function reuseParams(job: StudioJob) {
   p.sampler = q.sampler || "";
   p.noise_schedule = q.noise_schedule || "";
   p.custom_size = q.custom_size ?? null;
-  p.llm_refine = q.llm_refine ?? true;
+  p.llm_refine = q.llm_refine ?? false;
   loraSel.value = (q.loras || []).map((s: any) => ({ name: s.name, weight: s.weight, preset: s.preset || "" }));
   if (q.mode && q.mode !== "t2i") {
     message.info("参数已复用；参考图是临时文件，需要重新上传");

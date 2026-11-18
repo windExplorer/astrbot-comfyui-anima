@@ -126,16 +126,7 @@
       </n-collapse-item>
     </n-collapse>
 
-    <!-- LLM 润色开关 -->
-    <div class="refine-row">
-      <n-switch v-model:value="params.llm_refine" size="small" />
-      <div class="refine-text">
-        <div class="refine-title">提交时让插件 LLM 再润色</div>
-        <div class="ctrl-hint">
-          开：与聊天侧一致（按工作流风格翻译/改写，更稳）。关：只用上面输入框里的原文（已自己润色过时用）。
-        </div>
-      </div>
-    </div>
+    <!-- v7.9.6：LLM 润色开关移到提示词区工具条（🪄 图标钮，用户提交前主动决定） -->
   </div>
 </template>
 
@@ -294,12 +285,4 @@ watch(
 /* v7.9.5：高级区两行下拉之间留出间距 */
 .adv-row { margin-bottom: 10px; }
 .adv-row:last-of-type { margin-bottom: 8px; }
-.refine-row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  border-top: 1px dashed var(--border-color);
-  padding-top: 8px;
-}
-.refine-title { font-size: 12px; font-weight: 600; color: var(--text-main); }
 </style>
