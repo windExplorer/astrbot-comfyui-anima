@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.9.2（在线生图页布局修复：工作流改下拉选择 + 左栏可滚动）
+
+需求（用户 2026-11-19 反馈）：「工作流选择做这么大干啥，可以做成下拉选择啊」「左侧面板咋没办法滚动呢」。
+
+根因与修复：
+- **工作流选择改下拉**：`WorkflowPicker.vue` 的卡片网格占屏太大，重写为 `n-select`
+  （filterable 可搜）：选项用 `render-label` 渲染「类型徽章 + 名称 + 底模 + 多参考标 + 服务器」，
+  选中项下方保留一行简介（类型/底模/服务器/多参考角标 + 描述，两行截断）。
+  **已停用的工作流不再进下拉**（`compatibleWorkflows` 同步过滤——此前卡片可选中停用项，
+  提交时才会失败），空列表时展示引导文案。
+- **左栏滚不动**：外壳 `.app-shell/.app-content` 是 `100vh + overflow:hidden`，
+  滚动必须由**页面内部**管理（ConfigView 用 `.cfg-scroll` 就是这个原因），
+  而 `StudioView` 依赖了 body 滚动 → 内容被裁掉且无法滚动。
+  补 `.studio-view { height:100%; flex column }` + 内部 `.studio-scroll { flex:1; overflow:auto }`，
+  网格与提示词区整体放进滚动区。
+
+验证：`build_webui.ps1` 构建通过；桩 API 冒烟确认 `.studio-scroll` 存在且可滚
+（scrollHeight > clientHeight）、下拉渲染正常、停用工作流不出现在选项中。
+
 ## v7.9.1（在线生图页改版：多参考并入图生图，一个模式直接放多张参考图）
 
 需求（用户 2026-11-19 反馈）：「多参考也属于图生图啊，可以选择多张参考图呢」——

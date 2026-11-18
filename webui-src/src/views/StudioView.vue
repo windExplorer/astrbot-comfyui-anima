@@ -5,7 +5,10 @@
       <n-button size="tiny" style="margin-left: 8px" @click="loadAll">重试</n-button>
     </n-alert>
 
-    <n-spin :show="loading && !overview">
+    <!-- v7.9.2：外壳 .app-shell/.app-content 都是 overflow:hidden，滚动必须由页面
+         内部管理（同 ConfigView 的 .cfg-scroll 模式），否则长页面滚不动 -->
+    <div class="studio-scroll">
+      <n-spin :show="loading && !overview">
       <div class="studio-grid">
         <!-- 左：生成配置 -->
         <div class="col col-left">
@@ -111,7 +114,8 @@
           @open-templates="tplShow = true"
         />
       </div>
-    </n-spin>
+      </n-spin>
+    </div>
 
     <TemplateDrawer
       v-model:show="tplShow"
@@ -264,8 +268,11 @@ async function loadAll() {
 }
 
 function compatibleWorkflows(m: string) {
-  if (m === "t2i") return ovWorkflows.value.filter((w) => w.kind === "t2i" || w.kind === null);
-  return ovWorkflows.value.filter((w) => w.kind === "img2img");
+  // v7.9.2：只认已启用的（下拉不再列出停用条目，自动选中也不落在停用项上）
+  if (m === "t2i") {
+    return ovWorkflows.value.filter((w) => w.enabled && (w.kind === "t2i" || w.kind === null));
+  }
+  return ovWorkflows.value.filter((w) => w.enabled && w.kind === "img2img");
 }
 
 function ensureWorkflowSelected() {
@@ -570,7 +577,19 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.studio-view { padding: 4px 2px 24px; }
+.studio-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 外壳 overflow:hidden，页面必须自带内部滚动区（对齐 ConfigView .cfg-scroll） */
+.studio-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 4px 24px 2px;
+}
 .studio-grid {
   display: grid;
   grid-template-columns: minmax(330px, 400px) minmax(0, 1fr) minmax(240px, 300px);
