@@ -3640,6 +3640,22 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"采样器枚举获取失败: {e}")
 
+    async def studio_ai_imagine(self):
+        try:
+            studio = self._studio()
+            if studio is None:
+                return error_response("在线生图工作台未就绪")
+            body = await request.json(default={}) or {}
+            text = await studio.ai_imagine(
+                str(body.get("hint") or ""),
+                str(body.get("workflow") or ""),
+            )
+            return json_response({"text": text})
+        except RuntimeError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"AI 想画面失败: {e}")
+
     async def studio_llm_prompt(self):
         try:
             studio = self._studio()
@@ -4000,6 +4016,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/studio/interrupt", _h("studio_interrupt"), ["POST"], "中断 ComfyUI 当前任务"),
         (f"{prefix}/studio/queue", _h("studio_queue"), ["GET"], "ComfyUI 服务器队列概览"),
         (f"{prefix}/studio/samplers", _h("studio_samplers"), ["GET"], "采样器/调度器枚举（object_info）"),
+        (f"{prefix}/studio/ai_imagine", _h("studio_ai_imagine"), ["POST"], "AI 自由生成一幅画面的提示词"),
         (f"{prefix}/studio/llm_prompt", _h("studio_llm_prompt"), ["POST"], "AI 生成/润色提示词"),
         (f"{prefix}/studio/templates", _h("studio_templates"), ["GET"], "提示词模板列表"),
         (f"{prefix}/studio/templates/save", _h("studio_templates_save"), ["POST"], "提示词模板保存"),

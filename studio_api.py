@@ -21,6 +21,7 @@ import asyncio
 import base64
 import json
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -64,6 +65,13 @@ _LLM_PROMPT_MODES = ("expand", "translate", "anima", "natural", "qwen_edit")
 
 # 采样器/调度器枚举缓存：{server_key: {samplers, schedulers}}（/object_info 很大，绝不反复拉）
 _SAMPLERS_CACHE: dict[str, dict] = {}
+
+# 「AI 想画面」自由发挥时的题材建议池（每次随机挑一个，让重复点击的画面不重样）
+_IMAGINE_THEMES = (
+    "纯风景（无人）", "一个女孩", "多个角色", "动漫角色", "游戏角色", "动物萌宠",
+    "都市夜景", "和风庭院", "科幻机械", "奇幻魔法", "日常生活", "神话生物",
+    "四季变换", "美食静物", "古风侠客", "星空宇宙",
+)
 
 
 # ────────────────────────────────────────────────────────────────── #
@@ -1129,6 +1137,102 @@ class StudioManager:
             raise RuntimeError(
                 "LLM 没有返回内容（请检查是否配置了「翻译/改写模型」，或稍后重试）"
             )
+        return out
+
+    async def ai_imagine(self, hint: str, workflow_name: str) -> str:
+        """🎲 AI 想画面：按所选工作流底模的提示词格式**自由创作**一幅画面的提示词。
+
+        - 格式跟随底模 prompt_style：danbooru→英文标签；natural→自然语言
+          （语言按 priority_lang）；qwen→中文描述式。
+        - hint 非空 = 围绕用户的想法创作；为空 = AI 自由发挥
+          （每次随机抽一个题材建议，重复点击画面不重样）。
+        - LLM 调用与 token 入账与聊天侧同款（_record_llm_token）。
+        """
+        plugin = self.plugin
+        wf_entry = None
+        try:
+            target = str(workflow_name or "").strip()
+            for e in plugin._workflows():
+                if isinstance(e, dict) and str(e.get("name") or "").strip() == target:
+                    wf_entry = e
+                    break
+        except Exception:
+            wf_entry = None
+
+        style = "danbooru"
+        bm_name = ""
+        priority_lang = ""
+        if wf_entry is not None:
+            try:
+                bm = plugin._basemodel_of_workflow(wf_entry) or {}
+                style = str(bm.get("prompt_style") or "danbooru")
+                bm_name = str(bm.get("name") or "")
+                priority_lang = str(bm.get("priority_lang") or "").strip()
+            except Exception:
+                pass
+
+        if style == "danbooru":
+            fmt = (
+                "输出格式：英文 Danbooru 标签——用英文逗号分隔 10~24 个小写标签，"
+                "涵盖主体、动作/表情、服装、场景、构图与光影。"
+                "⛔不要写任何画质词（masterpiece / best quality / score_9 / very aesthetic 等，"
+                "插件会自动补）；不要编号、不要解释、不要引号。"
+            )
+        elif style == "qwen":
+            fmt = (
+                "输出格式：中文描述式提示词——1~3 句完整的画面描述（Qwen 图像模型口径），"
+                "主体、动作、场景、细节都要具体。不要标签化罗列、不要画质词堆砌、"
+                "不要编号与解释。"
+            )
+        else:  # natural
+            lang = "中文" if (not priority_lang or "中" in priority_lang) else "英文"
+            fmt = (
+                f"输出格式：{lang}自然语言描述——2~4 句流畅的画面描写，"
+                "主体、动作、场景、氛围都要具体。不要标签化罗列、不要画质词堆砌、"
+                "不要编号与解释。"
+            )
+
+        hint = str(hint or "").strip()
+        if hint:
+            subject = f"用户给了一些想法，请围绕它们创作一幅画面（可适度补充细节，不要偏离）：{hint}"
+        else:
+            theme = random.choice(_IMAGINE_THEMES)
+            subject = (
+                "用户没有给任何想法——请你自由发挥，想象一幅有意思、有记忆点的画面。"
+                f"本次题材建议：{theme}（可自由变化，不必拘泥）；"
+                "可以是纯风景、一个女孩、多个角色、动漫/游戏角色、动物、都市、"
+                "和风、科幻、奇幻等等，尽量避免最老套的构图。"
+            )
+
+        bm_line = f"当前底模：{bm_name}。" if bm_name else ""
+        prompt = (
+            "你是顶级的 AI 绘画提示词创作师。请为用户创作一幅画面的提示词。\n"
+            f"{bm_line}{fmt}\n"
+            f"{subject}\n"
+            "只输出提示词本身，不要任何前后缀说明。"
+        )
+        provider_id = plugin._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("未配置「翻译/改写模型」，无法 AI 生成提示词")
+        timeout = max(1, int(plugin._cfg("llm_rewrite_timeout", 60) or 60))
+        try:
+            llm_resp = await asyncio.wait_for(
+                plugin.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"AI 想画面超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"AI 想画面失败: {e}") from e
+        try:
+            plugin._record_llm_token("studio_imagine", provider_id, llm_resp)
+        except Exception:
+            pass
+        out = str(getattr(llm_resp, "completion_text", "") or "").strip()
+        out = out.strip("`").strip()
+        out = re.sub(r"^\s*(提示词|prompt)\s*[:：]\s*", "", out, flags=re.I)
+        if not out:
+            raise RuntimeError("LLM 没有返回内容（请稍后重试）")
         return out
 
 

@@ -42,6 +42,25 @@
         <span class="pp-count">{{ tagCount }} 个标签</span>
       </div>
       <div class="pp-right">
+        <!-- v7.9.10：🎲 AI 想画面——按当前工作流底模的提示词格式自由创作一幅画面；
+             输入框有内容则作为灵感参考，留空则 AI 完全自由发挥 -->
+        <n-tooltip trigger="hover" placement="bottom-end">
+          <template #trigger>
+            <n-button
+              size="small"
+              ghost
+              class="pp-imagine"
+              :loading="imagining"
+              :disabled="!llmReady || aiLoading || refining"
+              @click="runImagine"
+            >
+              🎲 想画面
+            </n-button>
+          </template>
+          AI 想画面：按当前工作流底模的提示词格式自由创作一幅画面（纯风景 / 单人 /
+          多角色 / 动漫或游戏角色 / 风景城市等等）。输入框有内容时作为灵感参考，
+          留空则完全自由发挥
+        </n-tooltip>
         <!-- v7.9.7：润色是即用即点的动作按钮——点一下就按当前工作流风格自动选方式
              （扩写/翻译/改写/编辑指令）就地改写输入框文本，无任何隐藏的提交后加工 -->
         <n-tooltip trigger="hover" placement="bottom-end">
@@ -52,7 +71,7 @@
               ghost
               class="pp-refine"
               :loading="refining"
-              :disabled="!llmReady || !positive.trim() || aiLoading"
+              :disabled="!llmReady || !positive.trim() || aiLoading || imagining"
               @click="runAutoPolish"
             >
               🪄 润色
@@ -171,6 +190,28 @@ async function runAi(mode: string) {
 
 // v7.9.7：🪄 一键润色（即用即点）——按当前工作流风格自动选润色方式，就地改写输入框文本
 const refining = ref(false);
+
+// v7.9.10：🎲 AI 想画面——按当前工作流底模的提示词格式自由创作一幅画面
+const imagining = ref(false);
+
+async function runImagine() {
+  if (imagining.value) return;
+  imagining.value = true;
+  aiError.value = "";
+  try {
+    const d = await studioApi.aiImagine(props.positive.trim(), props.workflow?.name || "");
+    if (d && d.text) {
+      emit("update:positive", d.text);
+      message.success("AI 已想好一个画面，可继续修改或直接开始生图");
+    } else {
+      aiError.value = "AI 没有返回内容";
+    }
+  } catch (e: any) {
+    aiError.value = e?.message || String(e);
+  } finally {
+    imagining.value = false;
+  }
+}
 
 function autoPolishMode(): string {
   // 多参考编辑类工作流 → 编辑指令；动漫/danbooru 底模 → 中文翻译为标签、英文标签扩写；

@@ -1407,6 +1407,7 @@ class StandaloneWebUI:
             "/studio/interrupt": ("studio_interrupt", "POST"),
             "/studio/queue": ("studio_queue", "GET"),
             "/studio/samplers": ("studio_samplers", "GET"),
+            "/studio/ai_imagine": ("studio_ai_imagine", "POST"),
             "/studio/llm_prompt": ("studio_llm_prompt", "POST"),
             "/studio/templates": ("studio_templates", "GET"),
             "/studio/templates/save": ("studio_templates_save", "POST"),

@@ -189,6 +189,10 @@ export const studioApi = {
   /** AI 生成/润色提示词。mode: expand / translate / anima / natural / qwen_edit */
   llmPrompt: (mode: string, text: string, loraRef = ""): Promise<{ text: string }> =>
     apiPost("studio/llm_prompt", { mode, text, lora_ref: loraRef }, { timeout: 120000 }),
+  /** 🎲 AI 想画面：按所选工作流底模的提示词格式自由创作一幅画面；
+   *  hint 可空（AI 自由发挥），非空则围绕用户想法创作 */
+  aiImagine: (hint: string, workflow: string): Promise<{ text: string }> =>
+    apiPost("studio/ai_imagine", { hint, workflow }, { timeout: 120000 }),
   templates: (): Promise<{ items: StudioTemplate[] }> => apiGet("studio/templates"),
   saveTemplate: (t: Partial<StudioTemplate>): Promise<{ id: number }> =>
     apiPost("studio/templates/save", t as any),
