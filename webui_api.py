@@ -196,7 +196,7 @@ async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
                     w_real, h_real = _im.width, _im.height
             except Exception:
                 pass
-            _final = g.archive_image(
+            _final = await g.aarchive_image(
                 str(tmp_path), source="gen", prompt=prompt, prompt_raw=prompt,
                 workflow="", loras=[], seed=seed, w=w_real, h=h_real,
                 is_img2img=False,
@@ -2407,12 +2407,12 @@ class WebUIApi:
             if size > 200:
                 size = 200
             offset = (page - 1) * size
-            rows = g.search(keyword=kw, type=stype, starred_only=starred,
-                            trash=trash, limit=size, offset=offset, user_filter=user_filter,
-                            nsfw=nsfw, tag=tag, platform=platform)
-            total = g.count_search(keyword=kw, type=stype,
-                                   starred_only=starred, trash=trash, user_filter=user_filter,
+            rows = await g.asearch(keyword=kw, type=stype, starred_only=starred,
+                                   trash=trash, limit=size, offset=offset, user_filter=user_filter,
                                    nsfw=nsfw, tag=tag, platform=platform)
+            total = await g.acount_search(keyword=kw, type=stype,
+                                          starred_only=starred, trash=trash, user_filter=user_filter,
+                                          nsfw=nsfw, tag=tag, platform=platform)
             # 列表只返回元数据（含 sha256），不内联任何缩略图 base64——避免一次几十张
             # 图导致响应体爆炸/超时。缩略图由前端经 bridge 调用 gallery_thumb 按需、
             # 懒加载、带 LRU 缓存地拉取单张 data URL（参考 astrbot_plugin_stealer 图库）。

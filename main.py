@@ -7672,7 +7672,7 @@ class ComfyUIDrawPlugin(Star):
                     # （>1 进 scale、0~1 进重缩放），这里填引导强度；steps 同理。
                     _cfg_val = _eff_scale
                     _steps_val = _eff_steps
-                    _final = self.gallery.archive_image(
+                    _final = await self.gallery.aarchive_image(
                         img_path,
                         source=SRC_GEN,
                         prompt=positive,
@@ -8534,7 +8534,7 @@ class ComfyUIDrawPlugin(Star):
                             continue
                         # 参考图优先按 user（用户发来的合照等）归档，便于「合照」类召回；
                         # 必须带 user_id，否则该图成为"无主图"会串给其他用户。
-                        _final = self.gallery.archive_image(
+                        _final = await self.gallery.aarchive_image(
                             _ri, source=SRC_USER, user_id=user_id,
                             user_name=user_name,
                             session_id=(getattr(event, "session_id", "") or ""),
@@ -9794,7 +9794,7 @@ class ComfyUIDrawPlugin(Star):
                                 _sampler = _wb.get_sampler_defaults(prompt) or {}
                             except Exception:
                                 _sampler = {}
-                            _final = self.gallery.archive_image(
+                            _final = await self.gallery.aarchive_image(
                                 img_path,
                                 source=SRC_GEN,
                                 prompt=positive,
@@ -11565,7 +11565,7 @@ class ComfyUIDrawPlugin(Star):
                                 from .image_store import SRC_USER
                             except ImportError:
                                 from image_store import SRC_USER
-                            _ref_final = self.gallery.archive_image(
+                            _ref_final = await self.gallery.aarchive_image(
                                 src, source=SRC_USER, user_id=_uid,
                                 user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                                 session_id=_sid, keep_src=True,
@@ -11579,7 +11579,7 @@ class ComfyUIDrawPlugin(Star):
                                 _ref_sha = _sha256_of(src) or ""
                             except Exception:
                                 _ref_sha = ""
-                        _final = self.gallery.archive_image(
+                        _final = await self.gallery.aarchive_image(
                             img_path,
                             source=SRC_GEN,
                             prompt=f"图片放大 {(applied or scale):g}×",
@@ -12277,7 +12277,7 @@ class ComfyUIDrawPlugin(Star):
                                 from .image_store import SRC_USER
                             except ImportError:
                                 from image_store import SRC_USER
-                            _ref_final = self.gallery.archive_image(
+                            _ref_final = await self.gallery.aarchive_image(
                                 src, source=SRC_USER, user_id=_uid,
                                 user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                                 session_id=_sid, keep_src=True,
@@ -12291,7 +12291,7 @@ class ComfyUIDrawPlugin(Star):
                                 _ref_sha = _sha256_of(src) or ""
                             except Exception:
                                 _ref_sha = ""
-                        _final = self.gallery.archive_image(
+                        _final = await self.gallery.aarchive_image(
                             img_path,
                             source=SRC_GEN,
                             prompt=_text_now,
@@ -15112,10 +15112,10 @@ class ComfyUIDrawPlugin(Star):
                     pass
             # 全库模式：管理员可查看所有用户的图片（owner 传空表示不过滤）
             eff_owner = "" if all_view else owner
-            total = self.gallery.count_search(session=session_scope, owner=eff_owner)
+            total = await self.gallery.acount_search(session=session_scope, owner=eff_owner)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
-            rows = self.gallery.search(
+            rows = await self.gallery.asearch(
                 limit=page_size, offset=(page - 1) * page_size,
                 session=session_scope, owner=eff_owner,
             )
@@ -15164,10 +15164,10 @@ class ComfyUIDrawPlugin(Star):
                     pass
             eff_owner = "" if all_view else owner
             # 收藏也遵循会话范围：群聊仅本群，私聊跨会话；「全部」子命令（管理员）强制跨会话。
-            total = self.gallery.count_search(starred_only=True, owner=eff_owner, session=session_scope)
+            total = await self.gallery.acount_search(starred_only=True, owner=eff_owner, session=session_scope)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
-            rows = self.gallery.search(
+            rows = await self.gallery.asearch(
                 starred_only=True, limit=page_size, offset=(page - 1) * page_size,
                 owner=eff_owner, session=session_scope,
             )
@@ -15218,13 +15218,13 @@ class ComfyUIDrawPlugin(Star):
                     except (TypeError, ValueError):
                         page_size = 5
                     eff_owner = "" if all_view else owner
-                    total = self.gallery.count_search(keyword=kw, session=session_scope, owner=eff_owner)
+                    total = await self.gallery.acount_search(keyword=kw, session=session_scope, owner=eff_owner)
                     if not total:
                         await self._send(event, f"没找到含「{kw}」的图。")
                     else:
                         total_pages = max(1, (total + page_size - 1) // page_size)
                         page = min(page, total_pages)
-                        rows = self.gallery.search(
+                        rows = await self.gallery.asearch(
                             keyword=kw, limit=page_size, offset=(page - 1) * page_size,
                             session=session_scope, owner=eff_owner,
                         )

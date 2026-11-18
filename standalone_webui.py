@@ -945,12 +945,12 @@ class StandaloneWebUI:
             page = max(1, self._qint(request, "page", 1))
             size = min(self._qint(request, "size", 40), 200)
             offset = (page - 1) * size
-            rows = g.search(keyword=kw, type=stype, starred_only=starred, trash=trash,
-                            limit=size, offset=offset, user_filter=user_filter,
-                            nsfw=nsfw, tag=tag, platform=platform)
-            total = g.count_search(keyword=kw, type=stype, starred_only=starred,
-                                   trash=trash, user_filter=user_filter,
+            rows = await g.asearch(keyword=kw, type=stype, starred_only=starred, trash=trash,
+                                   limit=size, offset=offset, user_filter=user_filter,
                                    nsfw=nsfw, tag=tag, platform=platform)
+            total = await g.acount_search(keyword=kw, type=stype, starred_only=starred,
+                                          trash=trash, user_filter=user_filter,
+                                          nsfw=nsfw, tag=tag, platform=platform)
             for r in rows:
                 r["sha"] = r.get("sha256", "")
                 r.pop("thumb", None)

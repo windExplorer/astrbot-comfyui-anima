@@ -2,6 +2,25 @@
 
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 
+## v7.8.21（修复出图成功后图迟迟不发：图库归档同步 SQLite 卡死事件循环 30+ 秒）
+
+现象（用户 2026-11-18 实报）：ComfyUI 后台约 20 秒就把图画好了，但群里要等 1 分多钟图才发出来；期间 bot 整个卡住、gscore_adapter 与 onebot 断连重连。主日志有 `Event loop lag detected: 52.622s`。
+
+根因（watchdog 线程栈铁证 `data/logs/event_loop_watchdog.log`）：6 次事件循环停摆 30~33 秒，其中 4 次主线程栈顶一致：
+`_do_draw → gallery.archive_image → ensure_user → conn.execute`（`image_store.py:1647`），
+另一次是 WebUI `gallery_search → count_search → conn.execute`。
+两个成因：
+- ① 图库归档/检索的 SQLite 操作是同步的，直接在事件循环主线程执行——一次锁等待/查询慢就把整个 bot 事件循环卡住，发图协程、onebot 心跳全部停摆（心跳超时即掉线）。
+- ② 后台 NSFW 全库扫描线程 `_scan_nsfw_worker` 旧实现是「推理一张→写一条 UPDATE→每 10 张 commit」，ONNX 推理每张数秒且全程持有写事务，主线程归档的 `ensure_user/commit` 抢锁被卡 30+ 秒，这是触发①的写锁源头。
+
+修复（三层）：
+- 治本：`image_store` 新增 `async_call`/`aarchive_image`/`asearch`/`acount_search`，把同步 SQLite 调用丢 `asyncio.to_thread`，事件循环不再被 DB 阻塞。连接改为 thread-local（`threading.local` + `check_same_thread=False`），工作线程各用各的连接，`close()` 统一关闭；加 `busy_timeout=8000` 给锁等待设上限。
+- 调用点：`main.py` 7 处归档（NAI/ComfyUI 主链、放大、抠图、参考图）、`/图库` 列表/收藏/搜索检索，双 WebUI 通道（`webui_api.py`、`standalone_webui.py`）的 `gallery_search` 与平台测试归档全部改走 async 包装。
+- 锁竞争：NSFW 后台扫描改为「先纯推理收集结果，再集中短事务 `executemany` 写回并立即 commit」，慢推理不再持有写锁。
+- 附带：`oplog_store` 连接同样改 thread-local，避免归档线程池里的 `on_dedup` 回调跨线程写报错。
+
+验证：`compileall` 五文件零语法错；pyflakes 无 undefined name；图库异步归档/检索线程池实测通过；gallery_lists / image_store_today / search_filters / module_lists / gallery_batch / gallery_filters_refs / merge_ai_reply / at_and_suppress / wait_for_result 全部通过。
+
 ## v7.8.20（紧急修复：v7.8.18 拆函数把 base_timeout 抽走导致所有绘图崩溃）
 
 问题（用户 2026-11-18 实报）：星语等所有跨插件调用绘图全部失败，

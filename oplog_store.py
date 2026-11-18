@@ -14,6 +14,7 @@
 import json
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -44,20 +45,29 @@ class OpLogStore:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = Path(data_dir)
         self.db_path = self.data_dir / "oplog.db"
-        self._conn = None
+        # v7.8.21：线程本地连接——图库归档已丢到线程池，其 on_dedup 回调会在
+        # 工作线程里调用 add()，sqlite3 连接不可跨线程，故按线程隔离。
+        self._local = threading.local()
+        self._all_conns: list = []
+        self._all_conns_lock = threading.Lock()
         self._init_db()
 
     def _conn_get(self):
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), timeout=8.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
             # 开启 WAL：降低写入锁等待与 fsync 开销，读写并发更流畅
             try:
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA busy_timeout=8000")
             except Exception as e:  # pragma: no cover
                 logger.warning(f"[oplog] 开启 WAL 失败（不影响使用）: {e}")
-        return self._conn
+            self._local.conn = conn
+            with self._all_conns_lock:
+                self._all_conns.append(conn)
+        return conn
 
     def _init_db(self) -> None:
         try:

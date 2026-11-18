@@ -11,6 +11,7 @@
 - 保留策略：超 max_total_mb 时按 LRU 淘汰，收藏 / 带标签图永不淘汰；max_total_mb=0 表示不限容量。
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -188,7 +189,13 @@ class ImageStore:
         # 可选实时配置提供器：返回最新的 gallery 配置 dict（避免改动后需重启才生效）。
         # 提供后 _nsfw_cfg 等实时读取配置；未提供则用构造时的 cfg 快照。
         self._cfg_provider = cfg_provider if callable(cfg_provider) else None
-        self._conn = None
+        # v7.8.21：改为「每线程一个连接」。sqlite3 连接默认 check_same_thread=True，
+        # 而归档/检索已用 asyncio.to_thread 丢到线程池执行，跨线程复用同一连接会
+        # 抛 ProgrammingError。用 threading.local 让工作线程各用各的连接，
+        # 所有权仍归本对象，close() 时统一关闭。
+        self._local = threading.local()
+        self._all_conns: list = []
+        self._all_conns_lock = threading.Lock()
         # 分享令牌内存兜底：同一进程内创建/校验必然一致，
         # 规避 SQLite 读写不一致导致的「分享链接已失效」（token 在库中查不到）。
         self._share_tokens_mem: dict[str, dict] = {}
@@ -205,16 +212,28 @@ class ImageStore:
     # 连接 / 建表
     # ------------------------------------------------------------------ #
     def _conn_get(self):
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
+        """取当前线程专属连接（v7.8.21）。
+
+        asyncio.to_thread 会在不同工作线程上执行归档/检索，sqlite3 连接不可跨线程，
+        故按线程隔离。所有连接登记到 _all_conns，close() 统一关闭。
+        busy_timeout=8000：遇并发写锁最多等 8 秒再抛错，避免无限阻塞工作线程；
+        配合「推理与写库分离」后基本不会触发。
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), timeout=8.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
             # 开启 WAL：降低写入锁等待与 fsync 开销，读写并发更流畅
             try:
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA busy_timeout=8000")
             except Exception as e:  # pragma: no cover
                 logger.warning(f"[图库] 开启 WAL 失败（不影响使用）: {e}")
-        return self._conn
+            self._local.conn = conn
+            with self._all_conns_lock:
+                self._all_conns.append(conn)
+        return conn
 
     def _init_db(self) -> None:
         if not _HAS_SQLITE:
@@ -396,18 +415,22 @@ class ImageStore:
             logger.warning(f"[图库] 初始化 commit 失败: {_e}")
 
     def close(self) -> None:
-        if self._conn is not None:
+        # v7.8.21：关闭所有线程的连接（主线程 + to_thread 工作线程）。
+        with self._all_conns_lock:
+            conns = list(self._all_conns)
+            self._all_conns.clear()
+        self._local = threading.local()
+        for conn in conns:
             # WAL checkpoint：把 -wal 中未合并的数据合并回主库，避免停止/卸载时
             # 残留 WAL 文件导致数据库状态异常（建表/迁移被 SQLite 静默失败）。
             try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception:
                 pass
             try:
-                self._conn.close()
+                conn.close()
             except Exception:
                 pass
-            self._conn = None
 
     # ------------------------------------------------------------------ #
     # 配置辅助
@@ -515,6 +538,13 @@ class ImageStore:
             det = _get_detector(self._nsfw_threshold())
             if det is None:
                 raise RuntimeError("NSFW 检测器不可用")
+            # v7.8.21：推理与写库分离——ONNX 推理（每张数秒）绝不持有写事务。
+            # 旧实现「推理一张→execute 一条 UPDATE→每 10 张 commit」，从第一次
+            # UPDATE 到第 10 次 commit 之间写事务一直开着，主线程归档的
+            # ensure_user/commit 抢锁被卡 30+ 秒（watchdog 实测栈证据），
+            # 连带事件循环停摆、出图延迟发送、onebot 心跳掉线。
+            # 现在先纯推理收集结果（不碰库），再集中短事务写回并立即 commit。
+            pending: list = []
             for r in rows:
                 # 检查是否被停止（模块卸载/切换配置等场景）
                 with self._scan_lock:
@@ -522,25 +552,28 @@ class ImageStore:
                         break
                 p = self._path_of_row(r)
                 if not p.exists():
-                    wconn.execute("UPDATE images SET nsfw_checked=1 WHERE sha256=?", (r["sha256"],))
+                    pending.append((0, 0.0, r["sha256"]))
                     done += 1
                     self._set_scan_state({"done": done, "nsfw": nsfw_cnt})
                     continue
                 is_nsfw, score, avail = det.detect(str(p))
                 if not avail:
-                    # 模型中途失效：停止扫描，保留已扫结果
+                    # 模型中途失效：停止扫描，保留已扫结果（先落已收集的）
                     break
                 done += 1
                 if is_nsfw:
                     nsfw_cnt += 1
-                wconn.execute(
-                    "UPDATE images SET nsfw=?, nsfw_score=?, nsfw_checked=1 WHERE sha256=?",
-                    (1 if is_nsfw else 0, score, r["sha256"]),
-                )
+                pending.append((1 if is_nsfw else 0, score, r["sha256"]))
                 if done % 10 == 0:
-                    wconn.commit()
                     self._set_scan_state({"done": done, "nsfw": nsfw_cnt})
-            wconn.commit()
+            # 集中写回：短事务，推理耗时不占写锁
+            if pending:
+                wconn.executemany(
+                    "UPDATE images SET nsfw=?, nsfw_score=?, nsfw_checked=1 WHERE sha256=?",
+                    pending,
+                )
+                wconn.commit()
+                pending.clear()
             self._set_scan_state({
                 "running": False, "done": done, "nsfw": nsfw_cnt, "finished_at": time.time(),
             })
@@ -639,6 +672,25 @@ class ImageStore:
         else:
             base = self.refs_dir / month
         return base / f"{row['sha256'][:_SHA_PREFIX]}.{row['ext']}"
+
+    # ------------------------------------------------------------------ #
+    # 异步包装（v7.8.21）：把同步 SQLite 操作丢线程池，绝不阻塞事件循环
+    # ------------------------------------------------------------------ #
+    async def async_call(self, fn, *args, **kwargs):
+        """在线程池里执行一个图库同步方法，返回其结果。
+
+        连接已按线程隔离（_conn_get），故此处的 fn 可安全在任意工作线程跑。
+        """
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    async def aarchive_image(self, *args, **kwargs):
+        return await self.async_call(self.archive_image, *args, **kwargs)
+
+    async def acount_search(self, *args, **kwargs):
+        return await self.async_call(self.count_search, *args, **kwargs)
+
+    async def asearch(self, *args, **kwargs):
+        return await self.async_call(self.search, *args, **kwargs)
 
     def _size_of(self, row) -> int:
         """返回图片字节数；历史老图 size_bytes 列为 NULL 时，按磁盘真实文件补算。
