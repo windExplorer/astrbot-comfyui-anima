@@ -254,20 +254,24 @@ const enabledOptions = [
   { label: "禁用（黑名单）", value: 0 },
 ];
 
+// v7.11.3：插件身份以 origin 前缀为准（后端已保证一致），前端再兜一层防御，
+// 保证「用某插件出过图的群」绝不会被算进插件页。
+const isPlugin = (s: SessionItem) => !!s.is_plugin || String(s.origin || "").startsWith("plugin:");
+
 const counts = computed(() => ({
   all: sessions.value.length,
-  private: sessions.value.filter((s) => !s.is_group && !s.is_plugin).length,
-  group: sessions.value.filter((s) => s.is_group && !s.is_plugin).length,
-  plugin: sessions.value.filter((s) => s.is_plugin).length,
+  private: sessions.value.filter((s) => !s.is_group && !isPlugin(s)).length,
+  group: sessions.value.filter((s) => s.is_group && !isPlugin(s)).length,
+  plugin: sessions.value.filter(isPlugin).length,
   configured: sessions.value.filter((s) => s.has_override).length,
   disabled: sessions.value.filter((s) => s.enabled === 0).length,
 }));
 
 const filtered = computed(() => {
   let list = sessions.value;
-  if (tab.value === "private") list = list.filter((s) => !s.is_group && !s.is_plugin);
-  else if (tab.value === "group") list = list.filter((s) => s.is_group && !s.is_plugin);
-  else if (tab.value === "plugin") list = list.filter((s) => s.is_plugin);
+  if (tab.value === "private") list = list.filter((s) => !s.is_group && !isPlugin(s));
+  else if (tab.value === "group") list = list.filter((s) => s.is_group && !isPlugin(s));
+  else if (tab.value === "plugin") list = list.filter(isPlugin);
   if (onlyConfigured.value) list = list.filter((s) => s.has_override);
   const k = keyword.value.trim().toLowerCase();
   if (k) list = list.filter((s) =>
@@ -283,9 +287,9 @@ const grouped = computed<{ key: string; label: string; items: SessionItem[] }[]>
   const list = filtered.value;
   if (tab.value !== "all") return [{ key: tab.value, label: "", items: list }];
   return [
-    { key: "group", label: "群聊", items: list.filter((s) => s.is_group && !s.is_plugin) },
-    { key: "private", label: "私聊", items: list.filter((s) => !s.is_group && !s.is_plugin) },
-    { key: "plugin", label: "插件来源", items: list.filter((s) => s.is_plugin) },
+    { key: "group", label: "群聊", items: list.filter((s) => s.is_group && !isPlugin(s)) },
+    { key: "private", label: "私聊", items: list.filter((s) => !s.is_group && !isPlugin(s)) },
+    { key: "plugin", label: "插件来源", items: list.filter(isPlugin) },
   ].filter((g) => g.items.length > 0);
 });
 
@@ -476,26 +480,26 @@ async function resetUsage() {
 </script>
 
 <style scoped>
-.session-view { display: flex; flex-direction: column; gap: 16px; padding: 18px; }
-.view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.session-view { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 16px; padding: 18px; }
+.view-head { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .view-head h2 { margin: 0 0 6px; font-size: 20px; color: var(--text-main); }
 .view-head p { margin: 0; font-size: 12px; color: var(--text-sub); line-height: 1.6; }
 .head-actions { display: flex; gap: 8px; }
-.summary-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.summary-row { flex: 0 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
 .sum-card { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px 14px; }
 .sum-label { font-size: 11px; color: var(--text-sub); }
 .sum-value { font-size: 20px; font-weight: 700; color: var(--text-main); margin-top: 4px; }
-.panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 14px; padding: 16px; }
-.contacts-line { font-size: 12px; color: var(--text-sub); padding-bottom: 12px; border-bottom: 1px solid var(--border-color); display: flex; gap: 10px; flex-wrap: wrap; }
+.panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 14px; padding: 16px; }
+.contacts-line { flex: 0 0 auto; font-size: 12px; color: var(--text-sub); padding-bottom: 12px; border-bottom: 1px solid var(--border-color); display: flex; gap: 10px; flex-wrap: wrap; }
 .contacts-error { color: #e74c3c; }
-.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; flex-wrap: wrap; }
+.toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; flex-wrap: wrap; }
 .tabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 11px; background: var(--bg-body); border: 1px solid var(--border-color); }
 .tab { border: 0; background: transparent; color: var(--text-sub); font-size: 13px; font-family: inherit; padding: 7px 13px; border-radius: 8px; cursor: pointer; }
 .tab.active { background: var(--bg-panel); color: var(--text-main); font-weight: 650; box-shadow: 0 2px 8px rgba(255,143,179,.15); }
 .tab-count { font-size: 11px; color: var(--text-sub); margin-left: 4px; }
 .toolbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.loading-line, .empty-line { padding: 40px 0; text-align: center; color: var(--text-sub); font-size: 13px; }
-.session-list { display: flex; flex-direction: column; gap: 9px; }
+.loading-line, .empty-line { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 40px 0; text-align: center; color: var(--text-sub); font-size: 13px; }
+.session-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; display: flex; flex-direction: column; gap: 9px; }
 .group-heading { display: flex; align-items: center; gap: 8px; margin: 14px 0 2px; font-size: 13px; color: var(--text-main); }
 .group-heading:first-child { margin-top: 2px; }
 .group-heading-bar { width: 4px; height: 15px; border-radius: 3px; background: var(--accent); }

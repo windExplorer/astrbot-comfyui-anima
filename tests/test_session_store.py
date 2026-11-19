@@ -6,7 +6,9 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from session_store import AvatarCache, SessionStore, _avatar_mime, parse_origin  # noqa: E402
+from session_store import (  # noqa: E402
+    AvatarCache, SessionStore, _avatar_mime, normalize_origin, parse_origin,
+)
 
 
 def main() -> None:

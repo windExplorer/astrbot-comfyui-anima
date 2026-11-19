@@ -64,6 +64,34 @@ def parse_origin(origin: str) -> dict:
     }
 
 
+def normalize_origin(origin: str, *, group_id: str = "", platform: str = "aiocqhttp") -> str:
+    """把各种来源的会话键统一成完整 UMO ``platform:MessageType:id``。
+
+    v7.11.3：AstrBot 的 ``event.session_id`` 是**纯 ID**（如 ``123456``），
+    而 ``event.unified_msg_origin`` 才是完整 UMO。联系人同步写的是 UMO、图库/
+    oplog/出图登记此前写的是纯 ID，三套键并存导致同一好友登记两遍、群被判成
+    私聊。这里统一归一到 UMO：
+
+    - 已经是 UMO（含 ``:`` 且第二段是消息类型）→ 原样返回
+    - 插件伪会话 ``plugin:<source>`` → 原样返回
+    - 纯 ID + group_id 非空 → ``<platform>:GroupMessage:<id>``（群）
+    - 纯 ID + 无 group_id → ``<platform>:FriendMessage:<id>``（私聊）
+    """
+    s = str(origin or "").strip()
+    if not s:
+        return ""
+    if s.startswith("plugin:"):
+        return s
+    # 完整 UMO：platform:MessageType:ID（第二段通常以 Message 结尾）
+    parts = s.split(":", 2)
+    if len(parts) >= 3 and parts[1].strip().lower().endswith("message"):
+        return s
+    gid = str(group_id or "").strip()
+    if gid and gid not in ("0", "None"):
+        return f"{platform}:GroupMessage:{gid}"
+    return f"{platform}:FriendMessage:{s}"
+
+
 def _hour_start(ts: float) -> int:
     return int(ts // 3600 * 3600)
 
@@ -443,10 +471,16 @@ class SessionStore:
     # 历史统计（读 gallery.db / oplog.db，不落新表）
     # ------------------------------------------------------------------ #
     def history_stats(self) -> dict[str, dict]:
-        """按 session_id 聚合图库/操作日志：总出图、今日出图、最近一次工作流、最近活跃时间。
+        """按 UMO 聚合图库/操作日志：总出图、今日出图、最近一次工作流、最近活跃时间。
 
-        另外把 ``user_id LIKE 'plugin:%'`` 的记录归到 ``plugin:<source>`` 伪会话，
-        供「插件」标签页展示（插件来源在归档时由 _do_draw 写成 plugin:<source>）。
+        v7.11.3 修正两处口径错误：
+        1) 插件记录（``user_id`` 为 ``plugin:<source>``）**只按插件名聚合**，key 固定
+           为 ``plugin:<source>``，与会话归属互斥——此前用 session_id（群号）当 key，
+           导致「用某插件出过图的群」被误判成插件、且同一插件在每个群各产生一条重复。
+        2) 普通记录统一走 :func:`normalize_origin` 归一到完整 UMO，与联系人同步的
+           UMO key 对齐——此前纯 ID 与 UMO 各算一行，私聊数翻倍、群聊被判成私聊。
+        3) oplog 段不再 ``setdefault`` 新会话，只给已存在的 key 补最近活跃时间；
+           否则历史 oplog 里的纯 ID 会凭空造出一大堆「不知名的会话」。
         """
         out: dict[str, dict] = {}
         today = _day_start(time.time())
@@ -456,7 +490,8 @@ class SessionStore:
                 conn = sqlite3.connect(str(gallery), timeout=5.0)
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    """SELECT session_id, user_id, user_name, group_name, workflow, created_at, is_img2img
+                    """SELECT session_id, user_id, user_name, group_name, group_id, workflow,
+                              created_at, is_img2img
                        FROM images WHERE deleted=0 AND status=0
                        ORDER BY created_at DESC LIMIT 20000"""
                 ).fetchall()
@@ -465,17 +500,26 @@ class SessionStore:
                     sid = str(r["session_id"] or "").strip()
                     uid = str(r["user_id"] or "").strip()
                     is_plugin = uid.startswith("plugin:")
-                    key = sid if sid else (uid if is_plugin else "")
-                    if not key:
-                        continue
+                    if is_plugin:
+                        # 插件身份来自 user_id，与会话无关 → 按插件名聚合，绝不用 sid
+                        key = uid.strip()
+                    else:
+                        if not sid:
+                            continue
+                        key = normalize_origin(
+                            sid,
+                            group_id=str(r["group_id"] or "").strip(),
+                        )
                     st = out.setdefault(key, {
                         "draw_total": 0, "draw_today": 0, "recent_workflow": "",
                         "recent_i2i_workflow": "", "last_draw": 0, "is_plugin": is_plugin,
-                        "plugin_name": uid[7:] if is_plugin else "",
-                        "group_name": "",
+                        "plugin_name": uid[7:].strip() if is_plugin else "",
+                        "group_name": "", "user_name": "",
                     })
                     if not st["group_name"] and (r["group_name"] or "").strip():
                         st["group_name"] = str(r["group_name"]).strip()
+                    if not st["user_name"] and (r["user_name"] or "").strip():
+                        st["user_name"] = str(r["user_name"]).strip()
                     st["draw_total"] += 1
                     ca = float(r["created_at"] or 0)
                     if ca >= today:
@@ -488,25 +532,26 @@ class SessionStore:
                         st["last_draw"] = ca
             except Exception as e:
                 logger.debug(f"[会话] 图库统计聚合失败: {e}")
-        # 操作日志只用来补「最近活动时间」（不重复累计出图数——图库才是出图口径）
+        # 操作日志只给已存在的会话补「最近活动时间」（不造新会话、不重复累计出图数）
         oplog = self.data_dir / "oplog.db"
         if oplog.is_file():
             try:
                 conn = sqlite3.connect(str(oplog), timeout=5.0)
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT session_id, event, ts FROM oplog WHERE session_id != '' ORDER BY ts DESC LIMIT 20000"
+                    "SELECT session_id, user_id, event, ts FROM oplog WHERE session_id != '' ORDER BY ts DESC LIMIT 20000"
                 ).fetchall()
                 conn.close()
                 for r in rows:
-                    key = str(r["session_id"] or "").strip()
-                    if not key:
-                        continue
-                    st = out.setdefault(key, {
-                        "draw_total": 0, "draw_today": 0, "recent_workflow": "",
-                        "recent_i2i_workflow": "", "last_draw": 0, "is_plugin": False,
-                        "plugin_name": "", "group_name": "",
-                    })
+                    sid = str(r["session_id"] or "").strip()
+                    uid = str(r["user_id"] or "").strip()
+                    if uid.startswith("plugin:"):
+                        key = uid.strip()
+                    else:
+                        key = normalize_origin(sid)
+                    st = out.get(key)
+                    if st is None:
+                        continue  # 关键：oplog 不再凭空造会话
                     ts = float(r["ts"] or 0)
                     if ts > st["last_draw"]:
                         st["last_draw"] = ts

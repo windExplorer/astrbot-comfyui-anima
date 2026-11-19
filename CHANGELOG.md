@@ -4,6 +4,36 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.11.3（会话页三处修复：插件误判/重复、私聊群聊数量错乱、列表无滚动条）
+
+用户 2026-11-19 反馈：同步联系人后会话页出问题——「插件」标签里出现大量重复的同名
+插件（如「萌萌星语」把用过的群也算成插件）；私聊 151（语音插件只有 75）、群聊 25
+（语音是 30）；列表没有滚动条，底部被截断。
+
+根因（三套主键体系混用）：
+- AstrBot 的 `event.session_id` 是**纯 ID**（`123456`），`unified_msg_origin` 才是完整
+  UMO（`aiocqhttp:FriendMessage:123456`，源码 `astr_message_event.py:176-194` 实证）。
+- 联系人同步写完整 UMO；出图登记 / 图库 / oplog 写纯 ID → 同一好友两行 → 私聊翻倍；
+  纯 ID 经 `parse_origin` 解析不出群聊 → 群被判私聊。
+- 插件身份写在 `user_id=plugin:<source>`，但 `history_stats` 拿 `session_id`（群号）当
+  key → 用某插件出过图的群被标成插件（前端 `&& !is_plugin` 又把群从群聊页排除，
+  30→25），同一插件在每个群各一条 → 重复。
+- oplog 段 `setdefault` 凭空造会话，进一步放大私聊数。
+- `.session-view` 无 `height/min-height/overflow` 高度链，被 App 的 `overflow:hidden` 裁掉。
+
+修复：
+- `session_store.py`：新增 `normalize_origin()` 把纯 ID / UMO / plugin: 统一到 UMO；
+  `history_stats()` 插件记录固定按 `plugin:<source>` 聚合（与会话互斥）、普通记录归一
+  到 UMO、oplog 不再 `setdefault` 新会话只补活跃时间。
+- `main.py`：新增 `_session_umo_of(event)`（取 `unified_msg_origin`，缺失再按 group_id 拼），
+  会话注册/限额/禁用/用量/固定工作流读写会话表全部改用 UMO；`g_session_workflow`
+  内存记忆仍用纯 session_id（旧口径不动，避免影响 v5.13.6 的工作流切换链路）。
+- `webui_api.py`：`session_list` 归一化历史纯 ID 行并按 UMO 合并去重；`is_plugin` 只由
+  origin 前缀决定，绝不被图库统计翻转；联系人同步把 `{id,name}` 明细写进快照。
+- `SessionView.vue`：插件判定加 origin 前缀兜底；补齐 `height:100% + min-height:0 +
+  .session-list overflow-y:auto` 高度链，底部可滚动。
+- 新增 `tests/test_session_umo.py` 回归测试（归一化 / 插件聚合 / oplog 不造会话）全过。
+
 ## v7.11.2（在线生图工作流标签：分隔符更醒目）
 
 v7.11.1 加的圆点 `·` 分隔符太淡，用户反馈「工作流名和底模还是挤在一起、看不出边界」。

@@ -825,6 +825,20 @@ class WebUIApi:
     def _sessions(self):
         return getattr(self.plugin, "sessions", None)
 
+    @staticmethod
+    def _session_row_score(r: dict) -> int:
+        """同一 UMO 有多条历史行时的取舍：有名字/有覆盖配置的优先。"""
+        score = 0
+        if str(r.get("name") or "").strip():
+            score += 4
+        for k in ("wf_t2i", "wf_i2i", "note"):
+            if str(r.get(k) or "").strip():
+                score += 2
+        for k in ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day", "nsfw", "card", "enabled"):
+            if r.get(k) not in (None, 0, ""):
+                score += 1
+        return score
+
     async def session_list(self):
         """会话全量列表：会话表底表 + 图库历史会话 + 插件伪会话合并。"""
         st = self._sessions()
@@ -832,21 +846,49 @@ class WebUIApi:
             return error_response("会话管理未初始化")
         try:
             rows = st.list_all()
-            by_origin: dict[str, dict] = {r["origin"]: r for r in rows}
+            # v7.11.3：老版本(v7.11.0~v7.11.2)登记的会话行可能还是纯 session_id，
+            # 统一归一到完整 UMO，与联系人同步写入的 UMO 对齐后天然去重。
+            by_origin: dict[str, dict] = {}
+            for r in rows:
+                origin = session_store.normalize_origin(
+                    r.get("origin", ""),
+                    group_id=str(r.get("group_id") or ""),
+                )
+                if not origin:
+                    continue
+                r = dict(r)
+                r["origin"] = origin
+                # 同 UMO 多条（历史纯 ID 行 + UMO 行）合并：配置字段非空的优先保留
+                prev = by_origin.get(origin)
+                if prev is None or self._session_row_score(r) > self._session_row_score(prev):
+                    by_origin[origin] = r
             stats = st.history_stats()
 
             # 历史里有、但会话表未登记的会话（图库里出过图但没走新版登记）
             for origin, s in stats.items():
                 if origin in by_origin:
                     continue
-                p = session_store.parse_origin(origin) if not origin.startswith("plugin:") else {}
-                is_plugin = bool(s.get("is_plugin"))
+                if origin.startswith("plugin:"):
+                    # 插件来源伪会话：每个插件名一条，绝不与真实会话混在一起
+                    by_origin[origin] = {
+                        "origin": origin,
+                        "name": s.get("plugin_name", "") or origin[7:],
+                        "is_group": 0,
+                        "group_id": "",
+                        "user_id": origin,
+                        "last_active": s.get("last_draw", 0) or 0,
+                        "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
+                        "max_total": None, "max_hour": None, "max_day": None,
+                        "nsfw": None, "card": None, "enabled": None, "note": "",
+                    }
+                    continue
+                p = session_store.parse_origin(origin)
                 by_origin[origin] = {
                     "origin": origin,
-                    "name": (s.get("plugin_name") if is_plugin else "") or s.get("group_name") or "",
+                    "name": s.get("group_name") or s.get("user_name") or "",
                     "is_group": int(p.get("is_group", False)),
                     "group_id": p.get("group_id", ""),
-                    "user_id": p.get("user_id", "") or (origin if is_plugin else ""),
+                    "user_id": p.get("user_id", ""),
                     "last_active": s.get("last_draw", 0) or 0,
                     "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
                     "max_total": None, "max_hour": None, "max_day": None,
@@ -889,13 +931,17 @@ class WebUIApi:
             for origin, sc in by_origin.items():
                 s = stats.get(origin, {})
                 usage = st.get_usage(origin)
-                is_plugin = bool(s.get("is_plugin")) or origin.startswith("plugin:")
+                # v7.11.3：插件身份只由 origin 前缀决定，绝不被图库历史数据翻转
+                is_plugin = origin.startswith("plugin:")
                 item = dict(sc)
                 is_group = bool(item.get("is_group"))
-                avatar_id = str(item.get("group_id") or "").strip() if is_group else str(item.get("user_id") or "").strip()
+                avatar_id = "" if is_plugin else (
+                    str(item.get("group_id") or "").strip() if is_group
+                    else str(item.get("user_id") or "").strip()
+                )
                 item.update({
                     "is_plugin": is_plugin,
-                    "plugin_name": s.get("plugin_name", ""),
+                    "plugin_name": s.get("plugin_name", "") or (origin[7:] if is_plugin else ""),
                     "avatar_id": avatar_id,
                     "avatar_kind": "group" if is_group else "user",
                     "draw_total": int(s.get("draw_total", 0) or 0),
@@ -1022,6 +1068,8 @@ class WebUIApi:
                 return json_response({"ok": False, "error": "未发现 aiocqhttp 平台（仅支持 OneBot v11 拉取联系人）"})
             friends = 0
             groups = 0
+            friend_items: list[dict] = []
+            group_items: list[dict] = []
             errors: list[str] = []
             for p in platforms:
                 try:
@@ -1048,11 +1096,16 @@ class WebUIApi:
                         st.upsert(origin, name=name)
                         if is_group:
                             groups += 1
+                            if not any(x.get("id") == _id for x in group_items):
+                                group_items.append({"id": _id, "name": name})
                         else:
                             friends += 1
+                            if not any(x.get("id") == _id for x in friend_items):
+                                friend_items.append({"id": _id, "name": name})
             meta = {
                 "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "friends": friends, "groups": groups,
+                "friend_items": friend_items, "group_items": group_items,
                 "platforms": len(platforms), "error": "；".join(errors)[:300],
             }
             st.set_meta("contacts", meta)

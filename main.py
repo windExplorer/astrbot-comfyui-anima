@@ -5337,11 +5337,12 @@ class ComfyUIDrawPlugin(Star):
             or self._cfg("default_workflow_real", "")
         )
 
-    def _remember_session_workflow(self, session_id: str, name: str) -> None:
+    def _remember_session_workflow(self, session_id: str, name: str, session_umo: str = "") -> None:
         """记录「本会话最近一次显式指定的文生图工作流」（v5.13.6）。
 
         仅文生图调用方在用户/LLM 确实显式指定了工作流名时调用；
         图生图工作流绝不入记忆。空名忽略；同名重复写覆盖（刷新时间语义）。
+        g_session_workflow 用纯 session_id（旧口径）；session_store 用统一 UMO。
         """
         _name = (name or "").strip()
         _sid = (session_id or "").strip()
@@ -5357,11 +5358,13 @@ class ComfyUIDrawPlugin(Star):
             pass
         g_session_workflow[_sid] = _name
         # v7.11.0：同步落到会话管理表，WebUI 会话页即时可见；已固定的会话不被对话改写
+        # v7.11.3：会话管理表用统一 UMO 作主键
         try:
             if getattr(self, "sessions", None) is not None:
-                _cfg = self.sessions.get(_sid) or {}
+                _sk = (session_umo or session_store.normalize_origin(_sid)).strip()
+                _cfg = self.sessions.get(_sk) or {}
                 if not _cfg.get("pin_t2i"):
-                    self.sessions.set_config(_sid, {"wf_t2i": _name})
+                    self.sessions.set_config(_sk, {"wf_t2i": _name})
         except Exception:
             pass
         logger.info(f"【绘图·解析】 会话工作流记忆更新：session={_sid} -> 「{_name}」")
@@ -5440,6 +5443,7 @@ class ComfyUIDrawPlugin(Star):
         intercept_disabled: bool = False,
         session_id: str = "",
         apply_session_pin: bool = False,
+        session_umo: str = "",
     ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
@@ -5463,12 +5467,14 @@ class ComfyUIDrawPlugin(Star):
         workflows = self._workflows()
         if not workflows:
             raise ValueError("未配置任何工作流，请先在插件配置中添加。")
+        # 会话管理表用统一 UMO 作主键（v7.11.3）；缺失时按纯 session_id 兜底归一化。
+        _sk = (session_umo or session_store.normalize_origin(session_id)).strip()
         # v7.11.0：会话「固定工作流」优先级最高——一旦固定，聊天/LLM 指定的名字
         # 一律忽略（只有绘图真正入口 _do_draw 传 apply_session_pin=True 才生效，
         # 校验类调用不受影响）。
-        if apply_session_pin and session_id and getattr(self, "sessions", None) is not None:
+        if apply_session_pin and _sk and getattr(self, "sessions", None) is not None:
             try:
-                _pin = self.sessions.pinned_workflow(session_id, is_img2img)
+                _pin = self.sessions.pinned_workflow(_sk, is_img2img)
                 if _pin:
                     if name and name.strip().lower() != _pin.lower():
                         logger.info(f"【绘图·解析】 会话固定工作流生效：忽略请求的工作流 {name!r}，强制 {_pin!r}")
@@ -5486,9 +5492,9 @@ class ComfyUIDrawPlugin(Star):
                 # 会话手动设置的工作流（未固定也能作为本会话默认）；文生图再回退
                 # 到旧的内存记忆（v5.13.6），图生图历史上不入记忆，直接用会话值。
                 _swf = ""
-                if getattr(self, "sessions", None) is not None:
+                if getattr(self, "sessions", None) is not None and _sk:
                     try:
-                        _swf = self.sessions.session_workflow(session_id, is_img2img)
+                        _swf = self.sessions.session_workflow(_sk, is_img2img)
                     except Exception:
                         _swf = ""
                 if not _swf and not is_img2img:
@@ -8345,8 +8351,9 @@ class ComfyUIDrawPlugin(Star):
         # 在线生图工作台（管理端）不受此约束。
         if not (external and str(source or "").strip() == SOURCE_WEBUI_STUDIO):
             try:
-                if getattr(self, "sessions", None) is not None and self.sessions.is_disabled(_session_id):
-                    logger.info(f"【绘图·解析】 会话已被禁用：session={_session_id or '(unknown)'} user={user_id}")
+                _sk_disabled = self._session_umo_of(event)
+                if getattr(self, "sessions", None) is not None and self.sessions.is_disabled(_sk_disabled):
+                    logger.info(f"【绘图·解析】 会话已被禁用：session={_sk_disabled or '(unknown)'} user={user_id}")
                     await self._send(event, "本会话已被管理员禁用生图功能，请联系管理员。")
                     return
             except Exception:
@@ -8440,6 +8447,7 @@ class ComfyUIDrawPlugin(Star):
                 intercept_disabled=bool(workflow_name and workflow_name.strip()),
                 session_id=getattr(event, "session_id", "") or "",
                 apply_session_pin=True,
+                session_umo=self._session_umo_of(event),
             )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
@@ -10354,7 +10362,10 @@ class ComfyUIDrawPlugin(Star):
             logger.info(f"【取图】 --图 {_ref_sel}：{_n0} 张 → {len(images)} 张")
         # 记录「本会话显式指定的文生图工作流」（v5.13.6，图生图不入记忆）
         if wf_name and not images:
-            self._remember_session_workflow(getattr(event, "session_id", "") or "", wf_name)
+            self._remember_session_workflow(
+                getattr(event, "session_id", "") or "", wf_name,
+                session_umo=self._session_umo_of(event),
+            )
         async for m, _p in self._do_draw(
             event, wf_name, prompt, "", width, height, lora_map, lora_presets, seed,
             init_images=images,
@@ -12800,7 +12811,10 @@ class ComfyUIDrawPlugin(Star):
                 return
             # 记录「本会话显式指定的文生图工作流」（v5.13.6，图生图不入记忆）
             if not is_img:
-                self._remember_session_workflow(getattr(event, "session_id", "") or "", wf_name)
+                self._remember_session_workflow(
+                    getattr(event, "session_id", "") or "", wf_name,
+                    session_umo=self._session_umo_of(event),
+                )
         # 若消息或引用(回复)里带了图片，则按图生图处理（参考图注入 LoadImage 节点）。
         # 否则走普通文生图。这样「画 真人 一个女孩 + 引用图片」也能自动图生图。
         async for out, _p in self._do_draw(
@@ -14272,10 +14286,32 @@ class ComfyUIDrawPlugin(Star):
     # 会话管理（v7.11.0）：会话维度的固定工作流 / 覆盖配置助手
     # ------------------------------------------------------------------ #
     def _session_id_of(self, event) -> str:
+        """纯 session_id（AstrBot 的 event.session_id，形如 123456）——仅用于旧的内存
+        工作流记忆 g_session_workflow，不要用它读写 session_store。"""
         return (getattr(event, "session_id", "") or "") if event is not None else ""
 
+    def _session_umo_of(self, event) -> str:
+        """会话管理模块的统一主键：完整 UMO（platform:MessageType:id）。
+
+        v7.11.3：图库/oplog/出图登记此前用纯 session_id，联系人同步用完整 UMO，
+        两套键并存导致同一好友两行、群被判私聊。这里统一取 unified_msg_origin
+        （AstrBot 里 str(event.session)），缺失时再按 group_id 拼出 UMO。
+        """
+        if event is None:
+            return ""
+        try:
+            umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+            if umo and ":" in umo and umo.split(":", 2)[-1].strip():
+                return umo
+        except Exception:
+            pass
+        return session_store.normalize_origin(
+            self._session_id_of(event),
+            group_id=str(getattr(event, "get_group_id", lambda: "")() or ""),
+        )
+
     def _session_cfg(self, event) -> dict | None:
-        sid = self._session_id_of(event)
+        sid = self._session_umo_of(event)
         if not sid or getattr(self, "sessions", None) is None:
             return None
         try:
@@ -14284,8 +14320,12 @@ class ComfyUIDrawPlugin(Star):
             return None
 
     def _session_remember_draw(self, event) -> None:
-        """出图后登记会话底表（名字 / 群私 / 活跃时间），不写任何覆盖配置。"""
-        sid = self._session_id_of(event)
+        """出图后登记会话底表（名字 / 群私 / 活跃时间），不写任何覆盖配置。
+
+        v7.11.3：用统一 UMO 作主键（此前用纯 session_id，和联系人同步的 UMO
+        各算一行，导致同一好友登记两遍）。
+        """
+        sid = self._session_umo_of(event)
         if not sid or getattr(self, "sessions", None) is None:
             return
         try:
@@ -14377,7 +14417,7 @@ class ComfyUIDrawPlugin(Star):
         # 管理员豁免（对会话限额同样生效）
         if self._draw_limit_cfg().get("admin_exempt", False) and self._is_admin(event):
             return True, ""
-        _sid = self._session_id_of(event)
+        _sid = self._session_umo_of(event)
         # 会话限额：额外一层，与用户限额并存
         if _sid and getattr(self, "sessions", None) is not None:
             try:
@@ -14444,7 +14484,7 @@ class ComfyUIDrawPlugin(Star):
         v7.11.0：会话用量与会话底表登记独立于用户限额——即使 quota_store 不可用
         或无 user_id，会话页的统计/活跃时间也要正常更新。
         """
-        _sid = self._session_id_of(event)
+        _sid = self._session_umo_of(event)
         if _sid and getattr(self, "sessions", None) is not None:
             try:
                 self.sessions.record_usage(_sid)
@@ -17713,7 +17753,8 @@ class ComfyUIDrawPlugin(Star):
                         break
             if _explicit_wf:
                 self._remember_session_workflow(
-                    getattr(event, "session_id", "") or "", _explicit_wf
+                    getattr(event, "session_id", "") or "", _explicit_wf,
+                    session_umo=self._session_umo_of(event),
                 )
 
         # ── 出图计划：把多条提示词摊平为「每项独立参数」的列表 ──────────
