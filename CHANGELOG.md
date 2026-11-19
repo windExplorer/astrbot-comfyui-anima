@@ -4,6 +4,34 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.11.6（会话归属修正：外部插件出图不再把群聊变成「非好友」、群名不再被昵称覆盖）
+
+用户反馈：在群聊 A（如「小叽大家族」，群号 1038800862）通过星语插件出图后，
+会话页出现两处错乱——「群聊」里 A 的名字从群名变成用户自己的昵称「涟漪」
+（头像/群号还是 A 的）；「非好友」里同时多出一条同名、QQ 写成群号的假私聊。
+私聊记录正常。
+
+问题：星语等外部插件以 `external=True` 调 `comfyui_draw` 时传入的是**合成 event**，
+只有 `session_id` / `unified_msg_origin`，没有可用的 `get_group_id()` / `get_group_name()`。
+两处独立缺陷叠加：
+- `history_stats` 把图库记录的 `group_id` 直接取 `event.get_group_id()`，空值时
+  `normalize_origin` 只看到 `session_id=群号` → 归一成 `FriendMessage:<群号>` →
+  判私聊；该 ID 又不在好友快照里 → 落进「非好友」。
+- `_session_remember_draw` 拿不到 `get_group_name()` 时回退到 `get_sender_name()`，
+  `upsert` 用触发者昵称覆盖了联系人同步写好的群名（群号、头像都没变）。
+
+修复：
+- `session_store.py`：新增 `known_group_ids()` 读联系人快照群号集合；`history_stats`
+  对「`group_id` 为空但 `session_id` 在群快照里」的记录用 `session_id` 作群号归一，
+  历史脏数据无需迁移数据库即可自动归回群聊。
+- `main.py`：`_session_umo_of` 把 `FriendMessage:<已知群号>` 纠正为 `GroupMessage`；
+  `_session_remember_draw` 群名只认 `get_group_name()`，拿不到就留空（由 `upsert`
+  保留已有群名），不再拿昵称兜底；主出图与平台出图写图库时 `group_id` 从统一 UMO 兜底。
+- `webui_api.py`：同步联系人时自愈清理会话表里「`user_id`=已知群号、`is_group=0`」
+  的历史假私聊行（群的真实会话已重新登记，图库/用户限额不受影响）。
+- 新增守卫 `tests/test_session_group_fix.py`；`test_session_umo.py` /
+  `test_session_store.py` 全过。升级后点一次「同步联系人」即可恢复被覆盖的群名。
+
 ## v7.11.5（会话页工作流展示修正：区分「上次实际使用」与「后续将用」）
 
 用户反馈：会话页的工作流「不对劲」——需要看到「最后一次出图实际用的工作流」；

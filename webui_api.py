@@ -1148,6 +1148,24 @@ class WebUIApi:
                 "platforms": len(platforms), "error": "；".join(errors)[:300],
             }
             st.set_meta("contacts", meta)
+            # v7.11.6：自愈历史脏行——外部插件（星语等）合成 event 曾把「群号」当
+            # 私聊 ID 写进会话表，形成「名字=触发者、QQ=群号」的假非好友行。同步到
+            # 全量群列表后，只清掉 user_id 恰好等于已知群号的私聊行；群的真实会话
+            # 已由上面的 upsert 重新登记，图库/用户限额历史不受影响。
+            try:
+                gids = {str(x.get("id") or "").strip() for x in group_items if str(x.get("id") or "").strip()}
+                cleaned = 0
+                for row in st.list_all():
+                    if row.get("is_group"):
+                        continue
+                    if str(row.get("user_id") or "").strip() in gids:
+                        if st.delete(str(row.get("origin") or "")):
+                            cleaned += 1
+                if cleaned:
+                    meta["cleaned_stale"] = cleaned
+                    st.set_meta("contacts", meta)
+            except Exception:
+                pass
             return json_response({"ok": True, **meta})
         except Exception as e:
             return error_response(f"同步联系人失败: {e}")

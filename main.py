@@ -7851,7 +7851,9 @@ class ComfyUIDrawPlugin(Star):
                         user_id=user_id or ((getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""),
                         user_name=user_name or ((getattr(event, "get_sender_name", lambda: "")() or "") if event is not None else ""),
                         session_id=_session_id,
-                        group_id=(getattr(event, "get_group_id", lambda: "")() or "") if event is not None else "",
+                        group_id=((str(getattr(event, "get_group_id", lambda: "")() or "")
+                                   or session_store.parse_origin(self._session_umo_of(event)).get("group_id", ""))
+                                  if event is not None else ""),
                         group_name=_group_name,
                         trigger_msg=(getattr(event, "message_str", "") or "") if event is not None else "",
                         status=0,
@@ -10011,7 +10013,11 @@ class ComfyUIDrawPlugin(Star):
                                 user_id=user_id,
                                 user_name=user_name,
                                 session_id=(getattr(event, "session_id", "") or ""),
-                                group_id=(getattr(event, "get_group_id", lambda: "")() or ""),
+                                # v7.11.6：外部插件合成 event 的 get_group_id() 常为空，
+                                # 从统一 UMO 兜底取群号，避免图库把群聊存成「无群的私聊」，
+                                # 进而在会话页被判成非好友。
+                                group_id=(str(getattr(event, "get_group_id", lambda: "")() or "")
+                                          or session_store.parse_origin(self._session_umo_of(event)).get("group_id", "")),
                                 group_name=_group_name,
                                 trigger_msg=(getattr(event, "message_str", "") or ""),
                                 status=0,
@@ -14296,19 +14302,33 @@ class ComfyUIDrawPlugin(Star):
         v7.11.3：图库/oplog/出图登记此前用纯 session_id，联系人同步用完整 UMO，
         两套键并存导致同一好友两行、群被判私聊。这里统一取 unified_msg_origin
         （AstrBot 里 str(event.session)），缺失时再按 group_id 拼出 UMO。
+        v7.11.6：外部插件（星语等）的合成 event 常把群号塞进 FriendMessage 或
+        干脆没有 get_group_id()，用联系人快照的群号把这类 UMO 掰回 GroupMessage，
+        避免群聊被登记成私聊 / 非好友。
         """
         if event is None:
             return ""
+        known_groups: set = set()
+        try:
+            if getattr(self, "sessions", None) is not None:
+                known_groups = self.sessions.known_group_ids()
+        except Exception:
+            pass
         try:
             umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
             if umo and ":" in umo and umo.split(":", 2)[-1].strip():
+                parts = umo.split(":", 2)
+                if (len(parts) == 3 and not parts[1].strip().lower().startswith("group")
+                        and parts[2].strip() in known_groups):
+                    return f"{parts[0]}:GroupMessage:{parts[2].strip()}"
                 return umo
         except Exception:
             pass
-        return session_store.normalize_origin(
-            self._session_id_of(event),
-            group_id=str(getattr(event, "get_group_id", lambda: "")() or ""),
-        )
+        sid = self._session_id_of(event)
+        gid = str(getattr(event, "get_group_id", lambda: "")() or "").strip()
+        if not gid and sid in known_groups:
+            gid = sid
+        return session_store.normalize_origin(sid, group_id=gid)
 
     def _session_cfg(self, event) -> dict | None:
         sid = self._session_umo_of(event)
@@ -14324,16 +14344,21 @@ class ComfyUIDrawPlugin(Star):
 
         v7.11.3：用统一 UMO 作主键（此前用纯 session_id，和联系人同步的 UMO
         各算一行，导致同一好友登记两遍）。
+        v7.11.6：群聊名字只认 get_group_name()；外部插件合成 event 拿不到群名时
+        留空（upsert 会保留联系人同步写好的群名），绝不能回退到 get_sender_name()
+        ——否则一次星语出图就把「小叽大家族」覆盖成触发者昵称（报障现象）。
         """
         sid = self._session_umo_of(event)
         if not sid or getattr(self, "sessions", None) is None:
             return
         try:
+            parsed = session_store.parse_origin(sid)
             name = ""
-            get_g = getattr(event, "get_group_name", None)
-            if callable(get_g):
-                name = str(get_g() or "").strip()
-            if not name:
+            if parsed.get("is_group"):
+                get_g = getattr(event, "get_group_name", None)
+                if callable(get_g):
+                    name = str(get_g() or "").strip()
+            else:
                 get_n = getattr(event, "get_sender_name", None)
                 if callable(get_n):
                     name = str(get_n() or "").strip()

@@ -206,6 +206,24 @@ class SessionStore:
         except Exception as e:
             logger.debug(f"[会话] set_meta 失败: {e}")
 
+    def known_group_ids(self) -> set[str]:
+        """联系人快照里已确认的群号集合（v7.11.6）。
+
+        外部插件（星语等）调生图工具时传入的合成 event 往往只有 session_id /
+        unified_msg_origin，没有可用的 ``get_group_id()``。此时群号会被误当成
+        「对方 QQ 号」，群聊登记成私聊、落进「非好友」标签。这里把同步过的
+        群号暴露出来，供 UMO 归一与图库统计把这类记录掰回群聊。未同步过联系人
+        时返回空集，保持既有行为不变。
+        """
+        try:
+            meta = self.get_meta("contacts", {}) or {}
+            return {
+                str(x.get("id") or "").strip()
+                for x in (meta.get("group_items") or []) if isinstance(x, dict)
+            }
+        except Exception:
+            return set()
+
     # ------------------------------------------------------------------ #
     # 基础 CRUD
     # ------------------------------------------------------------------ #
@@ -484,6 +502,7 @@ class SessionStore:
         """
         out: dict[str, dict] = {}
         today = _day_start(time.time())
+        known_groups = self.known_group_ids()
         gallery = self.data_dir / "gallery.db"
         if gallery.is_file():
             try:
@@ -506,10 +525,14 @@ class SessionStore:
                     else:
                         if not sid:
                             continue
-                        key = normalize_origin(
-                            sid,
-                            group_id=str(r["group_id"] or "").strip(),
-                        )
+                        gid = str(r["group_id"] or "").strip()
+                        # v7.11.6：外部插件（星语等）合成 event 的 get_group_id() 常为空，
+                        # 图库里只剩 session_id=群号；若该 ID 在联系人快照的群列表里，
+                        # 必须判群聊，否则会被 normalize_origin 当成私聊 → 落进「非好友」。
+                        # 未同步过联系人（known_groups 为空）时保持旧行为。
+                        if not gid and sid in known_groups:
+                            gid = sid
+                        key = normalize_origin(sid, group_id=gid)
                     st = out.setdefault(key, {
                         "draw_total": 0, "draw_today": 0, "recent_workflow": "",
                         "recent_i2i_workflow": "", "last_draw": 0, "is_plugin": is_plugin,
