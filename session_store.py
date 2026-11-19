@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import base64
 import re
 import sqlite3
 import threading
@@ -512,3 +513,119 @@ class SessionStore:
             except Exception as e:
                 logger.debug(f"[会话] 操作日志统计聚合失败: {e}")
         return out
+
+
+# ---------------------------------------------------------------------- #
+# 会话头像缓存（v7.11.1）：腾讯公开 CDN 抓取 → 落盘 → data URI
+# ---------------------------------------------------------------------- #
+# 控制台在 AstrBot sandbox iframe 里，浏览器直连 CDN 常因内网/代理/CORS 失败；
+# 由后端抓取并缓存成本地文件，再转 data URI 给 <img src>，两条 WebUI 通道通用。
+_FRIEND_URL = "https://q4.qlogo.cn/headimg_dl?dst_uin={id}&spec=140"
+_FRIEND_FALLBACK = "https://q1.qlogo.cn/g?b=qq&nk={id}&s=100"
+_GROUP_URL = "https://p.qlogo.cn/gh/{id}/{id}/140"
+_AVATAR_MAX_BYTES = 512 * 1024
+
+
+def _avatar_mime(data: bytes) -> str:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+class AvatarCache:
+    """用户/群头像：CDN 抓取 + 本地缓存 + data URI。抓取失败静默降级，不影响会话列表。"""
+
+    def __init__(self, cache_dir: Path, *, timeout: float = 8.0, concurrency: int = 6) -> None:
+        self.cache_dir = Path(cache_dir)
+        self.timeout = float(timeout)
+        self.concurrency = max(1, int(concurrency))
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.debug(f"[头像] 缓存目录创建失败: {e}")
+
+    def _path(self, kind: str, ident: str) -> Path:
+        clean = re.sub(r"[^0-9A-Za-z_-]", "", str(ident))[:64]
+        return self.cache_dir / f"{'group' if kind == 'group' else 'user'}_{clean}.img"
+
+    def _candidates(self, kind: str, ident: str) -> list[str]:
+        if kind == "group":
+            return [_GROUP_URL.format(id=ident)]
+        return [_FRIEND_URL.format(id=ident), _FRIEND_FALLBACK.format(id=ident)]
+
+    async def _fetch(self, kind: str, ident: str):
+        import asyncio
+
+        try:
+            import aiohttp
+        except ImportError:
+            return None
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        for url in self._candidates(kind, ident):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as sess:
+                    async with sess.get(url) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.read()
+                        if not data or len(data) > _AVATAR_MAX_BYTES or not _avatar_mime(data):
+                            continue
+                        return data
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+        return None
+
+    async def ensure_map(self, kind: str, ids: list[str], *, force: bool = False,
+                         max_age_days: float | None = 30) -> dict[str, str]:
+        """返回 {id: data URI}。缓存命中直接用；未命中抓 CDN；失败回退过期缓存。"""
+        import asyncio
+
+        kind = "group" if kind == "group" else "user"
+        ids = [str(i).strip() for i in (ids or []) if str(i).strip()][:200]
+        if not ids:
+            return {}
+        now = time.time()
+        result: dict[str, str] = {}
+        sem = asyncio.Semaphore(self.concurrency)
+
+        async def one(ident: str):
+            path = self._path(kind, ident)
+            if not force and path.is_file():
+                try:
+                    if max_age_days is None or (now - path.stat().st_mtime) < float(max_age_days) * 86400:
+                        return path.read_bytes()
+                except Exception:
+                    pass
+            async with sem:
+                data = await self._fetch(kind, ident)
+            if data:
+                try:
+                    tmp = path.with_name(path.name + ".tmp")
+                    tmp.write_bytes(data)
+                    tmp.replace(path)
+                except Exception as e:
+                    logger.debug(f"[头像] 落盘失败 {ident}: {e}")
+                return data
+            if not force and path.is_file():
+                try:
+                    return path.read_bytes()  # 抓取失败时用过期缓存兜底
+                except Exception:
+                    pass
+            return None
+
+        outcomes = await asyncio.gather(*(one(i) for i in ids), return_exceptions=True)
+        for ident, data in zip(ids, outcomes):
+            if not isinstance(data, (bytes, bytearray)):
+                continue
+            mime = _avatar_mime(bytes(data))
+            if mime:
+                result[ident] = f"data:{mime};base64,{base64.b64encode(bytes(data)).decode('ascii')}"
+        return result

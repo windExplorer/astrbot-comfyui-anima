@@ -6,6 +6,7 @@
         <p>按会话（群聊 / 私聊）管理固定工作流、限额、NSFW、信息卡片与启停。所有覆盖项默认为「跟随全局」。</p>
       </div>
       <div class="head-actions">
+        <n-button :loading="refreshingAvatars" @click="refreshAvatars">刷新头像</n-button>
         <n-button :loading="loading" @click="load">刷新</n-button>
         <n-button type="primary" :loading="syncing" @click="syncContacts">同步联系人</n-button>
       </div>
@@ -55,9 +56,16 @@
         {{ contacts.synced_at || sessions.length ? '没有匹配的会话' : '点「同步联系人」拉取机器人的全部群和好友，或先让机器人出一次图。' }}
       </div>
       <div v-else class="session-list">
-        <div v-for="s in filtered" :key="s.origin" class="session-item" :class="{ disabled: s.enabled === 0 }">
+        <template v-for="grp in grouped" :key="grp.key">
+        <div v-if="grp.label" class="group-heading">
+          <span class="group-heading-bar" :class="grp.key"></span>
+          <strong>{{ grp.label }}</strong>
+          <span class="group-heading-count">{{ grp.items.length }}</span>
+        </div>
+        <div v-for="s in grp.items" :key="s.origin" class="session-item" :class="{ disabled: s.enabled === 0 }">
           <div class="avatar" :class="{ group: s.is_group, plugin: s.is_plugin }">
-            {{ s.is_plugin ? '插' : initial(s) }}
+            <img v-if="avatarSrc(s)" :src="avatarSrc(s)" :alt="displayName(s)" />
+            <span v-else>{{ s.is_plugin ? '插' : initial(s) }}</span>
           </div>
 
           <div class="session-main">
@@ -96,6 +104,7 @@
             <n-button v-else size="tiny" @click="openEdit(s)">查看</n-button>
           </div>
         </div>
+        </template>
       </div>
     </div>
 
@@ -190,6 +199,8 @@ interface SessionItem {
   plugin_name: string;
   group_id: string;
   user_id: string;
+  avatar_id: string;
+  avatar_kind: "group" | "user";
   note: string;
   wf_t2i: string;
   wf_i2i: string;
@@ -220,11 +231,13 @@ const contacts = ref<{ synced_at?: string; groups?: number; friends?: number; er
 const loading = ref(false);
 const syncing = ref(false);
 const saving = ref(false);
+const refreshingAvatars = ref(false);
 const keyword = ref("");
 const tab = ref<"all" | "private" | "group" | "plugin">("all");
 const onlyConfigured = ref(false);
 const editing = ref(false);
 const draft = ref<SessionItem | null>(null);
+const avatars = ref<Record<string, string>>({});
 
 const wfOptions = computed(() => [
   { label: "（跟随全局）", value: "" },
@@ -264,6 +277,18 @@ const filtered = computed(() => {
   return list;
 });
 
+// 「全部」标签下按类型分组展示（群聊 / 私聊 / 插件），避免混在一起分不清；
+// 其它标签已经是单一类型，不再分组。
+const grouped = computed<{ key: string; label: string; items: SessionItem[] }[]>(() => {
+  const list = filtered.value;
+  if (tab.value !== "all") return [{ key: tab.value, label: "", items: list }];
+  return [
+    { key: "group", label: "群聊", items: list.filter((s) => s.is_group && !s.is_plugin) },
+    { key: "private", label: "私聊", items: list.filter((s) => !s.is_group && !s.is_plugin) },
+    { key: "plugin", label: "插件来源", items: list.filter((s) => s.is_plugin) },
+  ].filter((g) => g.items.length > 0);
+});
+
 const modalTitle = computed(() => {
   if (!draft.value) return "会话配置";
   return draft.value.is_plugin
@@ -288,6 +313,7 @@ async function load() {
     }));
     workflows.value = data?.workflows || [];
     contacts.value = data?.contacts || {};
+    await loadAvatars(false);
   } catch (e: any) {
     message.error(e?.message || "加载会话列表失败");
   } finally {
@@ -295,6 +321,37 @@ async function load() {
   }
 }
 onMounted(load);
+
+async function loadAvatars(force: boolean) {
+  const byKind: Record<string, string[]> = { user: [], group: [] };
+  for (const s of sessions.value) {
+    const kind = s.avatar_kind === "group" ? "group" : "user";
+    if (s.avatar_id && !byKind[kind].includes(s.avatar_id)) byKind[kind].push(s.avatar_id);
+  }
+  const merged: Record<string, string> = {};
+  for (const kind of ["user", "group"]) {
+    if (!byKind[kind].length) continue;
+    try {
+      const r = await apiGet("avatars",
+        { type: kind, ids: byKind[kind].join(","), force: force ? 1 : 0 },
+        { timeout: 25000 });
+      Object.assign(merged, r?.items || {});
+    } catch { /* 头像失败不影响会话列表 */ }
+  }
+  avatars.value = merged;
+}
+async function refreshAvatars() {
+  refreshingAvatars.value = true;
+  try {
+    await loadAvatars(true);
+    message.success("头像已刷新");
+  } catch (e: any) {
+    message.error(e?.message || "刷新头像失败");
+  } finally {
+    refreshingAvatars.value = false;
+  }
+}
+function avatarSrc(s: SessionItem): string { return avatars.value[s.avatar_id] || ""; }
 
 async function syncContacts() {
   syncing.value = true;
@@ -439,11 +496,19 @@ async function resetUsage() {
 .toolbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .loading-line, .empty-line { padding: 40px 0; text-align: center; color: var(--text-sub); font-size: 13px; }
 .session-list { display: flex; flex-direction: column; gap: 9px; }
+.group-heading { display: flex; align-items: center; gap: 8px; margin: 14px 0 2px; font-size: 13px; color: var(--text-main); }
+.group-heading:first-child { margin-top: 2px; }
+.group-heading-bar { width: 4px; height: 15px; border-radius: 3px; background: var(--accent); }
+.group-heading-bar.group { background: #5a8dee; }
+.group-heading-bar.private { background: #ff6b9d; }
+.group-heading-bar.plugin { background: #f08a24; }
+.group-heading-count { font-size: 11px; color: var(--text-sub); background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 999px; padding: 0 7px; }
 .session-item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-body); }
 .session-item.disabled { opacity: .65; }
-.avatar { width: 42px; height: 42px; flex: 0 0 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 14px; background: linear-gradient(135deg, #ff8fb3, #ff6b9d); }
+.avatar { width: 42px; height: 42px; flex: 0 0 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 14px; background: linear-gradient(135deg, #ff8fb3, #ff6b9d); overflow: hidden; }
 .avatar.group { background: linear-gradient(135deg, #7bc0ff, #5a8dee); }
 .avatar.plugin { background: linear-gradient(135deg, #ffc26e, #f08a24); }
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
 .session-main { flex: 1; min-width: 0; }
 .line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .name { font-size: 14px; color: var(--text-main); }

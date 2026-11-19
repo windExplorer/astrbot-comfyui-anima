@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from session_store import SessionStore, parse_origin  # noqa: E402
+from session_store import AvatarCache, SessionStore, _avatar_mime, parse_origin  # noqa: E402
 
 
 def main() -> None:
@@ -70,6 +70,18 @@ def main() -> None:
         # 空库统计不报错
         assert st.history_stats() == {}
         st.close()
+
+        # 头像缓存：MIME 识别 + 落盘/读取（不联网，仅验缓存逻辑）
+        assert _avatar_mime(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00") == "image/jpeg"
+        assert _avatar_mime(b"\x89PNG\r\n\x1a\n123") == "image/png"
+        assert _avatar_mime(b"GIF89a123") == "image/gif"
+        assert _avatar_mime(b"RIFF\x00\x00\x00\x00WEBP") == "image/webp"
+        assert _avatar_mime(b"not an image") == ""
+        ac = AvatarCache(Path(td) / "avatars")
+        assert ac._path("user", "12345").name == "user_12345.img"
+        assert ac._path("group", "999").name == "group_999.img"
+        assert len(ac._candidates("group", "1")) == 1
+        assert len(ac._candidates("user", "1")) == 2
         print("RESULT: session_store OK")
 
 

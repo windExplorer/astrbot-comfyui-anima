@@ -891,9 +891,13 @@ class WebUIApi:
                 usage = st.get_usage(origin)
                 is_plugin = bool(s.get("is_plugin")) or origin.startswith("plugin:")
                 item = dict(sc)
+                is_group = bool(item.get("is_group"))
+                avatar_id = str(item.get("group_id") or "").strip() if is_group else str(item.get("user_id") or "").strip()
                 item.update({
                     "is_plugin": is_plugin,
                     "plugin_name": s.get("plugin_name", ""),
+                    "avatar_id": avatar_id,
+                    "avatar_kind": "group" if is_group else "user",
                     "draw_total": int(s.get("draw_total", 0) or 0),
                     "draw_today": int(s.get("draw_today", 0) or 0),
                     "last_draw": float(s.get("last_draw", 0) or 0),
@@ -1055,6 +1059,27 @@ class WebUIApi:
             return json_response({"ok": True, **meta})
         except Exception as e:
             return error_response(f"同步联系人失败: {e}")
+
+    async def avatars(self):
+        """批量取用户/群头像，返回 {id: data URI}。query: type=user|group, ids=a,b,c, force=1。"""
+        cache = getattr(self.plugin, "avatars", None)
+        if cache is None:
+            return json_response({"items": {}, "requested": 0, "got": 0})
+        try:
+            kind = str(request.query.get("type") or "user").strip().lower()
+            if kind not in ("user", "group"):
+                kind = "user"
+            ids = [s.strip() for s in str(request.query.get("ids") or "").split(",") if s.strip()][:200]
+            force = str(request.query.get("force") or "").strip().lower() in ("1", "true", "yes", "on")
+            try:
+                days = int(request.query.get("days") or 0)
+            except (TypeError, ValueError):
+                days = 0
+            items = await cache.ensure_map(kind, ids, force=force, max_age_days=(days or None))
+            return json_response({"items": items, "requested": len(ids), "got": len(items)})
+        except Exception as e:
+            # 头像失败不影响会话列表
+            return json_response({"items": {}, "requested": 0, "got": 0, "error": str(e)})
 
     # -------------------------------------------------------------- #
     # LLM token 用量统计
@@ -4217,6 +4242,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/sessions/reset", _h("session_reset"), ["POST"], "会话配置恢复跟随全局"),
         (f"{prefix}/sessions/reset_usage", _h("session_reset_usage"), ["POST"], "会话限额用量清零"),
         (f"{prefix}/sessions/sync", _h("session_sync_contacts"), ["POST"], "同步 OneBot 联系人"),
+        (f"{prefix}/avatars", _h("avatars"), ["GET"], "批量取会话用户/群头像"),
         (f"{prefix}/token/summary", _h("token_summary"), ["GET"], "LLM token 用量统计"),
         (f"{prefix}/token/reset", _h("token_reset"), ["POST"], "LLM token 统计重置"),
         (f"{prefix}/lora/fetch", _h("lora_fetch"), ["POST"], "C站 LoRA 抓取 / 任意图片直链下载封面"),

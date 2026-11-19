@@ -850,6 +850,8 @@ class StandaloneWebUI:
         # ---------- 会话管理（v7.11.0，复用 WebUIApi 实现，两通道同口径） ----------
         if path == "/sessions" or path.startswith("/sessions/"):
             return await self._api_lora_translate(path, request)
+        if path == "/avatars":
+            return await self._api_lora_translate(path, request)
 
         # ---------- token 用量 ----------
         if path.startswith("/token/"):
@@ -1330,6 +1332,7 @@ class StandaloneWebUI:
             "/basemodels/reseed": ("basemodels_reseed", "POST"),
             "/size_tiers": ("size_tiers", "GET"),
             "/sessions": ("session_list", "GET"),
+            "/avatars": ("avatars", "GET"),
             "/sessions/set": ("session_set", "POST"),
             "/sessions/delete": ("session_delete", "POST"),
             "/sessions/reset": ("session_reset", "POST"),

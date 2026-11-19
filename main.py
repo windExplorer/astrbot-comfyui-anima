@@ -1930,6 +1930,13 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 会话管理初始化失败（功能不可用）: {e}", exc_info=True)
 
+        # 会话头像缓存（v7.11.1）：CDN 抓取结果落 data_dir/avatars/，供会话页展示
+        self.avatars = None
+        try:
+            self.avatars = session_store.AvatarCache(self.data_dir / "avatars")
+        except Exception as e:
+            logger.warning(f"【初始化】 头像缓存初始化失败: {e}")
+
         # 角色卡片：独立 SQLite（character.db）维护角色 / 锚点 / 参考图，
         # 解决「模型/LoRA/danbooru 都找不到某角色」与「角色设定每轮漂移」的问题。
         self.character = None
