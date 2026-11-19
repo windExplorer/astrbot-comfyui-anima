@@ -14,8 +14,9 @@
 
     <div class="summary-row">
       <div class="sum-card"><div class="sum-label">全部会话</div><div class="sum-value">{{ counts.all }}</div></div>
-      <div class="sum-card"><div class="sum-label">私聊</div><div class="sum-value">{{ counts.private }}</div></div>
+      <div class="sum-card"><div class="sum-label">私聊（好友）</div><div class="sum-value">{{ counts.private }}</div></div>
       <div class="sum-card"><div class="sum-label">群聊</div><div class="sum-value">{{ counts.group }}</div></div>
+      <div class="sum-card"><div class="sum-label">非好友私聊</div><div class="sum-value">{{ counts.stranger }}</div></div>
       <div class="sum-card"><div class="sum-label">插件来源</div><div class="sum-value">{{ counts.plugin }}</div></div>
       <div class="sum-card"><div class="sum-label">已配置覆盖</div><div class="sum-value">{{ counts.configured }}</div></div>
       <div class="sum-card"><div class="sum-label">已禁用</div><div class="sum-value">{{ counts.disabled }}</div></div>
@@ -40,6 +41,9 @@
           </button>
           <button class="tab" :class="{ active: tab === 'group' }" @click="tab = 'group'">
             群聊 <span class="tab-count">{{ counts.group }}</span>
+          </button>
+          <button class="tab" :class="{ active: tab === 'stranger' }" @click="tab = 'stranger'">
+            非好友 <span class="tab-count">{{ counts.stranger }}</span>
           </button>
           <button class="tab" :class="{ active: tab === 'plugin' }" @click="tab = 'plugin'">
             插件 <span class="tab-count">{{ counts.plugin }}</span>
@@ -74,6 +78,7 @@
               <n-tag size="small" :type="s.is_plugin ? 'warning' : (s.is_group ? 'info' : 'success')" round>
                 {{ s.is_plugin ? '插件' : (s.is_group ? '群聊' : '私聊') }}
               </n-tag>
+              <n-tag v-if="isStranger(s)" size="small" type="warning" round>非好友</n-tag>
               <n-tag v-if="s.enabled === 0" size="small" type="error" round>已禁用</n-tag>
               <n-tag v-if="s.has_override" size="small" round>已配置</n-tag>
               <span class="sub-id">{{ subName(s) }}</span>
@@ -197,6 +202,7 @@ interface SessionItem {
   is_group: number;
   is_plugin: boolean;
   plugin_name: string;
+  in_contacts: boolean;
   group_id: string;
   user_id: string;
   avatar_id: string;
@@ -233,7 +239,7 @@ const syncing = ref(false);
 const saving = ref(false);
 const refreshingAvatars = ref(false);
 const keyword = ref("");
-const tab = ref<"all" | "private" | "group" | "plugin">("all");
+const tab = ref<"all" | "private" | "group" | "stranger" | "plugin">("all");
 const onlyConfigured = ref(false);
 const editing = ref(false);
 const draft = ref<SessionItem | null>(null);
@@ -257,11 +263,15 @@ const enabledOptions = [
 // v7.11.3：插件身份以 origin 前缀为准（后端已保证一致），前端再兜一层防御，
 // 保证「用某插件出过图的群」绝不会被算进插件页。
 const isPlugin = (s: SessionItem) => !!s.is_plugin || String(s.origin || "").startsWith("plugin:");
+// v7.11.4：私聊里区分「好友（在联系人快照内）」与「非好友（出过图但不在好友列表）」。
+const isPrivate = (s: SessionItem) => !s.is_group && !isPlugin(s);
+const isStranger = (s: SessionItem) => isPrivate(s) && s.in_contacts === false;
 
 const counts = computed(() => ({
   all: sessions.value.length,
-  private: sessions.value.filter((s) => !s.is_group && !isPlugin(s)).length,
+  private: sessions.value.filter((s) => isPrivate(s) && !isStranger(s)).length,
   group: sessions.value.filter((s) => s.is_group && !isPlugin(s)).length,
+  stranger: sessions.value.filter(isStranger).length,
   plugin: sessions.value.filter(isPlugin).length,
   configured: sessions.value.filter((s) => s.has_override).length,
   disabled: sessions.value.filter((s) => s.enabled === 0).length,
@@ -269,8 +279,9 @@ const counts = computed(() => ({
 
 const filtered = computed(() => {
   let list = sessions.value;
-  if (tab.value === "private") list = list.filter((s) => !s.is_group && !isPlugin(s));
+  if (tab.value === "private") list = list.filter((s) => isPrivate(s) && !isStranger(s));
   else if (tab.value === "group") list = list.filter((s) => s.is_group && !isPlugin(s));
+  else if (tab.value === "stranger") list = list.filter(isStranger);
   else if (tab.value === "plugin") list = list.filter(isPlugin);
   if (onlyConfigured.value) list = list.filter((s) => s.has_override);
   const k = keyword.value.trim().toLowerCase();
@@ -288,7 +299,8 @@ const grouped = computed<{ key: string; label: string; items: SessionItem[] }[]>
   if (tab.value !== "all") return [{ key: tab.value, label: "", items: list }];
   return [
     { key: "group", label: "群聊", items: list.filter((s) => s.is_group && !isPlugin(s)) },
-    { key: "private", label: "私聊", items: list.filter((s) => !s.is_group && !isPlugin(s)) },
+    { key: "private", label: "私聊（好友）", items: list.filter((s) => isPrivate(s) && !isStranger(s)) },
+    { key: "stranger", label: "非好友私聊", items: list.filter(isStranger) },
     { key: "plugin", label: "插件来源", items: list.filter(isPlugin) },
   ].filter((g) => g.items.length > 0);
 });
@@ -312,6 +324,7 @@ async function load() {
         s.nsfw !== null || s.card !== null || s.enabled !== null || s.note
       ),
       usage: s.usage || { total_used: 0, hour_used: 0, day_used: 0 },
+      in_contacts: s.in_contacts !== false,
       wf_now_t2i: s.wf_now_t2i || { name: "", pinned: false, source: "" },
       wf_now_i2i: s.wf_now_i2i || { name: "", pinned: false, source: "" },
     }));

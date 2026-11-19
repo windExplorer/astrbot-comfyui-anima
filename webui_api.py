@@ -863,6 +863,18 @@ class WebUIApi:
                 if prev is None or self._session_row_score(r) > self._session_row_score(prev):
                     by_origin[origin] = r
             stats = st.history_stats()
+            # 联系人快照 ID 集合（v7.11.4）：用于把「好友/群」与「出过图但不在联系人里」
+            # 的会话区分开。旧版 meta 只存计数，没有 *_items 时视为未同步 → 全部算联系人内。
+            _contacts_meta = st.get_meta("contacts", {}) or {}
+            _friend_ids = {
+                str(x.get("id") or "").strip()
+                for x in (_contacts_meta.get("friend_items") or []) if isinstance(x, dict)
+            }
+            _group_ids = {
+                str(x.get("id") or "").strip()
+                for x in (_contacts_meta.get("group_items") or []) if isinstance(x, dict)
+            }
+            _has_contact_snapshot = bool(_friend_ids or _group_ids)
 
             # 历史里有、但会话表未登记的会话（图库里出过图但没走新版登记）
             for origin, s in stats.items():
@@ -939,9 +951,17 @@ class WebUIApi:
                     str(item.get("group_id") or "").strip() if is_group
                     else str(item.get("user_id") or "").strip()
                 )
+                # v7.11.4：是否在联系人快照（好友/群）里。用于把「出过图的非好友私聊」
+                # 从正常私聊中分离出来。没有快照时一律算「在联系人内」，不误伤。
+                if is_plugin or not _has_contact_snapshot:
+                    in_contacts = True
+                else:
+                    sid = origin.split(":", 2)[-1].strip() if ":" in origin else origin.strip()
+                    in_contacts = sid in (_group_ids if is_group else _friend_ids)
                 item.update({
                     "is_plugin": is_plugin,
                     "plugin_name": s.get("plugin_name", "") or (origin[7:] if is_plugin else ""),
+                    "in_contacts": in_contacts,
                     "avatar_id": avatar_id,
                     "avatar_kind": "group" if is_group else "user",
                     "draw_total": int(s.get("draw_total", 0) or 0),
@@ -964,11 +984,10 @@ class WebUIApi:
                 ]
             except Exception:
                 workflows = []
-            meta = st.get_meta("contacts", {}) or {}
             return json_response({
                 "sessions": out,
                 "workflows": workflows,
-                "contacts": meta,
+                "contacts": _contacts_meta,
                 "defaults": {
                     "t2i": str(self.plugin._pick_default_workflow_name(False) or ""),
                     "i2i": str(self.plugin._pick_default_workflow_name(True) or ""),
