@@ -61,6 +61,15 @@
           多角色 / 动漫或游戏角色 / 风景城市等等）。输入框有内容时作为灵感参考，
           留空则完全自由发挥
         </n-tooltip>
+        <!-- v7.10.3：英文提示词才有译文（生成时一次 LLM 顺带产出），点击查看不额外调接口 -->
+        <n-button
+          v-if="canShowImagineTranslation"
+          size="small"
+          quaternary
+          @click="imagineZhShow = true"
+        >
+          🇨🇳 看译文
+        </n-button>
         <!-- v7.9.7：润色是即用即点的动作按钮——点一下就按当前工作流风格自动选方式
              （扩写/翻译/改写/编辑指令）就地改写输入框文本，无任何隐藏的提交后加工 -->
         <n-tooltip trigger="hover" placement="bottom-end">
@@ -94,6 +103,23 @@
     </div>
 
     <div v-if="aiError" class="pp-error">{{ aiError }}</div>
+
+    <!-- v7.10.3：想画面译文（与提示词同一次 LLM 产出，点按钮查看，不再调翻译接口） -->
+    <n-modal
+      :show="imagineZhShow"
+      preset="card"
+      title="画面提示词中文译文"
+      :bordered="false"
+      style="width: min(640px, 92vw)"
+      :mask-closable="true"
+      @update:show="(v: boolean) => (imagineZhShow = v)"
+    >
+      <p class="pp-zh-hint">这是「🎲 想画面」生成英文提示词时一并产出的译文，查看不再消耗翻译额度：</p>
+      <div class="pp-zh-label">原英文提示词</div>
+      <div class="pp-zh-en">{{ imaginedPrompt }}</div>
+      <div class="pp-zh-label pp-zh-label-zh">中文译文</div>
+      <div class="pp-zh-text">{{ imaginedTranslation }}</div>
+    </n-modal>
   </div>
 </template>
 
@@ -193,6 +219,13 @@ const refining = ref(false);
 
 // v7.9.10：🎲 AI 想画面——按当前工作流底模的提示词格式自由创作一幅画面
 const imagining = ref(false);
+// v7.10.3：同一次 LLM 顺带产出的译文；提示词被用户改动后按钮自动隐藏，避免展示过期译文
+const imaginedPrompt = ref("");
+const imaginedTranslation = ref("");
+const imagineZhShow = ref(false);
+const canShowImagineTranslation = computed(
+  () => !!imaginedTranslation.value && imaginedPrompt.value === props.positive.trim()
+);
 
 async function runImagine() {
   if (imagining.value) return;
@@ -202,7 +235,13 @@ async function runImagine() {
     const d = await studioApi.aiImagine(props.positive.trim(), props.workflow?.name || "");
     if (d && d.text) {
       emit("update:positive", d.text);
-      message.success("AI 已想好一个画面，可继续修改或直接开始生图");
+      imaginedPrompt.value = d.text.trim();
+      imaginedTranslation.value = (d.translation || "").trim();
+      message.success(
+        imaginedTranslation.value
+          ? "AI 已想好一个画面；点「看译文」可查看中文意思"
+          : "AI 已想好一个画面，可继续修改或直接开始生图"
+      );
     } else {
       aiError.value = "AI 没有返回内容";
     }
@@ -286,4 +325,17 @@ function appendTemplate(t: StudioTemplate) {
   border-radius: 8px;
   padding: 6px 10px;
 }
+/* v7.10.3：想画面译文弹窗 */
+.pp-zh-hint { margin: 0 0 14px; font-size: 12px; color: var(--text-sub); line-height: 1.6; }
+.pp-zh-label { font-size: 12px; font-weight: 600; color: var(--text-sub); margin-bottom: 6px; }
+.pp-zh-label-zh { margin-top: 16px; color: var(--accent); }
+.pp-zh-en, .pp-zh-text {
+  max-height: 220px; overflow: auto; padding: 12px 14px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
+  border: 1px solid var(--border-color);
+  font-size: 13px; line-height: 1.75; white-space: pre-wrap; word-break: break-word;
+  user-select: text;
+}
+.pp-zh-en { color: var(--text-sub); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.pp-zh-text { color: var(--text-main); font-size: 14px; }
 </style>

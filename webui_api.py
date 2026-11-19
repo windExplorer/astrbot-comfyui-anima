@@ -3648,11 +3648,17 @@ class WebUIApi:
             if studio is None:
                 return error_response("在线生图工作台未就绪")
             body = await request.json(default={}) or {}
-            text = await studio.ai_imagine(
+            result = await studio.ai_imagine(
                 str(body.get("hint") or ""),
                 str(body.get("workflow") or ""),
             )
-            return json_response({"text": text})
+            # v7.10.3：ai_imagine 改为返回 {text, translation}；兼容旧实现返回纯字符串。
+            if isinstance(result, str):
+                result = {"text": result, "translation": ""}
+            return json_response({
+                "text": str(result.get("text") or ""),
+                "translation": str(result.get("translation") or ""),
+            })
         except RuntimeError as e:
             return error_response(str(e))
         except Exception as e:

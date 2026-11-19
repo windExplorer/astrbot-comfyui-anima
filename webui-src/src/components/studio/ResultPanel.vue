@@ -33,7 +33,7 @@
       <n-button size="small" @click="emit('rerun')">🎲 换种子重跑</n-button>
       <n-button size="small" :loading="refing" @click="useAsRef">🖼 用作图生图</n-button>
       <n-button size="small" quaternary @click="copyPrompt">📋 复制提示词</n-button>
-      <n-button size="small" quaternary :loading="transLoading" @click="openTranslation">🇨🇳 看译文</n-button>
+      <n-button size="small" quaternary @click="openPromptViewer">查看提示词</n-button>
     </div>
 
     <!-- 会话成果条（v7.9.5：支持单张移除与新建会话，仅页面级——成品仍在图库） -->
@@ -62,28 +62,41 @@
       <div v-else class="strip-empty">还没有成果——出一张图，或从右侧「最近成品」挑一张接着改</div>
     </div>
 
-    <!-- 提示词中文译文（v7.10.1：点「看译文」才请求，英文→中文，按需触发） -->
+    <!-- 提示词详情（v7.10.3）：打开只显示原文；译文必须在弹窗内再点「查看译文」才翻译 -->
     <n-modal
       :show="transShow"
       preset="card"
-      title="提示词中文译文"
+      title="查看提示词"
       :bordered="false"
       style="width: min(680px, 92vw)"
       :mask-closable="true"
       @update:show="(v: boolean) => (transShow = v)"
     >
-      <div v-if="transLoading" class="trans-loading">
-        <span class="trans-spin"></span> 正在翻译，请稍候…
-      </div>
+      <div class="trans-label">提示词原文</div>
+      <div class="trans-en">{{ transSource }}</div>
+
+      <div v-if="isChinesePrompt" class="trans-note">提示词是中文，无需翻译</div>
       <template v-else>
-        <p class="trans-hint">下面是这张图所用英文提示词的中文意思（按需翻译，仅供参考，不影响实际出图）：</p>
-        <div class="trans-label">原英文提示词</div>
-        <div class="trans-en">{{ transSource }}</div>
-        <div class="trans-label trans-label-zh">中文译文</div>
-        <div v-if="transError" class="trans-error">{{ transError }}</div>
-        <div v-else class="trans-zh">{{ transText }}</div>
-        <div class="trans-foot">翻译模型复用配置里的 translate_llm_model（留空走默认对话模型）</div>
+        <div class="trans-actions">
+          <n-button
+            size="small"
+            type="primary"
+            ghost
+            :loading="transLoading"
+            :disabled="!!transText"
+            @click="fetchTranslation"
+          >
+            {{ transText ? "已翻译" : "🇨🇳 查看译文" }}
+          </n-button>
+          <span class="trans-tip">按需翻译，查看才消耗额度</span>
+        </div>
+        <template v-if="transText || transError">
+          <div class="trans-label trans-label-zh">中文译文</div>
+          <div v-if="transError" class="trans-error">{{ transError }}</div>
+          <div v-else class="trans-zh">{{ transText }}</div>
+        </template>
       </template>
+      <div class="trans-foot">英文提示词按需翻译，复用 translate_llm_model（留空走默认对话模型）</div>
     </n-modal>
   </div>
 </template>
@@ -118,13 +131,15 @@ const message = useMessage();
 const downloading = ref(false);
 const refing = ref(false);
 
-// 提示词译文：点「看译文」才请求（按需触发），按提示词文本缓存避免重复消耗 LLM
+// 提示词详情：点「查看提示词」只打开弹窗显示原文；译文要在弹窗内再点「查看译文」才请求
 const transShow = ref(false);
 const transLoading = ref(false);
 const transText = ref("");
 const transError = ref("");
 const transSource = ref("");
 const transCache = new Map<string, string>();
+// 中文提示词不翻译（避免白白消耗额度）；含任一汉字即视为中文提示词
+const isChinesePrompt = computed(() => /[\u4e00-\u9fff]/.test(transSource.value));
 
 /** 当前忙态是排队还是绘制中（activeHint 由父组件按 activeJob.state 生成） */
 const queued = computed(() => props.activeHint.includes("排队"));
@@ -169,8 +184,7 @@ function currentPrompt(): string {
   return cur?.params?.positive || "";
 }
 
-async function openTranslation() {
-  if (transLoading.value) return;
+function openPromptViewer() {
   const text = currentPrompt();
   if (!text) {
     message.warning("这张图没有提示词信息");
@@ -178,13 +192,20 @@ async function openTranslation() {
   }
   transSource.value = text;
   transError.value = "";
+  // 命中旧缓存直接展示（不产生新请求）；否则只显示原文，译文等用户点按钮
+  transText.value = transCache.get(text) || "";
   transShow.value = true;
+}
+
+async function fetchTranslation() {
+  if (transLoading.value || isChinesePrompt.value || transText.value) return;
+  const text = transSource.value;
   const cached = transCache.get(text);
   if (cached !== undefined) {
     transText.value = cached;
     return;
   }
-  transText.value = "";
+  transError.value = "";
   transLoading.value = true;
   try {
     const d = await studioApi.translatePrompt(text);
@@ -193,7 +214,6 @@ async function openTranslation() {
     transText.value = out;
     transCache.set(text, out);
   } catch (e: any) {
-    transText.value = "";
     transError.value = e?.message || "翻译失败，请稍后重试";
   } finally {
     transLoading.value = false;
@@ -320,19 +340,14 @@ async function openTranslation() {
 .strip-empty { font-size: 11px; color: var(--text-sub); line-height: 1.6; padding: 4px 0; }
 .strip-item.active, .strip-item:hover { border-color: var(--accent); }
 .strip-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* 提示词译文弹窗（v7.10.1） */
-.trans-loading {
-  display: flex; align-items: center; gap: 10px;
-  padding: 30px 4px; color: var(--text-sub); font-size: 13px;
+/* 提示词详情弹窗（v7.10.3） */
+.trans-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.trans-tip { font-size: 11px; color: var(--text-sub); opacity: 0.85; }
+.trans-note {
+  margin-top: 16px; padding: 10px 14px; border-radius: 10px;
+  font-size: 12px; color: var(--text-sub);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel));
 }
-.trans-spin {
-  width: 16px; height: 16px; border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  border-top-color: var(--accent);
-  animation: trans-spin 0.8s linear infinite;
-}
-@keyframes trans-spin { to { transform: rotate(360deg); } }
-.trans-hint { margin: 0 0 14px; font-size: 12px; color: var(--text-sub); line-height: 1.6; }
 .trans-label { font-size: 12px; font-weight: 600; color: var(--text-sub); margin-bottom: 6px; }
 .trans-label-zh { margin-top: 16px; color: var(--accent); }
 .trans-en, .trans-zh {

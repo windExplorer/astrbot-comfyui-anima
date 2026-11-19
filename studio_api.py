@@ -1139,13 +1139,15 @@ class StudioManager:
             )
         return out
 
-    async def ai_imagine(self, hint: str, workflow_name: str) -> str:
+    async def ai_imagine(self, hint: str, workflow_name: str) -> dict:
         """🎲 AI 想画面：按所选工作流底模的提示词格式**自由创作**一幅画面的提示词。
 
         - 格式跟随底模 prompt_style：danbooru→英文标签；natural→自然语言
           （语言按 priority_lang）；qwen→中文描述式。
         - hint 非空 = 围绕用户的想法创作；为空 = AI 自由发挥
           （每次随机抽一个题材建议，重复点击画面不重样）。
+        - 返回 {"text": 提示词, "translation": 中文译文或 ""}：英文提示词时在同一次
+          LLM 输出里用 ===ZH=== 分隔顺带产出译文（省一次翻译调用）；中文提示词不含译文。
         - LLM 调用与 token 入账与聊天侧同款（_record_llm_token）。
         """
         plugin = self.plugin
@@ -1209,7 +1211,10 @@ class StudioManager:
             "你是顶级的 AI 绘画提示词创作师。请为用户创作一幅画面的提示词。\n"
             f"{bm_line}{fmt}\n"
             f"{subject}\n"
-            "只输出提示词本身，不要任何前后缀说明。"
+            "如果上面要求输出英文提示词：在提示词正文之后另起一行写 ===ZH===，"
+            "再用 1~2 句通顺中文说明这幅画画了什么（只描述画面，不要逐条复述标签名）。\n"
+            "如果提示词本身是中文：不要写分隔符、不要写译文。\n"
+            "除提示词正文与上述可选译文外，不要任何前后缀说明。"
         )
         provider_id = plugin._resolve_translate_provider_id()
         if not provider_id:
@@ -1230,10 +1235,22 @@ class StudioManager:
             pass
         out = str(getattr(llm_resp, "completion_text", "") or "").strip()
         out = out.strip("`").strip()
+        # v7.10.3：同一次 LLM 调用顺带产出中文译文（仅英文提示词有），省一次翻译额度。
+        # LLM 按 ===ZH=== 分隔；不遵守格式时退回「只有提示词」，绝不丢主产物。
+        translation = ""
+        if "===ZH===" in out:
+            out, zh = out.split("===ZH===", 1)
+            out = out.strip().strip("`").strip()
+            translation = zh.strip().strip("`").strip()
+            translation = re.sub(r"^\s*(中文译文|译文)\s*[:：]\s*", "", translation)
+            translation = " ".join(translation.split())
         out = re.sub(r"^\s*(提示词|prompt)\s*[:：]\s*", "", out, flags=re.I)
         if not out:
             raise RuntimeError("LLM 没有返回内容（请稍后重试）")
-        return out
+        # 实际输出是中文就不给译文（中文无需翻译，也避免误把译文中的中文当提示词语言）
+        if re.search(r"[\u4e00-\u9fff]", out):
+            translation = ""
+        return {"text": out, "translation": translation}
 
 
 # ────────────────────────────────────────────────────────────────── #
