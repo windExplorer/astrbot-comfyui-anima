@@ -847,6 +847,10 @@ class StandaloneWebUI:
         if path.startswith("/quota/"):
             return await self._api_quota(path, request, q)
 
+        # ---------- 会话管理（v7.11.0，复用 WebUIApi 实现，两通道同口径） ----------
+        if path == "/sessions" or path.startswith("/sessions/"):
+            return await self._api_lora_translate(path, request)
+
         # ---------- token 用量 ----------
         if path.startswith("/token/"):
             return await self._api_token(path, request, tok)
@@ -1325,6 +1329,12 @@ class StandaloneWebUI:
             "/basemodels/delete": ("basemodels_delete", "POST"),
             "/basemodels/reseed": ("basemodels_reseed", "POST"),
             "/size_tiers": ("size_tiers", "GET"),
+            "/sessions": ("session_list", "GET"),
+            "/sessions/set": ("session_set", "POST"),
+            "/sessions/delete": ("session_delete", "POST"),
+            "/sessions/reset": ("session_reset", "POST"),
+            "/sessions/reset_usage": ("session_reset_usage", "POST"),
+            "/sessions/sync": ("session_sync_contacts", "POST"),
             "/options/list": ("options_list", "GET"),
             "/options/save": ("options_save", "POST"),
             "/options/delete": ("options_delete", "POST"),

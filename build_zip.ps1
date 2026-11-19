@@ -65,6 +65,7 @@ $includeList = @(
     "prompt_guard.py",
     "story_store.py",
     "quota_store.py",
+    "session_store.py",
     "oplog_store.py",
     "platform_store.py",
     "nai_client.py",

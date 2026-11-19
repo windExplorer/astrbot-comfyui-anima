@@ -46,6 +46,11 @@ from urllib.parse import quote, urlparse
 
 from astrbot.api.web import error_response, file_response, json_response, request
 
+try:
+    from . import session_store
+except ImportError:  # 非包环境（独立测试）
+    import session_store
+
 # 模块级 logger（v6.1.1）：此前本文件多处用了 `logger.`（如平台测试入库失败分支），
 # 但**从未定义** —— 一旦走到那些 except 分支就会 NameError，把原始错误盖掉。
 # 测试环境（桩掉 astrbot.api.web）没有 astrbot 包，回退标准 logging。
@@ -813,6 +818,243 @@ class WebUIApi:
             return json_response({"ok": ok, "reset_user": user_id})
         except Exception as e:
             return error_response(f"重置生图次数失败: {e}")
+
+    # -------------------------------------------------------------- #
+    # 会话管理（v7.11.0）：会话列表 / 覆盖配置 / 会话限额 / 联系人同步
+    # -------------------------------------------------------------- #
+    def _sessions(self):
+        return getattr(self.plugin, "sessions", None)
+
+    async def session_list(self):
+        """会话全量列表：会话表底表 + 图库历史会话 + 插件伪会话合并。"""
+        st = self._sessions()
+        if st is None:
+            return error_response("会话管理未初始化")
+        try:
+            rows = st.list_all()
+            by_origin: dict[str, dict] = {r["origin"]: r for r in rows}
+            stats = st.history_stats()
+
+            # 历史里有、但会话表未登记的会话（图库里出过图但没走新版登记）
+            for origin, s in stats.items():
+                if origin in by_origin:
+                    continue
+                p = session_store.parse_origin(origin) if not origin.startswith("plugin:") else {}
+                is_plugin = bool(s.get("is_plugin"))
+                by_origin[origin] = {
+                    "origin": origin,
+                    "name": (s.get("plugin_name") if is_plugin else "") or s.get("group_name") or "",
+                    "is_group": int(p.get("is_group", False)),
+                    "group_id": p.get("group_id", ""),
+                    "user_id": p.get("user_id", "") or (origin if is_plugin else ""),
+                    "last_active": s.get("last_draw", 0) or 0,
+                    "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
+                    "max_total": None, "max_hour": None, "max_day": None,
+                    "nsfw": None, "card": None, "enabled": None, "note": "",
+                }
+
+            # 当前会话内存记忆（v5.13.6，重启丢失；WebUI 里标注来源）
+            mem: dict[str, str] = {}
+            try:
+                try:
+                    from .main import g_session_workflow
+                except ImportError:
+                    from main import g_session_workflow
+                mem = dict(g_session_workflow or {})
+            except Exception:
+                pass
+
+            def _wf_now(origin: str, is_i2i: bool) -> dict:
+                sc = by_origin.get(origin) or {}
+                pin_key = "pin_i2i" if is_i2i else "pin_t2i"
+                wf_key = "wf_i2i" if is_i2i else "wf_t2i"
+                pinned = bool(sc.get(pin_key))
+                name = str(sc.get(wf_key) or "").strip()
+                source = "会话设置"
+                if not name and not is_i2i:
+                    name = str(mem.get(origin, "") or "").strip()
+                    if name:
+                        source = "对话记忆"
+                if not name:
+                    try:
+                        name = str(self.plugin._pick_default_workflow_name(is_i2i) or "").strip()
+                    except Exception:
+                        name = ""
+                    source = "全局默认"
+                if pinned:
+                    source = "固定"
+                return {"name": name, "pinned": pinned, "source": source}
+
+            out: list[dict] = []
+            for origin, sc in by_origin.items():
+                s = stats.get(origin, {})
+                usage = st.get_usage(origin)
+                is_plugin = bool(s.get("is_plugin")) or origin.startswith("plugin:")
+                item = dict(sc)
+                item.update({
+                    "is_plugin": is_plugin,
+                    "plugin_name": s.get("plugin_name", ""),
+                    "draw_total": int(s.get("draw_total", 0) or 0),
+                    "draw_today": int(s.get("draw_today", 0) or 0),
+                    "last_draw": float(s.get("last_draw", 0) or 0),
+                    "recent_workflow": s.get("recent_workflow", ""),
+                    "recent_i2i_workflow": s.get("recent_i2i_workflow", ""),
+                    "usage": usage,
+                    "wf_now_t2i": _wf_now(origin, False),
+                    "wf_now_i2i": _wf_now(origin, True),
+                })
+                out.append(item)
+            out.sort(key=lambda x: (float(x.get("last_active") or 0), float(x.get("last_draw") or 0)), reverse=True)
+
+            try:
+                workflows = [
+                    {"name": str(w.get("name") or "").strip(), "enabled": bool(w.get("enabled", True))}
+                    for w in (self.plugin._workflows() or [])
+                    if str(w.get("name") or "").strip()
+                ]
+            except Exception:
+                workflows = []
+            meta = st.get_meta("contacts", {}) or {}
+            return json_response({
+                "sessions": out,
+                "workflows": workflows,
+                "contacts": meta,
+                "defaults": {
+                    "t2i": str(self.plugin._pick_default_workflow_name(False) or ""),
+                    "i2i": str(self.plugin._pick_default_workflow_name(True) or ""),
+                    "quota_global": self.plugin._draw_limit_cfg(),
+                },
+            })
+        except Exception as e:
+            return error_response(f"读取会话列表失败: {e}")
+
+    async def session_set(self):
+        """设置会话覆盖配置。body: {origin, name?, wf_t2i?, pin_t2i?, max_total?, nsfw?, ...}"""
+        st = self._sessions()
+        if st is None:
+            return error_response("会话管理未初始化")
+        try:
+            body = await request.json(default={}) or {}
+            origin = str(body.get("origin") or "").strip()
+            if not origin:
+                return error_response("缺少 origin")
+            fields = {k: body[k] for k in (
+                "wf_t2i", "wf_i2i", "pin_t2i", "pin_i2i",
+                "max_total", "max_hour", "max_day", "nsfw", "card", "enabled", "note",
+            ) if k in body}
+            if fields:
+                st.set_config(origin, fields)
+            if "name" in body:
+                st.upsert(origin, name=str(body.get("name") or ""))
+            return json_response({"ok": True, "session": st.get(origin)})
+        except Exception as e:
+            return error_response(f"保存会话配置失败: {e}")
+
+    async def session_delete(self):
+        """删除会话记录及其会话限额用量（不影响图库/用户限额历史）。"""
+        st = self._sessions()
+        if st is None:
+            return error_response("会话管理未初始化")
+        try:
+            body = await request.json(default={}) or {}
+            origin = str(body.get("origin") or "").strip()
+            if not origin:
+                return error_response("缺少 origin")
+            ok = st.delete(origin)
+            return json_response({"ok": ok})
+        except Exception as e:
+            return error_response(f"删除会话失败: {e}")
+
+    async def session_reset(self):
+        """把会话所有覆盖配置清回「跟随全局」。"""
+        st = self._sessions()
+        if st is None:
+            return error_response("会话管理未初始化")
+        try:
+            body = await request.json(default={}) or {}
+            origin = str(body.get("origin") or "").strip()
+            if not origin:
+                return error_response("缺少 origin")
+            st.reset_config(origin)
+            return json_response({"ok": True, "session": st.get(origin)})
+        except Exception as e:
+            return error_response(f"重置会话配置失败: {e}")
+
+    async def session_reset_usage(self):
+        """清零某会话的会话限额用量（用户限额不受影响）。"""
+        st = self._sessions()
+        if st is None:
+            return error_response("会话管理未初始化")
+        try:
+            body = await request.json(default={}) or {}
+            origin = str(body.get("origin") or "").strip()
+            if not origin:
+                return error_response("缺少 origin")
+            return json_response({"ok": st.reset_usage(origin)})
+        except Exception as e:
+            return error_response(f"重置会话用量失败: {e}")
+
+    async def session_sync_contacts(self):
+        """从 aiocqhttp(OneBot v11) 拉取全量好友/群，登记为已知会话底表。
+
+        与语音插件会话页同口径：只做快照、不实时打 OneBot；失败逐平台记录。
+        """
+        st = self._sessions()
+        if st is None:
+            return error_response("会话管理未初始化")
+        try:
+            import asyncio as _aio
+            ctx = getattr(self.plugin, "context", None)
+            pm = getattr(ctx, "platform_manager", None)
+            insts = list(getattr(pm, "platform_insts", []) or [])
+            platforms = []
+            for p in insts:
+                try:
+                    if str(getattr(p.meta(), "name", "") or "") == "aiocqhttp":
+                        platforms.append(p)
+                except Exception:
+                    continue
+            if not platforms:
+                return json_response({"ok": False, "error": "未发现 aiocqhttp 平台（仅支持 OneBot v11 拉取联系人）"})
+            friends = 0
+            groups = 0
+            errors: list[str] = []
+            for p in platforms:
+                try:
+                    bot = p.get_client()
+                except Exception as e:
+                    errors.append(f"平台客户端获取失败: {e}")
+                    continue
+                for action, is_group in (("get_friend_list", False), ("get_group_list", True)):
+                    try:
+                        raw = await _aio.wait_for(bot.call_action(action), timeout=15.0)
+                    except Exception as e:
+                        errors.append(f"{action} 失败: {e}")
+                        continue
+                    if not isinstance(raw, list):
+                        continue
+                    for it in raw:
+                        if not isinstance(it, dict):
+                            continue
+                        _id = str(it.get("group_id") if is_group else (it.get("user_id") or it.get("uin")) or "").strip()
+                        if not _id:
+                            continue
+                        origin = f"aiocqhttp:{'GroupMessage' if is_group else 'FriendMessage'}:{_id}"
+                        name = str(it.get("group_name") if is_group else (it.get("remark") or it.get("nickname")) or "").strip()
+                        st.upsert(origin, name=name)
+                        if is_group:
+                            groups += 1
+                        else:
+                            friends += 1
+            meta = {
+                "synced_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "friends": friends, "groups": groups,
+                "platforms": len(platforms), "error": "；".join(errors)[:300],
+            }
+            st.set_meta("contacts", meta)
+            return json_response({"ok": True, **meta})
+        except Exception as e:
+            return error_response(f"同步联系人失败: {e}")
 
     # -------------------------------------------------------------- #
     # LLM token 用量统计
@@ -3968,6 +4210,13 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/quota/config", _h("quota_save_config"), ["POST"], "生图限额配置保存"),
         (f"{prefix}/quota/save_global", _h("quota_save_global"), ["POST"], "生图全局限额保存"),
         (f"{prefix}/quota/reset", _h("quota_reset"), ["POST"], "生图次数重置"),
+        # 会话管理（v7.11.0）
+        (f"{prefix}/sessions", _h("session_list"), ["GET"], "会话管理列表"),
+        (f"{prefix}/sessions/set", _h("session_set"), ["POST"], "会话覆盖配置保存"),
+        (f"{prefix}/sessions/delete", _h("session_delete"), ["POST"], "会话记录删除"),
+        (f"{prefix}/sessions/reset", _h("session_reset"), ["POST"], "会话配置恢复跟随全局"),
+        (f"{prefix}/sessions/reset_usage", _h("session_reset_usage"), ["POST"], "会话限额用量清零"),
+        (f"{prefix}/sessions/sync", _h("session_sync_contacts"), ["POST"], "同步 OneBot 联系人"),
         (f"{prefix}/token/summary", _h("token_summary"), ["GET"], "LLM token 用量统计"),
         (f"{prefix}/token/reset", _h("token_reset"), ["POST"], "LLM token 统计重置"),
         (f"{prefix}/lora/fetch", _h("lora_fetch"), ["POST"], "C站 LoRA 抓取 / 任意图片直链下载封面"),

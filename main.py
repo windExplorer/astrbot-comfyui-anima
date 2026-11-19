@@ -733,6 +733,11 @@ except ImportError:
     import quota_store
 
 try:
+    from . import session_store
+except ImportError:
+    import session_store
+
+try:
     from . import character
 except ImportError:
     import character
@@ -1915,6 +1920,16 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 生图限额初始化失败（功能不可用）: {e}", exc_info=True)
 
+        # 会话管理（v7.11.0）：独立 SQLite（sessions.db）维护会话维度的固定工作流 /
+        # 限额 / NSFW / 卡片 / 启停覆盖配置与会话级用量计数。与 quota_store 并存：
+        # 用户限额照旧，会话限额是额外一层（仅显式配置的会话生效）。
+        self.sessions = None
+        try:
+            self.sessions = session_store.SessionStore(self.data_dir)
+            logger.info(f"【初始化】 会话管理已就绪: {self.sessions.db_path}")
+        except Exception as e:
+            logger.warning(f"【初始化】 会话管理初始化失败（功能不可用）: {e}", exc_info=True)
+
         # 角色卡片：独立 SQLite（character.db）维护角色 / 锚点 / 参考图，
         # 解决「模型/LoRA/danbooru 都找不到某角色」与「角色设定每轮漂移」的问题。
         self.character = None
@@ -2037,7 +2052,7 @@ class ComfyUIDrawPlugin(Star):
                 "workflow_store",
                 "option_store",
                 "story_store",
-                "quota_store", "oplog_store", "token_store",
+                "quota_store", "session_store", "oplog_store", "token_store",
                 "nsfw_detector", "translate_client",
             ):
                 try:
@@ -5334,6 +5349,14 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             pass
         g_session_workflow[_sid] = _name
+        # v7.11.0：同步落到会话管理表，WebUI 会话页即时可见；已固定的会话不被对话改写
+        try:
+            if getattr(self, "sessions", None) is not None:
+                _cfg = self.sessions.get(_sid) or {}
+                if not _cfg.get("pin_t2i"):
+                    self.sessions.set_config(_sid, {"wf_t2i": _name})
+        except Exception:
+            pass
         logger.info(f"【绘图·解析】 会话工作流记忆更新：session={_sid} -> 「{_name}」")
 
     def _get_session_workflow(self, session_id: str) -> str:
@@ -5409,6 +5432,7 @@ class ComfyUIDrawPlugin(Star):
         explicit_default: bool = False,
         intercept_disabled: bool = False,
         session_id: str = "",
+        apply_session_pin: bool = False,
     ) -> dict:
         """解析工作流配置。is_img2img=True 时优先用图生图默认工作流。
 
@@ -5432,6 +5456,19 @@ class ComfyUIDrawPlugin(Star):
         workflows = self._workflows()
         if not workflows:
             raise ValueError("未配置任何工作流，请先在插件配置中添加。")
+        # v7.11.0：会话「固定工作流」优先级最高——一旦固定，聊天/LLM 指定的名字
+        # 一律忽略（只有绘图真正入口 _do_draw 传 apply_session_pin=True 才生效，
+        # 校验类调用不受影响）。
+        if apply_session_pin and session_id and getattr(self, "sessions", None) is not None:
+            try:
+                _pin = self.sessions.pinned_workflow(session_id, is_img2img)
+                if _pin:
+                    if name and name.strip().lower() != _pin.lower():
+                        logger.info(f"【绘图·解析】 会话固定工作流生效：忽略请求的工作流 {name!r}，强制 {_pin!r}")
+                    name = _pin
+                    explicit_default = True
+            except Exception as _pe:
+                logger.debug(f"【绘图·解析】 会话固定工作流读取失败: {_pe}")
         if name:
             # 0) 先按「工作流别名」把外部传入名映射为真实工作流名
             alias_target = self._alias_workflow_name(name)
@@ -5439,10 +5476,19 @@ class ComfyUIDrawPlugin(Star):
                 name = alias_target
         if not name:
             if not explicit_default and session_id:
-                _mem = self._get_session_workflow(session_id)
-                if _mem:
-                    name = _mem
-                    logger.info(f"【绘图·解析】 未指定工作流，沿用本会话最近显式指定的文生图工作流={name}")
+                # 会话手动设置的工作流（未固定也能作为本会话默认）；文生图再回退
+                # 到旧的内存记忆（v5.13.6），图生图历史上不入记忆，直接用会话值。
+                _swf = ""
+                if getattr(self, "sessions", None) is not None:
+                    try:
+                        _swf = self.sessions.session_workflow(session_id, is_img2img)
+                    except Exception:
+                        _swf = ""
+                if not _swf and not is_img2img:
+                    _swf = self._get_session_workflow(session_id)
+                if _swf:
+                    name = _swf
+                    logger.info(f"【绘图·解析】 未指定工作流，沿用本会话设置的工作流={name}")
             if not name:
                 name = self._pick_default_workflow_name(is_img2img)
                 logger.info(
@@ -6174,6 +6220,10 @@ class ComfyUIDrawPlugin(Star):
     def _card_would_send(self, event, state: str) -> bool:
         """预计这次会不会发卡（用于决定是否还把报告文字并进配文，避免同一信息出现两次）。"""
         try:
+            # 会话级覆盖优先（NULL=跟随全局）
+            _scard = self._session_card(event)
+            if _scard is not None:
+                return bool(_scard)
             cfg = self._card_cfg()
             if not cfg.get("enabled", True):
                 return False
@@ -7317,7 +7367,11 @@ class ComfyUIDrawPlugin(Star):
 
         命中 → 群聊不再拦截 NSFW 图，正常发出；留空/未命中 → 按原策略拦截。
         私聊永远放行（调用方已用 _is_private_event 排除，不进本判断）。
+        v7.11.0：会话级 NSFW 开关优先于全局白名单（NULL=跟随全局）。
         """
+        _snsfw = self._session_nsfw(event)
+        if _snsfw is not None:
+            return bool(_snsfw)
         try:
             raw = str(
                 self._permissions_cfg().get("nsfw_group_whitelist", "") or ""
@@ -7342,6 +7396,14 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             return False
         return gid in allowed
+
+    def _nsfw_session_denied(self, event) -> bool:
+        """会话显式设为「禁止 NSFW」时为 True；此时私聊也应拦截。
+
+        全局的 nsfw_group_whitelist 只覆盖群聊（私聊默认放行），会话级禁止是
+        更严格的显式声明，故单独拦一道。
+        """
+        return self._session_nsfw(event) == 0
 
     def _nsfw_should_detect(self, event) -> bool:
         """是否需要对本图做 NSFW 检测：群聊一律检测（发送拦截），私聊仅在图库
@@ -7798,8 +7860,8 @@ class ComfyUIDrawPlugin(Star):
             # 群聊 NSFW 拦截（检测结果已在发送前跑过一次，这里直接复用判定）
             # 白名单内的群放行（nsfw_group_whitelist）。
             if (
-                not self._is_private_event(event)
-                and not self._nsfw_group_allowed(event)
+                ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                 or self._nsfw_session_denied(event))
                 and _nsfw_pre
                 and _nsfw_pre[0]
             ):
@@ -8271,6 +8333,17 @@ class ComfyUIDrawPlugin(Star):
             user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
             user_name_fn = getattr(event, "get_sender_name", None) if event is not None else None
             user_name = (user_name_fn() if callable(user_name_fn) else "") or ""
+        # v7.11.0：会话级启停（等价于具象化的黑/白名单）。优先级高于用户白名单：
+        # 管理员在会话页显式关掉某会话后，该会话一律不再出图；未配置/NULL 不受影响。
+        # 在线生图工作台（管理端）不受此约束。
+        if not (external and str(source or "").strip() == SOURCE_WEBUI_STUDIO):
+            try:
+                if getattr(self, "sessions", None) is not None and self.sessions.is_disabled(_session_id):
+                    logger.info(f"【绘图·解析】 会话已被禁用：session={_session_id or '(unknown)'} user={user_id}")
+                    await self._send(event, "本会话已被管理员禁用生图功能，请联系管理员。")
+                    return
+            except Exception:
+                pass
         # 绘图权限总闸（白名单优先，再黑名单）。白名单启用时只看白名单，
         # 未启用/空则走黑名单。两者互斥：白名单内用户即便在黑名单也放行。
         # v7.9.0：在线生图工作台（WebUI 控制台）放行——控制台有独立访问口令，
@@ -8359,6 +8432,7 @@ class ComfyUIDrawPlugin(Star):
                 explicit_default=explicit_default,
                 intercept_disabled=bool(workflow_name and workflow_name.strip()),
                 session_id=getattr(event, "session_id", "") or "",
+                apply_session_pin=True,
             )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
@@ -10012,8 +10086,8 @@ class ComfyUIDrawPlugin(Star):
                         else:
                             _nsfw_log = "(检测不可用)" if not _nsfw_avail else "(无分数)"
                         if (
-                            not self._is_private_event(event)
-                            and not self._nsfw_group_allowed(event)
+                            ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                             or self._nsfw_session_denied(event))
                             and _is_nsfw
                         ):
                             _sc = f"（置信度 {_nsfw_score:.2f}）" if isinstance(_nsfw_score, (int, float)) else ""
@@ -11638,8 +11712,9 @@ class ComfyUIDrawPlugin(Star):
                     _is_nsfw, _score, _avail = _nsfw_pre
                     # v7.7.27：补上 NSFW 群白名单（_nsfw_group_allowed）——出图/取图链路
                     # 一直有查，放大此前漏了，白名单内的群也被拦截
-                    if (_is_nsfw and not self._is_private_event(event)
-                            and not self._nsfw_group_allowed(event)):
+                    if (_is_nsfw and (
+                            (not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                            or self._nsfw_session_denied(event))):
                         _blocked = True
                         _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
                         logger.warning(f"【NSFW】 放大结果被群聊拦截{_sc} workflow={_wfname}")
@@ -12352,8 +12427,9 @@ class ComfyUIDrawPlugin(Star):
                 if _nsfw_pre is not None:
                     _is_nsfw, _score, _avail = _nsfw_pre
                     # v7.7.27：补上 NSFW 群白名单（与出图/放大链路同口径）
-                    if (_is_nsfw and not self._is_private_event(event)
-                            and not self._nsfw_group_allowed(event)):
+                    if (_is_nsfw and (
+                            (not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                            or self._nsfw_session_denied(event))):
                         _blocked = True
                         _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""
                         logger.warning(f"【NSFW】 抠图结果被群聊拦截{_sc} workflow={_wfname}")
@@ -14186,6 +14262,72 @@ class ComfyUIDrawPlugin(Star):
         return True, ""
 
     # ------------------------------------------------------------------ #
+    # 会话管理（v7.11.0）：会话维度的固定工作流 / 覆盖配置助手
+    # ------------------------------------------------------------------ #
+    def _session_id_of(self, event) -> str:
+        return (getattr(event, "session_id", "") or "") if event is not None else ""
+
+    def _session_cfg(self, event) -> dict | None:
+        sid = self._session_id_of(event)
+        if not sid or getattr(self, "sessions", None) is None:
+            return None
+        try:
+            return self.sessions.get(sid)
+        except Exception:
+            return None
+
+    def _session_remember_draw(self, event) -> None:
+        """出图后登记会话底表（名字 / 群私 / 活跃时间），不写任何覆盖配置。"""
+        sid = self._session_id_of(event)
+        if not sid or getattr(self, "sessions", None) is None:
+            return
+        try:
+            name = ""
+            get_g = getattr(event, "get_group_name", None)
+            if callable(get_g):
+                name = str(get_g() or "").strip()
+            if not name:
+                get_n = getattr(event, "get_sender_name", None)
+                if callable(get_n):
+                    name = str(get_n() or "").strip()
+            self.sessions.upsert(
+                sid,
+                name=name,
+                last_active=time.time(),
+                group_id=(str(getattr(event, "get_group_id", lambda: "")() or "")),
+                user_id=(str(getattr(event, "get_sender_id", lambda: "")() or "")),
+            )
+        except Exception:
+            pass
+
+    def _session_pinned_workflow(self, event, is_img2img: bool) -> str:
+        sid = self._session_id_of(event)
+        if not sid or getattr(self, "sessions", None) is None:
+            return ""
+        try:
+            return self.sessions.pinned_workflow(sid, is_img2img)
+        except Exception:
+            return ""
+
+    def _session_nsfw(self, event) -> int | None:
+        cfg = self._session_cfg(event)
+        if not cfg or cfg.get("nsfw") is None:
+            return None
+        try:
+            return int(cfg["nsfw"])
+        except (TypeError, ValueError):
+            return None
+
+    def _session_card(self, event) -> int | None:
+        cfg = self._session_cfg(event)
+        if not cfg or cfg.get("card") is None:
+            return None
+        try:
+            return int(cfg["card"])
+        except (TypeError, ValueError):
+            return None
+
+    # ------------------------------------------------------------------ #
     # 生图次数限制（配额）
     # ------------------------------------------------------------------ #
     def _draw_limit_cfg(self) -> dict:
@@ -14222,13 +14364,25 @@ class ComfyUIDrawPlugin(Star):
 
         管理员（且 admin_exempt 开启时）与未识别到 user_id 的用户不受限；
         -1 表示该项不限。任一维度超限则拒绝。
+        v7.11.0：会话限额与全局开关独立——只要该会话显式配置了 max_* 就生效，
+        即使全局 draw_limit.enabled=false（全局默认「跟随」不会被误改）。
         """
+        # 管理员豁免（对会话限额同样生效）
+        if self._draw_limit_cfg().get("admin_exempt", False) and self._is_admin(event):
+            return True, ""
+        _sid = self._session_id_of(event)
+        # 会话限额：额外一层，与用户限额并存
+        if _sid and getattr(self, "sessions", None) is not None:
+            try:
+                if self.sessions.has_quota_config(_sid):
+                    _sok, _sreason = self.sessions.check_quota(_sid)
+                    if not _sok:
+                        return False, _sreason
+            except Exception:
+                pass
         if self.quota is None or not self._quota_enabled():
             return True, ""
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
-        # 管理员豁免
-        if self._draw_limit_cfg().get("admin_exempt", False) and self._is_admin(event):
-            return True, ""
         # 未识别到用户：无法计数，跳过限制（避免误伤）
         if not user_id:
             return True, ""
@@ -14280,7 +14434,16 @@ class ComfyUIDrawPlugin(Star):
 
         无论 draw_limit.enabled 是否开启都记录，这样「限额」页总能显示每个用户的
         真实生图数量；enabled 只控制是否触发「限制」。
+        v7.11.0：会话用量与会话底表登记独立于用户限额——即使 quota_store 不可用
+        或无 user_id，会话页的统计/活跃时间也要正常更新。
         """
+        _sid = self._session_id_of(event)
+        if _sid and getattr(self, "sessions", None) is not None:
+            try:
+                self.sessions.record_usage(_sid)
+                self._session_remember_draw(event)
+            except Exception:
+                pass
         if self.quota is None:
             return
         user_id = (getattr(event, "get_sender_id", lambda: "")() or "") if event is not None else ""
@@ -14769,8 +14932,8 @@ class ComfyUIDrawPlugin(Star):
             # 跨群取图（如「把初音未来那张发我」）同样受此约束，避免涩图外泄到群。
             if (
                 row.get("nsfw")
-                and not self._is_private_event(event)
-                and not self._nsfw_group_allowed(event)
+                and ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                     or self._nsfw_session_denied(event))
             ):
                 _score = row.get("nsfw_score")
                 _sc = f"（置信度 {_score:.2f}）" if isinstance(_score, (int, float)) else ""

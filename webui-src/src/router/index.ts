@@ -10,6 +10,7 @@ import BaseWorkflowsView from "@/views/BaseWorkflowsView.vue";
 import PlatformsView from "@/views/PlatformsView.vue";
 import GalleryView from "@/views/GalleryView.vue";
 import QuotaView from "@/views/QuotaView.vue";
+import SessionView from "@/views/SessionView.vue";
 import TokenView from "@/views/TokenView.vue";
 import ShareView from "@/views/ShareView.vue";
 import ShareManageView from "@/views/ShareManageView.vue";
@@ -41,6 +42,7 @@ const router = createRouter({
     { path: "/platforms", name: "platforms", component: PlatformsView, meta: { title: "生图平台" } },
     { path: "/gallery", name: "gallery", component: GalleryView, meta: { title: "图库" } },
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
+    { path: "/sessions", name: "sessions", component: SessionView, meta: { title: "会话管理" } },
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },
     { path: "/share-manage", name: "share-manage", component: ShareManageView, meta: { title: "分享管理" } },
     { path: "/share", name: "share", component: ShareView, meta: { title: "萌绘分享", public: true } },

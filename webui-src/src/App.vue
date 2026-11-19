@@ -160,6 +160,7 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/platforms" }, { default: () => "生图平台" }), key: "platforms", icon: () => iconSvg("🌐") },
   { label: () => h(RouterLink, { to: "/gallery" }, { default: () => "图库" }), key: "gallery", icon: () => iconSvg("🖼️") },
   { label: () => h(RouterLink, { to: "/quota" }, { default: () => "限额" }), key: "quota", icon: () => iconSvg("🚦") },
+  { label: () => h(RouterLink, { to: "/sessions" }, { default: () => "会话管理" }), key: "sessions", icon: () => iconSvg("💬") },
   { label: () => h(RouterLink, { to: "/token" }, { default: () => "Token" }), key: "token", icon: () => iconSvg("🔑") },
   { label: () => h(RouterLink, { to: "/share-manage" }, { default: () => "分享管理" }), key: "share-manage", icon: () => iconSvg("🔗") },
   { label: () => h(RouterLink, { to: "/story" }, { default: () => "剧情档案" }), key: "story", icon: () => iconSvg("🎬") },
