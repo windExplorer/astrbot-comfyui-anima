@@ -34,7 +34,7 @@ class _Resp:
         self.usage = None
 
 
-def _fake_manager(output, style="danbooru"):
+def _fake_manager(output, style="danbooru", fallback=False):
     class _Ctx:
         last_prompt = ""
 
@@ -59,6 +59,10 @@ def _fake_manager(output, style="danbooru"):
 
         def _record_llm_token(self, *a, **kw):
             pass
+
+        if fallback:
+            async def _translate_to_chinese_llm(self, text):
+                return "兜底译文"
 
     mgr = studio_api.StudioManager.__new__(studio_api.StudioManager)
     mgr.plugin = _Plugin()
@@ -94,6 +98,21 @@ async def main():
     mgr, _ = _fake_manager("1girl\n===ZH===\n  中文译文：  一个女孩  ")
     r = await mgr.ai_imagine("", "wf1")
     check("译文前缀清理", r["translation"] == "一个女孩", repr(r))
+
+    # 6. 英文标签里夹少量中文角色名，不该把译文误清空（v7.10.4 汉字占比判定）
+    mgr, _ = _fake_manager("1girl, 初音未来, long hair\n===ZH===\n一个长发女孩")
+    r = await mgr.ai_imagine("", "wf1")
+    check("夹中文角色名仍保留译文", r["translation"] == "一个长发女孩", repr(r))
+
+    # 7. LLM 没写分隔符但有兜底翻译方法 → 补调一次，保证英文提示词一定有译文
+    mgr, _ = _fake_manager("1boy, solo, white shirt", fallback=True)
+    r = await mgr.ai_imagine("", "wf1")
+    check("无分隔符时兜底出译文", r["translation"] == "兜底译文", repr(r))
+
+    # 8. 中文提示词即使带兜底方法也不翻译
+    mgr, _ = _fake_manager("一个女孩站在樱花树下，微风吹过长发", style="qwen", fallback=True)
+    r = await mgr.ai_imagine("", "wf1")
+    check("中文提示词不触发兜底", r["translation"] == "", repr(r))
 
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 1 if _fail else 0

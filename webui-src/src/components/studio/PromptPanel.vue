@@ -24,6 +24,14 @@
       @update:value="(v: string) => emit('update:positive', v)"
     />
 
+    <!-- v7.10.4：想画面译文独立提示条——紧贴输入框，生成后一眼可见（不再挤工具条） -->
+    <div v-if="canShowImagineTranslation" class="pp-imagine-zh-bar">
+      <span class="pp-zh-bar-text">🎲 刚生成的英文提示词，可看中文意思</span>
+      <n-button size="tiny" type="primary" ghost @click="imagineZhShow = true">
+        🇨🇳 看译文
+      </n-button>
+    </div>
+
     <!-- 工具条：左侧 AI/模板/清空/计数，右侧润色开关+开始生图（聊天窗口式） -->
     <div class="pp-toolbar">
       <div class="pp-left">
@@ -61,15 +69,6 @@
           多角色 / 动漫或游戏角色 / 风景城市等等）。输入框有内容时作为灵感参考，
           留空则完全自由发挥
         </n-tooltip>
-        <!-- v7.10.3：英文提示词才有译文（生成时一次 LLM 顺带产出），点击查看不额外调接口 -->
-        <n-button
-          v-if="canShowImagineTranslation"
-          size="small"
-          quaternary
-          @click="imagineZhShow = true"
-        >
-          🇨🇳 看译文
-        </n-button>
         <!-- v7.9.7：润色是即用即点的动作按钮——点一下就按当前工作流风格自动选方式
              （扩写/翻译/改写/编辑指令）就地改写输入框文本，无任何隐藏的提交后加工 -->
         <n-tooltip trigger="hover" placement="bottom-end">
@@ -237,11 +236,13 @@ async function runImagine() {
       emit("update:positive", d.text);
       imaginedPrompt.value = d.text.trim();
       imaginedTranslation.value = (d.translation || "").trim();
-      message.success(
-        imaginedTranslation.value
-          ? "AI 已想好一个画面；点「看译文」可查看中文意思"
-          : "AI 已想好一个画面，可继续修改或直接开始生图"
-      );
+      if (imaginedTranslation.value) {
+        message.success("AI 已想好英文画面；点输入框下方的「看译文」看中文意思");
+      } else if (/[\u4e00-\u9fff]/.test(d.text)) {
+        message.success("AI 已想好一个中文画面（中文提示词无需译文）");
+      } else {
+        message.warning("AI 已想好一个画面，但本次未附带译文");
+      }
     } else {
       aiError.value = "AI 没有返回内容";
     }
@@ -325,6 +326,14 @@ function appendTemplate(t: StudioTemplate) {
   border-radius: 8px;
   padding: 6px 10px;
 }
+/* v7.10.4：想画面译文独立提示条（紧贴输入框，避免淹没在工具条里） */
+.pp-imagine-zh-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 10px; border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.pp-zh-bar-text { font-size: 11px; color: var(--text-sub); }
 /* v7.10.3：想画面译文弹窗 */
 .pp-zh-hint { margin: 0 0 14px; font-size: 12px; color: var(--text-sub); line-height: 1.6; }
 .pp-zh-label { font-size: 12px; font-weight: 600; color: var(--text-sub); margin-bottom: 6px; }

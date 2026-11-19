@@ -1211,10 +1211,11 @@ class StudioManager:
             "你是顶级的 AI 绘画提示词创作师。请为用户创作一幅画面的提示词。\n"
             f"{bm_line}{fmt}\n"
             f"{subject}\n"
-            "如果上面要求输出英文提示词：在提示词正文之后另起一行写 ===ZH===，"
-            "再用 1~2 句通顺中文说明这幅画画了什么（只描述画面，不要逐条复述标签名）。\n"
-            "如果提示词本身是中文：不要写分隔符、不要写译文。\n"
-            "除提示词正文与上述可选译文外，不要任何前后缀说明。"
+            "【输出格式·必须严格遵守】只输出以下两段，不要任何其它说明：\n"
+            "第 1 段：提示词正文。\n"
+            "第 2 段：若第 1 段是英文——在正文之后另起一行原样写上分隔符 ===ZH===，"
+            "紧接着写 1~2 句通顺中文说明画面（只描述画面，不逐条复述标签名）；"
+            "若第 1 段是中文——不要写分隔符、不要写译文。\n"
         )
         provider_id = plugin._resolve_translate_provider_id()
         if not provider_id:
@@ -1247,9 +1248,19 @@ class StudioManager:
         out = re.sub(r"^\s*(提示词|prompt)\s*[:：]\s*", "", out, flags=re.I)
         if not out:
             raise RuntimeError("LLM 没有返回内容（请稍后重试）")
-        # 实际输出是中文就不给译文（中文无需翻译，也避免误把译文中的中文当提示词语言）
-        if re.search(r"[\u4e00-\u9fff]", out):
+        # 判断提示词语言用「汉字占比」而非「含任一汉字」：英文标签里偶带中文角色名
+        # （如 hatsune miku 写成「初音未来」）不该让译文被误清空。
+        cn = len(re.findall(r"[\u4e00-\u9fff]", out))
+        is_cn = cn >= 2 and cn / max(len(out), 1) > 0.30
+        if is_cn:
             translation = ""
+        elif not translation and hasattr(plugin, "_translate_to_chinese_llm"):
+            # v7.10.4 兜底：LLM 没按格式给译文时补调一次翻译，保证英文提示词一定有译文可看。
+            # 正常遵守格式时不走这里，不额外耗额度。
+            try:
+                translation = await plugin._translate_to_chinese_llm(out)
+            except Exception:
+                translation = ""
         return {"text": out, "translation": translation}
 
 
