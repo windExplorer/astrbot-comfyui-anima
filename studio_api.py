@@ -1139,17 +1139,20 @@ class StudioManager:
             )
         return out
 
-    async def ai_imagine(self, hint: str, workflow_name: str) -> dict:
+    async def ai_imagine(self, hint: str, workflow_name: str, detail: bool = False) -> dict:
         """🎲 AI 想画面：按所选工作流底模的提示词格式**自由创作**一幅画面的提示词。
 
         - 格式跟随底模 prompt_style：danbooru→英文标签；natural→自然语言
           （语言按 priority_lang）；qwen→中文描述式。
+        - detail=True 时要求生成数百至上千字的丰富提示词（多维度层层展开），
+          默认关闭保持简洁；详细模式自动放宽 LLM 超时。
         - hint 非空 = 围绕用户的想法创作；为空 = AI 自由发挥
           （每次随机抽一个题材建议，重复点击画面不重样）。
         - 返回 {"text": 提示词, "translation": 中文译文或 ""}：英文提示词时在同一次
           LLM 输出里用 ===ZH=== 分隔顺带产出译文（省一次翻译调用）；中文提示词不含译文。
         - LLM 调用与 token 入账与聊天侧同款（_record_llm_token）。
         """
+        detail = bool(detail)
         plugin = self.plugin
         wf_entry = None
         try:
@@ -1174,25 +1177,56 @@ class StudioManager:
                 pass
 
         if style == "danbooru":
-            fmt = (
-                "输出格式：英文 Danbooru 标签——用英文逗号分隔 10~24 个小写标签，"
-                "涵盖主体、动作/表情、服装、场景、构图与光影。"
-                "⛔不要写任何画质词（masterpiece / best quality / score_9 / very aesthetic 等，"
-                "插件会自动补）；不要编号、不要解释、不要引号。"
-            )
+            if detail:
+                fmt = (
+                    "输出格式：英文 Danbooru 标签——用英文逗号分隔 80~160 个具体小写标签，"
+                    "总长 400~1200 字符。按以下维度层层展开，每个维度都要有具体标签、"
+                    "不要空泛重复：\n"
+                    "①主体（人数/性别/年龄感/身份/种族）②外貌（发型/发色/发质/眼睛/"
+                    "肤色/脸型/表情/体态特征）③服装（上下装/款式/颜色/材质/褶皱）"
+                    "④配饰（发饰/首饰/鞋袜/包/手持道具）⑤姿态动作（站坐卧跑/手势/"
+                    "视线方向/与他人互动）⑥场景环境（地点/时间/天气/建筑或自然细节/"
+                    "远近景层次）⑦光影色调（光源方向/色温/阴影/明暗对比）"
+                    "⑧构图镜头（视角/景别/景深/镜头语言）⑨画风质感（艺术风格/笔触/材质）。\n"
+                    "⛔不要写任何画质词（masterpiece / best quality / score_9 / very aesthetic 等，"
+                    "插件会自动补）；不要编号、不要解释、不要引号。"
+                )
+            else:
+                fmt = (
+                    "输出格式：英文 Danbooru 标签——用英文逗号分隔 10~24 个小写标签，"
+                    "涵盖主体、动作/表情、服装、场景、构图与光影。"
+                    "⛔不要写任何画质词（masterpiece / best quality / score_9 / very aesthetic 等，"
+                    "插件会自动补）；不要编号、不要解释、不要引号。"
+                )
         elif style == "qwen":
-            fmt = (
-                "输出格式：中文描述式提示词——1~3 句完整的画面描述（Qwen 图像模型口径），"
-                "主体、动作、场景、细节都要具体。不要标签化罗列、不要画质词堆砌、"
-                "不要编号与解释。"
-            )
+            if detail:
+                fmt = (
+                    "输出格式：中文描述式提示词（Qwen 图像模型口径）——6~12 句、"
+                    "300~800 字的完整画面描述。把主体身份、外貌特征、服装配饰、动作表情、"
+                    "场景环境、光影色调、构图镜头、氛围情绪逐层写清楚，细节具体可感，"
+                    "不要空泛重复。不要标签化罗列、不要画质词堆砌、不要编号与解释。"
+                )
+            else:
+                fmt = (
+                    "输出格式：中文描述式提示词——1~3 句完整的画面描述（Qwen 图像模型口径），"
+                    "主体、动作、场景、细节都要具体。不要标签化罗列、不要画质词堆砌、"
+                    "不要编号与解释。"
+                )
         else:  # natural
             lang = "中文" if (not priority_lang or "中" in priority_lang) else "英文"
-            fmt = (
-                f"输出格式：{lang}自然语言描述——2~4 句流畅的画面描写，"
-                "主体、动作、场景、氛围都要具体。不要标签化罗列、不要画质词堆砌、"
-                "不要编号与解释。"
-            )
+            if detail:
+                fmt = (
+                    f"输出格式：{lang}自然语言——8~16 句、共 400~1000 字的连贯画面描写。"
+                    "按主体外貌、服装配饰、姿态表情、场景环境、光影色调、构图镜头、"
+                    "氛围情绪逐层展开，每部分都要有具体细节，避免空泛重复。"
+                    "不要标签化罗列、不要画质词堆砌、不要编号与解释。"
+                )
+            else:
+                fmt = (
+                    f"输出格式：{lang}自然语言描述——2~4 句流畅的画面描写，"
+                    "主体、动作、场景、氛围都要具体。不要标签化罗列、不要画质词堆砌、"
+                    "不要编号与解释。"
+                )
 
         hint = str(hint or "").strip()
         if hint:
@@ -1207,6 +1241,12 @@ class StudioManager:
             )
 
         bm_line = f"当前底模：{bm_name}。" if bm_name else ""
+        zh_rule = (
+            "紧接着用中文把上面的画面细节完整译成通顺描述（200~600 字，覆盖主体、外貌、"
+            "服装、场景、光影、构图等主要信息）；"
+            if detail else
+            "紧接着写 1~2 句通顺中文说明画面（只描述画面，不逐条复述标签名）；"
+        )
         prompt = (
             "你是顶级的 AI 绘画提示词创作师。请为用户创作一幅画面的提示词。\n"
             f"{bm_line}{fmt}\n"
@@ -1214,13 +1254,16 @@ class StudioManager:
             "【输出格式·必须严格遵守】只输出以下两段，不要任何其它说明：\n"
             "第 1 段：提示词正文。\n"
             "第 2 段：若第 1 段是英文——在正文之后另起一行原样写上分隔符 ===ZH===，"
-            "紧接着写 1~2 句通顺中文说明画面（只描述画面，不逐条复述标签名）；"
+            f"{zh_rule}"
             "若第 1 段是中文——不要写分隔符、不要写译文。\n"
         )
         provider_id = plugin._resolve_translate_provider_id()
         if not provider_id:
             raise RuntimeError("未配置「翻译/改写模型」，无法 AI 生成提示词")
         timeout = max(1, int(plugin._cfg("llm_rewrite_timeout", 60) or 60))
+        if detail:
+            # 上千字输出明显慢于简洁模式，放宽到至少 150s（前端 detail 请求也同步放宽）
+            timeout = max(timeout, 150)
         try:
             llm_resp = await asyncio.wait_for(
                 plugin.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),

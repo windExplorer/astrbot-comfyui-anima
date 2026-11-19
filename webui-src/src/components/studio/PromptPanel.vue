@@ -50,6 +50,21 @@
         <span class="pp-count">{{ tagCount }} 个标签</span>
       </div>
       <div class="pp-right">
+        <!-- v7.10.5：想画面详细模式开关（数百~上千字，按需开启，记住选择） -->
+        <n-tooltip trigger="hover" placement="bottom-end">
+          <template #trigger>
+            <div class="pp-detail-toggle">
+              <n-switch
+                :value="imagineDetail"
+                size="small"
+                @update:value="(v: boolean) => { imagineDetail = v; onDetailChange(v); }"
+              />
+              <span class="pp-detail-label">详细</span>
+            </div>
+          </template>
+          详细模式：AI 想画面按外貌 / 服装 / 场景 / 光影等维度层层展开，
+          生成数百至上千字的丰富提示词。更慢、更耗 token，按需开启
+        </n-tooltip>
         <!-- v7.9.10：🎲 AI 想画面——按当前工作流底模的提示词格式自由创作一幅画面；
              输入框有内容则作为灵感参考，留空则 AI 完全自由发挥 -->
         <n-tooltip trigger="hover" placement="bottom-end">
@@ -125,6 +140,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { studioApi, type StudioTemplate, type StudioWorkflow } from "@/api/studio";
+import { lsGet, lsSet } from "@/api/storage";
 import { useMessage } from "naive-ui";
 
 const props = defineProps<{
@@ -216,6 +232,12 @@ async function runAi(mode: string) {
 // v7.9.7：🪄 一键润色（即用即点）——按当前工作流风格自动选润色方式，就地改写输入框文本
 const refining = ref(false);
 
+// v7.10.5：想画面详细模式（数百~上千字）——页面级开关，localStorage 记住选择
+const imagineDetail = ref(lsGet("anima_imagine_detail") === "1");
+function onDetailChange(v: boolean) {
+  lsSet("anima_imagine_detail", v ? "1" : "0");
+}
+
 // v7.9.10：🎲 AI 想画面——按当前工作流底模的提示词格式自由创作一幅画面
 const imagining = ref(false);
 // v7.10.3：同一次 LLM 顺带产出的译文；提示词被用户改动后按钮自动隐藏，避免展示过期译文
@@ -231,17 +253,22 @@ async function runImagine() {
   imagining.value = true;
   aiError.value = "";
   try {
-    const d = await studioApi.aiImagine(props.positive.trim(), props.workflow?.name || "");
+    const d = await studioApi.aiImagine(
+      props.positive.trim(),
+      props.workflow?.name || "",
+      imagineDetail.value,
+    );
     if (d && d.text) {
       emit("update:positive", d.text);
       imaginedPrompt.value = d.text.trim();
       imaginedTranslation.value = (d.translation || "").trim();
+      const lenNote = imagineDetail.value ? `（${d.text.length} 字）` : "";
       if (imaginedTranslation.value) {
-        message.success("AI 已想好英文画面；点输入框下方的「看译文」看中文意思");
+        message.success(`AI 已想好英文画面${lenNote}；点输入框下方的「看译文」看中文意思`);
       } else if (/[\u4e00-\u9fff]/.test(d.text)) {
-        message.success("AI 已想好一个中文画面（中文提示词无需译文）");
+        message.success(`AI 已想好一个中文画面${lenNote}（中文提示词无需译文）`);
       } else {
-        message.warning("AI 已想好一个画面，但本次未附带译文");
+        message.warning(`AI 已想好一个画面${lenNote}，但本次未附带译文`);
       }
     } else {
       aiError.value = "AI 没有返回内容";
@@ -317,6 +344,9 @@ function appendTemplate(t: StudioTemplate) {
 }
 .pp-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .pp-right { display: flex; align-items: center; gap: 10px; flex: none; }
+/* v7.10.5：想画面详细模式开关 */
+.pp-detail-toggle { display: flex; align-items: center; gap: 5px; }
+.pp-detail-label { font-size: 11px; color: var(--text-sub); white-space: nowrap; }
 .pp-count { font-size: 11px; color: var(--text-sub); }
 .pp-submit { flex: none; min-width: 140px; }
 .pp-error {

@@ -114,6 +114,17 @@ async def main():
     r = await mgr.ai_imagine("", "wf1")
     check("中文提示词不触发兜底", r["translation"] == "", repr(r))
 
+    # 9. 详细模式：prompt 要求数百至上千字的标签 + 展开译文（v7.10.5）
+    mgr, ctx = _fake_manager("1girl, long hair")
+    await mgr.ai_imagine("", "wf1", detail=True)
+    check("详细模式要求长标签串", "400~1200" in ctx.last_prompt, ctx.last_prompt[:200])
+    check("详细模式要求展开译文", "200~600 字" in ctx.last_prompt)
+
+    # 10. 默认模式仍保持简洁（不因新增开关改变既有行为）
+    mgr, ctx = _fake_manager("1girl, long hair")
+    await mgr.ai_imagine("", "wf1")
+    check("默认模式仍简洁", "10~24 个" in ctx.last_prompt, ctx.last_prompt[:200])
+
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 1 if _fail else 0
 
