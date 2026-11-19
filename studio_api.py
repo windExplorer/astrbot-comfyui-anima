@@ -464,6 +464,17 @@ class StudioJobManager:
             preset = str(item.get("preset") or "").strip()[:64]
             loras.append({"name": name, "weight": weight, "preset": preset})
 
+        # v7.10.6：工作台取消勾选的「工作流自带 LoRA」名字——后端据此从 active_map
+        # 真排除（不是权重置 0），避免 UI 未选但实际出图仍带该 LoRA。
+        disabled_in = params.get("disabled_loras") or []
+        if not isinstance(disabled_in, list):
+            return None, "disabled_loras 必须是数组"
+        disabled_loras: list[str] = []
+        for x in disabled_in[:32]:
+            nm = str(x or "").strip()
+            if nm and nm not in disabled_loras:
+                disabled_loras.append(nm)
+
         ref_ids = params.get("ref_ids") or []
         if not isinstance(ref_ids, list):
             return None, "ref_ids 必须是数组"
@@ -488,6 +499,7 @@ class StudioJobManager:
             "noise_schedule": noise_schedule,
             "custom_size": custom_size,
             "loras": loras,
+            "disabled_loras": disabled_loras,
             "ref_ids": ref_ids,
         }, None
 
@@ -592,6 +604,7 @@ class StudioJobManager:
                 raw_prompt=True,
                 custom_size=clean["custom_size"],
                 external=True,
+                disabled_loras=clean["disabled_loras"] or None,
             )
             async for _node, img_path in gen:
                 if img_path:

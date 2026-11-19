@@ -41,6 +41,7 @@
             :loras="ovLoras"
             :allowed-names="allowedLoraNames"
             :bound-names="selectedWorkflow?.bound_loras?.map((b) => b.name) ?? []"
+            @bound-change="onBoundChange"
           />
 
           <div class="sec-label">生成参数</div>
@@ -185,6 +186,15 @@ const mode = ref<"t2i" | "img2img">("t2i");
 const selectedWf = ref("");
 const refs = ref<StudioRefItem[]>([]);
 const loraSel = ref<StudioLoraSel[]>([]);
+// v7.10.6：被用户取消勾选的「工作流自带 LoRA」名字——提交时随参数发给后端真排除
+const disabledLoras = ref<string[]>([]);
+function onBoundChange(name: string, on: boolean) {
+  if (on) {
+    disabledLoras.value = disabledLoras.value.filter((n) => n !== name);
+  } else if (!disabledLoras.value.includes(name)) {
+    disabledLoras.value.push(name);
+  }
+}
 const submitting = ref(false);
 
 const p = reactive<StudioGenerateParams>({
@@ -202,6 +212,7 @@ const p = reactive<StudioGenerateParams>({
   noise_schedule: "",
   custom_size: null,
   loras: [],
+  disabled_loras: [],
   ref_ids: [],
 });
 
@@ -356,7 +367,8 @@ watch(selectedWf, (v, old) => {
     const boundNames = new Set(bound.map((b) => b.name));
     const libMap = new Map(ovLoras.value.map((l) => [l.name, l]));
     for (const b of bound) {
-      if (!b.name || loraSel.value.some((s) => s.name === b.name)) continue;
+      // v7.10.6：用户主动取消过的自带 LoRA 不再自动勾回来（切走再切回仍保持取消）
+      if (!b.name || disabledLoras.value.includes(b.name) || loraSel.value.some((s) => s.name === b.name)) continue;
       const lib = libMap.get(b.name);
       const w = b.weight != null ? b.weight : lib?.weight != null ? lib.weight : 0.8;
       loraSel.value.push({ name: b.name, weight: w, preset: "" });
@@ -392,6 +404,9 @@ async function submit() {
     p.mode = mode.value;
     p.workflow = selectedWf.value;
     p.loras = loraSel.value.map((s) => ({ ...s }));
+    // 只把「当前工作流自带且被取消」的名字发给后端，避免误伤其它 LoRA
+    const boundNow = new Set((selectedWorkflow.value?.bound_loras || []).map((b) => b.name));
+    p.disabled_loras = disabledLoras.value.filter((n) => boundNow.has(n));
     p.ref_ids = refs.value.map((r) => r.ref_id);
     await studioApi.generate({ ...p });
     message.success("任务已提交，出图后自动进入成果条");
@@ -596,6 +611,7 @@ function reuseParams(job: StudioJob) {
   p.noise_schedule = q.noise_schedule || "";
   p.custom_size = q.custom_size ?? null;
   loraSel.value = (q.loras || []).map((s: any) => ({ name: s.name, weight: s.weight, preset: s.preset || "" }));
+  disabledLoras.value = [...(q.disabled_loras || [])];
   if (q.mode && q.mode !== "t2i") {
     message.info("参数已复用；参考图是临时文件，需要重新上传");
   } else {

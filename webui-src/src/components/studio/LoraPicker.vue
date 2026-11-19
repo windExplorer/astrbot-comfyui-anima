@@ -2,6 +2,14 @@
   <div class="lora-picker">
     <div class="lora-head">
       <n-input v-model:value="keyword" size="small" placeholder="搜索 LoRA 名称 / 关键字" clearable />
+      <n-button
+        size="small"
+        :type="selectedOnly ? 'primary' : 'default'"
+        ghost
+        @click="selectedOnly = !selectedOnly"
+      >
+        {{ selectedOnly ? "仅看已选 ✓" : "仅看已选" }}
+      </n-button>
       <n-button size="small" :type="modelValue.length ? 'default' : 'primary'" ghost @click="clearAll" :disabled="!modelValue.length">
         清空已选
       </n-button>
@@ -19,11 +27,11 @@
         :class="{ selected: isSel(l.name), bound: isBound(l.name) }"
       >
         <div class="lora-main" @click="toggle(l)">
-          <span class="sel-dot" :class="{ on: isSel(l.name), lock: isBound(l.name) }">{{ isSel(l.name) ? (isBound(l.name) ? "🔒" : "✓") : "" }}</span>
+          <span class="sel-dot" :class="{ on: isSel(l.name) }">{{ isSel(l.name) ? "✓" : "" }}</span>
           <div class="lora-info">
             <div class="lora-name">
               {{ l.name }}
-              <span v-if="isBound(l.name)" class="chip accent" title="工作流自带（loras_text），出图时自动生效，不可取消勾选">自带</span>
+              <span v-if="isBound(l.name)" class="chip accent" title="工作流自带（loras_text）：默认勾选，可取消；取消后仍显示但本次出图不再加载，权重可调">自带</span>
               <span v-if="l.starred" class="star">★</span>
               <span v-if="l.category" class="chip">{{ l.category }}</span>
               <span v-if="l.base_model" class="chip dim">{{ l.base_model }}</span>
@@ -68,7 +76,7 @@
       </div>
     </div>
     <div v-if="modelValue.length || availableCount || boundNames.length" class="lora-selected-hint">
-      已选 {{ modelValue.length }} 个 · 可用 {{ availableCount }} 个<template v-if="allowedSet !== null">（已按工作流底模筛选）</template><template v-if="boundNames.length"> · 工作流自带 {{ boundNames.length }} 个（自动勾选，不可取消，权重可调）</template><template v-if="modelValue.length">；触发词会自动追加到提示词</template>
+      已选 {{ modelValue.length }} 个 · 可用 {{ availableCount }} 个<template v-if="allowedSet !== null">（已按工作流底模筛选）</template><template v-if="boundNames.length"> · 工作流自带 {{ boundNames.length }} 个（默认勾选、可取消；取消后仍显示，本次出图不加载）</template><template v-if="modelValue.length">；触发词会自动追加到提示词</template>
     </div>
   </div>
 </template>
@@ -83,14 +91,19 @@ const props = defineProps<{
   /** v7.9.3：当前工作流底模兼容的 LoRA 名单（后端按聊天侧同规则预筛）。
    *  null = 未选工作流（不限制）；非空 = 只展示名单内的。 */
   allowedNames?: string[] | null;
-  /** v7.9.9：工作流自带的 LoRA（loras_text）——自动勾选、锁定不可取消、
-   *  不受兼容过滤约束（作者绑定为准），权重仍可调 */
+  /** v7.10.6：工作流自带的 LoRA（loras_text）——默认勾选、**可取消**、
+   *  不受兼容过滤约束（作者绑定为准），权重仍可调；取消后仍显示只是未勾选 */
   boundNames?: string[];
 }>();
 
-const emit = defineEmits<{ (e: "update:modelValue", v: StudioLoraSel[]): void }>();
+const emit = defineEmits<{
+  (e: "update:modelValue", v: StudioLoraSel[]): void;
+  /** 自带 LoRA 勾选变化：父组件据此维护 disabled_loras（真排除出图，不是置 0） */
+  (e: "bound-change", name: string, on: boolean): void;
+}>();
 
 const keyword = ref("");
+const selectedOnly = ref(false);
 
 const allowedSet = computed(() => {
   if (props.allowedNames === null || props.allowedNames === undefined) return null;
@@ -111,6 +124,8 @@ const filtered = computed(() => {
   // v7.9.9：自带的 LoRA 免兼容过滤（作者绑定为准）
   return props.loras.filter((l) => {
     if (aset && !aset.has(l.name) && !boundSet.value.has(l.name)) return false;
+    // v7.10.6：仅看已选——取消勾选的自带 LoRA 在常规列表仍显示，只是在此筛选下隐藏
+    if (selectedOnly.value && !props.modelValue.some((s) => s.name === l.name)) return false;
     if (!kw) return true;
     return (
       l.name.toLowerCase().includes(kw) ||
@@ -138,18 +153,21 @@ function selPreset(name: string): string {
 }
 
 function toggle(l: StudioLora) {
-  // v7.9.9：自带的 LoRA 锁定（出图时本就自动生效，取消勾选只会造成 UI 与实际不符）
-  if (isBound(l.name)) return;
-  if (isSel(l.name)) {
+  const wasSel = isSel(l.name);
+  if (wasSel) {
     emit("update:modelValue", props.modelValue.filter((s) => s.name !== l.name));
   } else {
     const w = l.weight !== null && l.weight !== undefined ? l.weight : 0.8;
     emit("update:modelValue", [...props.modelValue, { name: l.name, weight: w, preset: "" }]);
   }
+  // 自带 LoRA 的勾选态要同步给父组件 → 后端本次真排除/恢复加载
+  if (isBound(l.name)) emit("bound-change", l.name, !wasSel);
 }
 
 function clearAll() {
+  const boundOn = (props.boundNames || []).filter((n) => isSel(n));
   emit("update:modelValue", []);
+  for (const n of boundOn) emit("bound-change", n, false);
 }
 
 function setWeight(name: string, v: number) {
@@ -213,9 +231,7 @@ function presetOptions(l: StudioLora) {
   color: #fff;
 }
 .sel-dot.on { background: var(--accent); border-color: var(--accent); }
-.sel-dot.lock { font-size: 9px; }
 .lora-row.bound { border-left: 3px solid var(--accent); }
-.lora-row.bound .lora-main { cursor: default; }
 .chip.accent { background: var(--accent); color: #fff; }
 .lora-info { min-width: 0; flex: 1; }
 .lora-name {

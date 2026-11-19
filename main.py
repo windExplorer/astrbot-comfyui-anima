@@ -453,12 +453,18 @@ def _decide_wait_timeout(
     return timeout, per_extra, max_timeout, hard_cap, squeezed, interval
 
 
-def _merge_active_loras(*, loras_cfg, raw_hits: dict, lora_map) -> dict | None:
+def _merge_active_loras(
+    *, loras_cfg, raw_hits: dict, lora_map, disabled_loras=None
+) -> dict | None:
     """v7.8.19：从 `_do_draw` 抽出的本次启用 LoRA 合并（无 self / 无 await / 无 IO）。
 
     顺序：工作流默认启用（权重 None）→ 用户原话命中 → 显式指定 `lora_map` 覆盖。
     原话已点名同系列（互相包含，如「娜娜莉」与「娜娜莉2」）时忽略 LLM 指定的那个，
     避免两个版本一起注入。返回 None 表示本次没有启用任何 LoRA。
+
+    v7.10.6：`disabled_loras` 用于工作台「取消勾选工作流自带 LoRA」——按名字
+    （忽略大小写、精确相等）从合并结果里剔除；`loras_cfg` 仍保留该条目，
+    `apply_loras` 的 true_disable 会真删/跳过对应节点。
     """
     merged: dict[str, float | None] = {}
     for lora in loras_cfg:
@@ -478,6 +484,14 @@ def _merge_active_loras(*, loras_cfg, raw_hits: dict, lora_map) -> dict | None:
                 logger.info(f"【LoRA】 用户原话已点名同系列 LoRA，忽略 LLM 指定的「{nm}」")
                 continue
             merged[nm] = w
+    if disabled_loras:
+        disabled = {
+            str(d or "").strip().lower() for d in disabled_loras if str(d or "").strip()
+        }
+        for nm in list(merged):
+            if nm.strip().lower() in disabled:
+                logger.info(f"【LoRA】 工作台已取消勾选，本次排除自带 LoRA「{nm}」")
+                merged.pop(nm, None)
     return merged or None
 
 
@@ -8191,6 +8205,9 @@ class ComfyUIDrawPlugin(Star):
         # 不记触发这条消息的 QQ 用户——否则「萌萌今日老婆」批量补的立绘
         # 在图库里全挂在抽签那位用户名下，看不出是哪个插件产的图。
         external: bool = False,
+        # v7.10.6：本次排除的工作流自带 LoRA 名字（WebUI 工作台取消勾选）。
+        # 从 active_map 剔除，apply_loras 会真删/跳过对应节点；不影响其它调用方。
+        disabled_loras: list[str] | None = None,
     ):
         # raw_prompt（v7.7.46）：调用方声明「提示词已由它自己的 LLM 润色 + 翻译完成」时，
         # 本次出图完全跳过本插件的 LLM 处理（Anima/Qwen 改写、翻译兜底、短描述扩写），
@@ -8780,11 +8797,11 @@ class ComfyUIDrawPlugin(Star):
         # 它们按逗号标签语法解析提示词，对 JSON 只会误伤 caption 文本。
         if not _fixed_prompt and not self._looks_moss_layout(positive):
             positive, _al_note = self._align_character_lora_triggers(
-                positive, lora_map, wf, event=event)
+                positive, lora_map, wf, event=event, disabled_loras=disabled_loras)
             if _al_note:
                 logger.warning(f"【角色 LoRA 对齐】 {_al_note}")
             positive, _le_note = self._strip_lora_echo_appearance(
-                positive, event, lora_map, wf)
+                positive, event, lora_map, wf, disabled_loras=disabled_loras)
             if _le_note:
                 logger.info(f"【LoRA 形象】 {_le_note}")
             # v7.7.71：剥完必须**补回权威身份锚点**（参考混合式）。只做减法会让两个分组
@@ -8793,7 +8810,8 @@ class ComfyUIDrawPlugin(Star):
                 try:
                     # _card_hits 只在走到角色卡注入分支时才赋值，故用 locals().get 取
                     positive, _mi_note = await self._apply_multi_identity(
-                        positive, event, lora_map, wf, locals().get("_card_hits") or [])
+                        positive, event, lora_map, wf, locals().get("_card_hits") or [],
+                        disabled_loras=disabled_loras)
                 except Exception as _mie:
                     _mi_note = ""
                     logger.warning(f"【多人混合式】 异常（忽略）: {_mie}")
@@ -9047,7 +9065,8 @@ class ComfyUIDrawPlugin(Star):
             event, include_keywords=bool(self._cfg("lora_keyword_auto", False))
         )
         active_map = _merge_active_loras(
-            loras_cfg=loras_cfg, raw_hits=_raw_hits, lora_map=lora_map
+            loras_cfg=loras_cfg, raw_hits=_raw_hits, lora_map=lora_map,
+            disabled_loras=disabled_loras,
         )
         logger.info(f"LoRA active_map（本次实际请求启用）: {active_map}")
         # v7.6.2 可观测性：本次**没人点名**任何 LoRA，却因为「工作流默认启用项」带上了
@@ -15901,7 +15920,7 @@ class ComfyUIDrawPlugin(Star):
             return negative, "", ""
 
     def _char_lora_triggers(
-        self, lora_map, wf: dict, event=None
+        self, lora_map, wf: dict, event=None, disabled_loras=None
     ) -> tuple[list[str], list[str]]:
         """本次生效的「角色」LoRA 名称与触发词。
 
@@ -15974,6 +15993,15 @@ class ComfyUIDrawPlugin(Star):
                 _cands.setdefault(_le.get("name") or "", _le)
         except Exception:
             pass
+        # v7.10.6：工作台取消勾选的自带 LoRA 不进角色触发词/形象锚点链路，
+        # 否则节点已真删、提示词却还追加着它的触发词（出图与 UI 再次不符）。
+        if disabled_loras:
+            _disabled = {
+                str(d or "").strip().lower()
+                for d in disabled_loras if str(d or "").strip()
+            }
+            for _nm in [k for k in _cands if str(k or "").strip().lower() in _disabled]:
+                _cands.pop(_nm, None)
         names: list[str] = []
         triggers: list[str] = []
         for _le in _cands.values():
@@ -15994,7 +16022,7 @@ class ComfyUIDrawPlugin(Star):
         return names, triggers
 
     def _align_character_lora_triggers(
-        self, positive: str, lora_map, wf: dict, event=None
+        self, positive: str, lora_map, wf: dict, event=None, disabled_loras=None
     ) -> tuple[str, str]:
         """把分组里写错的角色标识**换成**本次真正启用的角色 LoRA 触发词。
 
@@ -16016,7 +16044,7 @@ class ComfyUIDrawPlugin(Star):
             # 本次真正启用的角色 LoRA（按 _char_lora_triggers 口径）→ 每个的「权威激活词」
             # = 其触发词字段第一个有效 token。v7.7.85 修复：此前扁平展开所有触发词
             # 按序配对（清宵触发词拆成十几个 token，第二组被换成 wuthering 之类乱词）。
-            _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event)
+            _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event, disabled_loras=disabled_loras)
             if not _names:
                 return positive, ""
             _canon: list[tuple[str, str]] = []   # [(归一化核心, 展示激活词)]
@@ -16218,7 +16246,7 @@ class ComfyUIDrawPlugin(Star):
             return []
 
     async def _resolve_identity_anchors(
-        self, positive: str, lora_map, wf: dict, card_hits=None, event=None
+        self, positive: str, lora_map, wf: dict, card_hits=None, event=None, disabled_loras=None
     ) -> list[dict]:
         """解析多人各角色的**权威身份锚点**（参考 `fixed_characters` 的等价实现）。
 
@@ -16234,7 +16262,7 @@ class ComfyUIDrawPlugin(Star):
         v2 的「LoRA 描述」档直接用它，不再按 token 反查库（token 查不中库名）。
         """
         out: list[dict] = []
-        names, triggers = self._char_lora_triggers(lora_map, wf, event=event)
+        names, triggers = self._char_lora_triggers(lora_map, wf, event=event, disabled_loras=disabled_loras)
         for card, anchor in (card_hits or []):
             _pos = anchor.get("positive") or ""
             _tags = prompt_guard.identity_anchor_tags(_pos, limit=5)
@@ -16262,7 +16290,7 @@ class ComfyUIDrawPlugin(Star):
         return out
 
     async def _resolve_identity_anchors_v2(
-        self, positive: str, lora_map, wf: dict, card_hits=None, event=None
+        self, positive: str, lora_map, wf: dict, card_hits=None, event=None, disabled_loras=None
     ) -> list[dict]:
         """v7.7.74：身份锚点来源加一档 **LoRA 库描述**（原创角色的救命档）。
 
@@ -16271,7 +16299,7 @@ class ComfyUIDrawPlugin(Star):
         红瞳、黑无肩带裙"），对 Danbooru 查不到的原创角色比联网查更准、也不依赖网络。
         """
         out = await self._resolve_identity_anchors(
-            positive, lora_map, wf, card_hits, event=event)
+            positive, lora_map, wf, card_hits, event=event, disabled_loras=disabled_loras)
         if out and all(r.get("anchors") for r in out):
             return out
         try:
@@ -16308,7 +16336,7 @@ class ComfyUIDrawPlugin(Star):
         return out
 
     async def _apply_multi_identity(
-        self, positive: str, event, lora_map, wf: dict, card_hits=None
+        self, positive: str, event, lora_map, wf: dict, card_hits=None, disabled_loras=None
     ) -> tuple[str, str]:
         """多人场景：剥掉模型编造的外形后，按参考混合式补回**权威身份锚点**。
 
@@ -16320,7 +16348,7 @@ class ComfyUIDrawPlugin(Star):
             if not (positive or "").strip():
                 return positive, ""
             _roles = await self._resolve_identity_anchors_v2(
-                positive, lora_map, wf, card_hits, event=event)
+                positive, lora_map, wf, card_hits, event=event, disabled_loras=disabled_loras)
             _roles = [r for r in _roles if r.get("anchors")]
             if len(_roles) < 2:
                 if _roles:
@@ -16358,7 +16386,7 @@ class ComfyUIDrawPlugin(Star):
             return positive, ""
 
     def _strip_lora_echo_appearance(
-        self, positive: str, event, lora_map, wf: dict
+        self, positive: str, event, lora_map, wf: dict, disabled_loras=None
     ) -> tuple[str, str]:
         """剥掉提示词里对「角色 LoRA 自带形象」的复述，返回 ``(新正向, 日志说明)``。
 
@@ -16385,7 +16413,7 @@ class ComfyUIDrawPlugin(Star):
         try:
             if not (positive or "").strip():
                 return positive, ""
-            _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event)
+            _names, _triggers = self._char_lora_triggers(lora_map, wf, event=event, disabled_loras=disabled_loras)
             if not _triggers:
                 return positive, ""
             _low = (positive or "").lower()

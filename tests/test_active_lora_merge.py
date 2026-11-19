@@ -76,7 +76,26 @@ def test_fixed_scenarios():
     # 空名称过滤 / lora_map=None / 全空
     assert fn(loras_cfg=[{"name": "  ", "enabled": True}], raw_hits={}, lora_map=None) is None
     assert fn(loras_cfg=[], raw_hits={}, lora_map={"  ": 1.0}) is None
-    print("PASS 固定场景：默认/原话/显式优先级 + 同系列冲突 + 空值")
+
+    # v7.10.6：工作台取消勾选的自带 LoRA 被真排除（默认启用项也一样）
+    got = fn(
+        loras_cfg=[{"name": "自带A", "enabled": True}, {"name": "自带B", "enabled": True}],
+        raw_hits={}, lora_map=None, disabled_loras=["自带A"],
+    )
+    assert got == {"自带B": None}, got
+    # 显式指定的也会被取消（取消后 lora_map 里不该再有它）
+    got = fn(
+        loras_cfg=[{"name": "自带A", "enabled": True}],
+        raw_hits={}, lora_map={"自带A": 0.6}, disabled_loras=["自带A"],
+    )
+    assert got is None, got
+    # 大小写不敏感；名字不同的不误伤
+    got = fn(
+        loras_cfg=[{"name": "BoutiqueLora", "enabled": True}, {"name": "Lora乙", "enabled": True}],
+        raw_hits={}, lora_map=None, disabled_loras=["boutiquelora"],
+    )
+    assert got == {"Lora乙": None}, got
+    print("PASS 固定场景：默认/原话/显式优先级 + 同系列冲突 + 空值 + disabled 排除")
 
 
 def test_random_equivalence():

@@ -117,6 +117,8 @@ export interface StudioGenerateParams {
   noise_schedule: string;
   custom_size: boolean | null;
   loras: StudioLoraSel[];
+  /** v7.10.6：被取消勾选的「工作流自带 LoRA」名字，后端据此真排除（不是权重置 0） */
+  disabled_loras: string[];
   ref_ids: string[];
 }
 

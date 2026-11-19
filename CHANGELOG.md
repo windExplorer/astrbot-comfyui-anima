@@ -3,6 +3,41 @@
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 
+## v7.10.6（工作流自带 LoRA 可取消勾选：真排除出图 + 仅看已选筛选）
+
+需求（用户 2026-11-19 提出）：工作流自带的 LoRA 也要能选中/取消选中；加筛选查看
+已选 LoRA；自带的即使取消也要显示在列表里，只是不勾选。
+
+为什么不能只改 UI：`_merge_active_loras()` 把 `loras_text` 里 `enabled=1` 的默认项
+**无条件**并入 `active_map`，`apply_loras()` 据此注入节点、套预设、追加触发词。
+仅在前端取消勾选 → 界面未选但实际仍加载，正是要避免的"UI 与实际不符"。
+`weight=0` 也不算真禁用（节点仍在、触发词照样追加）。
+
+实现：
+- **前端**（`LoraPicker.vue` / `StudioView.vue` / `studio.ts`）：
+  - 去掉自带 LoRA 的 `toggle()` 锁定与 🔒 圆点，取消后条目**仍留在列表里**、只是未勾选；
+    「自带」角标保留，tooltip/底部提示改为「默认勾选、可取消；取消后本次出图不加载」。
+  - 搜索框旁新增 **「仅看已选」** 切换按钮（不加弹窗，权重仍用行内滑块编辑）。
+  - StudioView 维护 `disabledLoras`：`bound-change` 事件同步取消状态；切工作流不再把
+    用户取消过的自带 LoRA 自动勾回；提交时只把「当前工作流自带且被取消」的名字
+    写进 `StudioGenerateParams.disabled_loras`（复用历史任务参数时一并回填）。
+- **后端**：
+  - `studio_api.validate_params` 校验并归一化 `disabled_loras`（数组、去重、最多 32），
+    `_run` 透传给 `_do_draw`。
+  - `_do_draw` 新增 `disabled_loras` 参数；`_merge_active_loras` 末尾按名字（忽略大小写、
+    精确相等）从 `active_map` 剔除，`loras_cfg` 保留该条目 → `apply_loras` 的
+    `true_disable` 会真删已有节点/跳过注入。
+  - 同步排除触发词链路：`_char_lora_triggers` 的候选里去掉这些名字，参数沿
+    `_align_character_lora_triggers` / `_strip_lora_echo_appearance` / `_apply_multi_identity`
+    → `_resolve_identity_anchors_v2` → `_resolve_identity_anchors` 逐层传递——否则节点
+    已真删、提示词却还追加该角色触发词，再次造成不一致。其它调用方不传该参数，行为不变。
+
+验证：`tests/test_active_lora_merge.py` 新增 disabled 排除用例（默认启用项/显式指定/
+大小写/名字不同不误伤）全过，800 组随机对拍仍等价；`test_prompt_guard.py` 38 项全过；
+`compileall`、`test_static_lint.py`（pyflakes，逐个核对参数链作用域）、
+`test_character_webui.py`（109/0）通过；`build_webui.ps1` + `build_zip.ps1` 成功，
+产物 v7.10.6。
+
 ## v7.10.5（AI 想画面「详细」开关：按需生成数百至上千字的丰富提示词）
 
 需求（用户 2026-11-19 提出）：现在「🎲 想画面」生成的提示词太简陋，希望支持生成
