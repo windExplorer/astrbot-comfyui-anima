@@ -299,9 +299,9 @@ watch(
 .size-row { display: flex; gap: 8px; align-items: center; }
 .size-x { color: var(--text-sub); }
 .size-mode { display: flex; align-items: center; gap: 8px; }
-.auto-size-note { font-size: 11px; color: var(--text-sub); }
+.auto-size-note { font-size: 11px; color: var(--text-sub); white-space: nowrap; flex: none; }
 .ctrl-row { display: flex; align-items: center; gap: 8px; }
-.ctrl-label { font-size: 12px; color: var(--text-sub); flex: none; width: 44px; }
+.ctrl-label { font-size: 12px; color: var(--text-sub); flex: none; width: 52px; white-space: nowrap; }
 .ctrl-hint { font-size: 11px; color: var(--text-sub); opacity: 0.85; }
 .adv :deep(.n-collapse-item__header) { font-size: 12px; padding-top: 2px; padding-bottom: 2px; }
 .adv :deep(.n-collapse-item__content) { padding-top: 4px; }
