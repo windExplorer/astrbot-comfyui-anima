@@ -34,6 +34,7 @@
       <n-button size="small" :loading="refing" @click="useAsRef">🖼 用作图生图</n-button>
       <n-button size="small" quaternary @click="copyPrompt">📋 复制提示词</n-button>
       <n-button size="small" quaternary @click="openPromptViewer">查看提示词</n-button>
+      <n-button size="small" quaternary @click="usePrompt">📝 使用提示词</n-button>
     </div>
 
     <!-- 会话成果条（v7.9.5：支持单张移除与新建会话，仅页面级——成品仍在图库） -->
@@ -104,6 +105,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { downloadStudioImage, studioApi } from "@/api/studio";
+import { getCachedTranslation, setCachedTranslation } from "@/api/promptTranslationCache";
 import { useMessage } from "naive-ui";
 import type { StudioGenerateParams, StudioJob } from "@/api/studio";
 
@@ -125,6 +127,8 @@ const emit = defineEmits<{
   (e: "pick", r: { sha: string; params: Partial<StudioGenerateParams> | undefined; jobId: string }): void;
   (e: "remove", index: number): void;
   (e: "newSession"): void;
+  /** 把当前图片的提示词覆盖填入正向输入框 */
+  (e: "usePrompt", text: string): void;
 }>();
 
 const message = useMessage();
@@ -137,7 +141,7 @@ const transLoading = ref(false);
 const transText = ref("");
 const transError = ref("");
 const transSource = ref("");
-const transCache = new Map<string, string>();
+// v7.10.7：译文存本地（与「想画面」同一次 LLM 产出的译文共用），不再只存内存
 // 中文提示词不翻译（避免白白消耗额度）；含任一汉字即视为中文提示词
 const isChinesePrompt = computed(() => /[\u4e00-\u9fff]/.test(transSource.value));
 
@@ -184,6 +188,15 @@ function currentPrompt(): string {
   return cur?.params?.positive || "";
 }
 
+function usePrompt() {
+  const text = currentPrompt();
+  if (!text) {
+    message.warning("这张图没有提示词信息");
+    return;
+  }
+  emit("usePrompt", text);
+}
+
 function openPromptViewer() {
   const text = currentPrompt();
   if (!text) {
@@ -192,16 +205,16 @@ function openPromptViewer() {
   }
   transSource.value = text;
   transError.value = "";
-  // 命中旧缓存直接展示（不产生新请求）；否则只显示原文，译文等用户点按钮
-  transText.value = transCache.get(text) || "";
+  // 命中本地缓存（含「想画面」同次产出的译文）直接展示，不产生新请求
+  transText.value = getCachedTranslation(text);
   transShow.value = true;
 }
 
 async function fetchTranslation() {
   if (transLoading.value || isChinesePrompt.value || transText.value) return;
   const text = transSource.value;
-  const cached = transCache.get(text);
-  if (cached !== undefined) {
+  const cached = getCachedTranslation(text);
+  if (cached) {
     transText.value = cached;
     return;
   }
@@ -212,7 +225,7 @@ async function fetchTranslation() {
     const out = (d?.text || "").trim();
     if (!out) throw new Error("译文为空");
     transText.value = out;
-    transCache.set(text, out);
+    setCachedTranslation(text, out);
   } catch (e: any) {
     transError.value = e?.message || "翻译失败，请稍后重试";
   } finally {

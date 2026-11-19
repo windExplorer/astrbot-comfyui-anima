@@ -140,6 +140,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { studioApi, type StudioTemplate, type StudioWorkflow } from "@/api/studio";
+import { setCachedTranslation } from "@/api/promptTranslationCache";
 import { lsGet, lsSet } from "@/api/storage";
 import { useMessage } from "naive-ui";
 
@@ -262,6 +263,11 @@ async function runImagine() {
       emit("update:positive", d.text);
       imaginedPrompt.value = d.text.trim();
       imaginedTranslation.value = (d.translation || "").trim();
+      // v7.10.7：LLM 同次产出的译文也进本地缓存——之后在成果图「看译文」直接命中，
+      // 不必再调一次翻译接口（两条路径用同一份缓存、同一套 key）
+      if (imaginedTranslation.value) {
+        setCachedTranslation(imaginedPrompt.value, imaginedTranslation.value);
+      }
       const lenNote = imagineDetail.value ? `（${d.text.length} 字）` : "";
       if (imaginedTranslation.value) {
         message.success(`AI 已想好英文画面${lenNote}；点输入框下方的「看译文」看中文意思`);

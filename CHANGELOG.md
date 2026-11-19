@@ -3,6 +3,27 @@
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 
+## v7.10.7（成果图「使用提示词」按钮 + 译文本地缓存，两处翻译不再重复耗额度）
+
+需求（用户 2026-11-19 提出）：①「查看提示词」右边加「使用提示词」按钮，点击把该图
+提示词覆盖填入输入框；②翻译文案存本地，不必每次重翻；LLM 生成的译文也要对应上。
+
+实现：
+- **使用提示词**（`ResultPanel.vue` / `StudioView.vue`）：操作条新增 **📝 使用提示词**
+  按钮，取当前成果图 `params.positive` 经 `usePrompt` 事件覆盖写入 `p.positive`；
+  输入框内容变化后，「想画面」的「看译文」按钮按原有比较逻辑自动失效，避免展示过期译文。
+- **本地译文缓存**（新增 `api/promptTranslationCache.ts`）：走 storage.ts（内嵌页
+  localStorage 不可用时自动降内存）。两处共用同一份缓存、同一套 key：
+  - `ResultPanel` 点「查看译文」走 LLM 翻译成功后写入；打开弹窗/再点按钮先读缓存。
+  - `PromptPanel`「🎲 想画面」得到的 `translation`（LLM 同次产出，`===ZH===` 分隔）
+    按同一提示词文本写入。于是想画面看过的译文，在成果图再看直接命中，不再调接口。
+  - key 用 djb2 hash + 文本长度二次校验（详细模式上千字提示词不适合直接当 key，
+    同时防极端 hash 碰撞误用）；最多 200 条，超出按时间淘汰最旧。
+
+验证：`compileall`、`test_static_lint.py`、`test_character_webui.py`（109/0），
+以及 `test_imagine_translation.py`（15/0）、`test_active_lora_merge.py`（含 800 组对拍）
+均通过；`build_webui.ps1` + `build_zip.ps1` 成功，产物 v7.10.7。
+
 ## v7.10.6（工作流自带 LoRA 可取消勾选：真排除出图 + 仅看已选筛选）
 
 需求（用户 2026-11-19 提出）：工作流自带的 LoRA 也要能选中/取消选中；加筛选查看

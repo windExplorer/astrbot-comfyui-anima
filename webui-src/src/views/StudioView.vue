@@ -85,6 +85,7 @@
           @pick="onPick"
           @remove="removeResult"
           @new-session="newSession"
+          @use-prompt="onUsePrompt"
         />
         <div class="prompt-band">
           <PromptPanel
@@ -496,6 +497,11 @@ function setCurrent(sha: string) {
 
 function onPick(r: { sha: string }) {
   setCurrent(r.sha);
+}
+
+// v7.10.7：成果图「📝 使用提示词」——把该图提示词覆盖填入正向输入框
+function onUsePrompt(text: string) {
+  p.positive = text;
 }
 
 function ensureUrl(sha: string, size: number, map: Record<string, string>) {
