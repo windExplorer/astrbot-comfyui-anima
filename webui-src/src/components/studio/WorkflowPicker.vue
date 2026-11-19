@@ -72,14 +72,15 @@ function kindLabel(kind: string | null): string {
 }
 
 /** 下拉选项：名称 + 底模 + 多参考标（v7.10.10 去掉文生图/图生图前缀——模式已过滤类型，前缀多余）
- *  v7.11.1：各段之间加圆点分隔符，避免「工作流名」和「底模名」挤在一起看不清。 */
+ *  v7.11.2：分隔符改成主题色加粗竖线 + 两侧留白，工作流名加粗并加大段间距，
+ *  避免「工作流名」和「底模名」视觉上挤成一片。 */
 function renderWfLabel(o: any) {
   const w = o?.wf as StudioWorkflow | undefined;
   if (!w) return String(o?.label ?? "");
   const kids: any[] = [
     h("span", { class: "wf-opt-name" }, w.name),
   ];
-  const sep = () => kids.push(h("span", { class: "wf-opt-sep" }, "·"));
+  const sep = () => kids.push(h("span", { class: "wf-opt-sep" }, "│"));
   if (w.basemodel_name) { sep(); kids.push(h("span", { class: "wf-opt-meta" }, w.basemodel_name)); }
   if (w.multi_image) { sep(); kids.push(h("span", { class: "wf-opt-multi" }, "多参考")); }
   if (w.server_name) { sep(); kids.push(h("span", { class: "wf-opt-meta" }, "🛰 " + w.server_name)); }
@@ -134,9 +135,9 @@ function renderWfLabel(o: any) {
   -webkit-box-orient: vertical;
 }
 /* 下拉选项（renderLabel 渲染，scoped 属性随 VNode 带进 portal） */
-.wf-opt { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.wf-opt-name { font-size: 13px; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wf-opt-sep { flex: 0 0 auto; font-size: 12px; color: var(--text-sub); opacity: .55; user-select: none; }
-.wf-opt-meta { font-size: 10px; color: var(--text-sub); background: color-mix(in srgb, var(--text-sub) 12%, transparent); border-radius: 999px; padding: 0 6px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.wf-opt-multi { font-size: 10px; color: #fff; background: var(--accent); border-radius: 999px; padding: 0 6px; }
+.wf-opt { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.wf-opt-name { font-size: 13px; font-weight: 700; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wf-opt-sep { flex: 0 0 auto; display: inline-block; margin: 0 5px; font-size: 13px; font-weight: 900; line-height: 1; color: var(--accent); opacity: .85; user-select: none; }
+.wf-opt-meta { font-size: 10px; font-weight: 500; color: var(--text-sub); background: color-mix(in srgb, var(--text-sub) 12%, transparent); border-radius: 999px; padding: 1px 7px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.wf-opt-multi { font-size: 10px; font-weight: 600; color: #fff; background: var(--accent); border-radius: 999px; padding: 1px 7px; }
 </style>
