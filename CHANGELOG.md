@@ -3,6 +3,40 @@
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 
+## v7.10.8（尺寸不再被提示词偷偷改：「自动尺寸」开关 + AI 想画面带画布尺寸）
+
+现象（用户 2026-11-19 反馈）：参数区选「跟随工作流默认」，但出图尺寸会自动变化。
+
+根因（不是没告诉 LLM 尺寸，而是提示词被当成了尺寸指令）：
+- 工作台提交用的是 `_HeadlessEvent`，`message_str` 为空；`_ratio_source_text()`
+  取不到用户原话就**回退到 positive 提示词**（`main.py:3343-3356`）。
+- `ai_imagine` / ✨AI 生成 / 🪄润色产出的文本里极易出现 `portrait`、`landscape`、
+  `square`、`高清`、`2K` 等内置比例/档位关键词；`_resolve_ratio_size()` 命中后
+  `_decide_draw_size()` 里 `ratio_wh` 分支优先级**高于工作流默认**，尺寸就被改了。
+- 跳过正则只认提示词里的「默认尺寸 / 工作流默认」字样，UI 选择根本不写进提示词，
+  所以完全拦不住。
+
+实现：
+- **「自动尺寸」开关**（`ParamsPanel.vue` / `StudioView.vue` / `studio.ts`）：尺寸区
+  新增 n-switch，tooltip 说明「开启后提示词里的比例/档位词自动决定尺寸；关闭时严格
+  跟随所选尺寸或工作流默认」，选择用 localStorage 记住。默认**关闭**。
+- **后端**（`main._do_draw` 新增 `size_from_prompt: bool = True`，工作台传 False）：
+  关闭时 `_ratio_src` 直接置空 → `_resolve_ratio_size()` 返回 `(None, None)` → 尺寸
+  只由 UI 参数或工作流默认决定。聊天侧等其它调用方不传该参数，旧行为不变。
+  `studio_api.validate_params/_run` 解析并透传（工作台默认 False）。
+- **AI 想画面带尺寸上下文**（`studio_api.ai_imagine`）：把当前工作流 `default_width×
+  default_height` 写进 LLM prompt，要求按该画幅构思、且**不要**在提示词里写
+  `1:1 / 9:16 / portrait / landscape / 高清 / 2K` 这类会触发尺寸改写的词
+  （镜头/构图描述如 wide shot、特写不受限）。
+
+注意：工作流自带放大链仍会让**最终成图**大于初始 latent（图库 `w/h` 为实测尺寸、
+`in_w/in_h` 为输入尺寸），这与本次修的「比例词改尺寸」是两回事，属预期行为。
+
+验证：`tests/test_imagine_translation.py` 扩到 17 项（新增画布尺寸告知与比例词禁令），
+17/17 通过；`compileall`、`test_static_lint.py`（pyflakes，核对新参数链）、
+`test_character_webui.py`（109/0）、`test_active_lora_merge.py`（800 组对拍）通过；
+`build_webui.ps1` + `build_zip.ps1` 成功，产物 v7.10.8。
+
 ## v7.10.7（成果图「使用提示词」按钮 + 译文本地缓存，两处翻译不再重复耗额度）
 
 需求（用户 2026-11-19 提出）：①「查看提示词」右边加「使用提示词」按钮，点击把该图

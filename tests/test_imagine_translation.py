@@ -34,7 +34,7 @@ class _Resp:
         self.usage = None
 
 
-def _fake_manager(output, style="danbooru", fallback=False):
+def _fake_manager(output, style="danbooru", fallback=False, size=None):
     class _Ctx:
         last_prompt = ""
 
@@ -46,7 +46,11 @@ def _fake_manager(output, style="danbooru", fallback=False):
         context = _Ctx()
 
         def _workflows(self):
-            return [{"name": "wf1", "workflow_id": "x"}]
+            return [{
+                "name": "wf1", "workflow_id": "x",
+                "default_width": size[0] if size else None,
+                "default_height": size[1] if size else None,
+            }]
 
         def _basemodel_of_workflow(self, entry):
             return {"name": "测试底模", "prompt_style": style, "priority_lang": ""}
@@ -124,6 +128,12 @@ async def main():
     mgr, ctx = _fake_manager("1girl, long hair")
     await mgr.ai_imagine("", "wf1")
     check("默认模式仍简洁", "10~24 个" in ctx.last_prompt, ctx.last_prompt[:200])
+
+    # 11. 把当前工作流尺寸告知 LLM，并禁止它写会触发尺寸改写的比例/档位词（v7.10.8）
+    mgr, ctx = _fake_manager("1girl, long hair", size=(832, 1216))
+    await mgr.ai_imagine("", "wf1")
+    check("prompt 带当前画布尺寸", "832×1216" in ctx.last_prompt, ctx.last_prompt[:300])
+    check("prompt 禁止比例词", "portrait / landscape" in ctx.last_prompt)
 
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 1 if _fail else 0

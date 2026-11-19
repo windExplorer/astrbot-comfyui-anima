@@ -212,6 +212,7 @@ const p = reactive<StudioGenerateParams>({
   sampler: "",
   noise_schedule: "",
   custom_size: null,
+  size_from_prompt: lsGet("anima_studio_auto_size") === "1",
   loras: [],
   disabled_loras: [],
   ref_ids: [],

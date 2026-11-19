@@ -116,6 +116,8 @@ export interface StudioGenerateParams {
   sampler: string;
   noise_schedule: string;
   custom_size: boolean | null;
+  /** v7.10.8：自动尺寸——允许提示词里的比例/档位词（portrait/9:16/高清）改写尺寸；默认关 */
+  size_from_prompt: boolean;
   loras: StudioLoraSel[];
   /** v7.10.6：被取消勾选的「工作流自带 LoRA」名字，后端据此真排除（不是权重置 0） */
   disabled_loras: string[];

@@ -44,6 +44,22 @@
       />
     </div>
     <div v-if="wfSizeLabel.text" class="ctrl-hint">{{ wfSizeLabel.text }}</div>
+    <!-- v7.10.8：自动尺寸开关——关闭时提示词里的 portrait/9:16/高清 不会偷偷改尺寸 -->
+    <div class="size-mode">
+      <span class="ctrl-label">自动尺寸</span>
+      <n-tooltip trigger="hover" placement="bottom-start">
+        <template #trigger>
+          <n-switch
+            :value="params.size_from_prompt"
+            size="small"
+            @update:value="onAutoSizeChange"
+          />
+        </template>
+        开启后，提示词里的比例词（如 9:16 / portrait / landscape）与档位词（高清 / 2K）
+        会自动决定出图尺寸；关闭时严格跟随上方所选尺寸或工作流默认。
+      </n-tooltip>
+      <span class="auto-size-note">{{ params.size_from_prompt ? "提示词可改尺寸" : "跟随所选 / 工作流默认" }}</span>
+    </div>
     <div v-if="mode !== 't2i'" class="size-mode">
       <span class="ctrl-label">尺寸来源</span>
       <n-radio-group :value="params.custom_size" size="tiny" @update:value="(v: boolean | null) => (params.custom_size = v)">
@@ -132,6 +148,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { lsSet } from "@/api/storage";
 import type { StudioGenerateParams, StudioSizeRatio, StudioSizeTier, StudioWorkflow } from "@/api/studio";
 
 const props = defineProps<{
@@ -229,6 +246,11 @@ watch(
   { immediate: true }
 );
 
+function onAutoSizeChange(v: boolean) {
+  props.params.size_from_prompt = v;
+  lsSet("anima_studio_auto_size", v ? "1" : "0");
+}
+
 function applyRatio() {
   if (!ratioSel.value) {
     // 清空 → 跟随工作流默认
@@ -277,6 +299,7 @@ watch(
 .size-row { display: flex; gap: 8px; align-items: center; }
 .size-x { color: var(--text-sub); }
 .size-mode { display: flex; align-items: center; gap: 8px; }
+.auto-size-note { font-size: 11px; color: var(--text-sub); }
 .ctrl-row { display: flex; align-items: center; gap: 8px; }
 .ctrl-label { font-size: 12px; color: var(--text-sub); flex: none; width: 44px; }
 .ctrl-hint { font-size: 11px; color: var(--text-sub); opacity: 0.85; }

@@ -436,6 +436,9 @@ class StudioJobManager:
         custom_size = params.get("custom_size")
         if custom_size is not None:
             custom_size = bool(custom_size)
+        # v7.10.8：工作台「自动尺寸」默认关——禁止提示词里的比例/档位词改写尺寸，
+        # 让「跟随工作流默认」名副其实。聊天侧不传该参数，_do_draw 默认仍为 True。
+        size_from_prompt = bool(params.get("size_from_prompt", False))
         # v7.9.7：llm_refine 概念移除——润色是提示词区里的即用即点动作按钮
         # （用户点 🪄 就地改写输入框），提交永远用输入框最终文本（raw_prompt=True）。
 
@@ -498,6 +501,7 @@ class StudioJobManager:
             "sampler": sampler,
             "noise_schedule": noise_schedule,
             "custom_size": custom_size,
+            "size_from_prompt": size_from_prompt,
             "loras": loras,
             "disabled_loras": disabled_loras,
             "ref_ids": ref_ids,
@@ -605,6 +609,7 @@ class StudioJobManager:
                 custom_size=clean["custom_size"],
                 external=True,
                 disabled_loras=clean["disabled_loras"] or None,
+                size_from_prompt=clean["size_from_prompt"],
             )
             async for _node, img_path in gen:
                 if img_path:
@@ -1254,6 +1259,23 @@ class StudioManager:
             )
 
         bm_line = f"当前底模：{bm_name}。" if bm_name else ""
+        # v7.10.8：把当前工作流默认尺寸告知 LLM——让它按这个画幅构思构图，且不要
+        # 在提示词里写比例/档位词（这类词会被出图链路当成尺寸指令，覆盖工作流默认）。
+        # 镜头/构图描述（wide shot、特写等）不受限制。
+        size_line = ""
+        if wf_entry is not None:
+            try:
+                _dw, _dh = wf_entry.get("default_width"), wf_entry.get("default_height")
+                if _dw and _dh:
+                    _w, _h = int(_dw), int(_dh)
+                    size_line = (
+                        f"当前工作流默认画布：{_w}×{_h}（约 {_w / _h:.2f}:1），请按此画幅构思构图。"
+                        "不要在提示词里写 1:1 / 9:16 / portrait / landscape / 高清 / 2K 等"
+                        "尺寸或档位词（插件会自行处理尺寸）；镜头与构图描述"
+                        "（如 wide shot、特写、俯视）不受此限制。\n"
+                    )
+            except Exception:
+                size_line = ""
         zh_rule = (
             "紧接着用中文把上面的画面细节完整译成通顺描述（200~600 字，覆盖主体、外貌、"
             "服装、场景、光影、构图等主要信息）；"
@@ -1262,7 +1284,7 @@ class StudioManager:
         )
         prompt = (
             "你是顶级的 AI 绘画提示词创作师。请为用户创作一幅画面的提示词。\n"
-            f"{bm_line}{fmt}\n"
+            f"{bm_line}{size_line}{fmt}\n"
             f"{subject}\n"
             "【输出格式·必须严格遵守】只输出以下两段，不要任何其它说明：\n"
             "第 1 段：提示词正文。\n"

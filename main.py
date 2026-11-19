@@ -8208,6 +8208,10 @@ class ComfyUIDrawPlugin(Star):
         # v7.10.6：本次排除的工作流自带 LoRA 名字（WebUI 工作台取消勾选）。
         # 从 active_map 剔除，apply_loras 会真删/跳过对应节点；不影响其它调用方。
         disabled_loras: list[str] | None = None,
+        # v7.10.8：是否允许从提示词文本识别比例/档位词（portrait / 9:16 / 高清…）
+        # 改写尺寸。默认 True 保持聊天侧旧行为；工作台「自动尺寸」关闭时传 False，
+        # 让「跟随工作流默认」真正不被 AI 生成的提示词悄悄改掉。
+        size_from_prompt: bool = True,
     ):
         # raw_prompt（v7.7.46）：调用方声明「提示词已由它自己的 LLM 润色 + 翻译完成」时，
         # 本次出图完全跳过本插件的 LLM 处理（Anima/Qwen 改写、翻译兜底、短描述扩写），
@@ -8226,7 +8230,12 @@ class ComfyUIDrawPlugin(Star):
         # 但「尺寸比例」触发需基于**用户原话**（竖版/横版/9:16 等词）——
         # v7.0.17：此前这里是 LLM 生成的 positive，英文自然语言描述里的
         # `portrait` / `square` / `wide` 会命中内置 keyword，导致尺寸被悄悄改写。
-        _ratio_src = self._ratio_source_text(event, positive)
+        # v7.10.8：工作台「自动尺寸」关闭时，禁止把提示词当尺寸指令来源——
+        # 否则 AI 想画面/润色文本里的 portrait / landscape / 9:16 / 高清 会被
+        # _resolve_ratio_size 命中，悄悄覆盖用户选的「跟随工作流默认」。
+        _ratio_src = (
+            self._ratio_source_text(event, positive) if size_from_prompt else ""
+        )
         # 记录最近一次事件，供 LLM 工具在 event 异常时为兜底使用
         # （v7.6.2：同时按会话存一份，跨会话兜底会被 _last_event_for 拒绝）
         # v7.8.4：无头桩（外部插件调用）不记——写进去会把原生调用的兜底
