@@ -71,12 +71,11 @@ function kindLabel(kind: string | null): string {
   return "未知";
 }
 
-/** 下拉选项：类型徽章 + 名称 + 底模 + 多参考标（teleport 仍带本组件 scoped 属性，样式生效） */
+/** 下拉选项：名称 + 底模 + 多参考标（v7.10.10 去掉文生图/图生图前缀——模式已过滤类型，前缀多余） */
 function renderWfLabel(o: any) {
   const w = o?.wf as StudioWorkflow | undefined;
   if (!w) return String(o?.label ?? "");
   const kids: any[] = [
-    h("span", { class: "kind-badge " + (w.kind || "unknown") }, kindLabel(w.kind)),
     h("span", { class: "wf-opt-name" }, w.name),
   ];
   if (w.basemodel_name) kids.push(h("span", { class: "wf-opt-meta" }, w.basemodel_name));
