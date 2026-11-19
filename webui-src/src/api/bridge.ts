@@ -267,7 +267,10 @@ export function isStandaloneMode(): boolean {
 
 async function standaloneRequest(path: string, method: string, body?: any, timeoutMs?: number, tokenOverride?: string): Promise<any> {
   const clean = path.replace(/^\//, "").replace(/\/+/g, "/");
-  const tmo = (timeoutMs && timeoutMs > 0) ? timeoutMs : 15000;
+  // v7.10.2：默认 15s → 60s。图库检索（逐条 gidx COUNT）/统计（多条聚合）在图片量大时
+  // 会逼近 15s，AbortController 截断后前端只报「请求超时（15s 无响应）」，掩盖了真实耗时。
+  // 调用方仍可显式传 timeout 覆盖。
+  const tmo = (timeoutMs && timeoutMs > 0) ? timeoutMs : 60000;
   const url = "/api/" + clean;
   const headers: Record<string, string> = {};
   // 若显式指定 token（如分享站的分享令牌），用它，否则用本地口令。
@@ -379,7 +382,7 @@ export function characterRefUrl(id: number | string, size?: number, ver = ""): s
 }
 
 /** 缩略图/大图拉取封装：独立模式返回直链 URL（<img> 直接用），内嵌页返回 base64 data URL。 */
-export async function fetchThumb(sha: string, size = 300, timeout = 15000): Promise<string> {
+export async function fetchThumb(sha: string, size = 300, timeout = 60000): Promise<string> {
   if (isStandaloneMode()) {
     return standaloneImgUrl(sha, size);
   }

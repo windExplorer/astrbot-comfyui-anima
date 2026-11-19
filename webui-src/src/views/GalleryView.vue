@@ -264,6 +264,11 @@ import { useDevice } from "@/composables/useDevice";
 import ImageViewer from "@/components/ImageViewer.vue";
 import Pager from "@/components/Pager.vue";
 
+// 图库接口统一给足 60s：gallery/search 要逐条算 gidx COUNT、gallery/stats 有多条聚合，
+// 图库量大时 bridge 默认超时（独立 15s / 内嵌 6s）会把请求误截断成「请求超时」。
+const gApiGet = (path: string, params?: Record<string, any>) => apiGet(path, params, { timeout: 60000 });
+const gApiPost = (path: string, body?: any) => apiPost(path, body, { timeout: 60000 });
+
 const message = useMessage();
 const dialog = useDialog();
 const { isMobile } = useDevice();
@@ -322,7 +327,7 @@ async function runBatch(action: string) {
   if (!shas.length) { message.warning("请先选择图片"); return; }
   batching.value = true;
   try {
-    const res: any = await apiPost("gallery/batch", { action, shas });
+    const res: any = await gApiPost("gallery/batch", { action, shas });
     const ok = res?.ok ?? 0;
     const failed = res?.failed ?? 0;
     const verb = action === "delete" ? "移入回收站" : action === "restore" ? "恢复" : "彻底删除";
@@ -370,7 +375,7 @@ const scanState = ref<{ running: boolean; total: number; done: number; nsfw: num
   running: false, total: 0, done: 0, nsfw: 0, finished_at: null,
 });
 function startScan() {
-  apiGet("gallery/scan_nsfw", { only: 1 })
+  gApiGet("gallery/scan_nsfw", { only: 1 })
     .then((res: any) => { scanState.value = { ...scanState.value, ...res }; })
     .catch((e: any) => {
       if (isNsfwUnavailable(e)) showNsfwInstallDialog();
@@ -386,7 +391,7 @@ function startRescan() {
     negativeText: "取消",
     onPositiveClick: () => {
       return new Promise((resolve, reject) => {
-        apiGet("gallery/scan_nsfw", { only: 0 })
+        gApiGet("gallery/scan_nsfw", { only: 0 })
           .then((res: any) => {
             scanState.value = { ...scanState.value, ...res };
             message.success("已开始全量重新检测");
@@ -414,7 +419,7 @@ function showNsfwInstallDialog() {
   });
 }
 function refreshScanProgress() {
-  apiGet("gallery/scan_nsfw_progress")
+  gApiGet("gallery/scan_nsfw_progress")
     .then((res: any) => {
       scanState.value = { ...scanState.value, ...res };
       if (res?.finished_at && !res?.running) {
@@ -451,7 +456,7 @@ function cutName(name: string): string {
 
 async function loadStats() {
   try {
-    stats.value = await apiGet("gallery/stats");
+    stats.value = await gApiGet("gallery/stats");
     // 平台筛选下拉：基于图库真实存在的平台分布动态生成选项
     const ps = (stats.value && stats.value.platforms) || [];
     platformOptions.value = [{ label: "全部平台", value: "" }].concat(
@@ -524,7 +529,7 @@ async function doSearch(p: number) {
   // 结果集变化（翻页/搜索/切 tab）时清空已选，避免跨页误删
   if (selected.value.size) selected.value = new Set();
   try {
-    const data = await apiGet("gallery/search", {
+    const data = await gApiGet("gallery/search", {
       keyword: search.value.trim(),
       user: userSearch.value.trim(),
       tag: tagFilter.value.trim(),
@@ -569,7 +574,7 @@ function onPageSize(s: number) {
 
 function backupDb() {
   message.loading("正在备份数据库…", { duration: 15000 });
-  apiGet("gallery/backup").then((d) => {
+  gApiGet("gallery/backup").then((d) => {
     if (!d || !d.data_url) throw new Error("备份数据为空");
     const mimeMatch = String(d.data_url).match(/^data:([^;,]+)/);
     const mime = mimeMatch ? mimeMatch[1] : "application/octet-stream";
@@ -621,7 +626,7 @@ function onViewerNav(delta: number) {
 
 function onStar(img: any) {
   const sha = img.sha || img.sha256;
-  apiPost("gallery/star", { sha, on: !img.starred }).then(() => {
+  gApiPost("gallery/star", { sha, on: !img.starred }).then(() => {
     img.starred = !img.starred;
     message.success(img.starred ? "已收藏" : "已取消收藏");
     doSearch(page.value);
@@ -633,7 +638,7 @@ function onStar(img: any) {
 async function deleteImage(img: any) {
   const sha = img.sha || img.sha256;
   try {
-    await apiPost("gallery/delete", { sha });
+    await gApiPost("gallery/delete", { sha });
     message.success("已移入回收站");
     if (viewerShow.value) viewerShow.value = false;
     doSearch(page.value);
@@ -656,7 +661,7 @@ function onDelete(img: any) {
 
 function onRestore(img: any) {
   const sha = img.sha || img.sha256;
-  apiPost("gallery/restore", { sha }).then(() => {
+  gApiPost("gallery/restore", { sha }).then(() => {
     message.success("已恢复");
     viewerShow.value = false;
     doSearch(page.value);
@@ -667,7 +672,7 @@ function onRestore(img: any) {
 // 卡片「恢复」快捷操作（回收站视图）
 function restoreImage(img: any) {
   const sha = img.sha || img.sha256;
-  apiPost("gallery/restore", { sha }).then(() => {
+  gApiPost("gallery/restore", { sha }).then(() => {
     message.success("已恢复");
     doSearch(page.value);
     loadStats();
@@ -683,7 +688,7 @@ function onPurge(img: any) {
     negativeText: "取消",
     onPositiveClick: async () => {
       try {
-        await apiPost("gallery/purge", { sha });
+        await gApiPost("gallery/purge", { sha });
         message.success("已彻底删除");
         viewerShow.value = false;
         doSearch(page.value);
@@ -698,7 +703,7 @@ function onPurge(img: any) {
 // 卡片「彻底删除」快捷操作（回收站视图）：二次确认交给卡片 popconfirm，这里只发请求
 function purgeImage(img: any) {
   const sha = img.sha || img.sha256;
-  apiPost("gallery/purge", { sha }).then(() => {
+  gApiPost("gallery/purge", { sha }).then(() => {
     message.success("已彻底删除");
     doSearch(page.value);
     loadStats();

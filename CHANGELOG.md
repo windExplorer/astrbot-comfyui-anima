@@ -3,6 +3,37 @@
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 
+## v7.10.2（图库超时：前端默认 15s→60s + stats 挪出事件循环，治「请求超时（15s 无响应）」）
+
+现象（用户 2026-11-19 反馈）：图库页经常报「请求超时（15s 无响应）」。
+
+根因（前端硬截断 + 后端偏慢叠加，不是服务端有 15s 限制）：
+- `bridge.ts:270` 的 standaloneRequest 默认超时**写死 15000ms**（内嵌 `bridgeRequest`
+  更短，仅 6000ms），到点 `AbortController.abort()` → 报上述文案。
+- `GalleryView.vue` 的 13 个图库调用（search / stats / batch / backup / star / delete /
+  restore / purge / scan_nsfw）**全部没传 `{ timeout }`**，吃到默认值。对照证据：
+  `studio.ts:185` 的 `recentGens` 同样调 `gallery/search` 但显式传了 20000，所以
+  「最近成品」一直正常、只有整页图库超时。
+- 后端促因：`image_store.search()` 对每条结果调一次 `_gidx_rank()`（一次 COUNT 范围
+  扫描），每页 20 张就是 20 次 COUNT；`gallery/stats` 约 10 条同步 SQLite COUNT
+  （含 `image_tags` 的 `COUNT(DISTINCT …) JOIN`）直接在 async handler 里跑，
+  **阻塞事件循环**，放大所有并发请求的等待。图库越大越容易逼近 15s。
+
+修复（止血 + 去阻塞；N+1 批量化留待下一版单独做）：
+- **前端**（`bridge.ts` / `GalleryView.vue`）：standalone 默认超时 15000 → **60000**，
+  `fetchThumb` 默认同步放宽到 60000（独立模式走 `/img/{sha}/thumb` 直链本就不吃此超时，
+  主要是内嵌页的 `gallery/thumb` 受益）；`GalleryView.vue` 增加 `gApiGet/gApiPost`
+  两个本地封装统一传 `{ timeout: 60000 }`，13 个调用点全量替换——这样即使日后 bridge
+  默认值再被改小，图库仍受保护，内嵌通道的 6s 默认也被覆盖。
+- **后端**（`webui_api.gallery_stats` / `standalone_webui._api_gallery`）：`g.stats()` 改为
+  `await asyncio.to_thread(g.stats)`，统计聚合不再卡事件循环；两条通道口径一致。
+
+未做：`_gidx_rank` 逐条 COUNT 的 N+1 尚未改批量 SQL，大图库下 search 仍可能数秒——
+这次只是把误截断的上限放开、并去掉事件循环阻塞，让慢请求能正常返回而不是被判超时。
+
+验证：`compileall`、`test_static_lint.py`（pyflakes）、`test_character_webui.py`（109/0）
+通过；`build_webui.ps1` + `build_zip.ps1` 成功，图库 13 个调用点与两处 stats 已核对。
+
 ## v7.10.1（在线生图页：🇨🇳 看译文——英文提示词一键翻译成中文，按需触发弹窗展示）
 
 需求（用户 2026-11-19 提出）：在线生图页想看生成的英文提示词是什么意思。做成按钮点击

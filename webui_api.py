@@ -664,7 +664,9 @@ class WebUIApi:
         if g is None:
             return error_response("图库未启用或初始化失败")
         try:
-            return json_response(g.stats())
+            # v7.10.2：stats 是 ~10 条同步 SQLite COUNT（含 image_tags 的 DISTINCT JOIN），
+            # 直接在 async handler 里跑会卡住事件循环、放大其它图库请求的延迟。
+            return json_response(await asyncio.to_thread(g.stats))
         except Exception as e:
             return error_response(f"统计失败: {e}")
 

@@ -931,7 +931,8 @@ class StandaloneWebUI:
         if g is None:
             return _err("图库未启用或初始化失败")
         if path == "/gallery/stats":
-            return _ok(g.stats())
+            # v7.10.2：stats 含多条同步 SQLite 聚合，丢线程池执行，避免阻塞事件循环
+            return _ok(await asyncio.to_thread(g.stats))
         if path == "/gallery/search":
             kw = self._q(request, "keyword", "")
             # 昵称 / QQ 过滤：与内嵌通道（webui_api.gallery_search）保持一致。
