@@ -1409,6 +1409,7 @@ class StandaloneWebUI:
             "/studio/samplers": ("studio_samplers", "GET"),
             "/studio/ai_imagine": ("studio_ai_imagine", "POST"),
             "/studio/llm_prompt": ("studio_llm_prompt", "POST"),
+            "/studio/translate_prompt": ("studio_translate_prompt", "POST"),
             "/studio/templates": ("studio_templates", "GET"),
             "/studio/templates/save": ("studio_templates_save", "POST"),
             "/studio/templates/delete": ("studio_templates_delete", "POST"),

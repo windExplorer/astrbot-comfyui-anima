@@ -33,6 +33,7 @@
       <n-button size="small" @click="emit('rerun')">🎲 换种子重跑</n-button>
       <n-button size="small" :loading="refing" @click="useAsRef">🖼 用作图生图</n-button>
       <n-button size="small" quaternary @click="copyPrompt">📋 复制提示词</n-button>
+      <n-button size="small" quaternary :loading="transLoading" @click="openTranslation">🇨🇳 看译文</n-button>
     </div>
 
     <!-- 会话成果条（v7.9.5：支持单张移除与新建会话，仅页面级——成品仍在图库） -->
@@ -60,12 +61,36 @@
       </div>
       <div v-else class="strip-empty">还没有成果——出一张图，或从右侧「最近成品」挑一张接着改</div>
     </div>
+
+    <!-- 提示词中文译文（v7.10.1：点「看译文」才请求，英文→中文，按需触发） -->
+    <n-modal
+      :show="transShow"
+      preset="card"
+      title="提示词中文译文"
+      :bordered="false"
+      style="width: min(680px, 92vw)"
+      :mask-closable="true"
+      @update:show="(v: boolean) => (transShow = v)"
+    >
+      <div v-if="transLoading" class="trans-loading">
+        <span class="trans-spin"></span> 正在翻译，请稍候…
+      </div>
+      <template v-else>
+        <p class="trans-hint">下面是这张图所用英文提示词的中文意思（按需翻译，仅供参考，不影响实际出图）：</p>
+        <div class="trans-label">原英文提示词</div>
+        <div class="trans-en">{{ transSource }}</div>
+        <div class="trans-label trans-label-zh">中文译文</div>
+        <div v-if="transError" class="trans-error">{{ transError }}</div>
+        <div v-else class="trans-zh">{{ transText }}</div>
+        <div class="trans-foot">翻译模型复用配置里的 translate_llm_model（留空走默认对话模型）</div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { downloadStudioImage } from "@/api/studio";
+import { downloadStudioImage, studioApi } from "@/api/studio";
 import { useMessage } from "naive-ui";
 import type { StudioGenerateParams, StudioJob } from "@/api/studio";
 
@@ -92,6 +117,14 @@ const emit = defineEmits<{
 const message = useMessage();
 const downloading = ref(false);
 const refing = ref(false);
+
+// 提示词译文：点「看译文」才请求（按需触发），按提示词文本缓存避免重复消耗 LLM
+const transShow = ref(false);
+const transLoading = ref(false);
+const transText = ref("");
+const transError = ref("");
+const transSource = ref("");
+const transCache = new Map<string, string>();
 
 /** 当前忙态是排队还是绘制中（activeHint 由父组件按 activeJob.state 生成） */
 const queued = computed(() => props.activeHint.includes("排队"));
@@ -128,6 +161,42 @@ async function copyPrompt() {
     message.success("提示词已复制");
   } catch {
     message.error("复制失败（浏览器剪贴板不可用）");
+  }
+}
+
+function currentPrompt(): string {
+  const cur = props.results.find((r) => r.sha === props.currentSha);
+  return cur?.params?.positive || "";
+}
+
+async function openTranslation() {
+  if (transLoading.value) return;
+  const text = currentPrompt();
+  if (!text) {
+    message.warning("这张图没有提示词信息");
+    return;
+  }
+  transSource.value = text;
+  transError.value = "";
+  transShow.value = true;
+  const cached = transCache.get(text);
+  if (cached !== undefined) {
+    transText.value = cached;
+    return;
+  }
+  transText.value = "";
+  transLoading.value = true;
+  try {
+    const d = await studioApi.translatePrompt(text);
+    const out = (d?.text || "").trim();
+    if (!out) throw new Error("译文为空");
+    transText.value = out;
+    transCache.set(text, out);
+  } catch (e: any) {
+    transText.value = "";
+    transError.value = e?.message || "翻译失败，请稍后重试";
+  } finally {
+    transLoading.value = false;
   }
 }
 </script>
@@ -251,4 +320,33 @@ async function copyPrompt() {
 .strip-empty { font-size: 11px; color: var(--text-sub); line-height: 1.6; padding: 4px 0; }
 .strip-item.active, .strip-item:hover { border-color: var(--accent); }
 .strip-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 提示词译文弹窗（v7.10.1） */
+.trans-loading {
+  display: flex; align-items: center; gap: 10px;
+  padding: 30px 4px; color: var(--text-sub); font-size: 13px;
+}
+.trans-spin {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: trans-spin 0.8s linear infinite;
+}
+@keyframes trans-spin { to { transform: rotate(360deg); } }
+.trans-hint { margin: 0 0 14px; font-size: 12px; color: var(--text-sub); line-height: 1.6; }
+.trans-label { font-size: 12px; font-weight: 600; color: var(--text-sub); margin-bottom: 6px; }
+.trans-label-zh { margin-top: 16px; color: var(--accent); }
+.trans-en, .trans-zh {
+  max-height: 240px; overflow: auto; padding: 12px 14px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
+  border: 1px solid var(--border-color);
+  font-size: 13px; line-height: 1.75; white-space: pre-wrap; word-break: break-word;
+  user-select: text;
+}
+.trans-en { color: var(--text-sub); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.trans-zh { color: var(--text-main); font-size: 14px; }
+.trans-error {
+  padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.6;
+  color: #e86f9c; background: color-mix(in srgb, #e86f9c 10%, transparent);
+}
+.trans-foot { margin-top: 14px; font-size: 11px; color: var(--text-sub); opacity: 0.8; }
 </style>

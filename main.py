@@ -3539,6 +3539,47 @@ class ComfyUIDrawPlugin(Star):
         out = " ".join(out.split())
         return out
 
+    async def _translate_to_chinese_llm(self, text: str) -> str:
+        """用 LLM 把英文生图提示词（Danbooru 标签串）译成通顺中文画面描述。
+
+        与 _translate_llm（中文→英文标签）方向相反，专供在线生图页「看译文」按钮
+        在需要时调用：让用户看懂自己/AI 生成的英文提示词到底画了什么。
+        复用 translate_llm_model（留空走 AstrBot 当前默认对话模型）与
+        llm_rewrite_timeout；失败时抛 RuntimeError，由调用方给出明确提示。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("译文未配置可用模型（translate_llm_model 留空且无默认 provider）")
+        prompt = (
+            "你是动漫生图提示词翻译器。用户会给你一串英文生图提示词（Danbooru 风格标签，"
+            "可能含画质前缀、人物外貌、服装、场景、光影、画风、镜头等）。请把它们忠实翻译"
+            "成通顺自然的中文画面描述，让人一眼看懂这张图大概画了什么。要求：\n"
+            "1. 只输出中文译文，不要英文原文、不要解释、不要序号、不要 JSON。\n"
+            "2. 保留每个标签的含义（如 1girl=一个女孩、long hair=长发、blue eyes=蓝眼睛），"
+            "可把同类信息合并成一两句通顺中文，但不要新增原文没有的内容。\n"
+            "3. 画质前缀（masterpiece / best quality / ultra-detailed 等）可简要概括，"
+            "不必逐词罗列。\n\n"
+            f"英文提示词：\n{text}\n\n"
+            "中文译文："
+        )
+        try:
+            timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("translate", provider_id, llm_resp)
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"译文生成超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"译文生成失败: {e}") from e
+        out = out.strip().strip("`").strip()
+        out = " ".join(out.split())
+        if not out:
+            raise RuntimeError("译文为空（模型未返回内容）")
+        return out
+
     async def _rewrite_to_anima_llm(self, text: str, lora_ref: str = "") -> str:
         """用 LLM 把一段自然语言描述（可能中英混杂）改写为纯英文 Anima 生图提示词。
 

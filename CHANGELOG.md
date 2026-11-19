@@ -3,6 +3,31 @@
 本文件记录插件各版本的改动。版本号与 `metadata.yaml` 保持一致。
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 
+## v7.10.1（在线生图页：🇨🇳 看译文——英文提示词一键翻译成中文，按需触发弹窗展示）
+
+需求（用户 2026-11-19 提出）：在线生图页想看生成的英文提示词是什么意思。做成按钮点击
+弹窗展示译文，触发式翻译（不随生图自动跑），只需要英文翻译成中文。
+
+实现：
+- **后端**（`main.py` 新增 `_translate_to_chinese_llm`，`webui_api.py` 新增
+  `POST studio/translate_prompt`，双通道注册——`standalone_webui.py` 的
+  `_api_studio` handler 表同步加映射，独立 WebUI 可用）：
+  - 与现有 `_translate_llm`（中文描述→英文 Danbooru 标签）**方向相反**：把英文标签串
+    忠实译成通顺中文画面描述，只输出中文、不新增原文没有的内容、画质前缀简要概括。
+  - 复用 `translate_llm_model`（留空走 AstrBot 当前默认对话模型）与
+    `llm_rewrite_timeout` 超时，token 以 `translate` 场景入账 token_store；
+    无可用模型/超时/空结果均抛 `RuntimeError`，handler 转成明确错误文案。
+  - 未复用 `translate_api`：该接口现有字段映射（`result_field` / `append_original`）
+    语义固定为「中→英标签」，强行反向会拿到不符预期的产物；LLM 路径无需用户额外配置。
+- **前端**（`api/studio.ts` 加 `studioApi.translatePrompt`，`ResultPanel.vue`）：
+  - 画布操作条「📋 复制提示词」旁新增 **🇨🇳 看译文** 按钮，点击才发请求；数据取自当前
+    会话条目的 `params.positive`（与复制提示词同一口径）。
+  - `n-modal` 弹窗同时展示原英文与中文译文，含加载态与错误态；按提示词文本在前端
+    `Map` 缓存译文，同一张图反复点不重复消耗 LLM。译文仅供参考，不影响实际出图。
+
+验证：`compileall` 三文件通过；`build_webui.ps1` 构建通过；后端路由表双通道映射核对，
+前端构建产物含新按钮与端点。
+
 ## v7.10.0（在线生图页：🎲 AI 想画面——按当前工作流底模格式自由创作提示词）
 
 需求（用户 2026-11-19 提出）：加一个「直接用 AI 生成提示词」的功能——AI 自由发挥想一幅

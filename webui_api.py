@@ -3673,6 +3673,20 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"AI 生成提示词失败: {e}")
 
+    async def studio_translate_prompt(self):
+        """把英文生图提示词译成中文（在线生图页「看译文」按钮，按需调用）。"""
+        try:
+            body = await request.json(default={}) or {}
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return error_response("缺少待翻译的提示词 text")
+            out = await self.plugin._translate_to_chinese_llm(text)
+            return json_response({"text": out})
+        except RuntimeError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"提示词译文生成失败: {e}")
+
     async def studio_templates(self):
         try:
             studio = self._studio()
@@ -4018,6 +4032,7 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/studio/samplers", _h("studio_samplers"), ["GET"], "采样器/调度器枚举（object_info）"),
         (f"{prefix}/studio/ai_imagine", _h("studio_ai_imagine"), ["POST"], "AI 自由生成一幅画面的提示词"),
         (f"{prefix}/studio/llm_prompt", _h("studio_llm_prompt"), ["POST"], "AI 生成/润色提示词"),
+        (f"{prefix}/studio/translate_prompt", _h("studio_translate_prompt"), ["POST"], "英文提示词译中文（看译文）"),
         (f"{prefix}/studio/templates", _h("studio_templates"), ["GET"], "提示词模板列表"),
         (f"{prefix}/studio/templates/save", _h("studio_templates_save"), ["POST"], "提示词模板保存"),
         (f"{prefix}/studio/templates/delete", _h("studio_templates_delete"), ["POST"], "提示词模板删除"),
