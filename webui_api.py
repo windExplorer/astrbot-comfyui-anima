@@ -918,7 +918,20 @@ class WebUIApi:
             except Exception:
                 pass
 
-            def _wf_now(origin: str, is_i2i: bool) -> dict:
+            def _sid_of_umo(origin: str) -> str:
+                """从 UMO 取纯 session_id（g_session_workflow 的键口径）。"""
+                if ":" in origin:
+                    return origin.split(":", 2)[-1].strip()
+                return (origin or "").strip()
+
+            def _wf_now(origin: str, is_i2i: bool, stat: dict) -> dict:
+                """v7.11.5 重写：区分「最后一次实际出图用的」与「后续将使用的」。
+
+                - last_used：图库 images.workflow 最近一条（真实出图结果，t2i/i2i 分开）
+                - name：后续要使用的工作流，优先级与 _resolve_workflow 一致：
+                  固定 > 会话设置(wf_*) > 对话记忆(g_session_workflow，仅 t2i) > 全局默认
+                - source：name 的来源（固定/会话设置/对话记忆/全局默认）
+                """
                 sc = by_origin.get(origin) or {}
                 pin_key = "pin_i2i" if is_i2i else "pin_t2i"
                 wf_key = "wf_i2i" if is_i2i else "wf_t2i"
@@ -926,7 +939,8 @@ class WebUIApi:
                 name = str(sc.get(wf_key) or "").strip()
                 source = "会话设置"
                 if not name and not is_i2i:
-                    name = str(mem.get(origin, "") or "").strip()
+                    # 修复 v7.11.3 遗留的 key 不匹配：mem 是纯 session_id 键
+                    name = str(mem.get(_sid_of_umo(origin), "") or "").strip()
                     if name:
                         source = "对话记忆"
                 if not name:
@@ -937,7 +951,13 @@ class WebUIApi:
                     source = "全局默认"
                 if pinned:
                     source = "固定"
-                return {"name": name, "pinned": pinned, "source": source}
+                # 最后一次实际出图用的工作流（与「后续将用」分开呈现）
+                last_key = "recent_i2i_workflow" if is_i2i else "recent_workflow"
+                last_used = str((stat or {}).get(last_key) or "").strip()
+                return {
+                    "name": name, "pinned": pinned, "source": source,
+                    "last_used": last_used,
+                }
 
             out: list[dict] = []
             for origin, sc in by_origin.items():
@@ -970,8 +990,8 @@ class WebUIApi:
                     "recent_workflow": s.get("recent_workflow", ""),
                     "recent_i2i_workflow": s.get("recent_i2i_workflow", ""),
                     "usage": usage,
-                    "wf_now_t2i": _wf_now(origin, False),
-                    "wf_now_i2i": _wf_now(origin, True),
+                    "wf_now_t2i": _wf_now(origin, False, s),
+                    "wf_now_i2i": _wf_now(origin, True, s),
                 })
                 out.append(item)
             out.sort(key=lambda x: (float(x.get("last_active") or 0), float(x.get("last_draw") or 0)), reverse=True)

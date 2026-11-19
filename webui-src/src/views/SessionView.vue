@@ -85,12 +85,16 @@
             </div>
             <div class="line2">
               <span class="wf-chip" :class="{ pinned: s.wf_now_t2i.pinned }">
-                文生图：{{ s.wf_now_t2i.name || '—' }}
+                文生图 · 上次：{{ s.wf_now_t2i.last_used || '—' }}
                 <em v-if="s.wf_now_t2i.pinned">固定</em>
               </span>
               <span class="wf-chip" :class="{ pinned: s.wf_now_i2i.pinned }">
-                图生图：{{ s.wf_now_i2i.name || '—' }}
+                图生图 · 上次：{{ s.wf_now_i2i.last_used || '—' }}
                 <em v-if="s.wf_now_i2i.pinned">固定</em>
+              </span>
+              <span class="wf-next">
+                后续：文生图「{{ s.wf_now_t2i.name || '—' }}」{{ s.wf_now_t2i.source }} ·
+                图生图「{{ s.wf_now_i2i.name || '—' }}」{{ s.wf_now_i2i.source }}
               </span>
             </div>
             <div class="line3">
@@ -126,26 +130,32 @@
         </div>
 
         <div v-if="!draft.is_plugin" class="form-section">
-          <div class="section-title">固定工作流</div>
+          <div class="section-title">工作流</div>
+          <div class="form-tip" style="margin-top:-4px">
+            选「跟随全局 / 留空」即让本会话跟随全局默认、并允许 AI 对话动态切换；选具体工作流即手动指定后续使用，
+            AI 对话仍可动态改写（除非打开下方的「固定」）。
+          </div>
           <div class="wf-grid">
             <div class="wf-box">
-              <div class="wf-head">文生图工作流</div>
+              <div class="wf-head">文生图 · 后续使用</div>
               <n-select v-model:value="draft.wf_t2i" size="small" :options="wfOptions" clearable placeholder="跟随全局 / 对话设置" />
               <div class="wf-fix">
                 <span>固定（固定后对话无法更改）</span>
                 <n-switch v-model:value="draft.pin_t2i" size="small" />
               </div>
+              <div class="wf-last">上次实际使用：{{ draft.wf_now_t2i.last_used || '—' }}</div>
             </div>
             <div class="wf-box">
-              <div class="wf-head">图生图工作流</div>
+              <div class="wf-head">图生图 · 后续使用</div>
               <n-select v-model:value="draft.wf_i2i" size="small" :options="wfOptions" clearable placeholder="跟随全局" />
               <div class="wf-fix">
                 <span>固定（固定后对话无法更改）</span>
                 <n-switch v-model:value="draft.pin_i2i" size="small" />
               </div>
+              <div class="wf-last">上次实际使用：{{ draft.wf_now_i2i.last_used || '—' }}</div>
             </div>
           </div>
-          <div class="form-tip">当前生效：文生图「{{ draft.wf_now_t2i.name || '—' }}」（{{ draft.wf_now_t2i.source }}） · 图生图「{{ draft.wf_now_i2i.name || '—' }}」（{{ draft.wf_now_i2i.source }}）</div>
+          <div class="form-tip">后续将用：文生图「{{ draft.wf_now_t2i.name || '—' }}」（{{ draft.wf_now_t2i.source }}） · 图生图「{{ draft.wf_now_i2i.name || '—' }}」（{{ draft.wf_now_i2i.source }}）</div>
         </div>
 
         <div v-if="!draft.is_plugin" class="form-section">
@@ -195,7 +205,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { apiGet, apiPost } from "@/api/bridge";
 import { useMessage, useDialog } from "naive-ui";
 
-interface WfNow { name: string; pinned: boolean; source: string }
+interface WfNow { name: string; pinned: boolean; source: string; last_used: string }
 interface SessionItem {
   origin: string;
   name: string;
@@ -534,6 +544,8 @@ async function resetUsage() {
 .wf-chip { font-size: 11px; padding: 3px 8px; border-radius: 7px; background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-sub); }
 .wf-chip.pinned { border-color: var(--accent); color: var(--text-main); }
 .wf-chip em { font-style: normal; color: #e74c3c; margin-left: 4px; }
+.wf-next { font-size: 11px; color: var(--text-sub); }
+.wf-last { font-size: 11px; color: var(--accent); margin-top: 2px; }
 .line3 { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 7px; font-size: 11px; color: var(--text-sub); }
 .line3 .note { color: var(--accent); }
 .session-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

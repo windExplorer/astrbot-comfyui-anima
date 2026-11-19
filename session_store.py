@@ -524,10 +524,15 @@ class SessionStore:
                     ca = float(r["created_at"] or 0)
                     if ca >= today:
                         st["draw_today"] += 1
-                    if not st["recent_workflow"] and (r["workflow"] or "").strip():
-                        st["recent_workflow"] = str(r["workflow"]).strip()
-                    if not st["recent_i2i_workflow"] and r["is_img2img"] and (r["workflow"] or "").strip():
-                        st["recent_i2i_workflow"] = str(r["workflow"]).strip()
+                    # v7.11.5：按 t2i / i2i 分开记「最后一次实际出图用的工作流」，
+                    # 二者互不污染（此前 recent_workflow 会把最新一张 i2i 也算进去）。
+                    _wf = str(r["workflow"] or "").strip()
+                    if _wf:
+                        if r["is_img2img"]:
+                            if not st["recent_i2i_workflow"]:
+                                st["recent_i2i_workflow"] = _wf
+                        elif not st["recent_workflow"]:
+                            st["recent_workflow"] = _wf
                     if ca > st["last_draw"]:
                         st["last_draw"] = ca
             except Exception as e:
