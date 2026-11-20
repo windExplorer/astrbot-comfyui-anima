@@ -9222,7 +9222,10 @@ class ComfyUIDrawPlugin(Star):
                             f"【LoRA】 工作流「{wf.get('name') or ''}」未配置底模，无法校验"
                             f"「{cmd_name}」的兼容性，按原样注入。建议在 WebUI 工作流配置里补填底模。"
                         )
-                    w = active_map.get(cmd_name)
+                    # v7.11.10：此处 w 是 LoRA 权重，**绝不能复用外层的宽度变量 w**——
+                    # 一旦 active_map 非空（--名称 临时启用 LoRA），w 被覆盖成权重 1.0，
+                    # 后续图库归档 _real_w 与结果卡「尺寸」都读到它，宽度全显示成 1。
+                    _lora_w = active_map.get(cmd_name)
                     loras_cfg = list(loras_cfg or []) + [
                         {
                             "name": cmd_name,
@@ -9230,8 +9233,8 @@ class ComfyUIDrawPlugin(Star):
                             "model_only": bool(lib_l.get("model_only", True)),
                             "weight": (
                                 self._safe_lora_weight(lib_l.get("weight", 1.0))
-                                if w is None
-                                else self._safe_lora_weight(w)
+                                if _lora_w is None
+                                else self._safe_lora_weight(_lora_w)
                             ),
                             "enabled": True,
                             "load_node": "",

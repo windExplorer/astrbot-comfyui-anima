@@ -123,6 +123,37 @@ def test_random_equivalence():
     print("PASS 800 组随机参数：_merge_active_loras 与抽取前逐字等价")
 
 
+def test_lora_weight_not_clobber_width() -> None:
+    """v7.11.10：LoRA 临时补全的权重变量不能复用外层宽度 w。
+
+    出图主流程里 w 在 9106 行由 _decide_draw_size 赋成宽度，结果卡「尺寸」用到它。
+    若补全 --名称 LoRA 时写 `w = active_map.get(cmd_name)`（权重，通常 1.0），
+    w 被覆盖，图库归档 _real_w 与结果卡宽度全变成 1。守卫该赋值改用独立变量名，
+    且宽度赋值点之后到结果卡之间不再有对 w 的覆盖。
+    """
+    _, src = _load()
+    assert "v7.11.10" in src, "缺少修复标记"
+    # 权重必须存进独立变量，而不是 w（按行精确匹配，避免子串误伤 _lora_w）
+    assert "_lora_w = active_map.get(cmd_name)" in src, "LoRA 权重没存进独立变量 _lora_w"
+    assert not any(ln.strip() == "w = active_map.get(cmd_name)" for ln in src.splitlines()), (
+        "LoRA 权重又写回宽度变量 w 了"
+    )
+    lines = src.splitlines()
+    def _at(needle: str) -> int:
+        return next(i for i, ln in enumerate(lines) if needle in ln)
+    width_at = _at("w, h, _wh_src = _decide_draw_size(")
+    card_at = _at('("尺寸", f"{locals().get(\'_real_w\') or w}')
+    # 宽度赋值之后、结果卡之前，不允许任何独立语句 `w = ...` 覆盖。
+    # 只匹配「缩进 + w + 空格= 空格」（Python 赋值语句风格），排除关键字参数 `w=_real_w,`。
+    import re
+    for i in range(width_at + 1, card_at):
+        assert not re.match(r"^\s+w = [^=]", lines[i]), (
+            f"第 {i+1} 行在宽度赋值后又覆盖了 w: {lines[i].strip()}"
+        )
+    print("PASS 宽度变量 w 未被 LoRA 权重覆盖（结果卡宽度不会被改成 1）")
+
+
 if __name__ == "__main__":
     test_fixed_scenarios()
     test_random_equivalence()
+    test_lora_weight_not_clobber_width()
