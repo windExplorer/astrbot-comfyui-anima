@@ -141,7 +141,9 @@
               <n-select v-model:value="draft.wf_t2i" size="small" :options="wfOptions" clearable placeholder="跟随全局 / 对话设置" />
               <div class="wf-fix">
                 <span>固定（固定后对话无法更改）</span>
-                <n-switch v-model:value="draft.pin_t2i" size="small" />
+                <!-- v7.11.9：后端 pin_* 是数字 1/0，n-switch 默认只认 boolean true，
+                     必须显式声明数字 checked/unchecked，否则「已固定」显示成关 -->
+                <n-switch v-model:value="draft.pin_t2i" :checked-value="1" :unchecked-value="0" size="small" />
               </div>
               <div class="wf-last">上次实际使用：{{ draft.wf_now_t2i.last_used || '—' }}</div>
             </div>
@@ -150,7 +152,7 @@
               <n-select v-model:value="draft.wf_i2i" size="small" :options="wfOptions" clearable placeholder="跟随全局" />
               <div class="wf-fix">
                 <span>固定（固定后对话无法更改）</span>
-                <n-switch v-model:value="draft.pin_i2i" size="small" />
+                <n-switch v-model:value="draft.pin_i2i" :checked-value="1" :unchecked-value="0" size="small" />
               </div>
               <div class="wf-last">上次实际使用：{{ draft.wf_now_i2i.last_used || '—' }}</div>
             </div>

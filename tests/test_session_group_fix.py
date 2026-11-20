@@ -381,6 +381,25 @@ def test_session_list_cross_platform_merge() -> None:
     print("== 7. 同群双平台前缀在列表层并成一条 OK")
 
 
+def test_session_pin_switch_numeric_value() -> None:
+    """v7.11.9：编辑弹窗的 pin 开关必须显式声明数字 checked/unchecked。
+
+    后端 pin_t2i/pin_i2i 是数字 1/0；n-switch 默认 checked-value=true（boolean），
+    裸绑数字 1 严格比较不等于 true → 「已固定」在弹窗里显示成关，与列表的
+    wf_now_t2i.pinned（后端算的 boolean）矛盾。守卫住两处都带数字值声明。
+    """
+    src = (ROOT / "webui-src" / "src" / "views" / "SessionView.vue").read_text(encoding="utf-8")
+    for field in ("pin_t2i", "pin_i2i"):
+        import re
+        m = re.search(r"<n-switch[^>]*v-model:value=\"draft\." + field + r"\"[^>]*/>", src)
+        assert m, f"没找到 {field} 的 n-switch"
+        tag = m.group(0)
+        assert ":checked-value=\"1\"" in tag and ":unchecked-value=\"0\"" in tag, (
+            f"{field} 的 n-switch 缺数字 checked/unchecked 声明：{tag}"
+        )
+    print("== 8. 编辑弹窗 pin 开关数字值绑定 OK")
+
+
 if __name__ == "__main__":
     test_history_stats_known_group()
     test_session_umo_and_name()
@@ -390,4 +409,5 @@ if __name__ == "__main__":
     test_session_list_merges_fake_private()
     test_session_list_cross_platform_merge()
     test_merge_group_sessions()
+    test_session_pin_switch_numeric_value()
     print("RESULT: session_group_fix OK")
