@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import sqlite3
 import sys
 import tempfile
@@ -134,7 +135,153 @@ def test_session_umo_and_name() -> None:
     print("== 2. 合成 event 的群 UMO 纠正 + 群名不被昵称覆盖 OK")
 
 
+def _make_gallery(root: Path, row: tuple) -> None:
+    """造一张最小图库行，供 history_stats 聚合。"""
+    gconn = sqlite3.connect(str(root / "gallery.db"))
+    gconn.execute(
+        "CREATE TABLE IF NOT EXISTS images (sha256 TEXT PRIMARY KEY, session_id TEXT, user_id TEXT, "
+        "user_name TEXT, group_name TEXT, group_id TEXT, workflow TEXT, "
+        "created_at REAL, is_img2img INT, deleted INT DEFAULT 0, status INT DEFAULT 0)"
+    )
+    gconn.execute(
+        "INSERT INTO images (sha256,session_id,user_id,user_name,group_name,group_id,workflow,created_at,is_img2img) "
+        "VALUES (?,?,?,?,?,?,?,?,?)", row,
+    )
+    gconn.commit()
+    gconn.close()
+
+
+def test_history_stats_no_snapshot() -> None:
+    """v7.11.7 盲区守卫：没点过同步联系人时，靠 sessions 表已登记的群行也要掰回群聊。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        st = SessionStore(root)
+        # contacts meta 完全缺失 → 旧实现 known_group_ids() 返回空集，修复形同虚设
+        assert st.known_group_ids() == set()
+        st.upsert("aiocqhttp:GroupMessage:1038800862", name="小叽大家族",
+                  is_group=True, group_id="1038800862")
+        assert st.known_group_ids() == {"1038800862"}
+        _make_gallery(root, ("b", "1038800862", "1479221500", "涟漪", "", "", "wf", time.time(), 0))
+        stats = st.history_stats()
+        assert "aiocqhttp:GroupMessage:1038800862" in stats, stats.keys()
+        assert "aiocqhttp:FriendMessage:1038800862" not in stats, stats.keys()
+        st.close()
+    print("== 3. 无联系人快照时靠 sessions 已登记群行掰回群聊 OK")
+
+
+def test_history_stats_group_name_hint() -> None:
+    """v7.11.7：图库旧图 group_id 为空时，group_name 命中已知群名也要判群聊。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        st = SessionStore(root)
+        # 群号故意不在快照里（id=999999），只有群名相同 → 只能靠 group_name 判据
+        st.set_meta("contacts", {
+            "groups": 1, "friends": 0, "friend_items": [],
+            "group_items": [{"id": "999999", "name": "小叽大家族"}],
+        })
+        assert st.known_group_names() == {"小叽大家族"}
+        assert "1038800862" not in st.known_group_ids()
+        _make_gallery(root, ("c", "1038800862", "1479221500", "涟漪", "小叽大家族", "", "wf", time.time(), 0))
+        stats = st.history_stats()
+        assert "aiocqhttp:GroupMessage:1038800862" in stats, stats.keys()
+        st.close()
+    print("== 4. 图库旧图 group_name 命中已知群名时判群聊 OK")
+
+
+def _load_webui_session_list() -> dict:
+    """用 AST 抠 WebUIApi.session_list / _session_row_score，隔离 astrbot 运行时依赖。"""
+    src = (ROOT / "webui_api.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "WebUIApi")
+    ns = {
+        "logger": _Log(), "session_store": ss_mod, "time": time,
+        "json_response": lambda v: v, "error_response": lambda m: {"error": m},
+    }
+    for node in cls.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in (
+                "session_list", "_session_row_score", "_sessions"):
+            seg = ast.get_source_segment(src, node) or ""
+            body = "\n".join(ln for ln in seg.splitlines() if not ln.strip().startswith("@"))
+            exec(textwrap.dedent(body), ns)  # noqa: S102
+    assert "session_list" in ns and "_session_row_score" in ns
+    return ns
+
+
+class _FakeST:
+    """最小 SessionStore 替身：返回一真群行 + 一假私聊行。"""
+
+    def list_all(self):
+        return [
+            {"origin": "aiocqhttp:GroupMessage:1038800862", "name": "小叽大家族",
+             "is_group": 1, "group_id": "1038800862", "user_id": "", "last_active": 100,
+             "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
+             "max_total": None, "max_hour": None, "max_day": None,
+             "nsfw": None, "card": None, "enabled": None, "note": ""},
+            {"origin": "aiocqhttp:FriendMessage:1038800862", "name": "涟漪",
+             "is_group": 0, "group_id": "", "user_id": "1479221500", "last_active": 200,
+             "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
+             "max_total": None, "max_hour": None, "max_day": None,
+             "nsfw": None, "card": None, "enabled": None, "note": ""},
+        ]
+
+    def get_meta(self, key, default=None):
+        return default  # 无联系人快照
+
+    def known_group_ids(self):
+        return {"1038800862"}  # 来自 sessions 表已登记群行
+
+    def history_stats(self):
+        return {
+            "aiocqhttp:GroupMessage:1038800862": {
+                "draw_total": 3, "draw_today": 1, "group_name": "小叽大家族",
+                "user_name": "涟漪", "last_draw": time.time(),
+                "recent_workflow": "wf", "recent_i2i_workflow": "",
+            }
+        }
+
+    def get_usage(self, origin):
+        return {"total_used": 0, "hour_used": 0, "day_used": 0}
+
+
+class _FakePlugin:
+    def __init__(self, st):
+        self.sessions = st
+
+    def _pick_default_workflow_name(self, is_img2img):
+        return ""
+
+    def _workflows(self):
+        return []
+
+    def _draw_limit_cfg(self):
+        return 0
+
+
+def test_session_list_merges_fake_private() -> None:
+    """v7.11.7：会话列表把「人名假私聊」并入真群行，不再一正一误两条。"""
+    ns = _load_webui_session_list()
+    FakeApi = type("_FakeApi", (), {
+        "__init__": lambda self, plugin: setattr(self, "plugin", plugin),
+        "session_list": ns["session_list"],
+        "_sessions": ns["_sessions"],
+        "_session_row_score": staticmethod(ns["_session_row_score"]),
+    })
+    api = FakeApi(_FakePlugin(_FakeST()))
+    result = asyncio.run(api.session_list())
+    assert "error" not in result, result
+    groups = [x for x in result["sessions"] if x.get("is_group")]
+    assert len(groups) == 1, result["sessions"]
+    assert groups[0]["origin"] == "aiocqhttp:GroupMessage:1038800862"
+    assert groups[0]["name"] == "小叽大家族", groups[0]
+    assert groups[0]["draw_total"] == 3
+    assert not any(x["origin"] == "aiocqhttp:FriendMessage:1038800862" for x in result["sessions"])
+    print("== 5. 会话列表把假私聊并入真群行 OK")
+
+
 if __name__ == "__main__":
     test_history_stats_known_group()
     test_session_umo_and_name()
+    test_history_stats_no_snapshot()
+    test_history_stats_group_name_hint()
+    test_session_list_merges_fake_private()
     print("RESULT: session_group_fix OK")

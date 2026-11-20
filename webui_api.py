@@ -846,6 +846,30 @@ class WebUIApi:
             return error_response("会话管理未初始化")
         try:
             rows = st.list_all()
+            # 联系人快照 ID 集合（v7.11.4）：用于把「好友/群」与「出过图但不在联系人里」
+            # 的会话区分开。旧版 meta 只存计数，没有 *_items 时视为未同步 → 全部算联系人内。
+            # v7.11.7：提前到分桶前——假私聊行的掰正也要用 _group_ids。
+            _contacts_meta = st.get_meta("contacts", {}) or {}
+            _friend_ids = {
+                str(x.get("id") or "").strip()
+                for x in (_contacts_meta.get("friend_items") or []) if isinstance(x, dict)
+            }
+            _group_ids = {
+                str(x.get("id") or "").strip()
+                for x in (_contacts_meta.get("group_items") or []) if isinstance(x, dict)
+            }
+            _group_names = {
+                str(x.get("id") or "").strip(): str(x.get("name") or "").strip()
+                for x in (_contacts_meta.get("group_items") or []) if isinstance(x, dict)
+            }
+            _has_contact_snapshot = bool(_friend_ids or _group_ids)
+            # v7.11.7：掰正假私聊行时用更宽的群号来源——联系人快照 ∪ sessions 已登记群。
+            # 注意 _group_ids 保持原义（in_contacts 判定仍只看快照），另设 _all_group_ids。
+            try:
+                _all_group_ids = _group_ids | st.known_group_ids()
+            except Exception:
+                _all_group_ids = set(_group_ids)
+
             # v7.11.3：老版本(v7.11.0~v7.11.2)登记的会话行可能还是纯 session_id，
             # 统一归一到完整 UMO，与联系人同步写入的 UMO 对齐后天然去重。
             by_origin: dict[str, dict] = {}
@@ -857,29 +881,42 @@ class WebUIApi:
                 if not origin:
                     continue
                 r = dict(r)
+                parts = origin.split(":", 2)
+                # v7.11.7：把「FriendMessage:<已知群号>」的假私聊行掰回群行，
+                # 与联系人同步写入的真群行合并成一条（此前按 origin 分桶天然两条并存，
+                # 发图统计也一直贴在人名那条上）。名字用快照群名，绝不留触发者昵称。
+                if (len(parts) == 3 and parts[1].strip().lower().startswith("friend")
+                        and parts[2].strip() in _all_group_ids):
+                    gid = parts[2].strip()
+                    origin = f"{parts[0]}:GroupMessage:{gid}"
+                    r["origin"] = origin
+                    r["is_group"] = 1
+                    r["group_id"] = gid
+                    r["user_id"] = ""
+                    r["name"] = str(_group_names.get(gid, "") or "").strip()
                 r["origin"] = origin
                 # 同 UMO 多条（历史纯 ID 行 + UMO 行）合并：配置字段非空的优先保留
                 prev = by_origin.get(origin)
                 if prev is None or self._session_row_score(r) > self._session_row_score(prev):
                     by_origin[origin] = r
             stats = st.history_stats()
-            # 联系人快照 ID 集合（v7.11.4）：用于把「好友/群」与「出过图但不在联系人里」
-            # 的会话区分开。旧版 meta 只存计数，没有 *_items 时视为未同步 → 全部算联系人内。
-            _contacts_meta = st.get_meta("contacts", {}) or {}
-            _friend_ids = {
-                str(x.get("id") or "").strip()
-                for x in (_contacts_meta.get("friend_items") or []) if isinstance(x, dict)
-            }
-            _group_ids = {
-                str(x.get("id") or "").strip()
-                for x in (_contacts_meta.get("group_items") or []) if isinstance(x, dict)
-            }
-            _has_contact_snapshot = bool(_friend_ids or _group_ids)
 
             # 历史里有、但会话表未登记的会话（图库里出过图但没走新版登记）
             for origin, s in stats.items():
                 if origin in by_origin:
                     continue
+                # v7.11.7：stats 里若仍有「FriendMessage:<已知群号>」，同样掰回群行，
+                # 避免图库统计再造出一条「人名假私聊」与真群行并存。
+                parts = origin.split(":", 2)
+                if (len(parts) == 3 and parts[1].strip().lower().startswith("friend")
+                        and parts[2].strip() in _all_group_ids):
+                    gid = parts[2].strip()
+                    s = dict(s)
+                    if _group_names.get(gid):
+                        s["group_name"] = _group_names[gid]
+                    origin = f"{parts[0]}:GroupMessage:{gid}"
+                    if origin in by_origin:
+                        continue
                 if origin.startswith("plugin:"):
                     # 插件来源伪会话：每个插件名一条，绝不与真实会话混在一起
                     by_origin[origin] = {
@@ -1148,18 +1185,25 @@ class WebUIApi:
                 "platforms": len(platforms), "error": "；".join(errors)[:300],
             }
             st.set_meta("contacts", meta)
-            # v7.11.6：自愈历史脏行——外部插件（星语等）合成 event 曾把「群号」当
-            # 私聊 ID 写进会话表，形成「名字=触发者、QQ=群号」的假非好友行。同步到
-            # 全量群列表后，只清掉 user_id 恰好等于已知群号的私聊行；群的真实会话
-            # 已由上面的 upsert 重新登记，图库/用户限额历史不受影响。
+            # v7.11.6/v7.11.7：自愈历史脏行——外部插件（星语等）合成 event 曾把
+            # 「群号」当私聊 ID 写进会话表，形成「名字=触发者、QQ=群号」的假非好友行。
+            # v7.11.7 修正：v7.11.6 拿 user_id 比对群号，但假私聊行的 user_id 写的是
+            # 触发者 QQ（main.py _session_remember_draw 的 get_sender_id()），永远命中
+            # 不了 → 历史脏行清不掉。改为按 origin 里的 ID 比对，且只认 FriendMessage
+            # 前缀的私聊行，绝不误伤真群行。群的真实会话已由上面的 upsert 重新登记，
+            # 图库/用户限额历史不受影响。
             try:
                 gids = {str(x.get("id") or "").strip() for x in group_items if str(x.get("id") or "").strip()}
                 cleaned = 0
                 for row in st.list_all():
                     if row.get("is_group"):
                         continue
-                    if str(row.get("user_id") or "").strip() in gids:
-                        if st.delete(str(row.get("origin") or "")):
+                    origin = str(row.get("origin") or "").strip()
+                    parts = origin.split(":", 2)
+                    if not (len(parts) == 3 and parts[1].strip().lower().startswith("friend")):
+                        continue
+                    if parts[2].strip() in gids:
+                        if st.delete(origin):
                             cleaned += 1
                 if cleaned:
                     meta["cleaned_stale"] = cleaned

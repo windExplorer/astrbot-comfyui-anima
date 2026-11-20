@@ -4,6 +4,34 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.11.7（会话归属再修正：无联系人快照时群聊仍变「人名假私聊」、发图统计贴错行）
+
+用户反馈续 v7.11.6：会话页同一个群仍出现两条——一条正确群名、一条群内某人昵称；
+群里发图后出图数/工作流/最近活跃全贴到「人名那条」，正确群名那条始终是 0。
+
+问题：v7.11.6 的群判定完全押在联系人快照 `known_group_ids()` 一个条件上，只要快照
+为空或缺该群就整个失效：
+- 没点过「同步联系人」/ 平台非 aiocqhttp（官方机器人走 qq_official，同步接口只认
+  aiocqhttp）/ 同步失败 → `known_groups` 空集 → 群号仍被 `normalize_origin` 归一成
+  `FriendMessage:<群号>` → 落进「非好友」，群名回落 `user_name`（触发者昵称）。
+- `session_list` 按 origin 分桶，`GroupMessage:<群号>` 与 `FriendMessage:<群号>` 天然并存两条。
+- v7.11.6 自愈清理拿 `user_id` 比对群号，但假私聊行的 `user_id` 写的是触发者 QQ
+  （`get_sender_id()`），永远命中不了 → 历史脏行清不掉。
+
+修复：
+- `session_store.known_group_ids`：群号来源从「只有联系人快照」扩为「联系人快照 ∪
+  sessions 表 `is_group=1` 的已登记群」，去掉对单一快照的硬依赖——主链路正常出图写入
+  的真群行同样能作为判群依据。
+- `session_store.known_group_names` + `history_stats`：新增群名判据，图库旧图 `group_id`
+  为空、群号又不在快照里时，只要 `group_name` 命中已知群名仍判回群聊。
+- `webui_api.session_list`：分桶前把 `FriendMessage:<已知群号>` 的假私聊行掰回
+  `GroupMessage`（名字取快照群名、绝不留触发者昵称），stats 造行同样掰正，两条并成一条。
+- `webui_api.session_sync_contacts`：自愈清理改为按 origin 里的 ID 比对群号（且只认
+  FriendMessage 前缀），修掉「`user_id` 比对群号永远命中不了」的失效条件。
+- `tests/test_session_group_fix.py`：新增 3 项守卫（无联系人快照 / 图库群名判据 /
+  会话列表合并假私聊），连同既有 2 项共 5 项全过；`test_session_store` /
+  `test_session_umo` / `test_session_isolation` / `test_module_lists` 全绿。
+
 ## v7.11.6（会话归属修正：外部插件出图不再把群聊变成「非好友」、群名不再被昵称覆盖）
 
 用户反馈：在群聊 A（如「小叽大家族」，群号 1038800862）通过星语插件出图后，
