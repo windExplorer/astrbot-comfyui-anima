@@ -834,7 +834,8 @@ class WebUIApi:
         for k in ("wf_t2i", "wf_i2i", "note"):
             if str(r.get(k) or "").strip():
                 score += 2
-        for k in ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day", "nsfw", "card", "enabled"):
+        for k in ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day", "nsfw", "card", "enabled",
+                  "card_drawing", "card_done", "card_fail", "card_result_text"):
             if r.get(k) not in (None, 0, ""):
                 score += 1
         return score
@@ -928,7 +929,9 @@ class WebUIApi:
                         "last_active": s.get("last_draw", 0) or 0,
                         "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
                         "max_total": None, "max_hour": None, "max_day": None,
-                        "nsfw": None, "card": None, "enabled": None, "note": "",
+                        "nsfw": None, "card": None, "enabled": None,
+                        "card_drawing": None, "card_done": None, "card_fail": None,
+                        "card_result_text": None, "note": "",
                     }
                     continue
                 p = session_store.parse_origin(origin)
@@ -941,7 +944,9 @@ class WebUIApi:
                     "last_active": s.get("last_draw", 0) or 0,
                     "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
                     "max_total": None, "max_hour": None, "max_day": None,
-                    "nsfw": None, "card": None, "enabled": None, "note": "",
+                    "nsfw": None, "card": None, "enabled": None,
+                    "card_drawing": None, "card_done": None, "card_fail": None,
+                    "card_result_text": None, "note": "",
                 }
 
             # 当前会话内存记忆（v5.13.6，重启丢失；WebUI 里标注来源）
@@ -1055,7 +1060,8 @@ class WebUIApi:
                         if not str(main.get(k) or "").strip() and str(other.get(k) or "").strip():
                             main[k] = other[k]
                     for k in ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day",
-                              "nsfw", "card", "enabled"):
+                              "nsfw", "card", "enabled", "card_drawing", "card_done",
+                              "card_fail", "card_result_text"):
                         if main.get(k) in (None, 0, "") and other.get(k) not in (None, 0, ""):
                             main[k] = other[k]
                     by_origin.pop(o, None)
@@ -1133,7 +1139,9 @@ class WebUIApi:
                 return error_response("缺少 origin")
             fields = {k: body[k] for k in (
                 "wf_t2i", "wf_i2i", "pin_t2i", "pin_i2i",
-                "max_total", "max_hour", "max_day", "nsfw", "card", "enabled", "note",
+                "max_total", "max_hour", "max_day", "nsfw", "card", "enabled",
+                "card_drawing", "card_done", "card_fail", "card_result_text",
+                "note",
             ) if k in body}
             if fields:
                 st.set_config(origin, fields)

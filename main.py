@@ -6230,26 +6230,57 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             return []
 
-    def _card_would_send(self, event, state: str) -> bool:
-        """预计这次会不会发卡（用于决定是否还把报告文字并进配文，避免同一信息出现两次）。"""
+    # v7.12.0：会话级四类卡片开关 → 对应的全局开关键。
+    # 出图卡（drawing）全局无独立开关，只受总开关 enabled 约束（在门槛处已判）。
+    _CARD_KIND_MAP = {
+        "drawing": ("card_drawing", None),
+        "done": ("card_done", "result_enabled"),
+        "fail": ("card_fail", "fail_enabled"),
+        "result_text": ("card_result_text", "result_text"),
+    }
+
+    def _card_should_send(self, event, kind: str) -> bool:
+        """某类信息卡该不该发（v7.12.0 统一口径，全局门槛 + 会话级细分覆盖）。
+
+        kind: drawing(出图/排队卡) / done(结果卡) / fail(失败卡) / result_text(结果文字)。
+
+        门槛（全局，一票否决）：
+        - 全局 pre_draw_card.enabled=false → 一律不发；
+        - scope=group 且当前是私聊 → 不发。
+        门槛通过后，会话级四类开关优先（NULL=跟随全局，1=允许，0=禁止）；
+        会话未配该类时回落到对应全局开关键。旧单字段 card 作为四类共享兜底：
+        仅当四类全为 NULL 且旧 card 非 NULL 时生效（兼容老配置，WebUI 已不暴露）。
+        """
         try:
-            # 会话级覆盖优先（NULL=跟随全局）
-            _scard = self._session_card(event)
-            if _scard is not None:
-                return bool(_scard)
             cfg = self._card_cfg()
             if not cfg.get("enabled", True):
-                return False
-            if state == "done" and not cfg.get("result_enabled", True):
-                return False
-            if state in ("failed", "blocked") and not cfg.get("fail_enabled", True):
                 return False
             scope = str(cfg.get("scope") or "group").strip().lower()
             if scope == "group" and self._is_private_event(event):
                 return False
-            return True
+            sess_field, global_key = self._CARD_KIND_MAP.get(kind, (None, None))
+            sc = self._session_cfg(event) or {}
+            # 会话级该类显式配置
+            if sess_field and sc.get(sess_field) is not None:
+                return bool(int(sc[sess_field]))
+            # 旧 card 兼容兜底：四类都没单独配、旧 card 有值时按旧值
+            has_any_card = any(sc.get(f) is not None for f in (
+                "card_drawing", "card_done", "card_fail", "card_result_text"))
+            if not has_any_card and sc.get("card") is not None:
+                return bool(int(sc["card"]))
+            # 跟随全局
+            if global_key is None:
+                return True  # drawing：门槛里的 enabled 已判过
+            return bool(cfg.get(global_key, True))
         except Exception:
             return False
+
+    def _card_would_send(self, event, state: str) -> bool:
+        """预计这次会不会发卡（用于决定是否还把报告文字并进配文，避免同一信息出现两次）。"""
+        kind = ("done" if state == "done"
+                else "fail" if state in ("failed", "blocked")
+                else "drawing")
+        return self._card_should_send(event, kind)
 
     def _card_fail_info(self, *, wf: dict | None = None, prompt: str = "",
                         is_img2img: bool = False, srv_key: str = "",
@@ -6300,21 +6331,15 @@ class ComfyUIDrawPlugin(Star):
                 logger.info(f"【出图卡片】 未发送：本次为静默生图（silent，state={state}）")
                 return False
             cfg = self._card_cfg()
-            # v7.4.1：每个「不发」的分支都留日志——此前用户开了结果卡却没发，
-            # 日志里一点痕迹都没有，只能靠猜（真实原因就是下面这类门槛）。
-            if not cfg.get("enabled", True):
-                logger.info("【出图卡片】 未发送：卡片总开关关闭")
-                return False
-            if state == "done" and not cfg.get("result_enabled", True):
-                logger.info("【出图卡片】 未发送：结果卡开关关闭")
-                return False
-            if state in ("failed", "blocked") and not cfg.get("fail_enabled", True):
-                logger.info("【出图卡片】 未发送：失败卡开关关闭")
-                return False
-            # 发送范围：默认仅群聊（用户需求），可选所有会话
-            scope = str(cfg.get("scope") or "group").strip().lower()
-            if scope == "group" and self._is_private_event(event):
-                logger.info("【出图卡片】 未发送：发送范围为「仅群聊」，当前是私聊")
+            # v7.12.0：会话级四类开关 + 全局门槛统一判断（此前实际发卡不读会话
+            # 配置，导致会话页的「发送信息卡片」开关形同虚设）。
+            kind = ("done" if state == "done"
+                    else "fail" if state in ("failed", "blocked")
+                    else "drawing")
+            if not self._card_should_send(event, kind):
+                logger.info(
+                    f"【出图卡片】 未发送：{kind} 开关关闭（会话级覆盖或全局门槛）"
+                )
                 return False
             if not cfg.get("show_prompt", True):
                 info = self._card_hide_prompt(info)
@@ -10320,7 +10345,7 @@ class ComfyUIDrawPlugin(Star):
                         }
                         # v7.7.25：文字兜底也受 result_text 开关管——有人连文字都不想要
                         if not await self._send_draw_card(event, _done_info, "done") and _rpt_text \
-                                and self._card_cfg().get("result_text", True):
+                                and self._card_should_send(event, "result_text"):
                             try:
                                 await self._send(event, _rpt_text)
                             except Exception as _e:
@@ -11852,8 +11877,8 @@ class ComfyUIDrawPlugin(Star):
                     )
                 else:
                     logger.info("【放大】 结果卡未发送：卡片总开关/结果卡开关关闭，或发送范围不含当前会话")
-                # v7.7.25：文字小结受 result_text 开关管（结果卡与文字都关 = 完成后只发图）
-                if not _done_ok and self._card_cfg().get("result_text", True):
+                # v7.7.25/v7.12.0：文字小结受 result_text 开关管（结果卡与文字都关 = 完成后只发图）
+                if not _done_ok and self._card_should_send(event, "result_text"):
                     await self._send(
                         event,
                         f"放大完成：{(applied or scale):g}×"
@@ -12557,8 +12582,8 @@ class ComfyUIDrawPlugin(Star):
                 _done_ok = False
                 if self._card_would_send(event, "done"):
                     _done_ok = await self._send_report_card(event, _rep, foot_left="口径：按提示词抠图/去背景，透明通道保留")
-                # v7.7.25：文字小结受 result_text 开关管（结果卡与文字都关 = 完成后只发图）
-                if not _done_ok and self._card_cfg().get("result_text", True):
+                # v7.7.25/v7.12.0：文字小结受 result_text 开关管（结果卡与文字都关 = 完成后只发图）
+                if not _done_ok and self._card_should_send(event, "result_text"):
                     await self._send(
                         event,
                         "抠图完成"

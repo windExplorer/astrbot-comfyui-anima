@@ -174,12 +174,29 @@
               <n-select v-model:value="draft.nsfw" size="small" :options="triOptions" style="width:140px" />
             </div>
             <div class="opt-field">
-              <span>发送信息卡片</span>
-              <n-select v-model:value="draft.card" size="small" :options="triOptions" style="width:140px" />
-            </div>
-            <div class="opt-field">
               <span>会话状态</span>
               <n-select v-model:value="draft.enabled" size="small" :options="enabledOptions" style="width:140px" />
+            </div>
+          </div>
+          <!-- v7.12.0：信息卡片四类开关（三态，默认跟随全局）。总开关关闭时一律不发的口径不变 -->
+          <div class="section-title" style="margin-top:12px">发送信息卡片</div>
+          <div class="form-tip" style="margin-top:-4px">四类独立开关，默认「跟随全局」。全局卡片总开关关闭时，下列设为「允许」也不会发送。</div>
+          <div class="opt-grid">
+            <div class="opt-field">
+              <span>出图卡（排队 / 绘制中）</span>
+              <n-select v-model:value="draft.card_drawing" size="small" :options="triOptions" style="width:140px" />
+            </div>
+            <div class="opt-field">
+              <span>结果卡</span>
+              <n-select v-model:value="draft.card_done" size="small" :options="triOptions" style="width:140px" />
+            </div>
+            <div class="opt-field">
+              <span>失败卡</span>
+              <n-select v-model:value="draft.card_fail" size="small" :options="triOptions" style="width:140px" />
+            </div>
+            <div class="opt-field">
+              <span>结果文字小结</span>
+              <n-select v-model:value="draft.card_result_text" size="small" :options="triOptions" style="width:140px" />
             </div>
           </div>
         </div>
@@ -229,6 +246,10 @@ interface SessionItem {
   max_day: number | null;
   nsfw: number | null;
   card: number | null;
+  card_drawing: number | null;
+  card_done: number | null;
+  card_fail: number | null;
+  card_result_text: number | null;
   enabled: number | null;
   draw_total: number;
   draw_today: number;
@@ -333,7 +354,10 @@ async function load() {
       has_override: Boolean(
         s.wf_t2i || s.wf_i2i || s.pin_t2i || s.pin_i2i ||
         s.max_total !== null || s.max_hour !== null || s.max_day !== null ||
-        s.nsfw !== null || s.card !== null || s.enabled !== null || s.note
+        s.nsfw !== null || s.card !== null ||
+        s.card_drawing !== null || s.card_done !== null ||
+        s.card_fail !== null || s.card_result_text !== null ||
+        s.enabled !== null || s.note
       ),
       usage: s.usage || { total_used: 0, hour_used: 0, day_used: 0 },
       in_contacts: s.in_contacts !== false,
@@ -453,6 +477,10 @@ async function saveEdit() {
         max_day: d.max_day === null || d.max_day === undefined ? null : d.max_day,
         nsfw: d.nsfw === null || d.nsfw === undefined ? null : d.nsfw,
         card: d.card === null || d.card === undefined ? null : d.card,
+        card_drawing: d.card_drawing === null || d.card_drawing === undefined ? null : d.card_drawing,
+        card_done: d.card_done === null || d.card_done === undefined ? null : d.card_done,
+        card_fail: d.card_fail === null || d.card_fail === undefined ? null : d.card_fail,
+        card_result_text: d.card_result_text === null || d.card_result_text === undefined ? null : d.card_result_text,
         enabled: d.enabled === null || d.enabled === undefined ? null : d.enabled,
       });
     } else {

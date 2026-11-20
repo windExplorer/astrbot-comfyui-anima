@@ -31,15 +31,21 @@ except ImportError:  # 独立测试环境降级
     logger = logging.getLogger("anima.session_store")
 
 
+# v7.12.0：会话级信息卡片四类开关（三态：NULL=跟随全局 / 1=允许 / 0=禁止）。
+# 旧的单字段 card 保留兼容（不再在 WebUI 暴露），四类细分字段独立于它。
+CARD_FIELDS = ("card_drawing", "card_done", "card_fail", "card_result_text")
+
 # 可写配置字段白名单（WebUI 传进来的键必须先过这一关，避免 SQL 注入 / 误写）
 CONFIG_FIELDS = (
     "wf_t2i", "wf_i2i",
     "pin_t2i", "pin_i2i",
     "max_total", "max_hour", "max_day",
     "nsfw", "card", "enabled",
+    *CARD_FIELDS,
     "note",
 )
-INT_FIELDS = ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day", "nsfw", "card", "enabled")
+INT_FIELDS = ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day",
+              "nsfw", "card", "enabled", *CARD_FIELDS)
 STR_FIELDS = ("wf_t2i", "wf_i2i", "note")
 
 
@@ -147,9 +153,19 @@ class SessionStore:
                 nsfw        INTEGER DEFAULT NULL,
                 card        INTEGER DEFAULT NULL,
                 enabled     INTEGER DEFAULT NULL,
+                card_drawing      INTEGER DEFAULT NULL,
+                card_done         INTEGER DEFAULT NULL,
+                card_fail         INTEGER DEFAULT NULL,
+                card_result_text  INTEGER DEFAULT NULL,
                 note        TEXT NOT NULL DEFAULT ''
             )"""
         )
+        # v7.12.0：老库补列（CREATE TABLE IF NOT EXISTS 不会改已有表）
+        for _col in CARD_FIELDS:
+            try:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {_col} INTEGER DEFAULT NULL")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
         conn.execute(
             """CREATE TABLE IF NOT EXISTS session_usage (
                 origin     TEXT PRIMARY KEY,
@@ -457,7 +473,8 @@ class SessionStore:
             conn.execute(
                 """UPDATE sessions SET wf_t2i='', wf_i2i='', pin_t2i=0, pin_i2i=0,
                    max_total=NULL, max_hour=NULL, max_day=NULL, nsfw=NULL, card=NULL,
-                   enabled=NULL, note='', updated_at=? WHERE origin=?""",
+                   enabled=NULL, card_drawing=NULL, card_done=NULL, card_fail=NULL,
+                   card_result_text=NULL, note='', updated_at=? WHERE origin=?""",
                 (time.time(), origin),
             )
             conn.commit()
