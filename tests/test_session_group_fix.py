@@ -101,7 +101,7 @@ class _FakeSessions:
         self.calls: list[tuple[str, dict]] = []
 
     def known_group_ids(self):
-        return {"1038800862"}
+        return {"1038800862", "145326153"}
 
     def upsert(self, origin, **kw):
         self.calls.append((origin, kw))
@@ -133,6 +133,48 @@ def test_session_umo_and_name() -> None:
     assert origin == "aiocqhttp:GroupMessage:1038800862", origin
     assert kw["name"] == "", kw  # 群名不能被触发者昵称覆盖
     print("== 2. 合成 event 的群 UMO 纠正 + 群名不被昵称覆盖 OK")
+
+
+def test_session_umo_cross_platform() -> None:
+    """v7.11.8：qq_official 前缀的同群 UMO 归一到 aiocqhttp，杜绝同群两条会话。"""
+    ns = _load_main_fns({"_session_id_of", "_session_umo_of", "_session_remember_draw"})
+    Fake = type("_Fake", (), {
+        "sessions": None,
+        "_session_id_of": ns["_session_id_of"],
+        "_session_umo_of": ns["_session_umo_of"],
+        "_session_remember_draw": ns["_session_remember_draw"],
+    })
+    p = Fake()
+    p.sessions = _FakeSessions()
+
+    ev = _Ev("145326153", "qq_official:GroupMessage:145326153")
+    assert p._session_umo_of(ev) == "aiocqhttp:GroupMessage:145326153"
+    p._session_remember_draw(ev)
+    origin, kw = p.sessions.calls[-1]
+    assert origin == "aiocqhttp:GroupMessage:145326153", origin
+    print("== 2b. 跨平台同群 UMO 归一到 aiocqhttp OK")
+
+
+def test_merge_group_sessions() -> None:
+    """v7.11.8：同群双 origin 的配置/额度并进主行、副行删除。"""
+    with tempfile.TemporaryDirectory() as td:
+        st = SessionStore(Path(td))
+        st.upsert("aiocqhttp:GroupMessage:145326153", name="星际机器人26届家校共育群",
+                  is_group=True, group_id="145326153")
+        st.upsert("qq_official:GroupMessage:145326153", name="Scum",
+                  is_group=True, group_id="145326153")
+        # 副行带额度与配置，主行没有
+        st.record_usage("qq_official:GroupMessage:145326153")
+        st.set_config("qq_official:GroupMessage:145326153", {"wf_t2i": "moss", "max_day": "10"})
+        assert st.merge_group_sessions({"145326153"}) == 1
+        rows = st.list_all()
+        assert len(rows) == 1, rows
+        assert rows[0]["origin"] == "aiocqhttp:GroupMessage:145326153"
+        assert rows[0]["name"] == "星际机器人26届家校共育群"
+        assert rows[0]["wf_t2i"] == "moss" and rows[0]["max_day"] == 10
+        assert st.get_usage("aiocqhttp:GroupMessage:145326153")["total_used"] == 1
+        st.close()
+    print("== 6. 同群双 origin 配置/额度归并 OK")
 
 
 def _make_gallery(root: Path, row: tuple) -> None:
@@ -278,10 +320,74 @@ def test_session_list_merges_fake_private() -> None:
     print("== 5. 会话列表把假私聊并入真群行 OK")
 
 
+class _FakeSTCrossPlatform(_FakeST):
+    """截图场景：同群两条 GroupMessage（aiocqhttp 有出图、qq_official 有额度+昵称）。"""
+
+    def list_all(self):
+        return [
+            {"origin": "aiocqhttp:GroupMessage:145326153", "name": "星际机器人26届家校共育群",
+             "is_group": 1, "group_id": "145326153", "user_id": "", "last_active": 100,
+             "wf_t2i": "", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
+             "max_total": None, "max_hour": None, "max_day": None,
+             "nsfw": None, "card": None, "enabled": None, "note": ""},
+            {"origin": "qq_official:GroupMessage:145326153", "name": "Scum",
+             "is_group": 1, "group_id": "145326153", "user_id": "", "last_active": 200,
+             "wf_t2i": "moss", "wf_i2i": "", "pin_t2i": 0, "pin_i2i": 0,
+             "max_total": 16, "max_hour": None, "max_day": 10,
+             "nsfw": None, "card": None, "enabled": None, "note": ""},
+        ]
+
+    def get_meta(self, key, default=None):
+        if key == "contacts":
+            return {"group_items": [{"id": "145326153", "name": "星际机器人26届家校共育群"}],
+                    "friend_items": []}
+        return default
+
+    def history_stats(self):
+        return {
+            "aiocqhttp:GroupMessage:145326153": {
+                "draw_total": 316, "draw_today": 9, "group_name": "星际机器人26届家校共育群",
+                "user_name": "", "last_draw": time.time(),
+                "recent_workflow": "moss", "recent_i2i_workflow": "qw21t图生图",
+            }
+        }
+
+    def get_usage(self, origin):
+        if origin == "qq_official:GroupMessage:145326153":
+            return {"total_used": 16, "hour_used": 1, "day_used": 10}
+        return {"total_used": 0, "hour_used": 0, "day_used": 0}
+
+
+def test_session_list_cross_platform_merge() -> None:
+    """v7.11.8：截图场景——同群双平台前缀并成一条，名字/统计/额度/配置都正确。"""
+    ns = _load_webui_session_list()
+    FakeApi = type("_FakeApi", (), {
+        "__init__": lambda self, plugin: setattr(self, "plugin", plugin),
+        "session_list": ns["session_list"],
+        "_sessions": ns["_sessions"],
+        "_session_row_score": staticmethod(ns["_session_row_score"]),
+    })
+    api = FakeApi(_FakePlugin(_FakeSTCrossPlatform()))
+    result = asyncio.run(api.session_list())
+    assert "error" not in result, result
+    groups = [x for x in result["sessions"] if x.get("is_group")]
+    assert len(groups) == 1, result["sessions"]
+    g = groups[0]
+    assert g["origin"] == "aiocqhttp:GroupMessage:145326153", g
+    assert g["name"] == "星际机器人26届家校共育群", g  # 不是 Scum
+    assert g["draw_total"] == 316, g
+    assert g["usage"]["total_used"] == 16, g  # 额度累加
+    assert g["wf_t2i"] == "moss" and g["max_day"] == 10, g  # 配置补齐
+    print("== 7. 同群双平台前缀在列表层并成一条 OK")
+
+
 if __name__ == "__main__":
     test_history_stats_known_group()
     test_session_umo_and_name()
+    test_session_umo_cross_platform()
     test_history_stats_no_snapshot()
     test_history_stats_group_name_hint()
     test_session_list_merges_fake_private()
+    test_session_list_cross_platform_merge()
+    test_merge_group_sessions()
     print("RESULT: session_group_fix OK")

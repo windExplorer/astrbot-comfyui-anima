@@ -996,10 +996,77 @@ class WebUIApi:
                     "last_used": last_used,
                 }
 
+            # v7.11.8：按群号归并同一群的重复会话行。同一 QQ 群经 aiocqhttp / qq_official
+            # 双平台接入时，图库统计固定落 aiocqhttp:GroupMessage:<群号>，而旧版出图登记
+            # 落 event.unified_msg_origin 的原前缀，形成两条：一条有出图数（正确群名），
+            # 一条有额度/配置（触发者昵称）。这里在展示层归并成一条——保留 aiocqhttp
+            # 前缀行做主键，统计累加、额度累加、配置逐字段补齐、名字取联系人快照群名。
+            merged_usage: dict[str, dict] = {}
+            group_buckets: dict[str, list[str]] = {}
+            for origin, row in by_origin.items():
+                if not row.get("is_group"):
+                    continue
+                gid = str(row.get("group_id") or "").strip()
+                if not gid:
+                    parts = origin.split(":", 2)
+                    if len(parts) == 3 and parts[1].strip().lower().startswith("group"):
+                        gid = parts[2].strip()
+                if gid:
+                    group_buckets.setdefault(gid, []).append(origin)
+
+            def _keep_score(o: str) -> tuple:
+                # aiocqhttp 前缀优先（图库统计归属 + v7.11.8 出图链路统一归一的目标），
+                # 其次配置完整的优先。
+                return (1 if o.startswith("aiocqhttp:") else 0, self._session_row_score(by_origin[o]))
+
+            for gid, origins in group_buckets.items():
+                if len(origins) < 2:
+                    continue
+                keep = max(origins, key=_keep_score)
+                main = by_origin[keep]
+                main_stat = dict(stats.get(keep, {}))
+                main_usage = dict(st.get_usage(keep))
+                # 名字：联系人快照群名最可信，避免保留触发者昵称
+                snapshot_name = str(_group_names.get(gid, "") or "").strip()
+                if snapshot_name:
+                    main["name"] = snapshot_name
+                for o in origins:
+                    if o == keep:
+                        continue
+                    other = by_origin.get(o, {})
+                    ostat = stats.get(o, {})
+                    ousage = st.get_usage(o)
+                    # 统计累加
+                    for k in ("draw_total", "draw_today"):
+                        main_stat[k] = int(main_stat.get(k, 0) or 0) + int(ostat.get(k, 0) or 0)
+                    if float(ostat.get("last_draw", 0) or 0) > float(main_stat.get("last_draw", 0) or 0):
+                        main_stat["last_draw"] = ostat["last_draw"]
+                        for k in ("recent_workflow", "recent_i2i_workflow"):
+                            if ostat.get(k):
+                                main_stat[k] = ostat[k]
+                    # 额度累加
+                    for k in ("total_used", "hour_used", "day_used"):
+                        main_usage[k] = int(main_usage.get(k, 0) or 0) + int(ousage.get(k, 0) or 0)
+                    # 活跃时间取最大
+                    if float(other.get("last_active", 0) or 0) > float(main.get("last_active", 0) or 0):
+                        main["last_active"] = other["last_active"]
+                    # 配置逐字段补齐（保留行空、被并行非空时填入）
+                    for k in ("wf_t2i", "wf_i2i", "note"):
+                        if not str(main.get(k) or "").strip() and str(other.get(k) or "").strip():
+                            main[k] = other[k]
+                    for k in ("pin_t2i", "pin_i2i", "max_total", "max_hour", "max_day",
+                              "nsfw", "card", "enabled"):
+                        if main.get(k) in (None, 0, "") and other.get(k) not in (None, 0, ""):
+                            main[k] = other[k]
+                    by_origin.pop(o, None)
+                    stats.pop(o, None)
+                stats[keep] = main_stat
+                merged_usage[keep] = main_usage
+
             out: list[dict] = []
             for origin, sc in by_origin.items():
                 s = stats.get(origin, {})
-                usage = st.get_usage(origin)
+                usage = merged_usage.get(origin) or st.get_usage(origin)
                 # v7.11.3：插件身份只由 origin 前缀决定，绝不被图库历史数据翻转
                 is_plugin = origin.startswith("plugin:")
                 item = dict(sc)
@@ -1207,6 +1274,17 @@ class WebUIApi:
                             cleaned += 1
                 if cleaned:
                     meta["cleaned_stale"] = cleaned
+                    st.set_meta("contacts", meta)
+            except Exception:
+                pass
+            # v7.11.8：同群多 origin 归并——双平台接入时 aiocqhttp / qq_official 前缀
+            # 各留一行，统计贴主行、额度/配置贴副行。已知全量群号，把副行配置+额度
+            # 并进 aiocqhttp 主行再删副行，让限额判定与配置读取认准同一 origin。
+            try:
+                gids = {str(x.get("id") or "").strip() for x in group_items if str(x.get("id") or "").strip()}
+                merged = st.merge_group_sessions(gids)
+                if merged:
+                    meta["merged_groups"] = merged
                     st.set_meta("contacts", meta)
             except Exception:
                 pass

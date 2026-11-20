@@ -14320,7 +14320,16 @@ class ComfyUIDrawPlugin(Star):
                 parts = umo.split(":", 2)
                 if (len(parts) == 3 and not parts[1].strip().lower().startswith("group")
                         and parts[2].strip() in known_groups):
-                    return f"{parts[0]}:GroupMessage:{parts[2].strip()}"
+                    return f"aiocqhttp:GroupMessage:{parts[2].strip()}"
+                # v7.11.8：同一 QQ 群经不同平台前缀接入（aiocqhttp / qq_official）时，
+                # event.unified_msg_origin 带着各自前缀；而图库统计 normalize_origin 固定
+                # 拼 aiocqhttp:GroupMessage:<群号>，于是同一群出现两条会话——图库统计贴
+                # 正确群名那条，额度/配置/活跃贴另一条（名字是触发者昵称）。这里把已知
+                # 群号的群 UMO 统一归一到联系人同步使用的 aiocqhttp 前缀，杜绝再分裂。
+                if len(parts) == 3 and parts[1].strip().lower().startswith("group"):
+                    gid = parts[2].strip()
+                    if gid in known_groups:
+                        return f"aiocqhttp:GroupMessage:{gid}"
                 return umo
         except Exception:
             pass

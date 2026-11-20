@@ -364,6 +364,89 @@ class SessionStore:
         except Exception as e:
             logger.debug(f"[会话] set_config 失败: {e}")
 
+    def merge_group_sessions(self, group_ids=None) -> int:
+        """v7.11.8：按群号把同一群的多个 origin 归并到 `aiocqhttp:GroupMessage:<群号>`。
+
+        同一 QQ 群经 aiocqhttp / qq_official 双平台接入时，旧版会在会话表留下两条：
+        一条承载图库统计（aiocqhttp 前缀、正确群名），一条承载额度/配置（原前缀、
+        名字是触发者昵称）。同步联系人时已知全量群号，可安全地把副行的配置字段与
+        额度计数并进主行再删除，让额度限额、配置读取都认准同一个 origin。
+
+        `group_ids` 限定要处理的群号；None 表示全部。返回被删除的副行数。
+        """
+        allowed = set(str(x).strip() for x in group_ids) if group_ids is not None else None
+        try:
+            conn = self._conn()
+            rows = [dict(r) for r in conn.execute("SELECT * FROM sessions WHERE is_group=1")]
+            buckets: dict[str, list[dict]] = {}
+            for r in rows:
+                gid = str(r.get("group_id") or "").strip()
+                if not gid:
+                    parts = str(r.get("origin") or "").split(":", 2)
+                    if len(parts) == 3 and parts[1].strip().lower().startswith("group"):
+                        gid = parts[2].strip()
+                if not gid:
+                    continue
+                if allowed is not None and gid not in allowed:
+                    continue
+                buckets.setdefault(gid, []).append(r)
+            merged = 0
+            for gid, items in buckets.items():
+                if len(items) < 2:
+                    continue
+                canonical = f"aiocqhttp:GroupMessage:{gid}"
+                main = next((x for x in items if x.get("origin") == canonical), None)
+                if main is None:
+                    continue  # 主行不存在（未同步过该群）：跳过，不冒险改主键
+                for it in items:
+                    if it.get("origin") == canonical:
+                        continue
+                    stale = str(it.get("origin") or "").strip()
+                    # 配置字段：主行空、副行非空才搬过去
+                    upd: dict = {}
+                    for k in STR_FIELDS:
+                        if not str(main.get(k) or "").strip() and str(it.get(k) or "").strip():
+                            upd[k] = it[k]
+                            main[k] = it[k]
+                    for k in INT_FIELDS:
+                        if main.get(k) in (None, 0, "") and it.get(k) not in (None, 0, ""):
+                            upd[k] = it[k]
+                            main[k] = it[k]
+                    if upd:
+                        sets = ", ".join(f"{k}=?" for k in upd)
+                        conn.execute(
+                            f"UPDATE sessions SET {sets}, updated_at=? WHERE origin=?",
+                            tuple(upd.values()) + (time.time(), canonical),
+                        )
+                    # 额度：total 累加，hour/day 取较大值（窗口沿用主行，避免错配）
+                    u_old = conn.execute("SELECT * FROM session_usage WHERE origin=?", (stale,)).fetchone()
+                    if u_old:
+                        u_main = conn.execute("SELECT * FROM session_usage WHERE origin=?", (canonical,)).fetchone()
+                        total = int(u_main["total_used"] if u_main else 0) + int(u_old["total_used"] or 0)
+                        hour = max(int(u_main["hour_used"] if u_main else 0), int(u_old["hour_used"] or 0))
+                        day = max(int(u_main["day_used"] if u_main else 0), int(u_old["day_used"] or 0))
+                        hs = int(u_main["hour_start"] if u_main else 0)
+                        ds = int(u_main["day_start"] if u_main else 0)
+                        if u_main:
+                            conn.execute(
+                                "UPDATE session_usage SET total_used=?,hour_used=?,day_used=?,updated_at=? WHERE origin=?",
+                                (total, hour, day, time.time(), canonical),
+                            )
+                        else:
+                            conn.execute(
+                                "INSERT INTO session_usage (origin,total_used,hour_used,hour_start,day_used,day_start,updated_at) "
+                                "VALUES (?,?,?,?,?,?,?)",
+                                (canonical, total, hour, hs, day, ds, time.time()),
+                            )
+                        conn.execute("DELETE FROM session_usage WHERE origin=?", (stale,))
+                    conn.execute("DELETE FROM sessions WHERE origin=?", (stale,))
+                    merged += 1
+            conn.commit()
+            return merged
+        except Exception as e:
+            logger.debug(f"[会话] merge_group_sessions 失败: {e}")
+            return 0
+
     def reset_config(self, origin: str) -> None:
         """把所有覆盖字段清回「跟随全局」，保留会话底表行。"""
         origin = (origin or "").strip()
