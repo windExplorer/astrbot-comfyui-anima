@@ -4,6 +4,29 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.5.4（角色卡图生图：不跟参考图尺寸，防照搬三视图）
+
+现象：主参考图常是横版三视图，角色卡图生图输出经常跟着变成横图、甚至把三视图
+版面照搬过来——用户没说尺寸时应按工作流默认尺寸或竖版。
+
+根因（不在 `_decide_draw_size`）：角色卡链路只注入主参考图 + `is_img2img=True`，
+**没传 `custom_size`**；工作流尺寸开关默认 false → 采样 latent 直接来自参考图编码，
+**尺寸和构图一起继承**。而三视图负向词（`MULTI_FUSION_NEGATIVE`）只在多人场景注入
+（`main.py:15478` 单人早退），单人角色卡完全没压制。
+
+修复（`role_card` 配置加两个开关，默认都开）：
+- **`force_own_size`（不跟参考图尺寸，默认开）**：命中角色卡时强制 `custom_size=True`
+  → 采样走 EmptyLatentImage（工作流自己的尺寸），不再继承参考图 latent。
+  工作流没配默认宽高时用 832×1216 竖版兜底（不拒绝出图）；工作流没有尺寸开关时
+  日志明确提示该项不生效（需在编辑页打开「尺寸开关」）。
+- **`anti_sheet`（防止照搬三视图，默认开）**：命中角色卡时自动往 negative 追加
+  `character sheet, multiple views, three views, turnaround, split screen, comic panels,
+  三视图, 多视图, 分栏, 设定板`——单人场景也压制（不走多人早退分支）。
+
+验证：`test_role_card`（强制尺寸/竖版兜底/反三视图/无开关提示守卫）、
+`test_config_groups`、`test_self_methods_defined`、三套尺寸测试（`test_draw_size_decision`
+800 组 / `test_orig_size_guard` / `test_size_helpers`）全过，编译通过。
+
 ## v8.5.3（角色库命中不再让用户发参考图：加 LLM 请求 hook）
 
 现象（用户实测截图）：

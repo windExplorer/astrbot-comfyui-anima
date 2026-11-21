@@ -121,6 +121,13 @@ check("明确禁止写角色 tag", "不要把角色名 / 作品名 / 角色标�
 check("强调画面要具体", "画面内容更要写足、写具体" in src or "越具体越好" in src)
 check("不引导用户发参考图", "不要让用户发参考图" in src or "绝不要问用户要参考图" in src)
 check("有角色库命中 hook", "def _inject_role_card_hint" in src)
+# v8.5.4：不跟参考图尺寸 + 反三视图
+check("角色卡强制自定义尺寸", "_role_card_force_size" in src and "custom_size = True" in src)
+check("竖版兜底", "width, height = 832, 1216" in src)
+check("反三视图 negative", "character sheet, multiple views, three views" in src)
+check("无尺寸开关时提示", "工作流没有尺寸开关" in src)
+check("schema 有 force_own_size/anti_sheet", '"force_own_size"' in (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+      and '"anti_sheet"' in (ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 

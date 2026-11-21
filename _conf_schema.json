@@ -2022,6 +2022,18 @@
         "description": "注入角色英文标签（tags_en，默认关）",
         "hint": "命中角色卡时，把角色在老婆插件里的 tags_en 追加进提示词。默认关闭——角色卡链路已经用了主参考图做图生图，外观由参考图锁定，再塞标签是冗余且可能冲突。只有不走参考图、纯文字出图时才建议开启。",
         "default": false
+      },
+      "force_own_size": {
+        "type": "bool",
+        "description": "不跟参考图尺寸（默认开）",
+        "hint": "开启后：角色卡图生图强制用工作流自己的尺寸，不继承主参考图的尺寸。主参考图常是横版三视图——不开的话输出会跟着变成横图。★要求角色卡工作流带「尺寸开关」（ComfySwitchNode + EmptyLatentImage，在工作流编辑页开）并配好默认宽高（建议竖版 832×1216）；没配默认宽高时用 832×1216 兜底，没有尺寸开关则该项不生效（日志会提示）。关闭则完全跟随参考图尺寸与构图。",
+        "default": true
+      },
+      "anti_sheet": {
+        "type": "bool",
+        "description": "防止照搬三视图（默认开）",
+        "hint": "开启后：角色卡出图时在负向提示词里自动加入「三视图 / 多视图 / 分栏 / 设定板 / turnaround / character sheet / multiple views / split screen」等词，防止模型照搬主参考图的三视图版面。默认开启。",
+        "default": true
       }
     }
   }

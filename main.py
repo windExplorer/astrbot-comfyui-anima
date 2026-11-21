@@ -8288,6 +8288,7 @@ class ComfyUIDrawPlugin(Star):
         # LoRA 优先且本次命中 LoRA 时跳过（走常规工作流选择）。
         _wr_force_wf = ""
         _wr_hit_name = ""
+        _role_card_force_size = False  # v8.5.4：角色卡图生图强制自定义尺寸（不跟参考图尺寸）
         try:
             _wr_cfg = self._cfg("role_card", {}) or {}
             _wr_on = isinstance(_wr_cfg, dict) and _wr_cfg.get("enabled", True)
@@ -8309,6 +8310,19 @@ class ComfyUIDrawPlugin(Star):
                         if _wr_ref not in init_images:
                             init_images.insert(0, _wr_ref)
                         is_img2img = True
+                        # v8.5.4：主参考图常是横版三视图——强制用工作流自己的尺寸，
+                        # 不继承参考图 latent 的尺寸与构图（否则输出跟着变横图/三视图）。
+                        if _wr_cfg.get("force_own_size", True):
+                            _role_card_force_size = True
+                            custom_size = True  # 打开 EmptyLatentImage 尺寸注入分支
+                        # v8.5.4：反三视图负向词（单人场景也压制，原 MULTI_FUSION_NEGATIVE 只在多人注入）
+                        if _wr_cfg.get("anti_sheet", True):
+                            _sheet_neg = (
+                                "character sheet, multiple views, three views, turnaround, "
+                                "split screen, comic panels, multi-panel, 三视图, 多视图, 分栏, 设定板"
+                            )
+                            negative = (f"{negative.strip()}, {_sheet_neg}" if (negative or "").strip()
+                                        else _sheet_neg)
                         # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
                         if _wr_cfg.get("auto_tags", False):  # 默认关：有主参考图就靠参考图锁外观，不再塞 tags_en
                             positive = role_card.build_role_prompt(_wr_entry, positive)
@@ -8840,6 +8854,12 @@ class ComfyUIDrawPlugin(Star):
             bool(init_images), _explicit_size,
         )
         _custom_size = bool(init_images and _custom_size)
+        if _role_card_force_size and not _custom_size:
+            logger.warning(
+                "【角色卡】 已开启「不跟参考图尺寸」，但当前工作流没有尺寸开关"
+                "（ComfySwitchNode + EmptyLatentImage）→ 无法强制，输出仍会跟随参考图尺寸/构图。"
+                "请在工作流编辑页打开「尺寸开关」并配好默认宽高。"
+            )
         if _custom_size:
             logger.info(
                 f"【宽高】 自定义尺寸：开（依据={_sw_src}）"
@@ -8864,9 +8884,16 @@ class ComfyUIDrawPlugin(Star):
         if custom_size is True and _size_sw and init_images \
                 and not _explicit_size \
                 and not (int(wf.get("default_width") or 0) and int(wf.get("default_height") or 0)):
-            logger.warning("【宽高】 已开启自定义尺寸，但未传宽高且工作流条目没有默认宽高 → 拒绝出图")
-            await self._send(event, "这条工作流开启了自定义尺寸，但没给出尺寸（宽高/比例词都没传）哦～")
-            return
+            if _role_card_force_size:
+                # v8.5.4：角色卡链路专用兜底——工作流没配默认宽高时给一个 1K 竖版，
+                # 避免主参考图的横图三视图尺寸被继承；也避免直接拒绝出图。
+                width, height = 832, 1216
+                _explicit_size = True
+                logger.info("【宽高】 角色卡链路：工作流无默认宽高，兜底竖版 832×1216")
+            else:
+                logger.warning("【宽高】 已开启自定义尺寸，但未传宽高且工作流条目没有默认宽高 → 拒绝出图")
+                await self._send(event, "这条工作流开启了自定义尺寸，但没给出尺寸（宽高/比例词都没传）哦～")
+                return
         # v7.8.16：四层尺寸决策抽成模块级纯函数 _decide_draw_size（下面的
         # resolution_mode 注入 / MOSS / 输入尺寸计算一概不动）。
         # 两处 self._cfg 全局上限仍在此读取（含原异常处理），再作为参数传入。
