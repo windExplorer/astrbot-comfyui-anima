@@ -174,7 +174,9 @@ const wfOptions = ref<Array<{ label: string; value: string }>>([]);
 const styleValue = ref<string | null>(null);
 const styleSaved = ref<string | null>(null);
 const styleOptions = [
-  "", "水墨/国风", "厚涂", "赛璐璐/动漫", "水彩", "油画", "像素风", "3D渲染", "吉卜力风", "写实", "日系插画",
+  "", "现代日式动画", "新海诚式电影动画", "清透厚涂插画", "轻小说插画", "潮流插画", "赛璐璐上色",
+  "韩漫半写实", "电影感厚涂", "赛博霓虹", "3D 渲染", "清透水彩", "国风水墨", "扁平矢量插画",
+  "像素艺术", "写实摄影", "复古 90 年代动画",
 ].map((s) => ({ label: s || "留空 = 由对话决定", value: s }));
 const savingWf = ref(false);
 const wfDirty = computed(() => (wfValue.value || "") !== (wfSaved.value || "")

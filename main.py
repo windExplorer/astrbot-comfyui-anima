@@ -801,36 +801,56 @@ G_SESSION_ROLE_TTL = 1800.0  # 30 分钟没再用角色就过期
 # 通用画风词表：三档写法（danbooru 标签 / qwen 中文整句 / natural 英文整句）。
 # 用户说画风时由工具返回，避免 LLM 凭记忆写「柔和氛围」这种无效模糊词。
 STYLE_PRESETS = [
-    ("水墨/国风", "水墨", "ink wash painting, chinese ink, brushwork, monochrome with subtle washes, rice paper texture, generous negative space",
-     "水墨画风格，墨色浓淡晕染，宣纸质感，大面积留白，笔触写意，淡彩点缀",
-     "Traditional East Asian ink wash painting style with expressive brush strokes, monochrome ink tones, rice paper texture, generous negative space and subtle color washes"),
-    ("厚涂", "厚涂", "painterly, impasto, visible brush strokes, rich layered colors, soft blending",
-     "厚涂油画质感，笔触明显可见，颜料堆叠有肌理，色彩层次丰富，柔和过渡",
-     "A richly painterly style with visible impasto brush strokes, layered pigments and textured color application"),
-    ("赛璐璐/动漫", "赛璐璐", "modern cel shading, contemporary anime style, clean lineart, flat vivid colors, crisp shadows",
-     "当代日式赛璐璐动画风，线条干净，色块平涂鲜艳，阴影边界清晰硬朗，高光明确（不要复古/怀旧质感）",
-     "Modern contemporary anime cel-shaded style with clean linework, flat vivid color regions, crisp defined shadows and bright clean highlights"),
-    ("水彩", "水彩", "watercolor painting, soft color bleeding, translucent washes, paper grain",
-     "水彩画风，颜色透明晕染，边缘自然渗开，纸张颗粒质感，清新通透",
-     "Delicate watercolor style with translucent color washes, soft bleeding edges and visible paper grain"),
-    ("油画", "油画", "oil painting, canvas texture, rich impasto, cinematic lighting, detailed brushwork",
-     "油画风，画布肌理，颜料厚重，明暗对比强烈，笔触细腻写实（当代审美，不要古典复古）",
-     "Contemporary oil painting look with canvas texture, rich impasto and cinematic chiaroscuro lighting"),
-    ("像素风", "像素", "pixel art, low resolution, dithering, retro game style, sharp pixels",
-     "像素艺术风格，低分辨率颗粒感，抖动着色，复古游戏画面，边缘锐利",
-     "Retro pixel art style with crisp square pixels, dithering and limited color palette"),
-    ("3D渲染", "3d", "3d render, octane render, subsurface scattering, glossy materials, cinematic lighting",
-     "3D 渲染质感，次表面散射，材质光泽真实，电影级布光，立体感强",
-     "A polished 3D render with physically based materials, subsurface scattering and cinematic studio lighting"),
-    ("吉卜力风", "吉卜力", "ghibli style, hand painted background, warm nostalgic tones, soft watercolor sky",
-     "吉卜力动画风，手绘背景，温暖怀旧色调，柔和水彩天空，治愈感",
-     "Ghibli-inspired hand-painted animation style with warm nostalgic palettes and soft watercolor skies"),
-    ("写实", "写实", "photorealistic, realistic lighting, natural skin texture, shallow depth of field",
-     "写实摄影风，真实光影，自然皮肤质感，浅景深，细节逼真",
-     "Photorealistic style with natural lighting, lifelike skin texture and shallow depth of field"),
-    ("日系插画", "日系", "anime illustration, soft shading, detailed eyes, vibrant colors, light novel style",
-     "日系轻小说插画风，柔和阴影，精致大眼睛，明亮配色，细腻高光",
-     "Modern Japanese light-novel illustration with soft shading, detailed eyes and vibrant clean colors"),
+    # v8.10.0：照搬老婆插件 ARTSTYLES 的现代画风——中文写法(索引3)专供 Qwen 编辑指令，
+    # 现代系权重最高，复古/工艺类靠后。格式：(显示名, 关键词, danbooru标签, qwen中文指令写法, natural英文)
+    ("现代日式动画", "现代日式", "modern anime illustration, clean lineart, soft cel shading, vivid colors, detailed eyes, crisp highlights, polished finish",
+     "现代日式动画（干净线稿 + 柔和赛璐璐 + 通透高光）",
+     "Modern Japanese anime illustration with clean lineart, soft cel shading, vivid colors and polished highlights"),
+    ("新海诚式电影动画", "新海诚", "cinematic anime, luminous sky, volumetric light, god rays, vibrant gradient, hyper-detailed background",
+     "新海诚式电影动画（通透天空 + 体积光 + 高饱和渐变）",
+     "Cinematic anime with luminous skies, volumetric light and vibrant gradients"),
+    ("清透厚涂插画", "清透厚涂", "polished digital painting, soft brushwork, glossy highlights, subtle rim light, contemporary illustration",
+     "清透厚涂插画（细腻笔触 + 柔和边缘光）",
+     "Polished contemporary digital painting with soft brushwork and subtle rim light"),
+    ("轻小说插画", "轻小说", "light novel illustration, refined lineart, soft bloom, pastel gradient, delicate shading, modern anime art",
+     "轻小说插画（精致线稿 + 柔光 + 淡彩渐变）",
+     "Modern light novel illustration with refined lineart, soft bloom and pastel gradients"),
+    ("潮流插画", "潮流", "trendy illustration, muted premium palette, negative space, graphic shapes, editorial poster vibe",
+     "潮流插画（高级灰 + 大面积留白 + 图形化色块）",
+     "Trendy editorial illustration with muted premium palette and graphic shapes"),
+    ("赛璐璐上色", "赛璐璐", "anime coloring, cel shading, clean lineart, crisp highlights",
+     "日系动画赛璐璐上色（干净线稿 + 硬边阴影 + 高清高光）",
+     "Modern anime cel shading with clean linework and crisp highlights"),
+    ("韩漫半写实", "韩漫", "manhwa style, semi-realistic, clean lineart, soft cel shading, glossy highlights",
+     "韩漫半写实（干净线稿 + 柔和赛璐璐 + 高光）",
+     "Semi-realistic manhwa style with clean linework and glossy highlights"),
+    ("电影感厚涂", "电影感", "cinematic painting, volumetric light, rim light, atmospheric haze, shallow depth of field",
+     "电影感厚涂（逆光 + 体积光 + 空气感）",
+     "Cinematic painterly style with volumetric light and atmospheric haze"),
+    ("赛博霓虹", "赛博", "cyberpunk, neon lights, high contrast, glowing, chromatic aberration",
+     "赛博霓虹插画（霓虹光 + 高对比 + 辉光）",
+     "Cyberpunk neon illustration with high contrast and glowing lights"),
+    ("3D 渲染", "3d", "3d render, cgi, smooth shading, subsurface scattering, ambient occlusion",
+     "3D 渲染动画风（光滑着色 + 次表面散射）",
+     "Polished 3D render with smooth shading and subsurface scattering"),
+    ("清透水彩", "水彩", "watercolor, soft colors, paper texture, translucent washes",
+     "清透水彩绘本（透明晕染 + 纸张质感）",
+     "Delicate watercolor style with translucent washes and paper texture"),
+    ("国风水墨", "水墨", "ink wash painting, chinese ink, sumi-e, muted colors",
+     "国风水墨淡彩（墨色晕染 + 大面积留白）",
+     "Chinese ink wash painting with subtle color washes"),
+    ("扁平矢量插画", "扁平", "flat color, vector art, thick outline, minimalist",
+     "扁平矢量插画（纯色块 + 粗描边 + 极简）",
+     "Flat vector illustration with bold outlines and minimalist shapes"),
+    ("像素艺术", "像素", "pixel art, 16-bit, dithering, sharp pixels",
+     "像素艺术（清晰像素 + 抖动着色）",
+     "Pixel art with crisp pixels and dithering"),
+    ("写实摄影", "写实", "photorealistic, realistic lighting, natural skin texture, shallow depth of field",
+     "写实摄影风（真实光影 + 自然皮肤质感）",
+     "Photorealistic style with natural lighting and lifelike textures"),
+    ("复古 90 年代动画", "复古90s", "retro anime, 1990s, vintage, film grain, muted palette",
+     "复古 90 年代动画（胶片颗粒 + 低饱和）",
+     "Retro 1990s anime with film grain and muted palette"),
 ]
 
 
@@ -8756,8 +8776,11 @@ class ComfyUIDrawPlugin(Star):
                     # 用户消息里已提到画风则以用户为准（覆盖默认，只影响这一张）。
                     _style_cfg = str((_ad_cfg or {}).get("default_style") or "").strip()
                     if _style_cfg:
-                        _style_words = ("水墨", "厚涂", "赛璐璐", "水彩", "油画", "像素", "3d", "渲染",
-                                        "吉卜力", "写实", "日系", "动漫", "风格", "画风", "paint", "ink", "cel")
+                        _style_words = tuple(p[1].lower() for p in STYLE_PRESETS) + (
+                            "水墨", "厚涂", "赛璐璐", "水彩", "油画", "像素", "3d", "渲染", "吉卜力",
+                            "写实", "日系", "动漫", "新海诚", "韩漫", "赛博", "轻小说", "扁平", "矢量",
+                            "风格", "画风", "paint", "ink", "cel",
+                        )
                         _user_mentioned_style = any(
                             w in (getattr(event, "message_str", "") or "").lower() for w in _style_words
                         )
@@ -18314,11 +18337,12 @@ class ComfyUIDrawPlugin(Star):
             logger.debug(f"【角色卡】 注入提示失败（忽略）: {e}")
 
     async def _role_card_detail_prompt(self, hint: str, *, style: str = "tags") -> str:
-        """v8.6.0：角色卡命中 + 短描述时，LLM 把一句想法创作成几百~上千字画面提示词。
+        """v8.10.0：角色卡图生图的提示词 = Qwen-Image-2.1 **编辑指令**（照搬老婆插件成熟做法）。
 
-        与在线生图「🎲 想画面 + 详细」同档，但加 no_appearance 硬约束：
-        角色形象由主参考图锁定，**禁止写角色名 / 作品名 / 角色 tag / 任何外观**，
-        只写动作 / 场景 / 光影 / 氛围 / 构图，且每块要具体可感。
+        不是「成品画面长描写」！是「动作 + 目标 + 约束」的短指令串（≤330 字）：
+        以操作动词开头写清改什么，句尾一句总括「保持身份不变、**只做上述改动**」。
+        保持只锁身份（脸/发型发色/辨识度），不锁服装/画风；换装必须写明
+        「完全替换原服装、原款式轮廓不要残留」，否则编辑模型会保留原衣服。
         失败抛异常，由调用方保留原提示词。
         """
         provider_id = self._resolve_translate_provider_id()
@@ -18327,62 +18351,39 @@ class ComfyUIDrawPlugin(Star):
         hint = (hint or "").strip()
         if not hint:
             raise RuntimeError("详细创作需要至少一句画面想法")
-        # 按底模风格给不同的输出形态（对齐 studio_api.ai_imagine detail 档）
-        if style in ("qwen",):
-            fmt = (
-                "输出格式：中文 6~12 句、300~800 字的整段画面描写。"
-                "把人物的动作姿态与表情、场景环境、光影色调、构图镜头、氛围情绪逐层写清楚，"
-                "每个细节都要具体可感——不要空泛地说「背景简单」「光线柔和」，"
-                "要写清这个地方有什么、光从哪来、镜头怎么摆。"
-                "不要写成标签罗列，不要编号与解释。"
-            )
-        else:
-            # tags / pony / nai / natural 统一走「自然语言整句」详细档：
-            # 用户明确要上千字，标签系也写整句（后续画质前缀仍由插件按底模补）。
-            fmt = (
-                "输出格式：8~16 句、400~1000 字的画面描写（用目标提示词语言）。"
-                "把动作姿态与表情、场景环境、光影色调、构图镜头、材质氛围逐层展开，"
-                "每部分都要有具体细节——不要空泛重复、不要「simple background / soft lighting」这类空话。"
-                "不要写成逗号标签堆，不要编号与解释。"
-            )
-        # v8.8.0：景别——默认单人近景、角色占画面大（用户明确要全身/远景时不强制）
+        # v8.8.0：景别——用户没说全身/远景时默认近景、角色占画面大
         _fullbody_re = re.compile(r"全身|全身照|全身立绘|远景|大场景|全景|合影|群像|wide|full.?body|distant|far.?away")
-        _want_full = bool(_fullbody_re.search(hint))
         _framing_rule = (
             ""
-            if _want_full else
-            "【景别·默认近景】用户没明确要全身 / 远景：请写**单人近景或半身特写**"
-            "（如 upper body portrait / close-up / cowboy shot），"
-            "人物要占画面的主要面积、清晰可辨——**不要写成远景小人**（不要 full body / wide shot / 人物缩在画面中间）。"
-            "场景与光影只作为衬衬托人物，别为了写足环境把人物推远。\n"
+            if _fullbody_re.search(hint) else
+            "用户没说全身/远景：若涉及取景，用单人近景/半身特写、人物占画面主要面积，不要远景小人。\n"
         )
+        # v8.10.0：完全照搬老婆插件 _SYSTEM_PROMPT（prompt_gen.py:2225-2256）的编辑指令口径
         prompt = (
-            "你是顶级的 AI 绘画提示词创作师。用户给了一句画面想法，请围绕它"
-            "**自由创作**一幅丰富、有记忆点的画面提示词（可补充细节，但不要偏离原意）。\n\n"
-            f"{fmt}\n\n"
+            "你为 Qwen-Image-2.1 图生图撰写**中文编辑指令**（输入图=该角色的主参考图，"
+            "这是编辑任务，绝不是从零文生图）。\n\n"
+            "【写法·动作+目标+约束】以**操作动词开头**（把…改为／换成／让角色…），"
+            "一句话里说清「改什么」，并把改动推到强烈明确；句尾统一强调"
+            "「保持人物的面部特征、发型发色与角色辨识度不变，**只做上述改动**」。\n"
+            "【只改点名属性】只写用户要求的改动，不发明、不添加没要求的操作；"
+            "⛔ **不要把要保留的东西具体重画一遍**（越具体描述想保留的，越容易漂移）——"
+            "保留只用在句尾那一句总括，且只锁身份，不锁服装/画风。\n"
+            "【换装·必须点名完全替换】编辑模型默认保留原服装——只要涉及换衣服，必须写明"
+            "「新服装完全替换参考图原有服装，原服装的款式与轮廓不要残留」，"
+            "否则只改个别元素、款式还是原来那套（真实事故：用户说换比基尼，结果写成"
+            "「比基尼款式保持参考图一致」，衣服根本没换）。\n"
+            "【画风·现代当代】涉及画风时写「把整体画风改为X（人物面部与发型保持可辨认）」，"
+            "用 2026 现代画风（现代日式动画／新海诚式电影动画／清透厚涂／轻小说插画／潮流插画等干净通透质感）；"
+            "⛔ 除非用户明确要复古，绝不写复古/90年代/classic/retro/vintage。\n"
+            "【多视图参考图】若参考图是三视图/设定稿拼接，写明「只保留其中一个正面视角，"
+            "去掉其余视角的拼接」。\n"
             f"{_framing_rule}"
-            "【角色卡·参考图只锁定人物身份】本次出图用该角色的主参考图，参考图锁定的是"
-            "「这是谁」——五官轮廓、脸型、发色、瞳色、体型等**身份特征**不要改。"
-            "⛔ **绝对禁止写**：角色名、作品名、角色标签、发色、发型、瞳色、耳朵、角、尾巴、体型——"
-            "这些身份词一个字都不能出现。你只写「这个人在做什么、在什么场景、什么光线、什么镜头、"
-            "什么氛围」+ 用户点名的可改维度（画风 / 服装 / 配饰），越具体越好。\n"
-            "★【用户点名的改动必须照做，不许顶回去】画风、服装、配饰**不由参考图锁定**——"
-            "用户明确说「换比基尼 / 改成和服 / 戴帽子 / 水墨风 / 厚涂 / 赛璐璐」时，"
-            "这是**明确指令**，必须原样、强烈地写进提示词。"
-            "⛔ **绝对禁止写「服装/画风保持参考图不变」这类话**——用户都让你换了，"
-            "写「保持参考图一致」等于没执行指令（真实事故：用户说比基尼，却写成"
-            "「比基尼款式严格保持与参考图完全一致」，衣服根本没换）。"
-            "身份不变只针对「这是谁」，不包括穿什么、什么画风。\n"
-            "★【画风·默认当代】用户说画风时把它明确写进提示词，并把风格词翻译成具体视觉属性"
-            "（例：赛璐璐 → modern anime cel shading, clean lineart, flat vivid colors, crisp shadows, "
-            "contemporary Japanese animation look；厚涂 → painterly impasto, visible brush strokes）。"
-            "⛔ **不要写年代 / 复古 / 怀旧 / 90年代 / classic / retro / vintage**——除非用户明确要复古——"
-            "一律按 **当代 / 现代 / 2026** 的视觉质感写。不要只写「柔和氛围」（那是氛围不是画风）。"
-            "用户没提画风时，不要主动写画风词。\n"
-            "⛔ 不要写画质词（masterpiece / best quality / score_9 等），插件会自动补。\n"
-            "⛔ 不要写比例 / 尺寸词（portrait / landscape / 2K 等），会覆盖工作流尺寸。\n\n"
-            f"用户的画面想法：\n{hint}\n\n"
-            "只输出提示词正文本身，不要任何说明、标题或代码块："
+            "【身份我们不写在指令里】不要写角色名/作品名/角色 tag；五官发色等身份靠句尾总括"
+            "「保持参考图」来锁，不用文字复述。\n"
+            "【输出纪律】只输出**一条简体中文编辑指令本身**——不要解释、不要引号、"
+            "不要 markdown、不要分点、不要代码围栏，总长不超过 330 字。\n\n"
+            f"用户的编辑要求：\n{hint}\n\n"
+            "只输出这条编辑指令正文："
         )
         try:
             # 详细档要更长输出，超时放宽（在线生图 detail 用 150s+）；
