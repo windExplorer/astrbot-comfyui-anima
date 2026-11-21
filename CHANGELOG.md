@@ -4,6 +4,37 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.15.1（提示词优化整改：画质前缀与外观护栏两个真 bug）
+
+用户反馈「提示词优化感觉有问题」。审查整条链路（画质前缀 / LLM 扩写 / 外观护栏 /
+第三方改写）后，确认并修复两个确定的功能缺陷：
+
+- **画质前缀配置被架空**：`_rewrite_to_anima_llm` 的 LLM 提示词里把
+  `masterpiece, best quality, ultra-detailed...` 写死成「必须固定加」。后续
+  `ensure_quality_prefix` 检测到已有 masterpiece 就不再补 → `quality_prefix` 开关关不掉、
+  `quality_prefix_custom` 永远不生效、pony 底模拿不到 `score_9`、NAI 拿不到
+  `best quality`，且与「扩写时不要写画质词」的指令自相矛盾。改成让 LLM 不写画质词，
+  统一交给 `ensure_quality_prefix` 按底模风格 + 用户配置补。一处改动修掉四个症状。
+- **外观护栏放行太窄**：`main.py` 的 `_APPEARANCE_CHANGE_RE` 只认「改成/换成/染成」，
+  漏了「剪短/留长/加猫耳/去掉/脱下/dye/cut hair」；`prompt_guard.appearance_change_intent`
+  的宽版正则这些全认，但只用在了 LoRA 链路。结果用户说「把头发剪短」时，护栏把 AI
+  写的 `short hair` 当冲突剥掉，违背「用户明确改外观时放行」的承诺，且两条链路结论不一致。
+  出图主链路改为两个正则取并集（语义 = 宽版），与 LoRA 链路统一。
+
+守卫：`test_prompt_boost.py` 新增「LLM 改写不硬编码画质前缀」与「剪短头发/加猫耳/
+脱下外套/dye 都放行」用例，防复发。
+
+另发现但未改（需用户确认，属功能不完整而非 bug）：
+- `enhance_only_tag_family=false` 时 `_enhance_prompt_llm` 的 `style` 形参未使用，
+  仍输出英文 Danbooru 标签塞给自然语言底模；且 `keeps_original_tags` 要求原文逐字保留，
+  纯中文短描述扩写后必被放弃。改动牵扯校验口径，触发面窄（用户主动关才触发），
+  本次不动，留待确认。
+- `third_party_llm_refine=false` 的 hint 说「不调 LLM」，但实际仍会走 `enhance_llm`
+  扩写（CHANGELOG 表明两者是独立开关）——文案与实现不符，非功能 bug。
+- 平台链路（NAI/OpenAI）不做短描述扩写，hint 未说明——设计缺口。
+
+验证：`test_prompt_boost` / `test_prompt_guard` / `test_refine_fallback` 全过；编译通过。
+
 ## v7.15.0（配置页整理：全量重排分组 + 搜索）
 
 需求：用户反馈配置项多而杂、找不到东西。核对 62 个顶层键后确认：看似重复的键

@@ -3610,10 +3610,10 @@ class ComfyUIDrawPlugin(Star):
             "（可能是中文、英文或中英混杂，也可能是结构化文本），请你理解其含义，"
             "改写为一张可以直接交给动漫模型（Anime 风格）的英文提示词。要求：\n"
             "1. 全部用英文，输出 Danbooru 风格标签（如 1girl, solo, white dress, "
-            "long hair, blue eyes），用英文逗号分隔；结果开头必须固定加画质前缀 "
-            "`masterpiece, best quality, ultra-detailed, highres, absurdres, "
-            "intricate details, soft cinematic lighting, vibrant colors, refined anime style`"
-            "（稳定拉高出图精致度，不要省略）；\n"
+            "long hair, blue eyes），用英文逗号分隔；"
+            "不要写任何画质词（masterpiece / best quality / ultra-detailed / very aesthetic "
+            "/ score_9 等）——插件会按底模风格与用户配置自动补画质前缀，"
+            "你写了会导致前缀固定成某一套、且绕开用户的 quality_prefix 开关；\n"
             "2. 这是动漫/二次元风格生图，输出必须保持动漫风格（anime style, "
             "anime coloring, 2d 等），不要输出写实/照片类标签；\n"
             "3. 即使原文提到『真实摄影、手机拍照、胶片颗粒、35mm、浅景深、"
@@ -5133,7 +5133,14 @@ class ComfyUIDrawPlugin(Star):
             return positive
         if not hits or not (positive or "").strip():
             return positive
-        if user_text and _APPEARANCE_CHANGE_RE.search(user_text):
+        # v7.15.1：放行判定统一到 prompt_guard 的宽版正则——main 里的 _APPEARANCE_CHANGE_RE
+        # 只认「改成/换成/染成」，漏了「剪短/留长/加猫耳/去掉/脱下/dye/cut hair」等说法，
+        # 导致用户明确要改外观时护栏仍把 AI 写的短发/猫耳当冲突剥掉。LoRA 链路(16754)
+        # 早就在用宽版，两处结论不一致。取并集兼容旧正则，语义 = 宽版。
+        if user_text and (
+            _APPEARANCE_CHANGE_RE.search(user_text)
+            or prompt_guard.appearance_change_intent(user_text)
+        ):
             logger.info("【外观护栏】 用户明确要求改外观，跳过冲突剥除")
             return positive
         try:

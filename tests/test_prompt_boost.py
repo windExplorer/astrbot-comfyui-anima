@@ -167,6 +167,16 @@ def test_guard_appearance():
     for _said in ("把头发染成粉色", "换成红裙子", "眼睛改成红色"):
         out2 = NS["_guard_appearance"](pl, "1girl, pink hair, night", hits, user_text=_said)
         assert "pink hair" in out2, (_said, out2)
+    # v7.15.1：只命中 prompt_guard 宽版正则的说法也必须放行（此前 main 窄版会误剥）。
+    # 这些句子不会被 main 的「改成/换成/染成」命中，只有宽版认。
+    for _said, _tag in (
+        ("把头发剪短", "short hair"),
+        ("加上猫耳", "cat ears"),
+        ("脱下外套", "no jacket"),
+        ("dye her hair pink", "pink hair"),
+    ):
+        out2b = NS["_guard_appearance"](pl, f"1girl, {_tag}, night", hits, user_text=_said)
+        assert _tag in out2b, (_said, _tag, out2b)
     # 只是普通说话 → 不放行（照剥）
     out2b = NS["_guard_appearance"](pl, "1girl, pink hair, night", hits,
                                     user_text="画一张樱花树下的图")
@@ -236,9 +246,25 @@ def test_boost_positive():
     print("== 4. 丰富化总入口（扩写护栏/前缀/异常回退/平台档） OK")
 
 
+def test_llm_rewrite_no_hardcoded_quality_prefix():
+    """v7.15.1：_rewrite_to_anima_llm 不得把画质前缀写死在 LLM 提示词里。
+
+    写死会让 ensure_quality_prefix 检测到已有 masterpiece 而不再按底模风格补，
+    导致 quality_prefix 开关/自定义前缀/pony score_9/NAI best quality 全部失效。
+    """
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    start = src.index("async def _rewrite_to_anima_llm(")
+    end = src.index("\n    async def ", start + 10)
+    seg = src[start:end]
+    assert "必须固定加画质前缀" not in seg, "LLM 改写又把画质前缀写死了"
+    assert "不要写任何画质词" in seg, "LLM 改写缺少「不要写画质词」的指令"
+    print("== 5. LLM 改写不硬编码画质前缀（交给 ensure_quality_prefix） OK")
+
+
 if __name__ == "__main__":
     test_prompt_style()
     test_should_enhance()
     test_guard_appearance()
     test_boost_positive()
+    test_llm_rewrite_no_hardcoded_quality_prefix()
     print("提示词丰富化主链路全部通过")
