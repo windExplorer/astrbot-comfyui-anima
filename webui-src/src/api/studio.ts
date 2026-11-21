@@ -200,8 +200,8 @@ export const studioApi = {
    *  hint 可空（AI 自由发挥），非空则围绕用户想法创作。
    *  detail=true 生成数百至上千字的丰富提示词（更慢更耗 token，后端放宽超时）。
    *  translation 为同一次 LLM 顺带产出的中文译文（仅英文提示词有，空串=中文提示词） */
-  aiImagine: (hint: string, workflow: string, detail = false): Promise<{ text: string; translation: string }> =>
-    apiPost("studio/ai_imagine", { hint, workflow, detail }, { timeout: detail ? 180000 : 120000 }),
+  aiImagine: (hint: string, workflow: string, detail = false, roleTags = ""): Promise<{ text: string; translation: string }> =>
+    apiPost("studio/ai_imagine", { hint, workflow, detail, role_tags: roleTags }, { timeout: detail ? 180000 : 120000 }),
   templates: (): Promise<{ items: StudioTemplate[] }> => apiGet("studio/templates"),
   saveTemplate: (t: Partial<StudioTemplate>): Promise<{ id: number }> =>
     apiPost("studio/templates/save", t as any),

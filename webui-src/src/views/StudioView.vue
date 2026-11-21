@@ -112,6 +112,7 @@
             :workflow="selectedWorkflow"
             :quick-templates="quickTemplates"
             :selected-lora-names="loraSel.map((s) => s.name)"
+            :role-tags="roleTags"
             :submit-disabled="genDisabled"
             :submitting="submitting"
             @update:positive="(v: string) => (p.positive = v)"
@@ -282,11 +283,14 @@ const ovWorkflows = computed(() => overview.value?.workflows || []);
 const roleCards = ref<any[]>([]);
 const roleCardSel = ref<string | null>(null);
 const roleCardHint = ref("");
+const roleTags = ref("");  // 选中角色卡的 tags_en，供「🎲 想画面」生成时作为身份事实
 const roleCardOptions = computed(() => roleCards.value.map((r: any) => ({
   label: `${r.name}${r.aliases?.length ? `（${r.aliases.slice(0, 2).join("/")}）` : ""}`,
   value: String(r.name),
 })));
 function onRoleCardPick(name: string | null) {
+  const picked = roleCards.value.find((r: any) => r.name === name);
+  roleTags.value = String((picked || {}).tags_en || "").trim();
   if (!name) { roleCardHint.value = ""; return; }
   const text = String(p.positive || "");
   if (!text.includes(name)) {
