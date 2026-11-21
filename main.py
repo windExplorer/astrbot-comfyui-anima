@@ -444,10 +444,6 @@ def _decide_wait_timeout(
     per_extra = int(queue_extra_timeout or 0) or base_timeout
     max_timeout = int(max_draw_timeout or 0) or (base_timeout + 30 * base_timeout)
     _calc = min(max_timeout, base_timeout + ahead * per_extra)
-    # 原代码此处另算过 min(_calc, hard_cap)，但下一行立即被 squeeze_fn 覆盖；
-    # 保留该计算只为逐字等价，结果不参与返回值。
-    if hard_cap > 0:
-        _ = min(_calc, hard_cap)
     timeout, squeezed = squeeze_fn(_calc, hard_cap, elapsed_pre)
     interval = max(1, int(poll_interval or 2))
     return timeout, per_extra, max_timeout, hard_cap, squeezed, interval
@@ -7946,6 +7942,11 @@ class ComfyUIDrawPlugin(Star):
                     stats["nsfw_blocked"] = int(stats.get("nsfw_blocked", 0)) + 1
                 continue
 
+            # 走到这里说明本张图已生成并通过 NSFW 拦截，确定要发出去 → 标记成功，
+            # 供循环结束后的结果卡 / 今日出图计数使用（此前 _ok_sent 从不置位，导致
+            # 平台链路的结果卡与 bump_today 永久不可达）。
+            _ok_sent = True
+
             # 发送（图文消息 caption 与 ComfyUI 链路同构）
             if external:
                 # v7.8.5：外部插件调用由调用方自己发图——跳过发送链构造，
@@ -8492,6 +8493,7 @@ class ComfyUIDrawPlugin(Star):
             ):
                 yield _pn, _pp
             return
+        wf = None  # 解析失败时 except 里的失败卡也要能安全取到（wf or {}），避免 UnboundLocalError
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
@@ -9717,8 +9719,11 @@ class ComfyUIDrawPlugin(Star):
         # 绘图摘要：不再打印完整 workflow JSON，仅展示关键信息，减少日志噪声。
         # LoRA 权重以 active_map（命令 --名称:权重 优先，None 表示沿用工作流默认）为准。
         _lora_weight = {}
-        for nm, w in (active_map or {}).items():
-            if w is None:
+        # ★循环变量用 _lw 而非 w：Python 的 for 目标会泄漏到函数局部作用域，
+        # 用 w 会覆盖宽度变量，导致下方 _disp_w/图库归档/结果卡的宽度变成 LoRA 权重
+        # （v7.11.10 曾修过同款 bug，这里是换写法复发）。
+        for nm, _lw in (active_map or {}).items():
+            if _lw is None:
                 _cfg_w = next(
                     (l.get("weight") for l in (loras_cfg or [])
                      if (l.get("name") or "").strip() == nm),
@@ -9726,7 +9731,7 @@ class ComfyUIDrawPlugin(Star):
                 )
                 _lora_weight[nm] = _cfg_w if _cfg_w is not None else "默认"
             else:
-                _lora_weight[nm] = w
+                _lora_weight[nm] = _lw
         # v7.7.77：摘要里带上 LoRA / 工作流的稳定 ID（排查「用错哪条」时一眼定位）
         def _lora_id_of(_nm: str) -> str:
             for _l in (loras_cfg or []):

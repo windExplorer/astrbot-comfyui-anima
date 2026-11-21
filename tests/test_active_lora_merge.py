@@ -145,12 +145,19 @@ def test_lora_weight_not_clobber_width() -> None:
     card_at = _at('("尺寸", f"{locals().get(\'_real_w\') or w}')
     # 宽度赋值之后、结果卡之前，不允许任何独立语句 `w = ...` 覆盖。
     # 只匹配「缩进 + w + 空格= 空格」（Python 赋值语句风格），排除关键字参数 `w=_real_w,`。
+    # v7.14.1：补 for 循环目标 `for nm, w in ...` —— 普通 for 的循环变量会泄漏到
+    # 函数局部作用域，能覆盖 w；旧守卫只查独立赋值，漏掉了 v7.13 的复发。
+    # 只匹配「独立 for 语句」（行首 for、行尾冒号）；列表推导式 [.. for w in ..]
+    # 有独立作用域、不泄漏，且这类行不以 for 开头，故不会误报。
     import re
     for i in range(width_at + 1, card_at):
         assert not re.match(r"^\s+w = [^=]", lines[i]), (
             f"第 {i+1} 行在宽度赋值后又覆盖了 w: {lines[i].strip()}"
         )
-    print("PASS 宽度变量 w 未被 LoRA 权重覆盖（结果卡宽度不会被改成 1）")
+        assert not re.match(r"^\s*for\b.*\bw\b\s+in\b.*:\s*$", lines[i]), (
+            f"第 {i+1} 行的 for 循环把 w 当循环变量（会覆盖宽度）: {lines[i].strip()}"
+        )
+    print("PASS 宽度变量 w 未被 LoRA 权重覆盖（含 for 循环变量守卫）")
 
 
 if __name__ == "__main__":

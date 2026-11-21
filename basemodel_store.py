@@ -253,9 +253,6 @@ class BaseModelStore:
                 out.append(p)
         return out
 
-    def find_by_id(self, model_id) -> dict | None:
-        return self.get(model_id)
-
     def match_model(self, model_file: str = "", class_type: str = "") -> dict | None:
         """按「匹配关键字」在模型文件名 / 底模类名里找所属底模（模型族）。
 

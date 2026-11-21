@@ -197,14 +197,6 @@ class QuotaStore:
             return {}
         return {"max_total": row["max_total"], "max_hour": row["max_hour"], "max_day": row["max_day"]}
 
-    def delete_user_config(self, user_id: str) -> None:
-        """删除用户单独配置（删除后该用户回退使用全局配置）。"""
-        try:
-            self._conn_get().execute("DELETE FROM quota_config WHERE user_id=?", (user_id,))
-            self._conn_get().commit()
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"[限额] 删除配置失败: {e}")
-
     # ------------------------------------------------------------------ #
     # 列表 / 重置
     # ------------------------------------------------------------------ #
