@@ -4,6 +4,27 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.4.2（紧急修复：v8.0.0 误删的两个 MOSS 方法）
+
+**线上报错**：`AttributeError: 'ComfyUIDrawPlugin' object has no attribute
+'_looks_moss_layout'`（`llm_draw` 工具执行异常）。
+
+**根因**：v8.0.0 删自建角色卡时，把紧邻的 MOSS 图像布局通用方法
+`_looks_moss_layout` / `_rescale_moss_layout` 一并误删了——它们与角色卡无关，
+是 MOSS JSON Layout 的结构保护（提示词是布局 JSON 时跳过标签系扩写/前缀，
+并按实际出图尺寸缩放 bbox）。但 `_do_draw` 里 8 处仍在调 `_looks_moss_layout`、
+1 处调 `_rescale_moss_layout`，运行时必崩。pyflakes 只查未定义名，查不到
+`self.xxx` 这种实例属性，所以之前的静态检查全过也没发现。
+
+**修复**：从 v8.0.0 删除前的版本原样恢复这两个方法（docstring 里"角色卡锚点"
+措辞改为中性），放在 `_is_moss_image` 与 `_rewrite_to_moss_llm` 之间。
+
+**守卫**：新增 `tests/test_self_methods_defined.py`，用 AST 对比「`self._xxx(...)`
+调用」与「类里 `def xxx`」，跑一遍即发现悬空调用。当前 275 个调用全部有定义，
+确认没有其它误删。
+
+验证：`py_compile` + 新守卫 + `test_refine_fallback` 全过。
+
 ## v8.4.1（撤销角色标签注入：参考图已经锁定外观）
 
 用户纠正：角色卡链路**已经用了主参考图做图生图**，角色外观由参考图锁定，再注入

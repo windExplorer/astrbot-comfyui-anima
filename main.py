@@ -4082,6 +4082,66 @@ class ComfyUIDrawPlugin(Star):
             pass
         return False
 
+    # v8.4.2：v8.0.0 删自建角色卡时误删了这两个 MOSS 布局通用方法（与角色卡无关），
+    # 导致 _do_draw 多处调用抛 AttributeError。从删除前版本原样恢复。
+    @staticmethod
+    def _looks_moss_layout(text: str) -> bool:
+        """正向提示词是否是 MOSS JSON Layout。
+
+        决定后续所有「追加/扩写/前缀」是否跳过——那些全是标签系语法，会把 JSON 结构
+        打穿（触发词追加、画质前缀、多人计数清理等都算）。
+        """
+        try:
+            d = json.loads((text or "").strip())
+        except Exception:
+            return False
+        if not isinstance(d, dict) or not isinstance(d.get("items"), list):
+            return False
+        return any(isinstance(it, dict) and "bbox" in it for it in d["items"])
+
+    @staticmethod
+    def _rescale_moss_layout(text: str, real_w: int, real_h: int,
+                             plan: int = 1024) -> str:
+        """把 Layout JSON 的 bbox 从规划画布（plan×plan，默认 1024）等比缩放到实际尺寸。
+
+        bbox 是 abs_centralized 绝对坐标，不会随出图尺寸自动伸缩——用户改尺寸/说「竖版」
+        时版面会整体偏移。这里在尺寸定下来后按轴等比缩放并重新注入。
+        只改 bbox，其它字段原样；解析/序列化失败原样返回（绝不阻断出图）。
+        """
+        try:
+            d = json.loads((text or "").strip())
+            if not isinstance(d, dict) or not isinstance(d.get("items"), list):
+                return text
+            _sx = float(real_w) / float(plan)
+            _sy = float(real_h) / float(plan)
+            _hx, _hy = float(real_w) / 2.0, float(real_h) / 2.0
+
+            def _c(v: float, lim: float) -> int:
+                return int(max(-lim, min(lim, round(v))))
+
+            changed = False
+            for it in d["items"]:
+                if not isinstance(it, dict):
+                    continue
+                bb = it.get("bbox")
+                if not (isinstance(bb, list) and len(bb) == 4):
+                    continue
+                if not all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) for v in bb
+                ):
+                    continue
+                y0, x0, y1, x1 = bb
+                nb = [_c(y0 * _sy, _hy), _c(x0 * _sx, _hx),
+                      _c(y1 * _sy, _hy), _c(x1 * _sx, _hx)]
+                if nb != list(bb):
+                    it["bbox"] = nb
+                    changed = True
+            if not changed:
+                return text
+            return json.dumps(d, ensure_ascii=False)
+        except Exception:
+            return text
+
     async def _rewrite_to_moss_llm(self, text: str, *, lang: str = "",
                                    lora_ref: str = "") -> str:
         """按 MOSS-Image 规范改写提示词（A 档 caption / B 档 JSON Layout，v7.7.96）。
