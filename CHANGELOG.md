@@ -4,6 +4,30 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.5.0（新增 comfyui_role：让 LLM 能查角色库）
+
+现象：用户让 bot 画某作品某角色，bot 回「这个角色在标签库里没找到…角色卡我看不到啊，
+你把角色卡内容贴给我」。根因：v8.0.0 删自建角色卡时删掉了 `comfyui_character` 工具，
+但没给 LLM 替代入口；`comfyui_draw` 的 docstring 又引导「先查 LoRA → 查 danbooru →
+都没有就说没找到」，LLM 完全不知道角色库的存在。
+
+修复（恢复「按需查卡」契约，数据源换成老婆插件角色库）：
+- **新 LLM 工具 `comfyui_role`**（只读）：`keyword` 按角色名 / 别名 / 作品 / tags_en
+  查角色库，`limit` 控条数。返回 name / aliases / series / tags_en / has_ref，
+  **不暴露主参考图本地路径**。底层走 `role_card.load_ref_map`（waifu.v1 契约 + 60s 缓存
+  + 失败降级），新增纯函数 `role_card.search_roles`。遵守 `enable_llm_tools` 开关。
+- **`comfyui_draw` 查找链加第 1 步**：点名角色/作品时**先调 `comfyui_role`**；
+  明确写入「用户说'角色卡里有'就是让你调它，绝不要说'角色卡我看不到'」；LoRA 退到第 2 步、
+  danbooru 第 3 步，全不命中才说没找到。`comfyui_img2img` 相关引导同步。
+- `skills/comfyui-draw/SKILL.md` 里过时的 `comfyui_character` 文案改成 `comfyui_role`。
+
+链路：用户说「画 XX 角色的图」→ LLM 调 `comfyui_role` → 拿到 tags_en 填进 prompt →
+`comfyui_draw` 出图 → 命中角色名时插件自动走主参考图图生图 + 强制工作流。
+
+验证：`test_role_card`（含 search_roles 与工具守卫）/ `test_llm_tool_docstrings`
+（comfyui_role 2 参数 schema 正确）/ `test_self_methods_defined` / `test_static_lint`
+全过，vite 构建通过。
+
 ## v8.4.2（紧急修复：v8.0.0 误删的两个 MOSS 方法）
 
 **线上报错**：`AttributeError: 'ComfyUIDrawPlugin' object has no attribute

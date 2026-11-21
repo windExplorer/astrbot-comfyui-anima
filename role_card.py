@@ -75,6 +75,40 @@ def match_role(text: str, ref_map: dict):
     return cands[0][1], cands[0][2]
 
 
+def search_roles(keyword: str, ref_map: dict, limit: int = 30) -> list[dict]:
+    """按关键词查角色库（供 LLM 工具 comfyui_role 用；只读、不暴露本地路径）。
+
+    keyword 为空 → 返回前 limit 个（按名字排）；非空 → 名字/别名/作品/tags_en 子串匹配。
+    返回精简字段：char_id/name/aliases/series/tags_en/has_ref（不回 ref 绝对路径）。
+    """
+    kw = (keyword or "").strip().lower()
+    rows = []
+    for cid, e in (ref_map or {}).items():
+        if not isinstance(e, dict):
+            continue
+        blob = " ".join([
+            str(e.get("name") or ""), str(e.get("series") or ""),
+            str(e.get("tags_en") or ""),
+            " ".join(str(x) for x in (e.get("aliases") or [])),
+        ]).lower()
+        if kw and kw not in blob:
+            continue
+        rows.append({
+            "char_id": cid,
+            "name": str(e.get("name") or cid),
+            "aliases": list(e.get("aliases") or []),
+            "series": str(e.get("series") or ""),
+            "tags_en": str(e.get("tags_en") or ""),
+            "has_ref": bool(str(e.get("ref") or "").strip()),
+        })
+    rows.sort(key=lambda r: r["name"])
+    try:
+        limit = max(1, min(int(limit or 30), 100))
+    except (TypeError, ValueError):
+        limit = 30
+    return rows[:limit]
+
+
 def build_role_prompt(entry: dict, positive: str) -> str:
     """把角色 tags_en 作为提示词补充（不覆盖用户原词）。"""
     tags = str((entry or {}).get("tags_en") or "").strip()

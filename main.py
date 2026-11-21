@@ -16342,13 +16342,17 @@ class ComfyUIDrawPlugin(Star):
         ★要在画面里出现文字：自然语言系用引号写清内容；anima 系文字渲染不可控，
           只能用 english text / japanese text 等标签（不保证清晰大字）。
         ★★点名角色/作品/画风（「来一张XX的图」「画个初音未来」「用XX风格画」）的查找链，逐级降级、不许跳步：
-        1) **先查 LoRA**：调 comfyui_loras（keyword=名字，category 可传「角色」）。查不到就换更短关键词 / 英文名 / 关键字再查一两次
+        1) **先查角色库**（用户点名某作品/角色时必做）：调 comfyui_role（keyword=角色名/作品名）。
+           ★这是「角色卡」的唯一入口——用户说「角色卡里有」「你查查角色卡」时就是让你调它，
+           **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。命中就把 tags_en 填进 prompt；
+           has_ref=true 时主参考图由插件自动走图生图，你不用管路径、也不要自己传 image。
+        2) **再查 LoRA**：调 comfyui_loras（keyword=名字，category 可传「角色」）。查不到就换更短关键词 / 英文名 / 关键字再查一两次
            （工具会做去版本后缀的近似匹配），不要一次查不到就跳下一步。命中多条同名版本时优先**不带后缀的原版**。
            命中就填进 loras 参数，**不要**再用 danbooru 标签重复描述该角色外形。
-        2) **再查 danbooru MCP（查标签的唯一正确来源）**：工具名可能中/英文，名字含 danbooru / tag / 标签 的 MCP 都属于它，**只调它**。
+        3) **再查 danbooru MCP（查标签的唯一正确来源）**：工具名可能中/英文，名字含 danbooru / tag / 标签 的 MCP 都属于它，**只调它**。
            ⛔禁止联网搜索 / 抓 danbooru 官网或镜像（限流 / 403、格式易错）。
-        3) 仅当确认工具列表里没有任何 danbooru MCP 时，才用你自己的知识写标准标签（仍须遵守下一条）。
-        4) 都不命中 → 不出图：直接告诉用户「没找到『XX』相关的 LoRA 或标签，没法画」，绝不凭记忆瞎编硬画。
+        4) 仅当确认工具列表里没有任何 danbooru MCP 时，才用你自己的知识写标准标签（仍须遵守下一条）。
+        5) 角色库 / LoRA / 标签全都不命中 → 不出图：直接告诉用户「没找到『XX』相关的角色、LoRA 或标签，没法画」，绝不凭记忆瞎编硬画。
         ★★拿到角色/作品 tag 后**禁止补外观**（最高频错误）：角色 tag（如 hatsune_miku、belle \\(zenless zone zero\\)）+ 作品 tag
            已锁定角色完整设定，禁止再叠加发色/发型、瞳色、耳朵/角/尾巴/兽化、服装/配饰/体型等任何外观标签——
            **你凭记忆写的角色外貌几乎一定是错的**（真实案例：角色本是绿发，却补了 white_hair，直接把角色画错）。
@@ -18838,6 +18842,64 @@ class ComfyUIDrawPlugin(Star):
             return f"⚠️ nai-codex 检索出错：{_sanitize_exc_text(str(e), 160)}"
 
         return mod.format_results(results, keyword, full=bool(full))
+
+    # ------------------------------------------------------------------ #
+    # LLM 工具：comfyui_role（只读查询老婆插件角色库）
+    # ------------------------------------------------------------------ #
+    @filter.llm_tool(name="comfyui_role")
+    @_safe_llm_tool
+    async def llm_roles(
+        self,
+        event: AstrMessageEvent,
+        keyword: str = "",
+        limit: int = 30,
+    ):
+        """查询角色库（来自「萌萌今日老婆」插件）里的角色与资料，只读。
+
+        什么时候必须先用本工具：
+        - 用户要画「某作品某角色」「XX 角色」，且你不确定该角色的英文标签时，
+          ★先调本工具按角色名 / 别名 / 作品查角色库，拿到 tags_en（角色英文标签）
+          再写进 comfyui_draw 的 prompt。不要先去 danbooru MCP 找、更不要说
+          「角色卡我看不到」——角色库就是由本工具读取的。
+        - 用户说「角色卡里有」时，直接用本工具查，不要让用户贴内容或截图。
+        - 命中且 has_ref=true 的角色：把 tags_en 填进 prompt，主参考图由插件自动走
+          图生图链路（你不用管参考图路径，也不要自己传 image）。
+
+        怎么用返回结果：每条含 name（角色名）/ aliases（别名）/ series（作品）/
+        tags_en（可直接拼进提示词的英文标签）/ has_ref（是否绑定主参考图）。
+        keyword 为空 = 列出前 N 个角色；有关键词 = 按名字/别名/作品/tags_en 子串匹配。
+        角色库里查不到时，再按 comfyui_draw 的常规流程查 LoRA / danbooru。
+
+        Args:
+            keyword(string): 检索关键词（角色名 / 别名 / 作品名 / 英文标签），如「初音未来」
+                「asuna」「鸣潮」。留空则列出全部（前 limit 个）。
+            limit(number): 返回条数上限，默认 30，最大 100。
+        """
+        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
+        if plugin is None:
+            plugin = self
+        if not plugin._cfg("enable_llm_tools", True):
+            return "LLM 工具已关闭，无法查询角色库（可在插件配置中开启 enable_llm_tools）。"
+        try:
+            ref_map, _missing = await role_card.load_ref_map(plugin.context)
+        except Exception as e:  # noqa: BLE001
+            return f"⚠️ 角色库读取失败：{_sanitize_exc_text(str(e), 160)}"
+        if not ref_map:
+            return "角色库当前不可用（未安装「萌萌今日老婆」插件或版本过旧）。请按常规流程查 LoRA / danbooru 标签。"
+        rows = role_card.search_roles(keyword, ref_map, limit=limit)
+        if not rows:
+            return f"角色库里没有匹配「{keyword}」的角色（库中共 {len(ref_map)} 个）。可换个关键词，或按常规流程查 LoRA / danbooru。"
+        lines = [f"角色库命中 {len(rows)} 个（库中共 {len(ref_map)} 个）："]
+        for r in rows:
+            alias = "/".join(r["aliases"][:3])
+            lines.append(
+                f"- {r['name']}" + (f"（别名：{alias}）" if alias else "") +
+                (f"｜作品：{r['series']}" if r["series"] else "") +
+                f"｜主参考图：{'有' if r['has_ref'] else '无'}" +
+                (f"\n  tags_en: {r['tags_en']}" if r["tags_en"] else "")
+            )
+        lines.append("提示：把 tags_en 填进 comfyui_draw 的 prompt；有主参考图的角色插件会自动走图生图。")
+        return "\n".join(lines)
 
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）
     # ------------------------------------------------------------------ #

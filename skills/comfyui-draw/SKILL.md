@@ -192,12 +192,13 @@ Anima 参考插件（源码在 `_Refs/anima-master`）对多人的参考插件�
 - 参考实现的最终提示词是**混合式**：`2girls, duo, holding hands, <公共tag…>` + `green-eyed girl: green eyes, dark school uniform, …`（每人一个**自然语言块**，见 `anima/prompts/multi_person_prompt.py:386` 与 `tests/test_multi_person_prompt.py:273-294`），**不用 CLIP 权重括号绑定身份**（参考只给"易混淆身份锚点"加 `(tag:1.3)`）；
 - 参考多人负面词：`twins, duplicate characters, cloned character, extra person, fused characters, merged bodies, character sheet, multiple views, split screen, comic panels`。
 
-> ⚙️ 插件已按此实现：出图链路会 ① 剥掉模型编造的外形/服装 ② 按**角色卡锚点 → Danbooru 校正**的顺序取权威身份锚点 ③ 把提示词改写成参考混合式。日志 `【身份锚点】` / `【多人混合式】`。
-> ★ 所以**你不需要再自己写这些角色的外形**——写了会被剥掉，然后由插件用权威 tag 补上。
-> ★★ 但**权威锚点拿不到时插件无法凭空发明**（原创 / 冷门角色 Danbooru 查不到）。这时最有效的动作是
-> **把角色存进角色卡**（等价参考 `fixed_characters`）：用 `comfyui_character` 或角色指令把该角色的
-> 标准 tag 存一次（例：`锁暝 = 1girl, red hair, twin hair buns, red eyes, black coat`），
-> 之后每次画这个角色都会自动带上权威锚点。
+> ⚙️ 角色身份来源（v8.0.0 起）：角色库来自「萌萌今日老婆」插件，**用 `comfyui_role` 工具查**
+> （keyword=角色名 / 作品名）。命中后把返回的 `tags_en` 填进 prompt；`has_ref=true` 的角色
+> 插件会自动用该角色的主参考图走图生图，**你不用管参考图路径、也不要自己传 image**。
+> ★ 用户说「角色卡里有」「你查查角色卡」时，就是让你调 `comfyui_role`——**绝不要说
+> 「角色卡我看不到」「你把角色卡贴给我」**。
+> ★★ 角色库查不到时，再按查找链查 LoRA / Danbooru；全都不命中就如实告诉用户没找到，
+> 不要凭记忆瞎编角色外观。角色卡现在不在本插件内建立/编辑，资料请到老婆插件维护。
 > ★★★ 参考插件建议多人**多出几个种子筛选**（角色相似是已知现象）。一次调用里用 `prompts` 传 2~3 条
 > 同一画面的不同变体比在提示词上纠缠更有效——但这属于用户主动要求，**不要擅自加张数**。
 

@@ -87,10 +87,24 @@ check("tags 追加", out.startswith("1girl, smile") and "twintails" in out, out)
 out2 = role_card.build_role_prompt(REF_MAP["miku"], REF_MAP["miku"]["tags_en"])
 check("已有 tags 不重复", out2 == REF_MAP["miku"]["tags_en"], out2)
 
-# 7) 静态守卫：main.py 接入点存在
+# 7) search_roles（LLM 工具 comfyui_role 用）
+rows = role_card.search_roles("", REF_MAP)
+check("空关键词列出全部", len(rows) == 2, str(rows))
+rows = role_card.search_roles("miku", REF_MAP)
+check("按别名查到", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
+rows = role_card.search_roles("twintails", REF_MAP)
+check("按 tags_en 查到", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
+check("不暴露本地路径", all("ref" not in r for r in rows), str(rows))
+rows = role_card.search_roles("", REF_MAP, limit=1)
+check("limit 生效", len(rows) == 1, str(rows))
+
+# 8) 静态守卫：main.py 接入点存在
 src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
 check("main 接入 load_ref_map", "await role_card.load_ref_map(self.context)" in src)
 check("main 接入 match_role", "role_card.match_role(" in src)
+check("main 接入 search_roles", "role_card.search_roles(" in src)
+check("注册 comfyui_role 工具", '@filter.llm_tool(name="comfyui_role")' in src)
+check("出图 docstring 引导查角色库", "先查角色库" in src)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 
