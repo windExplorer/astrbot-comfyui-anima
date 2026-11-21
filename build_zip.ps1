@@ -104,16 +104,7 @@ function Add-ItemToZip($fsPath, $zipEntryPath) {
     } else {
         $entry = $zip.CreateEntry($zipEntryPath)
         $stream = $entry.Open()
-        # Version pages' static assets with a query string so browsers pull the
-        # fresh files after each release, avoiding stale-cache symptoms.
-        if ($zipEntryPath -eq "pages/anima-console-vue-legacy/index.html" -and $newVer -ne "") {
-            $html = [System.IO.File]::ReadAllText($fsPath)
-            $html = $html -replace '\./app\.js', ("./app.js?v=" + $newVer)
-            $html = $html -replace '\./styles\.css', ("./styles.css?v=" + $newVer)
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
-        } else {
-            $bytes = [System.IO.File]::ReadAllBytes($fsPath)
-        }
+        $bytes = [System.IO.File]::ReadAllBytes($fsPath)
         $stream.Write($bytes, 0, $bytes.Length)
         $stream.Dispose()
     }

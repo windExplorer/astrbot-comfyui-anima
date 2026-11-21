@@ -4,6 +4,29 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.12.2（减法第一刀：清理旧控制台与漫画残留）
+
+需求：插件长期「只增不减」，仓库里积了一批已移除功能留下的死文件和过期文案，
+用户维护时容易误以为这些功能还在、也可能被旧控制台页面误导。本次先做零风险的
+清理，不动任何仍在使用的功能（旧工作流条目、角色卡、分享、剧情等全部保留）。
+
+清理项（均为无引用 / 无读取的死代码）：
+- 删除 `pages/anima-console-vue-legacy/` 整套 Vue 重构前的旧控制台静态页（app.js / index.html / styles.css / _page.json），
+  `metadata.yaml` 同步移除旧版页面注册；`webui_api.py` 模块文档、`build_zip.ps1` 旧页版本号注入分支一并删除。
+  注意：WebUI 内「旧版工作流」页（`/workflows-legacy`，手填节点 ID 的老工作流条目）**不受影响**，
+  它属于新版 Vue 控制台，仍在用。
+- 删除 `docs/comic-meme-design.md`：漫画/表情包功能已于 v7.0.0 全线移除，该设计文档从未落地实现。
+- 删除 `main.py` 中「用户明确要清晰大字时建议改用 /漫画 指令」的过期文案——该指令已不存在。
+- 删除 `_conf_schema.json` 中 `gallery.cross_session`：自 v4.3.0 起图库按会话隔离后该开关已失效，
+  全仓无任何读取点；README 同步移除「表情包·漫画」类型筛选的过期描述。
+
+刻意保留（有兜底语义，删了会改变行为）：
+- `_size_presets_v2` 与顶层 `nsfw_group_whitelist`：仍承担旧配置迁移读取。
+- `FeaturesView.vue` 的 `image_upscale` / `matting` 旧配置折算：老用户升级仍依赖。
+- `webui_api.py` 的 `handler is None` 热更新兜底：防旧版类缺方法。
+
+验证：schema JSON 合法（63 顶层键）、`main.py` / `webui_api.py` 语法编译通过、lint 无新增错误。
+
 ## v7.12.1（NSFW 远程判定转正：默认内置本地检测、升级无感，实验性开关 + TODO）
 
 背景：远程 NSFW 判定（TaskHub / nsfw-check，Blue-Eye 主判）此前一直是工作区未提交
