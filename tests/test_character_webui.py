@@ -437,14 +437,14 @@ async def main() -> int:
         ("/p/config", object(), ["GET"], "读"),
         ("/p/config", object(), ["POST"], "写"),
         ("/p/skip", None, ["GET"], "handler 缺失应跳过"),
-        ("/p/story/session", object(), ["GET"], "详情"),
-        ("/p/story/session", object(), ["POST"], "更新"),
+        ("/p/session", object(), ["GET"], "详情"),
+        ("/p/session", object(), ["POST"], "更新"),
     ])
     check("同名条目归并方法（/config = GET+POST）",
           set(_tbl.get("/p/config") or []) == {"GET", "POST"}, str(_tbl.get("/p/config")))
     check("handler 为 None 的条目跳过", "/p/skip" not in _tbl)
-    check("同名条目归并方法（/story/session = GET+POST）",
-          set(_tbl.get("/p/story/session") or []) == {"GET", "POST"})
+    check("同名条目归并方法（/session = GET+POST）",
+          set(_tbl.get("/p/session") or []) == {"GET", "POST"})
     # 精确匹配优先：/quota/config 不该被 /config 抢走
     webui_api.ROUTE_METHODS.clear()
     webui_api.ROUTE_METHODS.update(webui_api.build_route_methods([

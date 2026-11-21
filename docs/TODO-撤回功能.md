@@ -47,7 +47,7 @@
 - 当前仅 **aiocqhttp（OneBot V11）** 支持撤回自己发出的消息；其它平台 `_recall_call_action` 返回 None，自动跳过（记日志、不崩溃）。
 
 ### 2. 拿到机器人发出图片的 message_id
-- 自动撤回：在出图主链路 / 图生图 / 后台续画 / 剧情模式兜底四处发送点，统一走 `_send_image_with_recall()`，开启自动撤回时直接调用协议端 API 发送并取回 `message_id`。
+- 自动撤回：在出图主链路 / 图生图 / 后台续画等发送点，统一走 `_send_image_with_recall()`，开启自动撤回时直接调用协议端 API 发送并取回 `message_id`。
 - 手动 `/撤回`：用户回复图片 → 被回复消息带 `Reply` 组件，`_extract_replied_message_id()` 从 `event.message_obj.message` 取出 `Reply.id` 即原图 `message_id`。
 
 ### 3. 指令注册

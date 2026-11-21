@@ -79,8 +79,7 @@ ROUTE_METHODS: "dict[str, list[str]]" = {}
 def build_route_methods(routes) -> "dict[str, list[str]]":
     """把 routes 列表归并成「路径 → 允许方法集」。
 
-    ★v6.0.1 修复：同一路径在 routes 里可能是**多条**条目（`/config` = GET 读 + POST 写、
-    `/story/session` = GET 详情 + POST 更新）。早期实现直接 `dict[key] = methods`
+    ★v6.0.1 修复：同一路径在 routes 里可能是**多条**条目（`/config` = GET 读 + POST 写等）。早期实现直接 `dict[key] = methods`
     会让后一条**覆盖**前一条，表里只剩最后一个方法 → 另一方向一律被判 405
     （实测 `GET /api/config` 全 405）。这里按路径归并、去重。
     跳过 handler 为 None 的条目（热更残留旧类时会被 _h() 判为缺方法）。
@@ -3333,8 +3332,6 @@ class WebUIApi:
             return error_response(f"备份失败: {e}")
 
     # ------------------------------------------------------------------ #
-    # 剧情模式档案
-    # ------------------------------------------------------------------ #
     # ------------------------------------------------------------------ #
     # 角色卡片（Character Card）：列表 / 详情 / 保存 / 删除 / 锚点 / 导入导出
     # ------------------------------------------------------------------ #
@@ -3946,83 +3943,6 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"导入失败: {e}")
 
-    async def story_sessions(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            page = int((request.query.get("page", "1") or "1"))
-            size = min(int(request.query.get("size", "20") or "20"), 200)
-            keyword = (request.query.get("keyword", "") or "").strip()
-            user_id = (request.query.get("user_id", "") or "").strip()
-            status = (request.query.get("status", "") or "").strip()
-            date_from = (request.query.get("date_from", "") or "").strip()
-            date_to = (request.query.get("date_to", "") or "").strip()
-            rows, total = store.get_sessions(
-                page=page, size=size, keyword=keyword, user_id=user_id,
-                status=status, date_from=date_from, date_to=date_to,
-            )
-            return json_response({"sessions": rows, "total": total, "page": page, "size": size})
-        except Exception as e:
-            return error_response(f"读取剧情档案失败: {e}")
-
-    async def story_session_detail(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            sid = int((request.query.get("id", "0") or "0"))
-            sess = store.get_session(sid)
-            if sess is None:
-                return error_response("未找到该剧情档案")
-            return json_response(sess)
-        except Exception as e:
-            return error_response(f"读取详情失败: {e}")
-
-    async def story_session_update(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            body = await request.json(default={}) or {}
-            if not isinstance(body, dict):
-                body = {}
-            sid = int(body.get("id") or 0)
-            if not sid:
-                return error_response("缺少 id")
-            fields = {k: body[k] for k in (
-                "title", "summary", "mood", "scene", "characters", "tags",
-                "rating", "notes", "status", "source",
-            ) if k in body}
-            store.update_session(sid, fields)
-            return json_response({"ok": True})
-        except Exception as e:
-            return error_response(f"更新失败: {e}")
-
-    async def story_session_delete(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            body = await request.json(default={}) or {}
-            ids = body.get("ids") or []
-            if not isinstance(ids, list):
-                ids = [ids]
-            ids = [int(x) for x in ids if str(x).isdigit()]
-            deleted = store.delete_sessions(ids)
-            return json_response({"ok": True, "deleted": deleted})
-        except Exception as e:
-            return error_response(f"删除失败: {e}")
-
-    async def story_stats(self):
-        try:
-            store = getattr(self.plugin, "story", None)
-            if store is None:
-                return error_response("剧情模块未启用")
-            return json_response(store.stats())
-        except Exception as e:
-            return error_response(f"统计失败: {e}")
-
     # -------------------------------------------------------------- #
     # 在线生图工作台（v7.9.0，studio_api.py）：两条 WebUI 通道共用。
     # 独立通道经 standalone_webui._api_studio 的 adapter 复用以下方法本体。
@@ -4396,7 +4316,7 @@ def get_webui_api_class():
 
     AStrBot 热更新只重载 main.py，webui_api 的 sys.modules 缓存可能是旧版；而
     reload 也可能因加载方式不同拿到孤立新对象、或直接失败。为保证拿到的一定是
-    磁盘上最新代码定义的 WebUIApi（含 story_sessions 等新接口），按序尝试：
+    磁盘上最新代码定义的 WebUIApi（含新接口），按序尝试：
     1) reload 本模块后取类；2) 从磁盘 __file__ 强制重新执行源码取类。
     内嵌路由注册与 main.py 重建独立 WebUI 的 _api 实例都复用本函数。
     """
@@ -4427,8 +4347,7 @@ def register_web_api(plugin) -> None:
     from astrbot.api import logger as _log
     # 关键：必须从 reload 返回的模块对象上取 WebUIApi 类，而不是用本函数所在模块的
     # 全局名。AStrBot 热更新/非标准加载下，当前模块全局的 WebUIApi 可能仍是旧类
-    # （缺 story_sessions 等新方法），直接用旧类建实例会被下方 _h 的 getattr 判为
-    # 「缺少方法」而跳过全部剧情路由。
+    # （缺新方法），直接用旧类建实例会被下方 _h 的 getattr 判为缺方法而跳过路由。
     _WebUIApi = get_webui_api_class()
     api = _WebUIApi(plugin)
     ctx = plugin.context
@@ -4439,7 +4358,7 @@ def register_web_api(plugin) -> None:
     prefix = f"/{PLUGIN_NAME}"
 
     # 安全获取 handler：AStrBot 热更新若仍残留旧版 WebUIApi 类（缺某些新增方法，
-    # 例如剧情接口 story_sessions / story_stats），用 getattr 取不到就返回 None，
+    # 例如新增接口），用 getattr 取不到就返回 None，
     # 仅跳过该路由，避免整个 routes 列表构建抛出 AttributeError 导致主控制台全部
     # 路由注册失败（那样 schema/config/gallery 等也全挂掉）。
     def _h(name: str):
@@ -4538,11 +4457,6 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/character/suggest", _h("character_suggest"), ["POST"], "联网补全候选标签"),
         (f"{prefix}/character/export", _h("character_export"), ["GET"], "角色卡片导出"),
         (f"{prefix}/character/import", _h("character_import"), ["POST"], "角色卡片导入"),
-        (f"{prefix}/story/sessions", _h("story_sessions"), ["GET"], "剧情档案列表"),
-        (f"{prefix}/story/session", _h("story_session_detail"), ["GET"], "剧情档案详情"),
-        (f"{prefix}/story/session", _h("story_session_update"), ["POST"], "剧情档案更新"),
-        (f"{prefix}/story/session/delete", _h("story_session_delete"), ["POST"], "剧情档案删除"),
-        (f"{prefix}/story/stats", _h("story_stats"), ["GET"], "剧情档案统计"),
         # 在线生图工作台（v7.9.0）：路由方法表会同步进独立通道的校验
         (f"{prefix}/studio/overview", _h("studio_overview"), ["GET"], "生图工作台引导数据"),
         (f"{prefix}/studio/upload_ref", _h("studio_upload_ref"), ["POST"], "生图工作台参考图上传"),

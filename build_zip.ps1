@@ -63,7 +63,6 @@ $includeList = @(
     "draw_card.py",
     "character.py",
     "prompt_guard.py",
-    "story_store.py",
     "quota_store.py",
     "session_store.py",
     "oplog_store.py",

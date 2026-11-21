@@ -115,7 +115,6 @@ const GROUP_META = [
   { name: "撤回", description: "出图消息撤回：自动定时撤回（按秒）与 /撤回 手动指令", icon: "↩️", keys: ["recall"] },
   { name: "图库", description: "图片画廊归档与语义标签召回", icon: "🏞️", keys: ["gallery"] },
   { name: "WebUI 服务", description: "独立 WebUI 服务与用户级分享（/萌绘 指令）", icon: "🔗", keys: ["webui_standalone", "share_webui"] },
-  { name: "剧情模式", description: "剧情模式（仅私聊被动记录）的开关、触发词、白名单与摘要设置", icon: "🎬", keys: ["story_mode"] },
 ];
 
 const groups = computed(() => {

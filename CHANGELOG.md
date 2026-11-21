@@ -4,6 +4,38 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.13.0（减法第二刀：移除剧情模式）
+
+需求：剧情模式（主动推演引擎，仅私聊）自上线以来用户已不再使用，但它在代码里
+占了相当体量——顶层 `story_store.py`、main.py 里 669 行推演引擎（含两个事件钩子）、
+5 条 WebUI 路由 + 独立通道分派、一个 Vue 页面、一组配置与一套设计文档。本次整块移除，
+给插件瘦身的同期降低维护面。
+
+移除范围（全链路）：
+- 配置：`_conf_schema.json` 删除整个 `story_mode` 配置块（顶层键 63 → 62）。
+- 后端：`main.py` 删除剧情引擎全部方法（`_story_enter` / `_story_run_loop` /
+  `_story_finish` 等）、`_on_story_message` / `_on_story_llm_response` 两个钩子、
+  出图主流程里的剧情图片关联、初始化段的 `StoryStore` 实例化、reload 列表项；
+  删除 `story_store.py`（连同 `story.db` 生成）。
+- WebUI：`webui_api.py` 删除 5 个 handler + 5 条路由；`standalone_webui.py` 删除
+  `_api_story` 与 `/story/*` 分派分支（双通道保持同步）。
+- 前端：删除 `StoryView.vue`、路由 `/story`、菜单项、配置页「剧情模式」分组。
+- 测试与文档：删除 `tests/test_character.py` 的剧情裁剪段、`docs/story-mode-design.md`，
+  修正 `test_character_webui.py` 的路径样例与撤回文档、README 的剧情章节/模块清单。
+
+刻意保留（不要误伤）：
+- 分享 WebUI（`share_webui` / `token_store` / ShareView）：其「世界」页走的是图库
+  `image_store.world_list`，与剧情数据零耦合，完全不受影响。
+- `main.py` 的 `_record_agent_draw_tokens`（token 统计钩子，紧邻剧情钩子之后）、
+  `get_webui_api_class` 热更新兜底机制、`_send_image_with_recall` 撤回发送：均保留本体，
+  仅把注释里的剧情字样改中性。
+- 旧工作流页、角色卡、NAI、图库等全部在用功能未动。
+
+升级注意：旧数据目录里若残留 `story.db`，插件不再读写，可手动删除（不影响任何功能）。
+
+验证：`test_module_lists`（磁盘/热重载/打包三方一致）、`test_character`（95）、
+`test_character_webui`（109）全过；四个后端模块语法编译通过；全仓源码零剧情引用残留。
+
 ## v7.12.2（减法第一刀：清理旧控制台与漫画残留）
 
 需求：插件长期「只增不减」，仓库里积了一批已移除功能留下的死文件和过期文案，

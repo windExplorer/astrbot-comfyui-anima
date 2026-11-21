@@ -275,15 +275,6 @@ async def main() -> int:
     )
     check("inject 合并既有负向",
           "lowres" in _r["negative"] and "bad hands" in _r["negative"], _r["negative"])
-    # 剧情档案 max_keep 裁剪（此前配置键从未被读取）
-    import story_store as _ss
-
-    _story = _ss.StoryStore(tmp / "story_test")
-    _sids = [_story.create_session(session_key=f"k{i}", user_id=f"u{i}") for i in range(3)]
-    check("story 裁剪：max_keep=2 删 1 条", _story.prune_sessions(2) == 1)
-    check("story 裁剪：最老一条已删", _story.get_session(_sids[0]) is None)
-    check("story 裁剪：最新一条保留", _story.get_session(_sids[2]) is not None)
-    check("story 裁剪：max_keep=-1 不限", _story.prune_sessions(-1) == 0)
 
     print("\n[12] 锚点级多图 / 角色封面 / 迁移（v6.1.0）")
     _cz = store.create_character("图测角色")
