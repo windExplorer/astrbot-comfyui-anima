@@ -538,6 +538,8 @@ class StandaloneWebUI:
                     "tags_en": str((e or {}).get("tags_en") or ""),
                     "ref": str((e or {}).get("ref") or ""),
                     "has_ref": bool((e or {}).get("ref")),
+                    "avatar_thumb": (e or {}).get("avatar_thumb") or "",
+                    "portrait_thumb": (e or {}).get("portrait_thumb") or "",
                 } for cid, e in sorted(data.items(),
                                         key=lambda kv: str((kv[1] or {}).get("name") or ""))]
                 return _ok({"ok": True, "installed": bool(data), "roles": rows,
