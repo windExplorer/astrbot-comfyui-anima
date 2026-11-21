@@ -807,15 +807,15 @@ STYLE_PRESETS = [
     ("厚涂", "厚涂", "painterly, impasto, visible brush strokes, rich layered colors, soft blending",
      "厚涂油画质感，笔触明显可见，颜料堆叠有肌理，色彩层次丰富，柔和过渡",
      "A richly painterly style with visible impasto brush strokes, layered pigments and textured color application"),
-    ("赛璐璐/动漫", "赛璐璐", "cel shading, anime style, clean lineart, flat color areas, crisp shadows",
-     "日式赛璐璐动画风，线条干净，色块平涂，阴影边界清晰硬朗，高光明确",
-     "Classic anime cel-shaded style with clean linework, flat color regions and sharp defined shadows"),
+    ("赛璐璐/动漫", "赛璐璐", "modern cel shading, contemporary anime style, clean lineart, flat vivid colors, crisp shadows",
+     "当代日式赛璐璐动画风，线条干净，色块平涂鲜艳，阴影边界清晰硬朗，高光明确（不要复古/怀旧质感）",
+     "Modern contemporary anime cel-shaded style with clean linework, flat vivid color regions, crisp defined shadows and bright clean highlights"),
     ("水彩", "水彩", "watercolor painting, soft color bleeding, translucent washes, paper grain",
      "水彩画风，颜色透明晕染，边缘自然渗开，纸张颗粒质感，清新通透",
      "Delicate watercolor style with translucent color washes, soft bleeding edges and visible paper grain"),
-    ("油画", "油画", "oil painting, canvas texture, rich impasto, classical lighting, detailed brushwork",
-     "古典油画风，画布肌理，颜料厚重，明暗对比强烈，笔触细腻写实",
-     "Classical oil painting look with canvas texture, rich impasto and dramatic chiaroscuro lighting"),
+    ("油画", "油画", "oil painting, canvas texture, rich impasto, cinematic lighting, detailed brushwork",
+     "油画风，画布肌理，颜料厚重，明暗对比强烈，笔触细腻写实（当代审美，不要古典复古）",
+     "Contemporary oil painting look with canvas texture, rich impasto and cinematic chiaroscuro lighting"),
     ("像素风", "像素", "pixel art, low resolution, dithering, retro game style, sharp pixels",
      "像素艺术风格，低分辨率颗粒感，抖动着色，复古游戏画面，边缘锐利",
      "Retro pixel art style with crisp square pixels, dithering and limited color palette"),
@@ -16511,7 +16511,8 @@ class ComfyUIDrawPlugin(Star):
            ★这是「角色卡」的唯一入口——用户说「角色卡里有」「你查查角色卡」时就是让你调它，
            **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。
            ⛔ **命中后不要把角色名 / 作品名 / tags_en 写进 prompt**——角色卡链路会用该角色的
-           **主参考图走图生图**，长相/发色/服装由参考图锁定，写角色 tag 是多余且会干扰画面。
+           **主参考图走图生图**，人物身份（长相/发色）由参考图锁定，写角色 tag 是多余且会干扰画面。
+           但用户点名要换的画风/服装/配饰是**明确指令**，照写、别写成「保持参考图不变」。
            comfyui_role 的作用只是「确认角色在库里」，你确认完就把精力放在写**画面内容**上
            （人物在做什么、什么场景、什么光线氛围、什么镜头构图），角色长相一个字都不用写。
            has_ref=true 时主参考图由插件自动注入，你不用管路径、也不要自己传 image。
@@ -18360,19 +18361,24 @@ class ComfyUIDrawPlugin(Star):
             "**自由创作**一幅丰富、有记忆点的画面提示词（可补充细节，但不要偏离原意）。\n\n"
             f"{fmt}\n\n"
             f"{_framing_rule}"
-            "【角色卡·最高优先级约束】本次出图会使用该角色的**主参考图**做图生图，"
-            "形象（长相 / 发色 / 瞳色 / 兽耳角尾 / 体型 / 服装 / 配饰）完全由参考图锁定。"
-            "⛔ **绝对禁止写**：角色名、作品名、角色标签、发色、发型、瞳色、耳朵、角、尾巴、"
-            "体型、服装、配饰——这些一个字都不能出现。你只写「这个人在做什么、在什么场景、"
-            "什么光线、什么镜头、什么氛围」+「画风（用户点名时）」，越具体越好。\n"
-            "★【画风·用户点名时是唯一允许改的维度】参考图锁定的是**人物身份**，不是渲染媒介。"
-            "如果用户说了任何画风/风格要求（如「水墨风」「厚涂」「赛璐璐」「水彩」「油画」"
-            "「像素风」「3D 渲染」「吉卜力风」「真人写实」等），必须把它**明确、强烈地写进提示词**"
-            "——把风格词翻译成具体视觉属性（例：水墨风 → ink wash painting, chinese ink brushwork, "
-            "monochrome ink tones with subtle washes, rice paper texture, generous negative space；"
-            "厚涂 → painterly impasto style, visible brush strokes, rich layered colors），"
-            "并加一句「人物身份、脸、发色、服装保持参考图不变」。不要只写「柔和氛围」这类模糊说法——"
-            "那是氛围不是画风，不会让画风改变。用户没提画风时，不要主动写画风词。\n"
+            "【角色卡·参考图只锁定人物身份】本次出图用该角色的主参考图，参考图锁定的是"
+            "「这是谁」——五官轮廓、脸型、发色、瞳色、体型等**身份特征**不要改。"
+            "⛔ **绝对禁止写**：角色名、作品名、角色标签、发色、发型、瞳色、耳朵、角、尾巴、体型——"
+            "这些身份词一个字都不能出现。你只写「这个人在做什么、在什么场景、什么光线、什么镜头、"
+            "什么氛围」+ 用户点名的可改维度（画风 / 服装 / 配饰），越具体越好。\n"
+            "★【用户点名的改动必须照做，不许顶回去】画风、服装、配饰**不由参考图锁定**——"
+            "用户明确说「换比基尼 / 改成和服 / 戴帽子 / 水墨风 / 厚涂 / 赛璐璐」时，"
+            "这是**明确指令**，必须原样、强烈地写进提示词。"
+            "⛔ **绝对禁止写「服装/画风保持参考图不变」这类话**——用户都让你换了，"
+            "写「保持参考图一致」等于没执行指令（真实事故：用户说比基尼，却写成"
+            "「比基尼款式严格保持与参考图完全一致」，衣服根本没换）。"
+            "身份不变只针对「这是谁」，不包括穿什么、什么画风。\n"
+            "★【画风·默认当代】用户说画风时把它明确写进提示词，并把风格词翻译成具体视觉属性"
+            "（例：赛璐璐 → modern anime cel shading, clean lineart, flat vivid colors, crisp shadows, "
+            "contemporary Japanese animation look；厚涂 → painterly impasto, visible brush strokes）。"
+            "⛔ **不要写年代 / 复古 / 怀旧 / 90年代 / classic / retro / vintage**——除非用户明确要复古——"
+            "一律按 **当代 / 现代 / 2026** 的视觉质感写。不要只写「柔和氛围」（那是氛围不是画风）。"
+            "用户没提画风时，不要主动写画风词。\n"
             "⛔ 不要写画质词（masterpiece / best quality / score_9 等），插件会自动补。\n"
             "⛔ 不要写比例 / 尺寸词（portrait / landscape / 2K 等），会覆盖工作流尺寸。\n\n"
             f"用户的画面想法：\n{hint}\n\n"
@@ -19152,9 +19158,11 @@ class ComfyUIDrawPlugin(Star):
           参考图已存在角色库里，插件出图时自动读取，用户发图是多余的。
 
         ★★查到角色之后怎么写 prompt（极重要，别搞反）：
-        - 角色身份（长相 / 发色 / 服装 / 角色名 / 作品名）**一个字都不要写进 prompt**！
-          角色卡链路会用该角色的**主参考图走图生图**，形象完全由参考图锁定。
+        - 角色身份（长相 / 发色 / 体型 / 角色名 / 作品名）**一个字都不要写进 prompt**！
+          角色卡链路会用该角色的**主参考图走图生图**，人物身份由参考图锁定。
           写角色 tag（如 `elyms (neverness to everness)`）或作品 tag 是多余且干扰画面的。
+        - ★用户点名要换的**画风 / 服装 / 配饰**是明确指令：照写，别写成「保持参考图不变」。
+          参考图只锁「这是谁」，不锁穿什么、什么画风。
         - 你要写的是**画面内容**：这个人在做什么（动作 / 姿态 / 表情）、在什么场景、
           什么光线与氛围、什么镜头构图。把这些写具体、写丰富——角色长相不用你管。
         - 返回结果里的 tags_en **仅供你了解角色背景，不要拼进 prompt**。
@@ -19222,7 +19230,8 @@ class ComfyUIDrawPlugin(Star):
         什么时候用：用户说「画成水墨风 / 厚涂 / 赛璐璐 / 水彩 / 油画 / 像素风 /
         3D 渲染 / 吉卜力风 / 写实」等任何画风/风格要求时，先调本工具拿到标准写法，
         再把风格**明确、强烈地**写进 comfyui_draw 的 prompt（只写「柔和氛围」不会改画风）。
-        角色卡图生图场景：画风是**唯一允许改**的维度，人物身份/脸/发色/服装仍由主参考图锁定。
+        角色卡图生图场景：画风 / 服装 / 配饰用户点名时可改，人物身份（脸/发色/体型）仍由主参考图锁定。
+        ★默认当代画风——不要写年代/复古/90年代/classic/retro（除非用户明确要复古）。
 
         Args:
             keyword(string): 画风关键词，如「水墨」「厚涂」「赛璐璐」「水彩」「像素」「吉卜力」
@@ -19240,7 +19249,7 @@ class ComfyUIDrawPlugin(Star):
         lines = ["查到以下画风（按需选一种；danbooru/qwen/natural 按当前工作流底模的提示词风格取用）："]
         for name, k, db, qw, na in hits:
             lines.append(f"- {name}（关键词：{k}）\n  danbooru 标签: {db}\n  qwen 中文: {qw}\n  natural 英文: {na}")
-        lines.append("★角色卡图生图：画风是唯一可改维度，务必把风格写成明确强烈的视觉属性，人物身份保持不变。")
+        lines.append("★角色卡图生图：画风/服装用户点名时可改，务必写成明确强烈的视觉属性；用当代质感，别写90年代复古。人物身份（谁）保持不变。")
         return "\n".join(lines)
 
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）

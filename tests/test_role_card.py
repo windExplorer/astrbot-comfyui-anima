@@ -141,6 +141,12 @@ check("有 TTL", "G_SESSION_ROLE_TTL" in src)
 check("读记忆回退", "g_session_role.get(_skey)" in src)
 check("写记忆", 'g_session_role[_skey] = {"cid"' in src)
 check("续画沿用", "续画沿用上次角色" in src)
+# v8.9.2：用户点名的服装/画风必须照做；禁止「保持参考图不变」；画风当代不复古
+check("点名服装画风照做", "用户点名的改动必须照做" in src and "配饰**不由参考图锁定**" in src)
+check("禁止保持参考图不变", "绝对禁止写「服装/画风保持参考图不变」" in src)
+check("画风默认当代", "不要写年代 / 复古" in src and "2026" in src)
+check("词表无Classic/复古", "Classic anime" not in src and "古典油画" not in src)
+check("比基尼事故写进约束", "比基尼" in src)
 check("schema 有 reuse_last_role", '"reuse_last_role"' in _sch)
 # v8.8.0：默认近景、角色占比大（用户明确全身/远景时不强制）
 check("详细创作有近景约束", "人物要占画面的主要面积" in src and "不要写成远景小人" in src)
