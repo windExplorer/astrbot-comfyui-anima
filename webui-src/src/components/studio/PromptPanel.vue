@@ -156,8 +156,6 @@ const props = defineProps<{
   quickTemplates: StudioTemplate[];
   /** 已选 LoRA 名（作为 AI 生成时的参考上下文） */
   selectedLoraNames: string[];
-  /** 已选角色卡的 tags_en（AI 想画面时作为角色固有外观事实） */
-  roleTags: string;
   /** 开始生图禁用态（父组件 genDisabled） */
   submitDisabled: boolean;
   submitting: boolean;
@@ -260,7 +258,6 @@ async function runImagine() {
       props.positive.trim(),
       props.workflow?.name || "",
       imagineDetail.value,
-      props.roleTags || "",
     );
     if (d && d.text) {
       emit("update:positive", d.text);

@@ -8250,7 +8250,7 @@ class ComfyUIDrawPlugin(Star):
                             init_images.insert(0, _wr_ref)
                         is_img2img = True
                         # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
-                        if _wr_cfg.get("auto_tags", True):
+                        if _wr_cfg.get("auto_tags", False):  # 默认关：有主参考图就靠参考图锁外观，不再塞 tags_en
                             positive = role_card.build_role_prompt(_wr_entry, positive)
                         # 强制工作流：配置项可直接填工作流名；填数字则按 base_id 反查工作流名
                         _wf_ref = str(_wr_cfg.get("workflow") or "").strip()

@@ -3502,7 +3502,6 @@ class WebUIApi:
                 str(body.get("hint") or ""),
                 str(body.get("workflow") or ""),
                 detail=bool(body.get("detail")),
-                role_tags=str(body.get("role_tags") or ""),
             )
             # v7.10.3：ai_imagine 改为返回 {text, translation}；兼容旧实现返回纯字符串。
             if isinstance(result, str):

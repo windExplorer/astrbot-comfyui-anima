@@ -135,18 +135,6 @@ async def main():
     check("prompt 带当前画布尺寸", "832×1216" in ctx.last_prompt, ctx.last_prompt[:300])
     check("prompt 禁止比例词", "portrait / landscape" in ctx.last_prompt)
 
-    # 12. 角色卡 tags_en 作为「必须体现的身份事实」进入 prompt（v8.4.0）
-    mgr, ctx = _fake_manager("1girl, twintails, teal hair, blue eyes")
-    await mgr.ai_imagine("樱花树下读书", "wf1",
-                         role_tags="hatsune miku, twintails, teal hair, headset")
-    check("prompt 带角色卡标签", "hatsune miku, twintails, teal hair, headset" in ctx.last_prompt,
-          ctx.last_prompt[-400:])
-    check("prompt 要求逐字保留角色标签", "逐字保留" in ctx.last_prompt)
-    # 不传 role_tags 时不得出现角色卡段落（兼容旧行为）
-    mgr, ctx = _fake_manager("1girl, long hair")
-    await mgr.ai_imagine("一个女孩", "wf1")
-    check("无角色卡时不加角色段落", "【角色卡·必须体现】" not in ctx.last_prompt)
-
     print(f"\n结果：{_ok} 通过 / {_fail} 失败")
     return 1 if _fail else 0
 

@@ -1163,8 +1163,7 @@ class StudioManager:
             )
         return out
 
-    async def ai_imagine(self, hint: str, workflow_name: str, detail: bool = False,
-                         role_tags: str = "") -> dict:
+    async def ai_imagine(self, hint: str, workflow_name: str, detail: bool = False) -> dict:
         """🎲 AI 想画面：按所选工作流底模的提示词格式**自由创作**一幅画面的提示词。
 
         - 格式跟随底模 prompt_style：danbooru→英文标签；natural→自然语言
@@ -1173,7 +1172,6 @@ class StudioManager:
           默认关闭保持简洁；详细模式自动放宽 LLM 超时。
         - hint 非空 = 围绕用户的想法创作；为空 = AI 自由发挥
           （每次随机抽一个题材建议，重复点击画面不重样）。
-        - role_tags 非空（角色卡 tags_en）= 作为角色固有外观事实逐字保留、不得改写。
         - 返回 {"text": 提示词, "translation": 中文译文或 ""}：英文提示词时在同一次
           LLM 输出里用 ===ZH=== 分隔顺带产出译文（省一次翻译调用）；中文提示词不含译文。
         - LLM 调用与 token 入账与聊天侧同款（_record_llm_token）。
@@ -1264,18 +1262,6 @@ class StudioManager:
                 f"本次题材建议：{theme}（可自由变化，不必拘泥）；"
                 "可以是纯风景、一个女孩、多个角色、动漫/游戏角色、动物、都市、"
                 "和风、科幻、奇幻等等，尽量避免最老套的构图。"
-            )
-
-        # v8.4.0：角色卡标签作为「必须体现的身份事实」——用户选了角色卡时，
-        # 这些 tags_en 是角色的固有外观（发色/瞳色/服装/兽耳等），
-        # AI 创作画面必须逐字保留，不得改写、不得遗漏、不得新增冲突外观。
-        role_tags = str(role_tags or "").strip()
-        if role_tags:
-            subject += (
-                "\n【角色卡·必须体现】本次用户选定了角色卡，下面是该角色在角色库里的"
-                "固有外观标签（英文）。请把它们作为身份事实体现在创作结果里："
-                f"逐字保留、不得改写或遗漏，也不要新增与之冲突的外观描述；"
-                f"围绕这些标签去构思动作/场景/氛围。角色标签：{role_tags}"
             )
 
         bm_line = f"当前底模：{bm_name}。" if bm_name else ""
