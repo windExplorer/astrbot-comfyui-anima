@@ -16337,6 +16337,19 @@ class ComfyUIDrawPlugin(Star):
         - ⛔这张清单**只覆盖「非外观维度」**：发色/发型/瞳色/耳角尾兽化/体型/服装/配饰属于外观维度，
           只在两种情况写——用户明确说了、或用户要的是泛化人物（「画个少女」）需要你自己定。
           别为了「写丰富」给已定角色补外观（这是本插件最高频的翻车原因）。
+        - ★★★**角色卡图生图（用户点名了库里的角色、有主参考图）时**：外观维度由主参考图负责，
+          **你一个字都不要写角色长相/角色名/作品名**——但正因为外观不用你操心，
+          **画面内容更要写足、写具体**，否则整张图会干瘪得像证件照。重点写这四块，每块都要有
+          **具体内容而不是泛词**：
+          ①动作/姿态/表情：不要只写 `looking at viewer / gentle smile` 就完了——
+             写清在做什么、手在做什么、身体朝向、眼神看向哪里、情绪细节（如 `leaning on windowsill,
+             one hand brushing hair, eyes lowered with a faint smile`）；
+          ②场景/环境：不要写 `simple background` 这种空话——写清具体地点与物件
+             （如 `sunlit library, tall bookshelves, wooden window, drifting dust motes`）；
+          ③光线/氛围：不要只写 `soft lighting`——写清光源方向与质感
+             （如 `warm afternoon sunlight through window, gentle rim light on hair, soft shadows`）；
+          ④镜头/构图：`close-up / medium shot / from above` + 明确主体在画面里的位置与景深。
+          标签系照常给 15~25 个**具体**标签；自然语言系把上面四块写成 2~4 句有画面感的整句。
         - 画质前缀由插件自动补（按底模分档），**你不需要写** masterpiece / score_9 / very aesthetic 这类词；
           写了也不会重复加。
         ★要在画面里出现文字：自然语言系用引号写清内容；anima 系文字渲染不可控，
@@ -16346,8 +16359,12 @@ class ComfyUIDrawPlugin(Star):
         即使别的查询都失败了、或你觉得这是冷门角色，也必须先做第 1 步；不许跳过直接说「没找到」。
         1) **先查角色库**（用户点名某作品/角色时必做）：调 comfyui_role（keyword=角色名/作品名）。
            ★这是「角色卡」的唯一入口——用户说「角色卡里有」「你查查角色卡」时就是让你调它，
-           **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。命中就把 tags_en 填进 prompt；
-           has_ref=true 时主参考图由插件自动走图生图，你不用管路径、也不要自己传 image。
+           **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。
+           ⛔ **命中后不要把角色名 / 作品名 / tags_en 写进 prompt**——角色卡链路会用该角色的
+           **主参考图走图生图**，长相/发色/服装由参考图锁定，写角色 tag 是多余且会干扰画面。
+           comfyui_role 的作用只是「确认角色在库里」，你确认完就把精力放在写**画面内容**上
+           （人物在做什么、什么场景、什么光线氛围、什么镜头构图），角色长相一个字都不用写。
+           has_ref=true 时主参考图由插件自动注入，你不用管路径、也不要自己传 image。
         2) **再查 LoRA**：调 comfyui_loras（keyword=名字，category 可传「角色」）。查不到就换更短关键词 / 英文名 / 关键字再查一两次
            （工具会做去版本后缀的近似匹配），不要一次查不到就跳下一步。命中多条同名版本时优先**不带后缀的原版**。
            命中就填进 loras 参数，**不要**再用 danbooru 标签重复描述该角色外形。
@@ -18859,17 +18876,23 @@ class ComfyUIDrawPlugin(Star):
         """查询角色库（来自「萌萌今日老婆」插件）里的角色与资料，只读。
 
         什么时候必须先用本工具：
-        - 用户要画「某作品某角色」「XX 角色」，且你不确定该角色的英文标签时，
-          ★先调本工具按角色名 / 别名 / 作品查角色库，拿到 tags_en（角色英文标签）
-          再写进 comfyui_draw 的 prompt。不要先去 danbooru MCP 找、更不要说
-          「角色卡我看不到」——角色库就是由本工具读取的。
+        - 用户要画「某作品某角色」「XX 角色」时，★先调本工具按角色名 / 别名 / 作品
+          查角色库，**只为确认角色在库里、以及有没有主参考图**。不要先去 danbooru
+          找角色标签、更不要说「角色卡我看不到」——角色库就是由本工具读取的。
         - 用户说「角色卡里有」时，直接用本工具查，不要让用户贴内容或截图。
-        - 命中且 has_ref=true 的角色：把 tags_en 填进 prompt，主参考图由插件自动走
-          图生图链路（你不用管参考图路径，也不要自己传 image）。
 
-        怎么用返回结果：每条含 name（角色名）/ aliases（别名）/ series（作品）/
-        tags_en（可直接拼进提示词的英文标签）/ has_ref（是否绑定主参考图）。
-        keyword 为空 = 列出前 N 个角色；有关键词 = 按名字/别名/作品/tags_en 子串匹配。
+        ★★查到角色之后怎么写 prompt（极重要，别搞反）：
+        - 角色身份（长相 / 发色 / 服装 / 角色名 / 作品名）**一个字都不要写进 prompt**！
+          角色卡链路会用该角色的**主参考图走图生图**，形象完全由参考图锁定。
+          写角色 tag（如 `elyms (neverness to everness)`）或作品 tag 是多余且干扰画面的。
+        - 你要写的是**画面内容**：这个人在做什么（动作 / 姿态 / 表情）、在什么场景、
+          什么光线与氛围、什么镜头构图。把这些写具体、写丰富——角色长相不用你管。
+        - 返回结果里的 tags_en **仅供你了解角色背景，不要拼进 prompt**。
+        - has_ref=false 的角色没有主参考图，才需要按 comfyui_draw 常规流程查 LoRA / 标签
+          自己写角色身份；has_ref=true 的完全不用。
+
+        返回字段：name / aliases / series / tags_en（仅参考，别写进 prompt）/ has_ref。
+        keyword 为空 = 列出前 N 个角色；多词空格分隔 = AND 匹配，顺序不限。
         角色库里查不到时，再按 comfyui_draw 的常规流程查 LoRA / danbooru。
 
         Args:
@@ -18905,10 +18928,15 @@ class ComfyUIDrawPlugin(Star):
             lines.append(
                 f"- {r['name']}" + (f"（别名：{alias}）" if alias else "") +
                 (f"｜作品：{r['series']}" if r["series"] else "") +
-                f"｜主参考图：{'有' if r['has_ref'] else '无'}" +
-                (f"\n  tags_en: {r['tags_en']}" if r["tags_en"] else "")
+                f"｜主参考图：{'有' if r['has_ref'] else '无'}"
             )
-        lines.append("提示：把 tags_en 填进 comfyui_draw 的 prompt；有主参考图的角色插件会自动走图生图。")
+        # v8.5.2：不再把 tags_en 回给 LLM——它看到就会抄进 prompt，
+        # 但角色卡链路靠主参考图锁外观，写角色 tag 是多余且干扰画面。
+        lines.append(
+            "提示：有主参考图的角色，插件会自动用参考图走图生图锁定形象——"
+            "**不要把角色名/作品名/角色标签写进 prompt**，只写画面内容"
+            "（动作、场景、光线、氛围、构图），越具体越好。"
+        )
         return "\n".join(lines)
 
     # LLM 工具：comfyui_img2img（AI 对话图生图触发）
@@ -18968,6 +18996,9 @@ class ComfyUIDrawPlugin(Star):
           回拉"原始消息"重新下载（签名 URL 本机常下不动，耗时且必失败）。当前消息里的图插件可直接用。
         - 图生图**不需要**你去"理解/描述"参考图内容：参考图直接作为像素喂给 LoadImage 节点，
           你只需把变换意图写成 prompt，**不要**浪费步骤调视觉转述/读图工具。
+        - ★用户点名了角色卡库里的角色（先调 comfyui_role 确认过）时：主参考图负责角色形象，
+          **prompt 里不要写角色名 / 作品名 / 角色 tag**，只写变换意图（动作 / 场景 / 光影 / 镜头 /
+          氛围）——而且要写具体，别只给 `soft lighting, simple background` 这类泛词。
 
         caption 配文（**强烈建议填**）：想和图片发在同一条消息里的那句话（如"给你改好啦～"），建议 20 字内、别复述画面。
         ★群里还会自动 @ 触发者，所以填了 caption 就是「@某人 + 配文 + 图」一条消息；

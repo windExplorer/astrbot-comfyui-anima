@@ -114,6 +114,11 @@ check("main 接入 match_role", "role_card.match_role(" in src)
 check("main 接入 search_roles", "role_card.search_roles(" in src)
 check("注册 comfyui_role 工具", '@filter.llm_tool(name="comfyui_role")' in src)
 check("出图 docstring 引导查角色库", "先查角色库" in src)
+# v8.5.2：图生图靠参考图锁形象，不能再引导 LLM 把 tags_en/角色名写进 prompt
+check("不引导填 tags_en 进 prompt", "把 tags_en 填进 prompt" not in src and "命中就把 tags_en" not in src)
+check("明确禁止写角色 tag", "不要把角色名 / 作品名 / 角色标签写进 prompt" in src
+      or "不要写角色 tag" in src or "不要写角色名" in src)
+check("强调画面要具体", "画面内容更要写足、写具体" in src or "越具体越好" in src)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 

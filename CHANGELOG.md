@@ -4,6 +4,32 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.5.2（图生图提示词：不再写角色 tag，画面要写具体）
+
+现象：用户点名角色的图生图，LLM 生成的提示词是
+`elyms (neverness to everness), neverness to everness, 1girl, solo, upper body portrait,
+side view, looking at viewer, gentle smile, ...`——既塞了角色名/作品名/角色 tag（多余，
+主参考图已锁定形象），画面又干瘪（`simple background` / `soft lighting` 这类空话）。
+
+根因（我的自相矛盾）：v8.4.1 按用户要求把 `tags_en` 注入全撤了，但 v8.5.0 加
+`comfyui_role` 时又把「命中就把 tags_en 填进 prompt」写回工具说明 + `comfyui_draw`
+查找链 + 工具返回文本 + skill 文档——LLM 照做就又写角色 tag 了。
+
+修复（四处一起改，口径统一）：
+- `comfyui_draw` 查找链：查角色库只为「确认角色在库里」，命中后**禁止把角色名 /
+  作品名 / tags_en 写进 prompt**；形象由主参考图锁定，LLM 只写画面内容。
+- `comfyui_role` 工具 docstring + **返回文本**：不再回传 `tags_en`（LLM 看到就抄），
+  改为提示「不要把角色名/作品名/角色标签写进 prompt，只写画面内容，越具体越好」。
+- `comfyui_img2img` docstring 加同样的角色卡场景约束。
+- `skills/comfyui-draw/SKILL.md` 同步。
+- **画面丰富度**：细节密度一节新增「角色卡图生图」专条——外观交给参考图后，动作/场景/
+  光影/构图更要写具体：不写 `looking at viewer / gentle smile` 就完事，写清手在做什么、
+  身体朝向、具体地点与物件、光源方向与质感、景深；禁 `simple background` / `soft lighting`
+  这类空话。标签系 15~25 个具体标签，自然语言系 2~4 句有画面感的整句。
+
+守卫：`test_role_card` 新增三条——不得再出现「把 tags_en 填进 prompt」引导、必须明确
+禁止写角色 tag、必须强调画面具体。全量测试 + vite 构建通过。
+
 ## v8.5.1（修 comfyui_role 搜不到角色：多词匹配 + OR 回退）
 
 现象：角色卡页能搜到「曳尔沐」（异环，有主参考），但 bot 查角色库说没有。

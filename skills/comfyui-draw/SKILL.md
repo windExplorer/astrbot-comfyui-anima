@@ -193,8 +193,10 @@ Anima 参考插件（源码在 `_Refs/anima-master`）对多人的参考插件�
 - 参考多人负面词：`twins, duplicate characters, cloned character, extra person, fused characters, merged bodies, character sheet, multiple views, split screen, comic panels`。
 
 > ⚙️ 角色身份来源（v8.0.0 起）：角色库来自「萌萌今日老婆」插件，**用 `comfyui_role` 工具查**
-> （keyword=角色名 / 作品名）。命中后把返回的 `tags_en` 填进 prompt；`has_ref=true` 的角色
-> 插件会自动用该角色的主参考图走图生图，**你不用管参考图路径、也不要自己传 image**。
+> （keyword=角色名 / 作品名）。**命中后不要把角色名 / 作品名 / tags_en 写进 prompt**——
+> `has_ref=true` 的角色插件会自动用主参考图走图生图，形象由参考图锁定，写角色 tag 多余且干扰画面。
+> 你只需写画面内容（动作 / 场景 / 光影 / 氛围 / 构图），而且要具体——别用 `simple background`
+> `soft lighting` 这类空话糊弄，写清具体地点、具体光源、具体动作细节。参考图路径不用管、也不要自己传 image。
 > ★ 用户说「角色卡里有」「你查查角色卡」时，就是让你调 `comfyui_role`——**绝不要说
 > 「角色卡我看不到」「你把角色卡贴给我」**。
 > ★★ 角色库查不到时，再按查找链查 LoRA / Danbooru；全都不命中就如实告诉用户没找到，
