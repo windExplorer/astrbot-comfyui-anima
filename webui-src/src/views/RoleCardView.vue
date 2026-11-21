@@ -32,8 +32,12 @@
         <div class="rc-wf-row">
           <n-select v-model:value="wfValue" :options="wfOptions" filterable clearable
             placeholder="留空 = 不强制工作流（只用主参考图走当前图生图工作流）" style="max-width:560px" />
+          <span class="rc-panel-sub">默认画风</span>
+          <n-select v-model:value="styleValue" :options="styleOptions" clearable
+            placeholder="留空 = 由对话决定" style="width:170px" />
           <n-button type="primary" size="small" :loading="savingWf" :disabled="!wfDirty" @click="saveWorkflow">保存</n-button>
         </div>
+        <div class="form-hint">默认画风会作为一句要求交给 LLM 自由发挥生成提示词；对话里临时说「换成 X 风」会覆盖它（只影响那一张）。</div>
       </div>
 
       <n-alert v-if="missing.length" type="info" style="margin-bottom:12px">
@@ -167,8 +171,14 @@ const fullCfg = ref<Record<string, any>>({});
 const wfValue = ref<string | null>(null);
 const wfSaved = ref<string | null>(null);
 const wfOptions = ref<Array<{ label: string; value: string }>>([]);
+const styleValue = ref<string | null>(null);
+const styleSaved = ref<string | null>(null);
+const styleOptions = [
+  "", "水墨/国风", "厚涂", "赛璐璐/动漫", "水彩", "油画", "像素风", "3D渲染", "吉卜力风", "写实", "日系插画",
+].map((s) => ({ label: s || "留空 = 由对话决定", value: s }));
 const savingWf = ref(false);
-const wfDirty = computed(() => (wfValue.value || "") !== (wfSaved.value || ""));
+const wfDirty = computed(() => (wfValue.value || "") !== (wfSaved.value || "")
+  || (styleValue.value || "") !== (styleSaved.value || ""));
 
 const refFilterOptions = [
   { label: "全部角色", value: "all" },
@@ -256,6 +266,9 @@ async function load(force = false) {
     const cur = String((cfg?.role_card || {}).workflow || "");
     wfValue.value = cur || null;
     wfSaved.value = cur || null;
+    const cs = String((cfg?.role_card || {}).default_style || "");
+    styleValue.value = cs || null;
+    styleSaved.value = cs || null;
   } finally {
     loading.value = false;
   }
@@ -266,10 +279,12 @@ async function saveWorkflow() {
   savingWf.value = true;
   try {
     const next = String(wfValue.value || "");
-    const rc = { ...(fullCfg.value.role_card || {}), workflow: next };
+    const st = String(styleValue.value || "");
+    const rc = { ...(fullCfg.value.role_card || {}), workflow: next, default_style: st };
     await apiPost("config", { config: { ...fullCfg.value, role_card: rc } });
     wfSaved.value = next || null;
-    message.success(next ? `角色卡工作流已设为「${next}」` : "已清空角色卡工作流");
+    styleSaved.value = st || null;
+    message.success(`已保存角色卡设置${next ? `（工作流：${next}）` : ""}${st ? `（默认画风：${st}）` : ""}`);
   } catch (e: any) {
     message.error(e?.message || "保存失败");
   } finally {

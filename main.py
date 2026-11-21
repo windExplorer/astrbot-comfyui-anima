@@ -798,6 +798,42 @@ g_session_workflow: dict[str, str] = {}
 g_session_role: dict[str, dict] = {}
 G_SESSION_ROLE_TTL = 1800.0  # 30 分钟没再用角色就过期
 
+# 通用画风词表：三档写法（danbooru 标签 / qwen 中文整句 / natural 英文整句）。
+# 用户说画风时由工具返回，避免 LLM 凭记忆写「柔和氛围」这种无效模糊词。
+STYLE_PRESETS = [
+    ("水墨/国风", "水墨", "ink wash painting, chinese ink, brushwork, monochrome with subtle washes, rice paper texture, generous negative space",
+     "水墨画风格，墨色浓淡晕染，宣纸质感，大面积留白，笔触写意，淡彩点缀",
+     "Traditional East Asian ink wash painting style with expressive brush strokes, monochrome ink tones, rice paper texture, generous negative space and subtle color washes"),
+    ("厚涂", "厚涂", "painterly, impasto, visible brush strokes, rich layered colors, soft blending",
+     "厚涂油画质感，笔触明显可见，颜料堆叠有肌理，色彩层次丰富，柔和过渡",
+     "A richly painterly style with visible impasto brush strokes, layered pigments and textured color application"),
+    ("赛璐璐/动漫", "赛璐璐", "cel shading, anime style, clean lineart, flat color areas, crisp shadows",
+     "日式赛璐璐动画风，线条干净，色块平涂，阴影边界清晰硬朗，高光明确",
+     "Classic anime cel-shaded style with clean linework, flat color regions and sharp defined shadows"),
+    ("水彩", "水彩", "watercolor painting, soft color bleeding, translucent washes, paper grain",
+     "水彩画风，颜色透明晕染，边缘自然渗开，纸张颗粒质感，清新通透",
+     "Delicate watercolor style with translucent color washes, soft bleeding edges and visible paper grain"),
+    ("油画", "油画", "oil painting, canvas texture, rich impasto, classical lighting, detailed brushwork",
+     "古典油画风，画布肌理，颜料厚重，明暗对比强烈，笔触细腻写实",
+     "Classical oil painting look with canvas texture, rich impasto and dramatic chiaroscuro lighting"),
+    ("像素风", "像素", "pixel art, low resolution, dithering, retro game style, sharp pixels",
+     "像素艺术风格，低分辨率颗粒感，抖动着色，复古游戏画面，边缘锐利",
+     "Retro pixel art style with crisp square pixels, dithering and limited color palette"),
+    ("3D渲染", "3d", "3d render, octane render, subsurface scattering, glossy materials, cinematic lighting",
+     "3D 渲染质感，次表面散射，材质光泽真实，电影级布光，立体感强",
+     "A polished 3D render with physically based materials, subsurface scattering and cinematic studio lighting"),
+    ("吉卜力风", "吉卜力", "ghibli style, hand painted background, warm nostalgic tones, soft watercolor sky",
+     "吉卜力动画风，手绘背景，温暖怀旧色调，柔和水彩天空，治愈感",
+     "Ghibli-inspired hand-painted animation style with warm nostalgic palettes and soft watercolor skies"),
+    ("写实", "写实", "photorealistic, realistic lighting, natural skin texture, shallow depth of field",
+     "写实摄影风，真实光影，自然皮肤质感，浅景深，细节逼真",
+     "Photorealistic style with natural lighting, lifelike skin texture and shallow depth of field"),
+    ("日系插画", "日系", "anime illustration, soft shading, detailed eyes, vibrant colors, light novel style",
+     "日系轻小说插画风，柔和阴影，精致大眼睛，明亮配色，细腻高光",
+     "Modern Japanese light-novel illustration with soft shading, detailed eyes and vibrant clean colors"),
+]
+
+
 # 跨插件调用的「外部调用」判定（v7.7.58 起收敛到 _is_external_call 一个入口）：
 #   · external=True —— 调用方的**显式声明**：我是外部插件，请把图片路径用 JSON 返回、
 #     由我自己发送（同时享受第三方待遇：默认静默、跳过单轮闸门 / 发图白名单 / 已读回执）。
@@ -8313,9 +8349,12 @@ class ComfyUIDrawPlugin(Star):
                 # 若像续画（未提到别的角色）则复用上次命中的角色卡，避免变成别的角色/工作流。
                 _reuse_cfg = _wr_cfg.get("reuse_last_role", True) if isinstance(_wr_cfg, dict) else True
                 _skey = self._session_umo_of(event)
-                _continue_re = re.compile(r"^(再|再来|继续|接着|还|还要|来一张|画一张|同样|一样|这个|按上面|照着|另(一)?张)")
+                # v8.9.1：不再靠「再来一张」这类前缀正则——用户实际说法千变万化
+                # （「帮我再来一张」「换张图」「同样的再来」都匹配不上）。
+                # 改为：本次没提到任何角色名 + 会话有记忆 + 有画面描述 → 一律沿用上次角色。
+                # 用户若明确提了别的角色，match_role 会命中新角色，根本走不到这里。
                 if (not _wr_entry and _reuse_cfg and _skey and _ref_map
-                        and _continue_re.search(_u_msg) and (positive or "").strip()):
+                        and (positive or "").strip()):
                     _prev = g_session_role.get(_skey)
                     if (_prev and isinstance(_prev, dict)
                             and time.time() - float(_prev.get("ts") or 0) <= G_SESSION_ROLE_TTL
@@ -8713,7 +8752,18 @@ class ComfyUIDrawPlugin(Star):
                         if str(_a).strip():
                             _hint = _hint.replace(str(_a).strip(), "")
                     _hint = re.sub(r"[,，。\s]+", "", _hint).strip()
-                    if 0 < len(_hint) <= _limit and (positive or "").strip() \
+                    # v8.9.1：角色卡页配的默认画风 = 一句普通的画风要求，交给 LLM 自由发挥。
+                    # 用户消息里已提到画风则以用户为准（覆盖默认，只影响这一张）。
+                    _style_cfg = str((_ad_cfg or {}).get("default_style") or "").strip()
+                    if _style_cfg:
+                        _style_words = ("水墨", "厚涂", "赛璐璐", "水彩", "油画", "像素", "3d", "渲染",
+                                        "吉卜力", "写实", "日系", "动漫", "风格", "画风", "paint", "ink", "cel")
+                        _user_mentioned_style = any(
+                            w in (getattr(event, "message_str", "") or "").lower() for w in _style_words
+                        )
+                        if not _user_mentioned_style:
+                            _hint = f"{_hint}，画成{_style_cfg}风格" if _hint else f"画成{_style_cfg}风格"
+                    if (0 < len(_hint) <= _limit + 20 or bool(_style_cfg)) and (positive or "").strip() \
                             and not self._looks_moss_layout(positive):
                         _t_detail = time.time()
                         _created = await self._role_card_detail_prompt(
@@ -19178,49 +19228,15 @@ class ComfyUIDrawPlugin(Star):
             keyword(string): 画风关键词，如「水墨」「厚涂」「赛璐璐」「水彩」「像素」「吉卜力」
                 「写实」「油画」「3D」。留空则返回全部画风。支持中英文模糊匹配。
         """
-        # 通用画风词表：三档写法（danbooru 标签 / qwen 中文整句 / natural 英文整句）。
-        # 用户说画风时由工具返回，避免 LLM 凭记忆写「柔和氛围」这种无效模糊词。
-        _STYLES = [
-            ("水墨/国风", "水墨", "ink wash painting, chinese ink, brushwork, monochrome with subtle washes, rice paper texture, generous negative space",
-             "水墨画风格，墨色浓淡晕染，宣纸质感，大面积留白，笔触写意，淡彩点缀",
-             "Traditional East Asian ink wash painting style with expressive brush strokes, monochrome ink tones, rice paper texture, generous negative space and subtle color washes"),
-            ("厚涂", "厚涂", "painterly, impasto, visible brush strokes, rich layered colors, soft blending",
-             "厚涂油画质感，笔触明显可见，颜料堆叠有肌理，色彩层次丰富，柔和过渡",
-             "A richly painterly style with visible impasto brush strokes, layered pigments and textured color application"),
-            ("赛璐璐/动漫", "赛璐璐", "cel shading, anime style, clean lineart, flat color areas, crisp shadows",
-             "日式赛璐璐动画风，线条干净，色块平涂，阴影边界清晰硬朗，高光明确",
-             "Classic anime cel-shaded style with clean linework, flat color regions and sharp defined shadows"),
-            ("水彩", "水彩", "watercolor painting, soft color bleeding, translucent washes, paper grain",
-             "水彩画风，颜色透明晕染，边缘自然渗开，纸张颗粒质感，清新通透",
-             "Delicate watercolor style with translucent color washes, soft bleeding edges and visible paper grain"),
-            ("油画", "油画", "oil painting, canvas texture, rich impasto, classical lighting, detailed brushwork",
-             "古典油画风，画布肌理，颜料厚重，明暗对比强烈，笔触细腻写实",
-             "Classical oil painting look with canvas texture, rich impasto and dramatic chiaroscuro lighting"),
-            ("像素风", "像素", "pixel art, low resolution, dithering, retro game style, sharp pixels",
-             "像素艺术风格，低分辨率颗粒感，抖动着色，复古游戏画面，边缘锐利",
-             "Retro pixel art style with crisp square pixels, dithering and limited color palette"),
-            ("3D渲染", "3d", "3d render, octane render, subsurface scattering, glossy materials, cinematic lighting",
-             "3D 渲染质感，次表面散射，材质光泽真实，电影级布光，立体感强",
-             "A polished 3D render with physically based materials, subsurface scattering and cinematic studio lighting"),
-            ("吉卜力风", "吉卜力", "ghibli style, hand painted background, warm nostalgic tones, soft watercolor sky",
-             "吉卜力动画风，手绘背景，温暖怀旧色调，柔和水彩天空，治愈感",
-             "Ghibli-inspired hand-painted animation style with warm nostalgic palettes and soft watercolor skies"),
-            ("写实", "写实", "photorealistic, realistic lighting, natural skin texture, shallow depth of field",
-             "写实摄影风，真实光影，自然皮肤质感，浅景深，细节逼真",
-             "Photorealistic style with natural lighting, lifelike skin texture and shallow depth of field"),
-            ("日系插画", "日系", "anime illustration, soft shading, detailed eyes, vibrant colors, light novel style",
-             "日系轻小说插画风，柔和阴影，精致大眼睛，明亮配色，细腻高光",
-             "Modern Japanese light-novel illustration with soft shading, detailed eyes and vibrant clean colors"),
-        ]
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
         if plugin is None:
             plugin = self
         if not plugin._cfg("enable_llm_tools", True):
             return "LLM 工具已关闭，无法查询画风（可在插件配置中开启 enable_llm_tools）。"
         kw = (keyword or "").strip().lower()
-        hits = [s for s in _STYLES if not kw or kw in s[0].lower() or kw in s[1].lower()]
+        hits = [s for s in STYLE_PRESETS if not kw or kw in s[0].lower() or kw in s[1].lower()]
         if not hits:
-            return f"画风词表里没有「{keyword}」。可用画风：" + "、".join(s[0] for s in _STYLES)
+            return f"画风词表里没有「{keyword}」。可用画风：" + "、".join(s[0] for s in STYLE_PRESETS)
         lines = ["查到以下画风（按需选一种；danbooru/qwen/natural 按当前工作流底模的提示词风格取用）："]
         for name, k, db, qw, na in hits:
             lines.append(f"- {name}（关键词：{k}）\n  danbooru 标签: {db}\n  qwen 中文: {qw}\n  natural 英文: {na}")
