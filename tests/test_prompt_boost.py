@@ -58,8 +58,6 @@ NS = _load(
     {"_default_prompt_boost_cfg"},
     {"_APPEARANCE_NOUNS", "_APPEARANCE_CHANGE_RE"},
 )
-
-
 class _FakePlugin:
     """假 self：只实现这些方法依赖的最小接口。"""
 
@@ -104,6 +102,9 @@ class _FakePlugin:
 for _name in ("_prompt_boost_cfg", "_prompt_style", "_should_enhance", "_guard_appearance",
               "_boost_positive"):
     setattr(_FakePlugin, _name, NS[_name])
+# v7.15.2：_load 已把 _prompt_boost_cfg exec 进 NS，这里显式绑到类，
+# 让 fake self 能走真实的总开关逻辑（老配置缺 enabled 时默认开、关掉时三项全关）。
+_FakePlugin._prompt_boost_cfg = NS["_prompt_boost_cfg"]
 
 
 def _p(boost=None, **kw):
@@ -246,6 +247,40 @@ def test_boost_positive():
     print("== 4. 丰富化总入口（扩写护栏/前缀/异常回退/平台档） OK")
 
 
+def test_master_switch_disables_everything():
+    """v7.15.2：总开关 enabled=false 时，三项优化全停、提示词原样返回。"""
+    # 老配置没有 enabled → 默认全开，行为不变
+    pl_old = _p()
+    del pl_old.boost["enabled"]
+    cfg_old = pl_old._prompt_boost_cfg()
+    assert cfg_old["quality_prefix"] and cfg_old["enhance_llm"] and cfg_old["guard_appearance"]
+
+    # 关掉总开关 → _prompt_boost_cfg 把三项强制关闭
+    pl = _p()
+    pl.boost["enabled"] = False
+    cfg = pl._prompt_boost_cfg()
+    assert cfg["quality_prefix"] is False
+    assert cfg["enhance_llm"] is False
+    assert cfg["guard_appearance"] is False
+
+    # 总入口：不扩写、不加前缀、原样返回（即便外部传了「全开」的 cfg，也要一票否决）
+    raw = "1girl, white hair, night"
+    out = asyncio.run(NS["_boost_positive"](pl, raw, style="tags"))
+    assert out == raw, out
+    assert pl.enhance_calls == 0, "总开关关了还在调 LLM 扩写"
+    forced_open = {"enabled": False, "quality_prefix": True, "enhance_llm": True,
+                   "guard_appearance": True}
+    out2 = asyncio.run(NS["_boost_positive"](pl, raw, style="tags", cfg=forced_open))
+    assert out2 == raw, out2
+
+    # 外观护栏：总开关关掉后不剥除冲突标签
+    hits = [({"name": "薄荷"}, {"name": "默认", "positive": "green hair, green eyes"})]
+    guarded = NS["_guard_appearance"](pl, "1girl, white hair, night", hits,
+                                      cfg={"enabled": False, "guard_appearance": True})
+    assert "white hair" in guarded, guarded
+    print("== 6. 总开关一键关闭（三项全停 / 老配置兼容 / 各路径一票否决） OK")
+
+
 def test_llm_rewrite_no_hardcoded_quality_prefix():
     """v7.15.1：_rewrite_to_anima_llm 不得把画质前缀写死在 LLM 提示词里。
 
@@ -266,5 +301,6 @@ if __name__ == "__main__":
     test_should_enhance()
     test_guard_appearance()
     test_boost_positive()
+    test_master_switch_disables_everything()
     test_llm_rewrite_no_hardcoded_quality_prefix()
-    print("提示词丰富化主链路全部通过")
+    print("提示词优化主链路全部通过")

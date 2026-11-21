@@ -1472,8 +1472,9 @@ def _user_wants_img2img_ref(event) -> bool:
 
 
 def _default_prompt_boost_cfg() -> dict:
-    """提示词丰富化配置的默认值（配置项缺失/类型异常时的兜底）。"""
+    """提示词优化配置的默认值（配置项缺失/类型异常时的兜底）。"""
     return {
+        "enabled": True,                 # ★ 总开关：关掉下面三项全部停用
         "quality_prefix": True,          # 自动补画质前缀（按底模分档）
         "quality_prefix_custom": "",     # 自定义画质前缀（留空=按底模自动）
         "enhance_llm": True,             # 短描述自动扩写（LLM，只补非外观维度）
@@ -4852,7 +4853,13 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
 
     def _prompt_boost_cfg(self) -> dict:
-        """读提示词丰富化配置（容错：非 dict/异常都退回默认）。"""
+        """读提示词优化配置（容错：非 dict/异常都退回默认）。
+
+        v7.15.2：总开关 enabled=false 时，强制把三项功能开关都关掉——
+        这样所有读 quality_prefix / enhance_llm / guard_appearance 的链路
+        （ComfyUI 主链路、平台链路、LoRA 链路）一处全部生效，不用逐个改调用点。
+        老配置没有 enabled 键 → 默认 True，行为完全不变。
+        """
         cfg = _default_prompt_boost_cfg()
         try:
             raw = self._cfg("prompt_boost", {}) or {}
@@ -4863,6 +4870,11 @@ class ComfyUIDrawPlugin(Star):
                     cfg[k] = v
         except Exception:
             pass
+        # 总开关关闭 → 三项全关（保留 cfg 里其余值，便于诊断/前端展示）
+        if cfg.get("enabled", True) is False:
+            cfg["quality_prefix"] = False
+            cfg["enhance_llm"] = False
+            cfg["guard_appearance"] = False
         return cfg
 
     def _known_character_names(self) -> tuple[str, ...]:
@@ -5067,6 +5079,11 @@ class ComfyUIDrawPlugin(Star):
         out = (positive or "").strip()
         if not out:
             return positive
+        # v7.15.2：总开关一票否决——关掉后提示词原样返回，不做任何优化。
+        # （调用方传原始 cfg dict 时 _prompt_boost_cfg 的强制关闭不生效，这里兜底）
+        if _cfg.get("enabled", True) is False:
+            logger.info("【提示词优化】 总开关已关闭，提示词原样提交")
+            return positive
         _style = platform_style or style or "unknown"
 
         # ① 扩写（v7.7.46：raw_prompt 时调用方已自行润色 → 跳过 LLM 扩写，画质前缀仍按本地规则补）
@@ -5129,6 +5146,10 @@ class ComfyUIDrawPlugin(Star):
         用户明确要求改外观（「把头发染成粉色」）时整体跳过——那是用户意图而非臆造。
         """
         _cfg = cfg if isinstance(cfg, dict) else self._prompt_boost_cfg()
+        # v7.15.2：总开关一票否决（调用方可能直接传原始 cfg dict，没经过 _prompt_boost_cfg
+        # 的强制关闭逻辑，这里再兜一道，确保「一键关」在任何调用路径都生效）。
+        if _cfg.get("enabled", True) is False:
+            return positive
         if not _cfg.get("guard_appearance", True):
             return positive
         if not hits or not (positive or "").strip():
