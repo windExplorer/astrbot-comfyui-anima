@@ -119,6 +119,8 @@ check("不引导填 tags_en 进 prompt", "把 tags_en 填进 prompt" not in src 
 check("明确禁止写角色 tag", "不要把角色名 / 作品名 / 角色标签写进 prompt" in src
       or "不要写角色 tag" in src or "不要写角色名" in src)
 check("强调画面要具体", "画面内容更要写足、写具体" in src or "越具体越好" in src)
+check("不引导用户发参考图", "不要让用户发参考图" in src or "绝不要问用户要参考图" in src)
+check("有角色库命中 hook", "def _inject_role_card_hint" in src)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 

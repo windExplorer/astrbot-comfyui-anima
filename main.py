@@ -16355,8 +16355,10 @@ class ComfyUIDrawPlugin(Star):
         ★要在画面里出现文字：自然语言系用引号写清内容；anima 系文字渲染不可控，
           只能用 english text / japanese text 等标签（不保证清晰大字）。
         ★★点名角色/作品/画风（「来一张XX的图」「画个初音未来」「用XX风格画」）的查找链，逐级降级、不许跳步：
-        ⚠️ **不要凭自己的知识判断「角色库里有没有」**——你不知道库里有什么，必须实际调工具查。
-        即使别的查询都失败了、或你觉得这是冷门角色，也必须先做第 1 步；不许跳过直接说「没找到」。
+        ⚠️ **第 1 步永远是调 comfyui_role，连 LoRA / danbooru 都不许先查**——你不知道库里有什么，
+        必须实际调工具查，不许凭自己知识判断「这个角色冷门、库里肯定没有」，不许跳过直接说没找到。
+        ⚠️ **角色库命中且 has_ref=true 时：直接调本工具画图，绝不要问用户要参考图 / 图片 / 截图**——
+        主参考图已经存在库里，插件出图时会自动读取，用户不需要发任何图。
         1) **先查角色库**（用户点名某作品/角色时必做）：调 comfyui_role（keyword=角色名/作品名）。
            ★这是「角色卡」的唯一入口——用户说「角色卡里有」「你查查角色卡」时就是让你调它，
            **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。
@@ -18129,6 +18131,39 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.debug(f"【强制出图】 注入强指令失败（忽略）: {e}")
 
+    # v8.5.3：用户点名的角色在角色库且有主参考图时，直接在 LLM 请求里注入事实，
+    # 不依赖 LLM 主动调 comfyui_role（实测它会跳过角色库先查 LoRA/danbooru，
+    # 或查到了仍问用户要参考图）。只在明确命中时注入一句，成本可忽略。
+    @_hook_register("on_llm_request")
+    async def _inject_role_card_hint(self, event: AstrMessageEvent, req=None) -> None:
+        try:
+            if req is None or event is None:
+                return
+            cfg = self._cfg("role_card", {}) or {}
+            if not (isinstance(cfg, dict) and cfg.get("enabled", True)):
+                return
+            text = (getattr(event, "message_str", "") or "").strip()
+            if not text:
+                return
+            ref_map, _missing = await role_card.load_ref_map(self.context)
+            if not ref_map:
+                return
+            cid, entry = role_card.match_role(text, ref_map)
+            if not entry or not str(entry.get("ref") or "").strip():
+                return
+            name = str(entry.get("name") or cid)
+            note = (
+                f"\n\n【角色库命中】用户提到的「{name}」在角色库里，且**已绑定主参考图**。"
+                "出图时插件会自动读取该主参考图走图生图，形象由参考图锁定——"
+                "**不要问用户发参考图/图片/截图，也不要自己传 image 参数**，直接调 comfyui_draw 就能画。"
+                "prompt 里不要写角色名/作品名/角色标签，只写具体画面内容"
+                "（动作、场景、光线、氛围、构图）。如需角色资料可先调 comfyui_role 确认。"
+            )
+            req.system_prompt = (getattr(req, "system_prompt", "") or "") + note
+            logger.info(f"【角色卡】 已向本次 LLM 请求注入角色库命中提示：{name}")
+        except Exception as e:
+            logger.debug(f"【角色卡】 注入提示失败（忽略）: {e}")
+
     async def _force_draw_enforce(self, event) -> None:
         """本轮结束校验：打了强制标记却没成功出图 → 由插件兜底补画。"""
         cfg = self._force_draw_cfg()
@@ -18880,6 +18915,8 @@ class ComfyUIDrawPlugin(Star):
           查角色库，**只为确认角色在库里、以及有没有主参考图**。不要先去 danbooru
           找角色标签、更不要说「角色卡我看不到」——角色库就是由本工具读取的。
         - 用户说「角色卡里有」时，直接用本工具查，不要让用户贴内容或截图。
+        - ⚠️ **查到 has_ref=true 后立刻去调 comfyui_draw 画图，绝不要让用户发参考图**——
+          参考图已存在角色库里，插件出图时自动读取，用户发图是多余的。
 
         ★★查到角色之后怎么写 prompt（极重要，别搞反）：
         - 角色身份（长相 / 发色 / 服装 / 角色名 / 作品名）**一个字都不要写进 prompt**！
@@ -18933,9 +18970,10 @@ class ComfyUIDrawPlugin(Star):
         # v8.5.2：不再把 tags_en 回给 LLM——它看到就会抄进 prompt，
         # 但角色卡链路靠主参考图锁外观，写角色 tag 是多余且干扰画面。
         lines.append(
-            "提示：有主参考图的角色，插件会自动用参考图走图生图锁定形象——"
-            "**不要把角色名/作品名/角色标签写进 prompt**，只写画面内容"
-            "（动作、场景、光线、氛围、构图），越具体越好。"
+            "提示：主参考图「有」的角色，参考图已经存在库里，**插件出图时会自动读取它走图生图——"
+            "绝对不要让用户发参考图/发截图/发图片**，也不要自己传 image 参数，直接调 "
+            "comfyui_draw 就能画。你只需写画面内容（动作、场景、光线、氛围、构图，越具体越好），"
+            "角色长相/角色名/作品名/角色标签一个字都不要写进 prompt。"
         )
         return "\n".join(lines)
 
