@@ -8757,8 +8757,12 @@ class ComfyUIDrawPlugin(Star):
 
         # ── v8.6.0：角色卡命中 + 短描述 → 自动详细创作（对齐在线生图「想画面+详细」）──
         # 只处理「要创作一幅画面」的场景；变换/编辑、固定提示词、MOSS 版面不碰。
+        # v8.10.4：原生聊天（source 空）即使 raw_prompt=true 也要转——LLM 传的是英文 tag
+        # 罗列（front-facing portrait, a girl...），不是 Qwen 图生图要的中文编辑指令。
+        # raw_prompt 语义是「别二次润色」，但**格式转换**不是润色，角色卡链路必须做。
         if (_wr_entry and str(_wr_entry.get("ref") or "").strip()
-                and not _fixed_prompt and not raw_prompt and not _user_had_images):
+                and not _fixed_prompt and not _user_had_images
+                and (not raw_prompt or not source)):
             try:
                 _ad_cfg = self._cfg("role_card", {}) or {}
                 if isinstance(_ad_cfg, dict) and _ad_cfg.get("auto_detail", True):

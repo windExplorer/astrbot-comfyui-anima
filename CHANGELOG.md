@@ -4,6 +4,25 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.10.4（原生聊天命中角色卡时，英文 tag 提示词要转中文编辑指令）
+
+用户日志：命中角色卡后最终提示词是英文 tag 罗列
+（`front-facing portrait, a girl with long dark straight hair...`），不是
+Qwen Image 2.1 图生图要的**中文自然语言编辑指令**；且日志里没有「角色卡·详细创作」
+——auto_detail 被 `not raw_prompt` 挡掉了。
+
+根因：工具链路把 `raw_prompt=true` 传进来（`comfyui_draw` 认为调用方已润色好），
+而角色卡详细创作条件里写了 `not raw_prompt` → 没做「英文 tag → 中文编辑指令」的
+**格式转换**。`raw_prompt` 的语义是「别二次润色」，但角色卡链路需要的是格式转换，
+两者不是一回事。
+
+修复：auto_detail 触发条件从 `not raw_prompt` 改为 `(not raw_prompt or not source)`——
+**原生聊天（source 空）即使 raw_prompt=true 也做格式转换**；第三方调用（source 非空）
+仍尊重 raw_prompt 不碰。这样 LLM 写的英文 tag 会被转成中文编辑指令
+（动作+目标+约束 + 句尾保身份），符合 Qwen 图生图规范。
+
+验证：`test_role_card`（原生 raw_prompt 也转换）、`test_static_lint` 全过。
+
 ## v8.10.3（根治图文对不上：创作源用 LLM 的 prompt，不用用户短消息）
 
 用户日志实证（深夜阳台+热可可）：

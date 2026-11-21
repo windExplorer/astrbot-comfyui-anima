@@ -158,6 +158,8 @@ check("用户原话强制拼回", "严格按用户要求执行" in src and "_raw
 # v8.10.3：创作 hint 用 LLM 的 positive（信息完整），不再只用用户短消息
 check("创作hint用LLM画面", "_llm_hint = (positive" in src and "len(_llm_hint) > len(_hint)" in src)
 check("长画面兜底措辞", "严格保留以下画面内容" in src)
+# v8.10.4：原生聊天即使 raw_prompt=true 也要转英文tag→中文编辑指令
+check("原生raw_prompt也转换", "(not raw_prompt or not source)" in src)
 check("完全替换原服装", "完全替换参考图原有服装" in src and "轮廓不要残留" in src)
 check("只做上述改动", "只做上述改动" in src)
 check("现代画风词表", "现代日式动画" in src and "新海诚式电影动画" in src and "复古 90 年代动画" in src)
