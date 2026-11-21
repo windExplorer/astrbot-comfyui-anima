@@ -1032,7 +1032,13 @@ class StudioManager:
             # 前端自动勾选并展示「自带」角标
             try:
                 w["bound_loras"] = [
-                    {"name": str(l.get("name") or "").strip(), "weight": l.get("weight")}
+                    {
+                        "name": str(l.get("name") or "").strip(),
+                        "weight": l.get("weight"),
+                        # v8.0.1：把工作流侧「禁用」位透出给前端——loras_text 里
+                        # 「名称|权重|0」解析出的 enabled=False，不能再无条件自动勾选。
+                        "enabled": l.get("enabled", True) is not False,
+                    }
                     for l in plugin._loras_of(entry)
                     if isinstance(l, dict) and str(l.get("name") or "").strip()
                 ]

@@ -436,17 +436,17 @@ class WebUIApi:
         except Exception as e:
             return error_response(f"读取配置 schema 失败: {e}")
 
-    async def waifu_roles(self):
+    async def role_cards(self):
         """老婆插件角色 + 主参考图状态（WebUI 展示；缺失的进 missing 提示）。"""
         try:
-            from . import waifu_role
+            from . import role_card
         except ImportError:
-            import waifu_role
+            import role_card
         try:
             force = str(request.query.get("refresh", "0") or "0") == "1"
             if force:
-                waifu_role.clear_cache()
-            data, missing = await waifu_role.load_ref_map(self.plugin.context)
+                role_card.clear_cache()
+            data, missing = await role_card.load_ref_map(self.plugin.context)
             rows = []
             for cid, e in sorted(data.items(), key=lambda kv: str((kv[1] or {}).get("name") or "")):
                 rows.append({
@@ -3787,7 +3787,7 @@ def register_web_api(plugin) -> None:
 
     routes = [
         (f"{prefix}/schema", _h("get_schema"), ["GET"], "读取配置 schema"),
-        (f"{prefix}/waifu/roles", _h("waifu_roles"), ["GET"], "老婆插件角色与主参考图状态"),
+        (f"{prefix}/role-card/roles", _h("role_cards"), ["GET"], "老婆插件角色与主参考图状态"),
         (f"{prefix}/config", _h("get_config"), ["GET"], "读取控制台配置"),
         (f"{prefix}/config", _h("save_config"), ["POST"], "保存控制台配置"),
         (f"{prefix}/logs", _h("get_logs"), ["GET"], "读取控制台日志"),

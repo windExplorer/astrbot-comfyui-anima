@@ -13,7 +13,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { path: "/config", name: "config", label: "配置", icon: "⚙️", key: "config" },
   { path: "/studio", name: "studio", label: "在线生图", icon: "🖌️", key: "studio" },
-  { path: "/waifu-roles", name: "waifu-roles", label: "老婆角色", icon: "🎭", key: "waifu-roles" },
+  { path: "/role-cards", name: "role-cards", label: "角色卡", icon: "🎭", key: "role-cards" },
   { path: "/features", name: "features", label: "更多功能", icon: "🧩", key: "features" },
   { path: "/logs", name: "logs", label: "日志", icon: "📋", key: "logs" },
   { path: "/stats", name: "stats", label: "统计", icon: "📊", key: "stats" },

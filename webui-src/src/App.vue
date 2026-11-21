@@ -149,7 +149,7 @@ function refreshAll() {
 const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/config" }, { default: () => "配置" }), key: "config", icon: () => iconSvg("⚙️") },
   { label: () => h(RouterLink, { to: "/studio" }, { default: () => "在线生图" }), key: "studio", icon: () => iconSvg("🖌️") },
-  { label: () => h(RouterLink, { to: "/waifu-roles" }, { default: () => "老婆角色" }), key: "waifu-roles", icon: () => iconSvg("🎭") },
+  { label: () => h(RouterLink, { to: "/role-cards" }, { default: () => "角色卡" }), key: "role-cards", icon: () => iconSvg("🎭") },
   { label: () => h(RouterLink, { to: "/logs" }, { default: () => "日志" }), key: "logs", icon: () => iconSvg("📋") },
   { label: () => h(RouterLink, { to: "/stats" }, { default: () => "统计" }), key: "stats", icon: () => iconSvg("📊") },
   { label: () => h(RouterLink, { to: "/workflows" }, { default: () => "工作流" }), key: "workflows", icon: () => iconSvg("🗂️") },

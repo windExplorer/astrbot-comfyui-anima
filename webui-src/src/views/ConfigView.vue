@@ -121,7 +121,7 @@ const HIDDEN_KEYS = ["features", "upscale_limits"];
 // 拆散原来塞了 18 项的「出图行为」大组，语义相近的键归到同组，一个键只出现一次。
 const GROUP_META = [
   // ── 出图前的准备 ──────────────────────────────────────────────
-  { name: "老婆角色链路", description: "对接萌萌今日老婆插件：角色主参考图 + 强制图生图工作流 + 优先级", icon: "🎭", keys: ["waifu_role"] },
+  { name: "角色卡链路", description: "对接萌萌今日老婆插件：角色主参考图 + 强制图生图工作流 + 优先级", icon: "🎭", keys: ["role_card"] },
   { name: "服务器与工作流", description: "ComfyUI 服务器连接 + 工作流列表（出图的两大基础）", icon: "🖥️", keys: ["comfyui_servers", "workflows"] },
   { name: "LoRA 库", description: "LoRA 模型库：分类、默认启用、关键字匹配与换装过滤", icon: "🧩", keys: ["loras", "lora_keyword_auto", "lora_alias_lookup", "lora_outfit_filter"] },
   { name: "默认工作流选择", description: "用户没指定工作流时，按风格优先级选哪一个", icon: "🧭", keys: ["default_style_priority", "default_workflow", "default_workflow_real", "default_img2img_workflow", "default_img2img_workflow_real", "img2img_fallback", "img2img_from_quote"] },

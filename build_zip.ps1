@@ -1,4 +1,4 @@
-﻿# One-click package AstrBot plugin into an uploadable zip
+# One-click package AstrBot plugin into an uploadable zip
 # Usage: .\build_zip.ps1 in plugin root
 # Output: dist/astrbot_plugin_comfyui_anima_vX.Y.Z.zip
 $ErrorActionPreference = "Stop"
@@ -69,7 +69,7 @@ $includeList = @(
     "standalone_webui.py",
     "token_store.py",
     "nsfw_detector.py",
-    "waifu_role.py",
+    "role_card.py",
     "logo.png",
     "metadata.yaml",
     "requirements.txt",

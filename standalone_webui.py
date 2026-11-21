@@ -521,15 +521,15 @@ class StandaloneWebUI:
                 return _err("找不到 _conf_schema.json")
             return _ok(json.loads(sp.read_text(encoding="utf-8")))
         # 老婆插件角色 + 主参考图状态（WebUI 展示；refresh=1 强制清缓存）
-        if path == "/waifu/roles" and method == "GET":
+        if path == "/role-card/roles" and method == "GET":
             try:
-                from . import waifu_role
+                from . import role_card
             except ImportError:
-                import waifu_role
+                import role_card
             try:
                 if self._q(request, "refresh", "0") == "1":
-                    waifu_role.clear_cache()
-                data, missing = await waifu_role.load_ref_map(self.plugin.context)
+                    role_card.clear_cache()
+                data, missing = await role_card.load_ref_map(self.plugin.context)
                 rows = [{
                     "char_id": cid,
                     "name": str((e or {}).get("name") or cid),

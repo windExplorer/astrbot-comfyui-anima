@@ -744,9 +744,9 @@ except ImportError:
     import token_store
 
 try:
-    from . import waifu_role
+    from . import role_card
 except ImportError:
-    import waifu_role
+    import role_card
 
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
@@ -2025,7 +2025,7 @@ class ComfyUIDrawPlugin(Star):
                 "workflow_store",
                 "option_store",
                 "quota_store", "session_store", "oplog_store", "token_store",
-                "nsfw_detector", "translate_client", "waifu_role",
+                "nsfw_detector", "translate_client", "role_card",
             ):
                 try:
                     _dn = f"{__package__}.{_dep_name}" if __package__ else _dep_name
@@ -2836,7 +2836,7 @@ class ComfyUIDrawPlugin(Star):
                         "model_only": bool(lib_l.get("model_only", True)),
                         "base_model": (lib_l.get("base_model") or "").strip() or (l.get("base_model") or "").strip(),
                         "weight": self._safe_lora_weight(l.get("weight", 1.0)),
-                        "enabled": bool(l.get("enabled", False)),
+                        "enabled": bool(l.get("enabled", True)),  # 旧格式 loras 无 enabled → 默认启用（与 _parse_loras_text 一致）
                         "load_node": "",
                         "model_input": "lora_name",
                         "strength_model_input": "strength_model",
@@ -2860,7 +2860,7 @@ class ComfyUIDrawPlugin(Star):
                         "model_only": True,
                         "base_model": (l.get("base_model") or "").strip(),
                         "weight": self._safe_lora_weight(l.get("weight", 1.0)),
-                        "enabled": bool(l.get("enabled", False)),
+                        "enabled": bool(l.get("enabled", True)),  # 旧格式 loras 无 enabled → 默认启用（与 _parse_loras_text 一致）
                         "load_node": "",
                         "model_input": "lora_name",
                         "strength_model_input": "strength_model",
@@ -8229,7 +8229,7 @@ class ComfyUIDrawPlugin(Star):
         _wr_force_wf = ""
         _wr_hit_name = ""
         try:
-            _wr_cfg = self._cfg("waifu_role", {}) or {}
+            _wr_cfg = self._cfg("role_card", {}) or {}
             _wr_on = isinstance(_wr_cfg, dict) and _wr_cfg.get("enabled", True)
             _lora_first_skip = (
                 isinstance(_wr_cfg, dict)
@@ -8238,8 +8238,8 @@ class ComfyUIDrawPlugin(Star):
             )
             if _wr_on and not _lora_first_skip and event is not None:
                 _u_msg = (getattr(event, "message_str", "") or "").strip()
-                _ref_map, _wr_missing = await waifu_role.load_ref_map(self.context)
-                _wr_cid, _wr_entry = waifu_role.match_role(f"{_u_msg} {positive}", _ref_map)
+                _ref_map, _wr_missing = await role_card.load_ref_map(self.context)
+                _wr_cid, _wr_entry = role_card.match_role(f"{_u_msg} {positive}", _ref_map)
                 if _wr_entry:
                     _wr_hit_name = str(_wr_entry.get("name") or _wr_cid or "")
                     _wr_ref = str(_wr_entry.get("ref") or "").strip()
@@ -8251,7 +8251,7 @@ class ComfyUIDrawPlugin(Star):
                         is_img2img = True
                         # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
                         if _wr_cfg.get("auto_tags", True):
-                            positive = waifu_role.build_role_prompt(_wr_entry, positive)
+                            positive = role_card.build_role_prompt(_wr_entry, positive)
                         # 强制工作流：配置项可直接填工作流名；填数字则按 base_id 反查工作流名
                         _wf_ref = str(_wr_cfg.get("workflow") or "").strip()
                         if _wf_ref:
@@ -8263,15 +8263,15 @@ class ComfyUIDrawPlugin(Star):
                             else:
                                 _wr_force_wf = _wf_ref
                         logger.info(
-                            f"【老婆角色】 命中 {_wr_hit_name!r}（{_wr_cid}）｜"
+                            f"【角色卡】 命中 {_wr_hit_name!r}（{_wr_cid}）｜"
                             f"主参考图={_wr_ref[:80]}｜强制工作流={_wr_force_wf or '(未配置)'}"
                         )
                     else:
                         logger.info(
-                            f"【老婆角色】 命中 {_wr_hit_name!r} 但无主参考图，本次不走角色卡链路"
+                            f"【角色卡】 命中 {_wr_hit_name!r} 但无主参考图，本次不走角色卡链路"
                         )
         except Exception as _wr_e:
-            logger.warning(f"【老婆角色】 解析异常（降级为普通出图）: {_wr_e}")
+            logger.warning(f"【角色卡】 解析异常（降级为普通出图）: {_wr_e}")
 
         wf = None  # 解析失败时 except 里的失败卡也要能安全取到（wf or {}），避免 UnboundLocalError
         try:
@@ -8279,7 +8279,7 @@ class ComfyUIDrawPlugin(Star):
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
             # intercept_disabled：只要本次请求**显式指定**了工作流名（workflow_name 非空），
             # 该工作流若已停用就直接拦截提示，避免用户/LLM 指定的停用工作流被静默替换。
-            # 老婆角色强制工作流：优先级高于会话固定（apply_session_pin=False），
+            # 角色卡强制工作流：优先级高于会话固定（apply_session_pin=False），
             # 且不因「显式指定停用工作流」而拦截（角色卡链路是插件内部选择）。
             _wf_name = _wr_force_wf or workflow_name
             wf = self._resolve_workflow(
@@ -8295,7 +8295,7 @@ class ComfyUIDrawPlugin(Star):
             )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
-                f"实际选用工作流={wf.get('name')!r}（老婆角色={_wr_hit_name or '-'}）"
+                f"实际选用工作流={wf.get('name')!r}（角色卡={_wr_hit_name or '-'}）"
                 f"（server_key={wf.get('server_key')!r}, 旧值 server_name={wf.get('server_name')!r}）"
             )
             # v7.1.0：优先按服务器唯一 key 绑定，兼容旧的「名字」引用

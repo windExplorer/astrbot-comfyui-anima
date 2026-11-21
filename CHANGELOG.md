@@ -4,6 +4,35 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.1.0（角色卡正名 + 页面配置工作流 + 在线生图两个 bug）
+
+用户反馈四点，逐条处理：
+
+1. **正名**：全局「老婆角色链路」→「角色卡链路」，不分性别（后续会有男角色）。
+   配置键 `waifu_role` → `role_card`、模块 `waifu_role.py` → `role_card.py`、
+   WebUI 页 `RoleCardView`、路由 `/role-cards`、API `/role-card/roles`、测试与文档
+   同步改名。**契约标识 `waifu.v1` / 插件名 `astrbot_plugin_moe_waifu` 保留**
+   （那是老婆插件的真实标识，不是本插件的功能命名）。
+   ⚠️ 若你已在 v8.0.0 配过 `waifu_role`，升级后需在新「角色卡链路」组重填一次。
+2. **角色卡页面可配工作流**：页面顶部新增「角色卡工作流」面板，下拉列出所有启用
+   工作流（图生图 / 多参考图排前），可直接选并保存，与「配置 → 角色卡链路」两处同步。
+   保存时提交完整配置块，避免浅覆盖丢字段。
+3. **在线生图两个 bug 修复**：
+   - 切换工作流后旧 LoRA 残留：`StudioView` 的 watch 原本不清空 loraSel、只按底模
+     做减法，同底模切换时旧工作流自带 LoRA 全部存活。改为先移除「旧工作流自带且
+     新工作流不自带」的项，再按新工作流重建。
+   - 禁用 LoRA 显示勾选：`studio_api.overview.bound_loras` 原本只返回 name/weight、
+     丢了 enabled；前端无条件勾选。后端补透 `enabled`，前端自动勾选时跳过 `enabled=false`。
+     同时修正 `main._loras_of` 里 `bool(l.get("enabled", False))` 的默认值——旧格式
+     `loras` 无该字段时会被误判为禁用，改为默认 True（与 `_parse_loras_text` 一致）。
+4. **在线生图页面可测试角色卡**：提示词区上方新增「🎭 角色卡」快速选择条，列出有
+   主参考图的角色；选中即把角色名插入提示词，出图时自动触发角色卡链路（强制工作流
+   + 主参考图）。角色资料与状态仍到「角色卡」页看。
+
+验证：`test_role_card` / `test_prompt_boost` / `test_refine_fallback` /
+`test_static_lint`（pyflakes）/ `test_module_lists` / `test_config_groups` /
+`test_llm_tool_docstrings` 全过；前端 vite 构建通过。
+
 ## v8.0.0（角色卡重构：删除自建库，改用老婆插件角色 + 主参考图）
 
 **重大架构变更（主版本升级）**：彻底移除插件自建角色卡子系统，角色资料统一来自

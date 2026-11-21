@@ -87,6 +87,22 @@
           @new-session="newSession"
           @use-prompt="onUsePrompt"
         />
+        <!-- v8.0.1：角色卡快速测试——选中即在提示词里插入角色名，触发角色卡链路
+             （强制工作流 + 主参考图图生图）。角色资料到「角色卡」页看。 -->
+        <div class="role-card-band">
+          <span class="rc-label">🎭 角色卡</span>
+          <n-select
+            v-model:value="roleCardSel"
+            :options="roleCardOptions"
+            filterable
+            clearable
+            size="small"
+            placeholder="选角色 = 在提示词插入角色名，测试角色卡图生图"
+            style="max-width:360px"
+            @update:value="onRoleCardPick"
+          />
+          <span v-if="roleCardHint" class="rc-hint">{{ roleCardHint }}</span>
+        </div>
         <div class="prompt-band">
           <PromptPanel
             :positive="p.positive"
@@ -172,6 +188,7 @@ import {
   type StudioRefItem,
   type StudioTemplate,
 } from "@/api/studio";
+import { apiGet } from "@/api/bridge";
 import { lsGet, lsSet } from "@/api/storage";
 import { useRefresh } from "@/composables/useRefresh";
 
@@ -258,6 +275,25 @@ const SESSION_KEY = "anima_studio_session_v1";
 
 // ── 派生 ────────────────────────────────────────────────────────── //
 const ovWorkflows = computed(() => overview.value?.workflows || []);
+
+// v8.0.1：角色卡快速测试（选角色 → 提示词插入角色名 → 触发角色卡链路）
+const roleCards = ref<any[]>([]);
+const roleCardSel = ref<string | null>(null);
+const roleCardHint = ref("");
+const roleCardOptions = computed(() => roleCards.value.map((r: any) => ({
+  label: `${r.name}${r.aliases?.length ? `（${r.aliases.slice(0, 2).join("/")}）` : ""}`,
+  value: String(r.name),
+})));
+function onRoleCardPick(name: string | null) {
+  if (!name) { roleCardHint.value = ""; return; }
+  const text = String(p.positive || "");
+  if (!text.includes(name)) {
+    p.positive = text.trimEnd() ? `${text.trimEnd()}, ${name}` : name;
+    roleCardHint.value = `已插入「${name}」→ 出图时强制用角色卡工作流 + 主参考图`;
+  } else {
+    roleCardHint.value = `提示词已含「${name}」→ 出图时走角色卡链路`;
+  }
+}
 const ovLoras = computed(() => overview.value?.loras || []);
 const ovTiers = computed(() => overview.value?.size_tiers?.tiers || []);
 const ovRatios = computed(() => overview.value?.size_tiers?.ratios || []);
@@ -309,7 +345,12 @@ async function loadAll() {
   loading.value = true;
   loadErr.value = "";
   try {
-    overview.value = await studioApi.overview();
+    const [ov, rc] = await Promise.all([
+      studioApi.overview(),
+      apiGet("role-card/roles").catch(() => null),
+    ]);
+    overview.value = ov;
+    roleCards.value = (rc?.roles || []).filter((r: any) => r.has_ref);
     ensureWorkflowSelected();
     ensureUrlsForVisible();
     fetchSamplers();
@@ -363,12 +404,18 @@ watch(selectedWf, (v, old) => {
     p.width = null;
     p.height = null;
     p.custom_size = null;
-    // v7.9.9：工作流自带的 LoRA（loras_text，出图时本就自动生效）自动勾选展示；
-    // 已选里不兼容新工作流的自动移除（自带的不受兼容过滤约束——作者绑定的为准）
-    const bound = selectedWorkflow.value?.bound_loras || [];
-    const boundNames = new Set(bound.map((b) => b.name));
+    // v8.0.1：切换工作流时重建 LoRA 选择——旧工作流的「自带 LoRA」不残留。
+    // 规则：① 先移除旧工作流自带、且用户未手动加过的 LoRA；② 新工作流自带的
+    // （仅 enabled 的）自动勾选；③ 用户手动选的且兼容新底模的保留。
+    const newBound = (selectedWorkflow.value?.bound_loras || []).filter((b) => b.enabled !== false);
+    const newBoundNames = new Set(newBound.map((b) => b.name));
+    const oldWf = old ? ovWorkflows.value.find((w) => w.name === old) : null;
+    const oldBoundNames = new Set((oldWf?.bound_loras || []).map((b) => b.name));
+    // 移除旧自带 LoRA（除非同时被新工作流自带，或用户显式手动添加过——用手动集合判定太复杂，
+    // 这里以「旧自带且新不自带」为准，最贴合用户反馈的同底模残留场景）
+    loraSel.value = loraSel.value.filter((s) => !(oldBoundNames.has(s.name) && !newBoundNames.has(s.name)));
     const libMap = new Map(ovLoras.value.map((l) => [l.name, l]));
-    for (const b of bound) {
+    for (const b of newBound) {
       // v7.10.6：用户主动取消过的自带 LoRA 不再自动勾回来（切走再切回仍保持取消）
       if (!b.name || disabledLoras.value.includes(b.name) || loraSel.value.some((s) => s.name === b.name)) continue;
       const lib = libMap.get(b.name);
@@ -378,7 +425,7 @@ watch(selectedWf, (v, old) => {
     const allowed = allowedLoraNames.value;
     if (allowed !== null && loraSel.value.length) {
       const set = new Set(allowed);
-      const kept = loraSel.value.filter((s) => set.has(s.name) || boundNames.has(s.name));
+      const kept = loraSel.value.filter((s) => set.has(s.name) || newBoundNames.has(s.name));
       if (kept.length !== loraSel.value.length) {
         loraSel.value = kept;
         message.info("已按新工作流的底模兼容性移除部分已选 LoRA");
@@ -769,6 +816,19 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 .col-center { display: flex; flex-direction: column; }
+.role-card-band {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+.rc-label { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.rc-hint { color: var(--text-sub); font-size: 12px; }
 .prompt-band {
   flex: 0 0 auto;
   margin-top: 10px;

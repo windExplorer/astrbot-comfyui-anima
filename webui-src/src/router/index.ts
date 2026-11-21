@@ -15,7 +15,7 @@ import TokenView from "@/views/TokenView.vue";
 import ShareView from "@/views/ShareView.vue";
 import ShareManageView from "@/views/ShareManageView.vue";
 import StudioView from "@/views/StudioView.vue";
-import WaifuRoleView from "@/views/WaifuRoleView.vue";
+import RoleCardView from "@/views/RoleCardView.vue";
 import LoginView from "@/views/LoginView.vue";
 import { authState, checkStandaloneAuth } from "@/composables/auth";
 import { isStandaloneMode } from "@/api/bridge";
@@ -29,7 +29,7 @@ const router = createRouter({
     { path: "/", redirect: "/config" },
     { path: "/login", name: "login", component: LoginView, meta: { title: "访问口令", public: true } },
     { path: "/studio", name: "studio", component: StudioView, meta: { title: "在线生图" } },
-    { path: "/waifu-roles", name: "waifu-roles", component: WaifuRoleView, meta: { title: "老婆角色" } },
+    { path: "/role-cards", name: "role-cards", component: RoleCardView, meta: { title: "角色卡" } },
     { path: "/config", name: "config", component: ConfigView, meta: { title: "配置" } },
     { path: "/logs", name: "logs", component: LogsView, meta: { title: "日志" } },
     { path: "/stats", name: "stats", component: StatsView, meta: { title: "统计" } },
