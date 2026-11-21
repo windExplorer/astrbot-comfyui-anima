@@ -75,13 +75,16 @@ def match_role(text: str, ref_map: dict):
     return cands[0][1], cands[0][2]
 
 
-def search_roles(keyword: str, ref_map: dict, limit: int = 30) -> list[dict]:
+def search_roles(keyword: str, ref_map: dict, limit: int = 30,
+                 any_word: bool = False) -> list[dict]:
     """按关键词查角色库（供 LLM 工具 comfyui_role 用；只读、不暴露本地路径）。
 
-    keyword 为空 → 返回前 limit 个（按名字排）；非空 → 名字/别名/作品/tags_en 子串匹配。
+    keyword 为空 → 返回前 limit 个（按名字排）；非空 → 名字/别名/作品/tags_en 匹配。
+    多个词空格分隔 = AND（每个词都要命中，顺序不限）——LLM 常把「作品名 角色名」
+    一起传进来（如「异环 曳尔沐」），整串子串匹配会漏，必须逐词匹配。
     返回精简字段：char_id/name/aliases/series/tags_en/has_ref（不回 ref 绝对路径）。
     """
-    kw = (keyword or "").strip().lower()
+    words = [w for w in (keyword or "").strip().lower().split() if w]
     rows = []
     for cid, e in (ref_map or {}).items():
         if not isinstance(e, dict):
@@ -91,8 +94,10 @@ def search_roles(keyword: str, ref_map: dict, limit: int = 30) -> list[dict]:
             str(e.get("tags_en") or ""),
             " ".join(str(x) for x in (e.get("aliases") or [])),
         ]).lower()
-        if kw and kw not in blob:
-            continue
+        if words:
+            hit = any(w in blob for w in words) if any_word else all(w in blob for w in words)
+            if not hit:
+                continue
         rows.append({
             "char_id": cid,
             "name": str(e.get("name") or cid),

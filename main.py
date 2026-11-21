@@ -16342,6 +16342,8 @@ class ComfyUIDrawPlugin(Star):
         ★要在画面里出现文字：自然语言系用引号写清内容；anima 系文字渲染不可控，
           只能用 english text / japanese text 等标签（不保证清晰大字）。
         ★★点名角色/作品/画风（「来一张XX的图」「画个初音未来」「用XX风格画」）的查找链，逐级降级、不许跳步：
+        ⚠️ **不要凭自己的知识判断「角色库里有没有」**——你不知道库里有什么，必须实际调工具查。
+        即使别的查询都失败了、或你觉得这是冷门角色，也必须先做第 1 步；不许跳过直接说「没找到」。
         1) **先查角色库**（用户点名某作品/角色时必做）：调 comfyui_role（keyword=角色名/作品名）。
            ★这是「角色卡」的唯一入口——用户说「角色卡里有」「你查查角色卡」时就是让你调它，
            **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。命中就把 tags_en 填进 prompt；
@@ -18872,7 +18874,8 @@ class ComfyUIDrawPlugin(Star):
 
         Args:
             keyword(string): 检索关键词（角色名 / 别名 / 作品名 / 英文标签），如「初音未来」
-                「asuna」「鸣潮」。留空则列出全部（前 limit 个）。
+                「asuna」「鸣潮」。支持多个词空格分隔（AND 匹配），「异环 曳尔沐」这种
+                「作品名 + 角色名」一起传也能查到，顺序不限。留空则列出全部（前 limit 个）。
             limit(number): 返回条数上限，默认 30，最大 100。
         """
         plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
@@ -18886,10 +18889,17 @@ class ComfyUIDrawPlugin(Star):
             return f"⚠️ 角色库读取失败：{_sanitize_exc_text(str(e), 160)}"
         if not ref_map:
             return "角色库当前不可用（未安装「萌萌今日老婆」插件或版本过旧）。请按常规流程查 LoRA / danbooru 标签。"
+        logger.info(f"【LLM工具·角色库】 查询关键词={keyword!r}，库中共 {len(ref_map)} 个角色")
         rows = role_card.search_roles(keyword, ref_map, limit=limit)
+        partial = False
+        if not rows and len((keyword or "").split()) > 1:
+            # AND 没命中 → 逐词 OR 回退（LLM 可能把作品英文名+中文角色名混着传，
+            # 其中某个虚词/无关词不在库里，导致严格 AND 落空）。宁可多返回几个也别漏。
+            rows = role_card.search_roles(keyword, ref_map, limit=limit, any_word=True)
+            partial = bool(rows)
         if not rows:
-            return f"角色库里没有匹配「{keyword}」的角色（库中共 {len(ref_map)} 个）。可换个关键词，或按常规流程查 LoRA / danbooru。"
-        lines = [f"角色库命中 {len(rows)} 个（库中共 {len(ref_map)} 个）："]
+            return f"角色库里没有匹配「{keyword}」的角色（库中共 {len(ref_map)} 个）。可换个更短关键词（只用角色名或只用作品名）再查，或按常规流程查 LoRA / danbooru。"
+        lines = [f"角色库{'部分匹配' if partial else '命中'} {len(rows)} 个（库中共 {len(ref_map)} 个）："]
         for r in rows:
             alias = "/".join(r["aliases"][:3])
             lines.append(

@@ -25,8 +25,8 @@ def check(name, cond, detail=""):
 
 
 REF_MAP = {
-    "miku": {"name": "初音未来", "aliases": ["miku", "初音"], "tags_en": "1girl, twintails, teal hair",
-             "ref": "/data/refs/miku.png"},
+    "miku": {"name": "初音未来", "aliases": ["miku", "初音"], "series": "vocaloid",
+             "tags_en": "1girl, twintails, teal hair", "ref": "/data/refs/miku.png"},
     "asuna": {"name": "明日奈", "aliases": ["asuna", "亚丝娜"], "tags_en": "1girl, brown hair",
               "ref": ""},  # 无主参考
 }
@@ -94,6 +94,15 @@ rows = role_card.search_roles("miku", REF_MAP)
 check("按别名查到", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
 rows = role_card.search_roles("twintails", REF_MAP)
 check("按 tags_en 查到", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
+# 多词 AND：LLM 常把「作品名 角色名」一起传（eva 的 miku：series=vocaloid）
+rows = role_card.search_roles("vocaloid miku", REF_MAP)
+check("作品+角色组合查到", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
+rows = role_card.search_roles("miku vocaloid", REF_MAP)
+check("组合词顺序无关", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
+rows = role_card.search_roles("vocaloid 不存在", REF_MAP)
+check("多词 AND 有一词不匹配→空", not rows, str(rows))
+rows = role_card.search_roles("vocaloid 不存在", REF_MAP, any_word=True)
+check("OR 回退能捞回", len(rows) == 1 and rows[0]["char_id"] == "miku", str(rows))
 check("不暴露本地路径", all("ref" not in r for r in rows), str(rows))
 rows = role_card.search_roles("", REF_MAP, limit=1)
 check("limit 生效", len(rows) == 1, str(rows))
