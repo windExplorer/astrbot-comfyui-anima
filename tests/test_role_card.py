@@ -160,6 +160,13 @@ check("创作hint用LLM画面", "_llm_hint = (positive" in src and "len(_llm_hin
 check("长画面兜底措辞", "严格保留以下画面内容" in src)
 # v8.10.4：原生聊天即使 raw_prompt=true 也要转英文tag→中文编辑指令
 check("原生raw_prompt也转换", "(not raw_prompt or not source)" in src)
+# v8.11.0：确定性中文编辑指令（不依赖LLM/auto_detail）
+ins = role_card.build_edit_instruction("深夜阳台喝杯热的", "现代日式动画")
+check("确定性指令含用户画面", "深夜阳台喝杯热的" in ins, ins)
+check("确定性指令含画风", "将整体画风改为现代日式动画" in ins, ins)
+check("确定性指令保身份", "保持人物的面部特征" in ins and "只做上述改动" in ins, ins)
+check("确定性指令含近景", "半身近景" in ins, ins)
+check("main接入确定性指令", "role_card.build_edit_instruction(" in src)
 check("完全替换原服装", "完全替换参考图原有服装" in src and "轮廓不要残留" in src)
 check("只做上述改动", "只做上述改动" in src)
 check("现代画风词表", "现代日式动画" in src and "新海诚式电影动画" in src and "复古 90 年代动画" in src)

@@ -8417,6 +8417,23 @@ class ComfyUIDrawPlugin(Star):
                                 )
                             negative = (f"{negative.strip()}, {_sheet_neg}" if (negative or "").strip()
                                         else _sheet_neg)
+                        # v8.11.0：确定性编辑指令——不管 auto_detail 开关/LLM 是否配合，
+                        # 角色卡出图的提示词必须是 Qwen 图生图要的中文编辑指令，不能是英文 tag 罗列。
+                        # 用用户消息（去角色名）+ 页面默认画风程序化拼装，画风不会丢。
+                        _plain = (getattr(event, "message_str", "") or "").strip()
+                        _nm0 = str(_wr_entry.get("name") or "")
+                        if _nm0:
+                            _plain = _plain.replace(_nm0, "")
+                        for _a0 in (list(_wr_entry.get("aliases") or [])):
+                            _a0 = str(_a0).strip()
+                            if _a0:
+                                _plain = _plain.replace(_a0, "")
+                        _plain = re.sub(r"[,，。\s]+", " ", _plain).strip()
+                        _style0 = str(_wr_cfg.get("default_style") or "").strip()
+                        _instr = role_card.build_edit_instruction(_plain, _style0)
+                        if _instr:
+                            positive = _instr
+                            logger.info(f"【角色卡】 确定性编辑指令：{_instr[:80]}...")
                         # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
                         if _wr_cfg.get("auto_tags", False):  # 默认关：有主参考图就靠参考图锁外观，不再塞 tags_en
                             positive = role_card.build_role_prompt(_wr_entry, positive)
