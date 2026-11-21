@@ -7813,6 +7813,12 @@ class ComfyUIDrawPlugin(Star):
             )
             return
 
+        # 平台出图成功（images 非空）：与 ComfyUI 链路对齐，一次请求记一次配额。
+        # 放在 NSFW 拦截之前——配额记的是「已生成」（被拦截的图也算生成过），
+        # 与 ComfyUI 主链路 _record_draw_used 的位置语义一致；无图路径上面已 return，
+        # 不会记空账。_record_draw_used 内部无论 draw_limit 开关与否都记，供限额页统计。
+        self._record_draw_used(event)
+
         _ok_sent = False
         for data in images:
             tmp_path = self.temp_dir / f"{uuid.uuid4().hex}.png"
