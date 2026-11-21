@@ -4,6 +4,30 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.12.1（NSFW 远程判定转正：默认内置本地检测、升级无感，实验性开关 + TODO）
+
+背景：远程 NSFW 判定（TaskHub / nsfw-check，Blue-Eye 主判）此前一直是工作区未提交
+的 WIP，每次发版都要临时隔离它的代码，既麻烦又有误操作风险。本次把它**正式纳入版本**，
+并以「默认关闭、升级无感」的方式交付，后续不用再规避。
+
+默认行为（关键）：
+- `gallery.nsfw.remote_mode` 默认值从 `auto` 改为 `local`——始终用内置 open_nsfw 检测，
+  与 v7.12.0 及之前完全一致。**用户升级后什么都不用配，行为不变。**
+- `local` 模式下 `_remote_nsfw_verdict` 恒返回 None，`_detect_nsfw` 走本地检测；
+  图库 images 表新增的 5 列（nsfw_remote_level / nsfw_remote_score / diverge /
+  review_status / review_auto）恒为 NULL，不影响任何现有查询。
+- 想尝鲜的用户可手动切到 `auto`：**仅当中转站往 ComfyUI history 注入 nsfw 结论时**
+  才用远程判定，没注入则自动回退本地。
+
+明确标注为实验性：当前版本**没有人工复核后台**——远程判为 `review` 的图会写
+`review_status=0`，但图库不会隐藏、也不进复核队列；三级分数门槛、双分歧对照、
+展示策略、迁移脚本均未完成。完整方案与剩余待办已写入
+`docs/TODO-审核与NSFW展示策略.md`（顶部「当前进展」小节），待 nsfw-check 服务稳定、
+插件主线排期空出后再按第 8 节分阶段补齐。在此之前 `auto` 仅供内部验证。
+
+- 新增 `tests/test_nsfw_remote_mode.py`（16 项：默认 local / auto 降级 / 列定义 ），全过
+- 既有会话卡片、会话归属、LoRA 宽度测试全绿；schema JSON 与 type 校验通过
+
 ## v7.12.0（会话卡片开关细分：出图卡 / 结果卡 / 失败卡 / 结果文字四类独立配置）
 
 用户反馈：会话配置里的「发送信息卡片」功能没做全——全局有出图卡 / 结果卡 /

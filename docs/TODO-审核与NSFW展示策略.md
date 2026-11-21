@@ -1,8 +1,37 @@
 # TODO：审核与 NSFW 展示策略（插件 WebUI 新功能）
 
-> 状态：方案设计（已多轮讨论收敛，待实现）
+> 状态：**方案已定稿；第一阶段「远程判定接入」已落地（v7.12.1，默认 local 关闭），其余待实现**
 > 范围：**本插件 WebUI 侧**功能（图库 / 分享站 / 审核页）
 > 关联：远程检测服务部署见 `nsfw-detection-service.md`（本功能消费其 `/detect` 返回的 score/level）
+
+---
+
+## 0. 当前进展（v7.12.1，2026-11-21）
+
+**已落地（实验性，默认关闭）**：
+- `gallery.nsfw.remote_mode` 配置（`local` 默认 / `auto` 实验性）；默认 `local` 时完全
+  走原内置 open_nsfw 检测，升级无需任何设置、行为与之前一致。
+- `main.py._remote_nsfw_verdict` 读取 ComfyUI history 里中转站注入的 `nsfw` 结论；
+  `_detect_nsfw` 在 `auto` 且有远程结论时优先用远程，否则回退本地。
+- `image_store` 的 images 表新增 5 列：`nsfw_remote_level` / `nsfw_remote_score` /
+  `diverge` / `review_status` / `review_auto`，归档时若有远程结论则一并写入。
+  默认 local 模式下这些列恒为 NULL，不影响任何现有图库查询。
+
+**未落地（后续完善，本文剩余章节即完整方案）**：
+1. 三级自动判定（分数门槛 0.35 / 0.8）当前只在归档侧做了简化的 level/action 映射，
+   **未按远程分数做 LOW/HIGH 分档**。
+2. 人工复核后台（第 7 节）：`review_list` / `review` / `review_batch` API 与 ReviewView
+   页面全都没有。远程判为 `review` 的图会写 `review_status=0`，但**没有任何地方消费
+   这个字段**——既不从图库隐藏，也不进复核队列，等于白写。
+3. 展示策略（第 6 节）：图库 `search()` 未按 `review_status!=0` 过滤；分享站无
+   `show_nsfw` 全局/用户级策略。
+4. 升级迁移（第 6.4 节）：无存量图补 `review_status` 的迁移脚本（当前新列默认 NULL，
+   不会清空图库，但也没有"已审核"语义）。
+5. 双分数对照：`nsfw_local_score` 未单独存储（本地分数仍只写 `nsfw_score`），无法做
+   本地/远程分歧(`diverge`)的真实计算——当前 `diverge` 直接取远程结论里的值。
+
+**何时做**：等 nsfw-check 远程服务稳定、且插件主线功能排期空出后，按本文第 8 节
+分阶段补齐。**在此之前，`auto` 模式仅供内部验证，不建议普通用户开启。**
 
 ---
 

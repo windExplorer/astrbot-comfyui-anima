@@ -1943,6 +1943,16 @@
             "default": true,
             "description": "NSFW 图默认模糊",
             "hint": "WebUI 图库中 NSFW 图默认以模糊遮罩显示，点击可查看；关闭后默认清晰显示。WebUI 工具栏的「NSFW 模糊」开关可一键覆盖全局，单图也可单独设置。"
+          },
+          "remote_mode": {
+            "type": "string",
+            "default": "local",
+            "options": [
+              "local",
+              "auto"
+            ],
+            "description": "远程判定模式（实验性）",
+            "hint": "local（默认，推荐）：始终用内置 open_nsfw 检测，升级后行为不变、无需任何设置。auto（实验性）：当 ComfyUI 中转站往 history 注入了 nsfw 结论时才用远程判定（需另部署 nsfw-check 服务），未注入则自动回退本地；注意当前版本尚无人工复核后台，远程判为待复核的图不会进复核队列，完整方案见 docs/TODO-审核与NSFW展示策略.md。"
           }
         }
       },

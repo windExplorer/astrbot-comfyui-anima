@@ -324,6 +324,13 @@ class ImageStore:
             ("in_w", "INTEGER DEFAULT NULL"),
             ("in_h", "INTEGER DEFAULT NULL"),
             ("upscale", "TEXT DEFAULT NULL"),
+            # v7.12：TaskHub/nsfw-check 远程判定（Blue-Eye 主判 + 自动复核），双分数入库
+            # review_status: 0=待人工复核 1=自动/人工放行 2=拦截；review_auto: 1=自动裁决
+            ("nsfw_remote_level", "TEXT DEFAULT NULL"),
+            ("nsfw_remote_score", "REAL DEFAULT NULL"),
+            ("diverge", "INTEGER DEFAULT NULL"),
+            ("review_status", "INTEGER DEFAULT NULL"),
+            ("review_auto", "INTEGER DEFAULT NULL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -752,6 +759,9 @@ class ImageStore:
         status: int = 0,
         on_dedup=None,
         nsfw_pre=None,
+        # v7.12：TaskHub/nsfw-check 远程判定结果（dict：level/action/score/diverge/...）。
+        # 可用时打标与复核字段以远程为主（Blue-Eye 主判比本地 Yahoo 分数准得多）。
+        remote_nsfw: dict | None = None,
         # v7.8.2：只复制、不搬走源文件。第三方插件（如萌萌今日老婆）把参考图
         # 传进来时，源图在它自己的数据目录里，os.replace 会直接把它的图搬走。
         keep_src: bool = False,
@@ -888,6 +898,9 @@ class ImageStore:
         # NSFW 检测：归档时自动打标（模型不可用/失败则标记 nsfw_checked=0，不阻塞归档）。
         # 调用方传了 nsfw_pre（出图链路发送前已检）则直接复用，不重复推理。
         _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
+        # v7.12：远程判定字段（TaskHub/nsfw-check，Blue-Eye 主判）
+        _remote_level, _remote_score, _diverge = None, None, None
+        _review_status, _review_auto = None, None
         if nsfw_pre is not None:
             try:
                 _p_is, _p_score, _p_avail = nsfw_pre
@@ -912,6 +925,31 @@ class ImageStore:
                 logger.warning(f"[图库] NSFW 检测异常（忽略，不阻塞归档）: {_ne}")
                 _nsfw, _nsfw_score, _nsfw_checked = 0, None, 0
 
+        # 远程判定（可用时）覆盖本地打标：level/action 直接决定 nsfw 与复核字段。
+        # review_status 口径（docs/TODO-审核与NSFW展示策略.md）：0=待人工 1=放行 2=拦截
+        if isinstance(remote_nsfw, dict) and remote_nsfw.get("available"):
+            try:
+                _level = str(remote_nsfw.get("level") or "")
+                _act = str(remote_nsfw.get("action") or "")
+                _remote_level = _level or None
+                _sc = remote_nsfw.get("score")
+                _remote_score = float(_sc) if isinstance(_sc, (int, float)) else None
+                _diverge = 1 if remote_nsfw.get("diverge") else 0
+                if _act == "review":
+                    _review_status, _review_auto = 0, 0
+                else:
+                    _review_status = 2 if _act == "block" else 1
+                    _review_auto = 1
+                if _level == "nsfw" or _act == "block":
+                    _nsfw, _nsfw_checked = 1, 1
+                    _nsfw_score = _remote_score if _remote_score is not None else _nsfw_score
+                elif _level == "safe" and not remote_nsfw.get("diverge"):
+                    _nsfw, _nsfw_checked = 0, 1
+                    _nsfw_score = _remote_score if _remote_score is not None else _nsfw_score
+                # level=review：nsfw 位保持本地结论（0），留 review_status=0 待人工
+            except Exception:
+                pass
+
         try:
             conn.execute(
                 """
@@ -922,9 +960,11 @@ class ImageStore:
                  user_id, user_name, session_id, group_id, group_name, trigger_msg, status,
                  nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps,
                  platform, model, negative, extra, platform_name,
-                 in_w, in_h, upscale)
+                 in_w, in_h, upscale,
+                 nsfw_remote_level, nsfw_remote_score, diverge, review_status, review_auto)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,
-                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                        ?,?,?,?,?)
                 """,
                 (
                     sha, ext, (dest.parent.name or time.strftime("%Y-%m")),
@@ -937,6 +977,7 @@ class ImageStore:
                     cfg, steps,
                     platform or "comfyui", model or "", negative or "", extra_json, platform_name or "",
                     in_w, in_h, upscale or "",
+                    _remote_level, _remote_score, _diverge, _review_status, _review_auto,
                 ),
             )
             conn.commit()

@@ -7454,11 +7454,61 @@ class ComfyUIDrawPlugin(Star):
         except Exception:
             return False
 
-    async def _detect_nsfw(self, image_path: str):
+    def _remote_nsfw_verdict(self, history_entry) -> dict | None:
+        """读取 TaskHub 注入的远程 NSFW 结论（history_entry['nsfw']，出图后由
+        nsfw-check 服务判定）。返回 dict 或 None（无远程结论/配置为 local 模式）。
+
+        remote_mode: local（默认）= 忽略远程，只用内置检测（升级无感）；
+        auto（实验性）= 有远程结论就用，没有则回退本地。完整方案见
+        docs/TODO-审核与NSFW展示策略.md。
+        """
+        try:
+            if not isinstance(history_entry, dict):
+                return None
+            try:
+                mode = str(self._cfg("gallery.nsfw.remote_mode", "local") or "local").lower()
+            except Exception:
+                mode = "local"
+            if mode == "local":
+                return None
+            v = history_entry.get("nsfw")
+            if isinstance(v, dict) and v.get("available"):
+                return v
+        except Exception:
+            pass
+        return None
+
+    def _nsfw_pre_from_remote(self, remote: dict):
+        """远程结论 → 本地契约三元组 (is_nsfw, score, available)。
+
+        映射：level=nsfw 或 action=block → 拦截；其余放行（review 交给图库人工复核）。
+        """
+        try:
+            level = str(remote.get("level") or "")
+            action = str(remote.get("action") or "")
+            score = remote.get("score")
+            score_f = float(score) if isinstance(score, (int, float)) else None
+            is_nsfw = (level == "nsfw") or (action == "block")
+            logger.info(
+                f"【NSFW】 使用远程判定（TaskHub/nsfw-check）：level={level} "
+                f"action={action} score={score_f}"
+            )
+            return is_nsfw, score_f, True
+        except Exception:
+            return None
+
+    async def _detect_nsfw(self, image_path: str, remote: dict | None = None):
         """跑一次 NSFW 检测（线程池，不阻塞事件循环）。
+
+        remote 非 None（TaskHub 注入的远程结论）时优先使用远程主判，不跑本地
+        Yahoo 检测；远程不可用/解析失败自动回退本地。
 
         返回 (is_nsfw, score, available)；异常时按群聊最严拦截口径返回
         (True, None, False)——归档侧会因 available=False 保持未打标。"""
+        if isinstance(remote, dict):
+            pre = self._nsfw_pre_from_remote(remote)
+            if pre is not None:
+                return pre
         try:
             from .nsfw_detector import get_detector
         except ImportError:
@@ -9966,9 +10016,11 @@ class ComfyUIDrawPlugin(Star):
                     img_path = str(tmp_path)
 
                     # NSFW 检测：只跑一次（线程池），结果同时供归档打标与群聊拦截复用。
+                    # TaskHub 启用了 nsfw-check 时优先用远程主判（Blue-Eye），本地检测仅兜底。
+                    _remote_verdict = self._remote_nsfw_verdict(history)
                     _nsfw_pre = None
                     if self._nsfw_should_detect(event):
-                        _nsfw_pre = await self._detect_nsfw(img_path)
+                        _nsfw_pre = await self._detect_nsfw(img_path, remote=_remote_verdict)
 
                     # 图库归档：把成品图按内容寻址永久移入 gallery/（移动转正，不重复占空间）
                     if self.gallery is not None:
@@ -10057,6 +10109,9 @@ class ComfyUIDrawPlugin(Star):
                                     if (_nsfw_pre is not None and self.gallery._nsfw_enabled())
                                     else None
                                 ),
+                                # v7.12：TaskHub/nsfw-check 远程判定（Blue-Eye 主判），
+                                # 打标/复核字段优先级高于本地 Yahoo 分数
+                                remote_nsfw=_remote_verdict,
                             )
                             # archive_image 会把文件从 temp/ 移动到 gallery/，必须用
                             # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。
@@ -11756,9 +11811,11 @@ class ComfyUIDrawPlugin(Star):
                     except Exception:
                         pass
                 # NSFW 护栏：与出图同口径（群聊拦截，私聊按图库打标策略）
+                # TaskHub 启用了 nsfw-check 时优先用远程主判（Blue-Eye），本地检测仅兜底。
+                _remote_verdict = self._remote_nsfw_verdict(history)
                 _nsfw_pre = None
                 if self._nsfw_should_detect(event):
-                    _nsfw_pre = await self._detect_nsfw(img_path)
+                    _nsfw_pre = await self._detect_nsfw(img_path, remote=_remote_verdict)
                 _blocked = False
                 if _nsfw_pre is not None:
                     _is_nsfw, _score, _avail = _nsfw_pre
@@ -11816,6 +11873,7 @@ class ComfyUIDrawPlugin(Star):
                             upscale=f"{(applied or scale):g}×",
                             is_img2img=True,
                             ref_sha256=_ref_sha,
+                            remote_nsfw=_remote_verdict,
                             user_id=_uid,
                             user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                             session_id=_sid,
@@ -12472,9 +12530,11 @@ class ComfyUIDrawPlugin(Star):
                     except Exception:
                         pass
                 # NSFW 护栏：与出图同口径（群聊拦截，私聊按图库打标策略）
+                # TaskHub 启用了 nsfw-check 时优先用远程主判（Blue-Eye），本地检测仅兜底。
+                _remote_verdict = self._remote_nsfw_verdict(history)
                 _nsfw_pre = None
                 if self._nsfw_should_detect(event):
-                    _nsfw_pre = await self._detect_nsfw(img_path)
+                    _nsfw_pre = await self._detect_nsfw(img_path, remote=_remote_verdict)
                 _blocked = False
                 if _nsfw_pre is not None:
                     _is_nsfw, _score, _avail = _nsfw_pre
@@ -12529,6 +12589,7 @@ class ComfyUIDrawPlugin(Star):
                             steps=_steps_now,
                             is_img2img=True,
                             ref_sha256=_ref_sha,
+                            remote_nsfw=_remote_verdict,
                             user_id=_uid,
                             user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                             session_id=_sid,
