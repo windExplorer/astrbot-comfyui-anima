@@ -147,6 +147,11 @@ check("详细创作有近景约束", "人物要占画面的主要面积" in src 
 check("有全身意图判定", "_fullbody_intent" in src or "_want_full" in src)
 check("negative 压制远景小人", "tiny character, small figure" in src)
 check("docstring 默认近景", "默认近景 / 半身" in src)
+# v8.9.0：画风可改（用户点名时唯一允许改的维度）+ 通用画风工具
+check("画风是唯一可改维度", "唯一允许改的维度" in src)
+check("画风翻译成视觉属性", "水墨画" in src and "笔触" in src)
+check("有 comfyui_style 工具", '@filter.llm_tool(name="comfyui_style")' in src)
+check("画风词表多档", "danbooru 标签" in src and "qwen 中文" in src and "natural 英文" in src)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 

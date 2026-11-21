@@ -46,6 +46,7 @@ REQUIRED = {
     "comfyui_loras": ["base_model", "keyword", "category"],
     "nai_codex": ["keyword", "scope", "full", "limit"],
     "comfyui_role": ["keyword", "limit"],
+    "comfyui_style": ["keyword"],
 }
 
 # 这两个工具按设计就没有参数（只读查询），无需补
