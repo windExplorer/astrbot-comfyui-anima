@@ -30,7 +30,7 @@
             </template>
             <div class="grp-body">
               <ConfigSection
-                v-for="key in grp.keys.filter((k: string) => schema && schema[k])"
+                v-for="key in grp.keys.filter((k: string) => schema && schema[k] && !hiddenKeys.has(k))"
                 :key="key"
                 :field-key="key"
                 :schema="schema![key]"
@@ -90,7 +90,9 @@ const baseConfig: Record<string, any> = {};
 
 // 由「更多功能」页（/features）自己渲染的配置键：本页不重复展示（也不进兜底分区）。
 // image_upscale 是 v7.7.1~v7.7.4 的旧键（保留在此仅为不显示，运行时仍按兼容模式读取）。
-const HIDDEN_KEYS = ["features", "image_upscale", "upscale_limits", "matting"];
+// 由「更多功能」页管理的配置键，不在本页展示。
+// image_upscale / matting 已在 v7.0.0 移除，HIDDEN_KEYS 里不再保留这两个幽灵键。
+const HIDDEN_KEYS = ["features", "upscale_limits"];
 
 // 配置分区元数据（服务器/工作流/LoRA 为同级独立分区）。
 // ★新增顶层配置键时必须同步加进对应分区的 keys（或新建分区），
@@ -117,13 +119,22 @@ const GROUP_META = [
   { name: "WebUI 服务", description: "独立 WebUI 服务与用户级分享（/萌绘 指令）", icon: "🔗", keys: ["webui_standalone", "share_webui"] },
 ];
 
+// 需要隐藏的键：由「更多功能」页管理的 + schema 标记 invisible 的内部/兼容键
+// （如 _size_presets_v2 内部迁移标记、nsfw_group_whitelist 旧位置兼容项）。
+// 统一在此算出，字段渲染与「其他」兜底分区都用它过滤。
+const hiddenKeys = computed(() => {
+  const s = schema.value || {};
+  const invis = Object.keys(s).filter((k) => !!(s[k] as Record<string, unknown>)?.invisible);
+  return new Set<string>([...HIDDEN_KEYS, ...invis]);
+});
+
 const groups = computed(() => {
-  const sk = Object.keys(schema.value || {});
+  const hidden = hiddenKeys.value;
+  const sk = Object.keys(schema.value || {}).filter((k) => !hidden.has(k));
   const gkeys: Record<string, boolean> = {};
   GROUP_META.forEach((g) => g.keys.forEach((k) => (gkeys[k] = true)));
   const list = GROUP_META.filter((g) => g.keys.some((k) => sk.includes(k)));
-  // HIDDEN_KEYS：由「更多功能」页自己管理的配置键，不在本页兜底分区里重复出现
-  const leftover = sk.filter((k) => !gkeys[k] && !HIDDEN_KEYS.includes(k));
+  const leftover = sk.filter((k) => !gkeys[k] && !hidden.has(k));
   if (leftover.length) {
     list.push({ name: "其他", description: "未分区的配置项", icon: "📦", keys: leftover });
   }

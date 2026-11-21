@@ -4,6 +4,29 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v7.14.0（配置页分组隔离：内部键不再暴露给用户）
+
+需求：配置页的分区由 `ConfigView.vue` 硬编码 `GROUP_META` 维护，没进表的键会掉进
+兜底「其他」分区暴露给用户。用脚本比对 62 个 schema 顶层键后发现两类问题：
+- `_size_presets_v2`（内部迁移标记）没进任何分区 → 掉进「其他」，用户能看到并可改；
+- `nsfw_group_whitelist` 旧位置兼容键虽在「权限」组，但 schema 标了 `invisible`、
+  前端却不读这个标记，仍会渲染给用户（v5.12.9 曾因同类问题把 permissions 埋进「其他」）。
+
+修复（纯前端 + schema 标注，零后端风险）：
+- `_conf_schema.json`：`_size_presets_v2` 补标 `"invisible": true`。
+- `ConfigView.vue`：新增 `hiddenKeys`（HIDDEN_KEYS ∪ schema 里 invisible 的键），
+  「其他」兜底分区与字段渲染两处都按它过滤——内部/兼容键彻底不再出现。
+- 清理 HIDDEN_KEYS 里 `image_upscale` / `matting` 两个幽灵键（v7.0.0 已移除功能）。
+
+关于「采样器 ov_* / default_* 并存、尺寸多维度」：核对后确认新版编辑弹窗已按 tab
+（基础 / 提示词 / 尺寸 / 采样器 / 放大与清理 / 保存）分好组，旧工作流走独立的 legacy
+线性表单，`ov_*` 与 `default_*` 本就不混排，**不存在需要隔离的混排问题**，故不改动。
+
+新增守卫 `tests/test_config_groups.py`：保证每个 schema 键都有归宿、无幽灵键、
+内部键已隐藏，跑一遍即发现漏归组（把「靠注释记着」变成自动检查）。
+
+验证：守卫测试通过、前端 vite 构建通过（2937 modules）。
+
 ## v7.13.1（NAI 法典检索减重：缓存 + limit 夹紧）
 
 需求：用户反馈 NAI 相关 skill 「有点重」。排查后确认真正的开销不在 SKILL.md

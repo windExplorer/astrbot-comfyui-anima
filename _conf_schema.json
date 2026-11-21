@@ -1491,7 +1491,8 @@
     "type": "bool",
     "description": "内部标记：尺寸预设是否已升级到 v2（1K 基准矩阵），请勿手动修改",
     "hint": "插件自动维护。设为 false 会让插件在下次重载时尝试把内置预设升级为 1K 基准矩阵（仅当现有预设仍是旧内置内容时）。",
-    "default": false
+    "default": false,
+    "invisible": true
   },
   "size_max_side": {
     "type": "int",
