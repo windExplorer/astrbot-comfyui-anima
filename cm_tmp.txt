@@ -1,8 +1,0 @@
-减法第二刀：移除剧情模式全链路（v7.13.0）
-
-- 删除 story_store.py 与 story_mode 配置块（顶层键 63→62）
-- main.py 删除 669 行推演引擎、两个事件钩子、出图关联、初始化与 reload 项
-- webui_api 删 5 handler+5 路由，standalone 删 _api_story 分派（双通道同步）
-- 前端删 StoryView.vue/路由/菜单/配置分组；删设计文档与相关测试段
-- 保留：分享 WebUI（与剧情零耦合）、token 统计钩子、热更新兜底、撤回发送
-- 验证：module_lists/character/character_webui 全过，4 模块编译通过，源码零残留
