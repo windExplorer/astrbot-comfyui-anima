@@ -155,6 +155,9 @@ check("必须补全画面", "必须把画面写完整" in src and "和参考图�
 # v8.10.2：用户点名的具体元素不许被替换 + 程序化拼回兜底
 check("用户点名元素硬事实", "必须逐字保留" in src and "厨房里冲热可可" in src)
 check("用户原话强制拼回", "严格按用户要求执行" in src and "_raw_hint" in src)
+# v8.10.3：创作 hint 用 LLM 的 positive（信息完整），不再只用用户短消息
+check("创作hint用LLM画面", "_llm_hint = (positive" in src and "len(_llm_hint) > len(_hint)" in src)
+check("长画面兜底措辞", "严格保留以下画面内容" in src)
 check("完全替换原服装", "完全替换参考图原有服装" in src and "轮廓不要残留" in src)
 check("只做上述改动", "只做上述改动" in src)
 check("现代画风词表", "现代日式动画" in src and "新海诚式电影动画" in src and "复古 90 年代动画" in src)

@@ -8786,7 +8786,14 @@ class ComfyUIDrawPlugin(Star):
                         )
                         if not _user_mentioned_style:
                             _hint = f"{_hint}，画成{_style_cfg}风格" if _hint else f"画成{_style_cfg}风格"
-                    if (0 < len(_hint) <= _limit + 20 or bool(_style_cfg)) and (positive or "").strip() \
+                    # v8.10.3：创作 hint 优先用 **LLM 写进 positive 的完整画面** ——
+                    # LLM 已经把用户意图（阳台/热可可/夜景）写全了，用它当创作源信息不丢；
+                    # 之前用 event.message_str（只有一句「深夜阳台喝杯热的」）让 LLM 重新
+                    # 发挥，结果被改成「书房/客厅+绿植书籍」，图文完全对不上。
+                    _llm_hint = (positive or "").strip()
+                    if _llm_hint and len(_llm_hint) > len(_hint):
+                        _hint = _llm_hint
+                    if (0 < len(_hint) <= 700 or bool(_style_cfg)) and (positive or "").strip() \
                             and not self._looks_moss_layout(positive):
                         _t_detail = time.time()
                         _created = await self._role_card_detail_prompt(
@@ -8797,8 +8804,11 @@ class ComfyUIDrawPlugin(Star):
                             # （厨房/热可可/换衣服）替换成自己编的（教室/公寓），
                             # 必须把用户原话原样拼回最终 prompt，确保图文对得上。
                             _raw_hint = re.sub(r"[,，。\s]+", "", _hint.replace(f"，画成{_style_cfg}风格", "") if _style_cfg else _hint).strip()
+                            # hint 来自 LLM 完整画面时，其内容本就该被创作保留，若丢了仍拼回；
+                            # 但拼回用「严格按以下画面执行」措辞（英文描写也合适）。
+                            _raw_title = "严格按用户要求执行" if len(_raw_hint) <= 80 else "严格保留以下画面内容"
                             if _raw_hint and _raw_hint not in _created:
-                                _created = f"{_created}。严格按用户要求执行：{_raw_hint}。"
+                                _created = f"{_created}。{_raw_title}：{_raw_hint}。"
                                 logger.info(f"【角色卡·详细创作】 用户原话已强制拼回：{_raw_hint}")
                             positive = _created
                             _detail_done = True
