@@ -8289,6 +8289,8 @@ class ComfyUIDrawPlugin(Star):
         _wr_force_wf = ""
         _wr_hit_name = ""
         _role_card_force_size = False  # v8.5.4：角色卡图生图强制自定义尺寸（不跟参考图尺寸）
+        _detail_done = False  # v8.6.0：已做详细创作 → 后续 boost 只补画质前缀、不再二次扩写
+        _user_had_images = bool(init_images)  # v8.6.0：角色卡注入前用户是否自带图（自带=变换，不创作）
         try:
             _wr_cfg = self._cfg("role_card", {}) or {}
             _wr_on = isinstance(_wr_cfg, dict) and _wr_cfg.get("enabled", True)
@@ -8661,6 +8663,39 @@ class ComfyUIDrawPlugin(Star):
                 f"【耗时】 出图前 LLM 整理（改写/翻译）耗时 {time.time() - _t_llm0:.1f}s"
             )
 
+        # ── v8.6.0：角色卡命中 + 短描述 → 自动详细创作（对齐在线生图「想画面+详细」）──
+        # 只处理「要创作一幅画面」的场景；变换/编辑、固定提示词、MOSS 版面不碰。
+        if (_wr_entry and str(_wr_entry.get("ref") or "").strip()
+                and not _fixed_prompt and not raw_prompt and not _user_had_images):
+            try:
+                _ad_cfg = self._cfg("role_card", {}) or {}
+                if isinstance(_ad_cfg, dict) and _ad_cfg.get("auto_detail", True):
+                    _limit = int(_ad_cfg.get("auto_detail_max_chars", 40) or 40)
+                    _hint = (getattr(event, "message_str", "") or "").strip()
+                    # 去掉角色名再量长度——「画曳尔沐近景特写」里角色名不该算内容
+                    _nm = str(_wr_entry.get("name") or "")
+                    if _nm:
+                        _hint = _hint.replace(_nm, "")
+                    for _a in (list(_wr_entry.get("aliases") or [])):
+                        if str(_a).strip():
+                            _hint = _hint.replace(str(_a).strip(), "")
+                    _hint = re.sub(r"[,，。\s]+", "", _hint).strip()
+                    if 0 < len(_hint) <= _limit and (positive or "").strip() \
+                            and not self._looks_moss_layout(positive):
+                        _t_detail = time.time()
+                        _created = await self._role_card_detail_prompt(
+                            _hint, style=self._prompt_style(wf),
+                        )
+                        if _created and len(_created) > len(_hint):
+                            positive = _created
+                            _detail_done = True
+                            logger.info(
+                                f"【角色卡·详细创作】 {len(_created)} 字，"
+                                f"耗时 {time.time() - _t_detail:.1f}s"
+                            )
+            except Exception as _ade:
+                logger.warning(f"【角色卡·详细创作】 失败（保留原提示词）: {_ade}")
+
         # ── 提示词丰富化（v7.6.0）──────────────────────────────────────
         # 位置很关键：放在 sanitize / LLM 翻译之后——
         #   ① 扩写只补「镜头/构图/光影/氛围/材质」等自由维度，外观维度由 prompt_guard 把关；
@@ -8677,7 +8712,7 @@ class ComfyUIDrawPlugin(Star):
                     positive, wf=wf, style=self._prompt_style(wf),
                     cfg=self._prompt_boost_cfg(),
                     draw_start=_draw_start, trace_id=_trace_id,
-                    skip_llm=raw_prompt,
+                    skip_llm=raw_prompt or _detail_done,  # v8.6.0：已详细创作 → 不再二次扩写（画质前缀仍补）
                     # v7.7.74：扩写也只参考「本次要用的 LoRA」的描述
                     lora_ref=self._lora_reference_note(lora_map, wf),
                 )
@@ -18190,6 +18225,71 @@ class ComfyUIDrawPlugin(Star):
             logger.info(f"【角色卡】 已向本次 LLM 请求注入角色库命中提示：{name}")
         except Exception as e:
             logger.debug(f"【角色卡】 注入提示失败（忽略）: {e}")
+
+    async def _role_card_detail_prompt(self, hint: str, *, style: str = "tags") -> str:
+        """v8.6.0：角色卡命中 + 短描述时，LLM 把一句想法创作成几百~上千字画面提示词。
+
+        与在线生图「🎲 想画面 + 详细」同档，但加 no_appearance 硬约束：
+        角色形象由主参考图锁定，**禁止写角色名 / 作品名 / 角色 tag / 任何外观**，
+        只写动作 / 场景 / 光影 / 氛围 / 构图，且每块要具体可感。
+        失败抛异常，由调用方保留原提示词。
+        """
+        provider_id = self._resolve_translate_provider_id()
+        if not provider_id:
+            raise RuntimeError("详细创作未配置可用模型")
+        hint = (hint or "").strip()
+        if not hint:
+            raise RuntimeError("详细创作需要至少一句画面想法")
+        # 按底模风格给不同的输出形态（对齐 studio_api.ai_imagine detail 档）
+        if style in ("qwen",):
+            fmt = (
+                "输出格式：中文 6~12 句、300~800 字的整段画面描写。"
+                "把人物的动作姿态与表情、场景环境、光影色调、构图镜头、氛围情绪逐层写清楚，"
+                "每个细节都要具体可感——不要空泛地说「背景简单」「光线柔和」，"
+                "要写清这个地方有什么、光从哪来、镜头怎么摆。"
+                "不要写成标签罗列，不要编号与解释。"
+            )
+        else:
+            # tags / pony / nai / natural 统一走「自然语言整句」详细档：
+            # 用户明确要上千字，标签系也写整句（后续画质前缀仍由插件按底模补）。
+            fmt = (
+                "输出格式：8~16 句、400~1000 字的画面描写（用目标提示词语言）。"
+                "把动作姿态与表情、场景环境、光影色调、构图镜头、材质氛围逐层展开，"
+                "每部分都要有具体细节——不要空泛重复、不要「simple background / soft lighting」这类空话。"
+                "不要写成逗号标签堆，不要编号与解释。"
+            )
+        prompt = (
+            "你是顶级的 AI 绘画提示词创作师。用户给了一句画面想法，请围绕它"
+            "**自由创作**一幅丰富、有记忆点的画面提示词（可补充细节，但不要偏离原意）。\n\n"
+            f"{fmt}\n\n"
+            "【角色卡·最高优先级约束】本次出图会使用该角色的**主参考图**做图生图，"
+            "形象（长相 / 发色 / 瞳色 / 兽耳角尾 / 体型 / 服装 / 配饰）完全由参考图锁定。"
+            "⛔ **绝对禁止写**：角色名、作品名、角色标签、发色、发型、瞳色、耳朵、角、尾巴、"
+            "体型、服装、配饰——这些一个字都不能出现。你只写「这个人在做什么、在什么场景、"
+            "什么光线、什么镜头、什么氛围」，越具体越好。\n"
+            "⛔ 不要写画质词（masterpiece / best quality / score_9 等），插件会自动补。\n"
+            "⛔ 不要写比例 / 尺寸词（portrait / landscape / 2K 等），会覆盖工作流尺寸。\n\n"
+            f"用户的画面想法：\n{hint}\n\n"
+            "只输出提示词正文本身，不要任何说明、标题或代码块："
+        )
+        try:
+            # 详细档要更长输出，超时放宽（在线生图 detail 用 150s+）；
+            # 上限仍受 llm_rewrite_timeout 配置影响，但至少 150s。
+            timeout = max(150, int(self._cfg("llm_rewrite_timeout", 60) or 60))
+            llm_resp = await asyncio.wait_for(
+                self.context.llm_generate(chat_provider_id=provider_id, prompt=prompt),
+                timeout=timeout,
+            )
+            self._record_llm_token("role_card_detail", provider_id, llm_resp)
+            out = getattr(llm_resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"角色卡详细创作超时（>{timeout}s）") from None
+        except Exception as e:
+            raise RuntimeError(f"角色卡详细创作失败: {e}") from e
+        out = out.strip().strip("`").strip()
+        if out.startswith("json"):
+            out = out[4:].strip()
+        return " ".join(out.split())
 
     async def _force_draw_enforce(self, event) -> None:
         """本轮结束校验：打了强制标记却没成功出图 → 由插件兜底补画。"""

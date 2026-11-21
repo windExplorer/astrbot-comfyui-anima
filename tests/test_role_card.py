@@ -128,6 +128,13 @@ check("反三视图 negative", "character sheet, multiple views, three views" in
 check("无尺寸开关时提示", "工作流没有尺寸开关" in src)
 check("schema 有 force_own_size/anti_sheet", '"force_own_size"' in (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
       and '"anti_sheet"' in (ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+# v8.6.0：角色卡短描述自动详细创作
+check("有详细创作方法", "async def _role_card_detail_prompt" in src)
+check("详细创作 no_appearance 约束", "绝对禁止写" in src and "角色名、作品名、角色标签" in src)
+check("创作后跳过二次扩写", "skip_llm=raw_prompt or _detail_done" in src)
+check("排除用户自带图场景", "not _user_had_images" in src)
+_sch = (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+check("schema 有 auto_detail", '"auto_detail"' in _sch and '"auto_detail_max_chars"' in _sch)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 

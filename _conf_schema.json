@@ -2034,6 +2034,19 @@
         "description": "防止照搬三视图（默认开）",
         "hint": "开启后：角色卡出图时在负向提示词里自动加入「三视图 / 多视图 / 分栏 / 设定板 / turnaround / character sheet / multiple views / split screen」等词，防止模型照搬主参考图的三视图版面。默认开启。",
         "default": true
+      },
+      "auto_detail": {
+        "type": "bool",
+        "description": "短描述自动详细创作（默认开）",
+        "hint": "开启后：命中角色卡且用户描述很短（如「近景特写」）时，插件先调 LLM 把这句想法创作成 300~1000 字的丰富画面提示词（对齐在线生图「想画面+详细」），再出图。只写画面内容（动作/场景/光影/氛围/构图），不写角色长相。会多花几秒 LLM 时间与 token。关闭则只用用户原描述。",
+        "default": true
+      },
+      "auto_detail_max_chars": {
+        "type": "int",
+        "description": "触发详细创作的描述长度上限",
+        "hint": "用户描述（去掉角色名后）字符数 ≤ 本值才自动详细创作，默认 40。描述已经很长时不重复创作。",
+        "slider": { "min": 10, "max": 200, "step": 5 },
+        "default": 40
       }
     }
   }
