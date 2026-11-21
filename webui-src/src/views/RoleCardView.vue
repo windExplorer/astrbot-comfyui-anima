@@ -1,6 +1,6 @@
 <template>
   <div class="rc-page">
-    <!-- 顶部：标题 + 操作 -->
+    <!-- 顶部固定：标题 + 操作 -->
     <div class="rc-head">
       <div class="rc-head-title">
         <h2>🎭 角色卡</h2>
@@ -11,12 +11,12 @@
       </div>
     </div>
 
-    <div class="rc-scroll">
-      <n-alert v-if="!installed && !loading" type="warning" style="margin-bottom:14px">
+    <!-- 固定控制区：统计 / 工作流 / 筛选（不随内容滚动） -->
+    <div class="rc-controls">
+      <n-alert v-if="!installed && !loading" type="warning" style="margin-bottom:12px">
         未读取到角色库：请确认已安装「萌萌今日老婆」插件（v0.71.13+）并已在配置页启用「角色卡链路」。
       </n-alert>
 
-      <!-- 统计 -->
       <div v-if="installed" class="rc-stats">
         <div class="stat-item"><span class="stat-num">{{ total }}</span><span class="stat-label">角色</span></div>
         <div class="stat-item ok"><span class="stat-num">{{ withRef }}</span><span class="stat-label">有主参考图</span></div>
@@ -24,7 +24,6 @@
         <div class="stat-item"><span class="stat-num">{{ withAvatar }}</span><span class="stat-label">有头像</span></div>
       </div>
 
-      <!-- 角色卡工作流 -->
       <div v-if="installed" class="rc-panel">
         <div class="rc-panel-head">
           <span class="rc-panel-title">⚙️ 角色卡工作流</span>
@@ -37,11 +36,10 @@
         </div>
       </div>
 
-      <n-alert v-if="missing.length" type="info" style="margin-bottom:14px">
+      <n-alert v-if="missing.length" type="info" style="margin-bottom:12px">
         以下 {{ missing.length }} 个角色没有主参考图，不参与角色卡生图（仍可按 LoRA / 文字出图）：{{ missingText }}
       </n-alert>
 
-      <!-- 工具栏：搜索 + 筛选 + 视图切换 -->
       <div class="rc-toolbar">
         <n-input v-model:value="q" placeholder="搜索角色名 / 别名 / 作品 / 标签" clearable style="max-width:300px" />
         <n-select v-model:value="seriesFilter" :options="seriesOptions" size="small" filterable clearable
@@ -54,10 +52,13 @@
         </n-radio-group>
         <span class="rc-count">{{ filtered.length }} / {{ total }}</span>
       </div>
+    </div>
 
-      <!-- 头像视图（默认）：圆形头像墙 + 悬停名字气泡（同老婆插件） -->
+    <!-- 只有内容区域滚动 -->
+    <div class="rc-scroll">
+      <!-- 头像视图（默认） -->
       <div v-if="viewMode === 'avatar'" class="av-wall">
-        <div v-for="r in filtered" :key="'av' + r.char_id" class="av-tile">
+        <div v-for="r in filtered" :key="'av' + r.char_id" class="av-tile" @click="openDetail(r)">
           <div class="av-pic">
             <img v-if="r.avatar_thumb" :src="r.avatar_thumb" :alt="r.name" loading="lazy" />
             <span v-else class="av-letter">{{ (r.name || '?').slice(0, 1) }}</span>
@@ -68,9 +69,9 @@
         <div v-if="!filtered.length" class="rc-empty">没有匹配的角色</div>
       </div>
 
-      <!-- 卡片视图：竖版封面 7:12 + 定高信息行 -->
+      <!-- 卡片视图：竖版封面，无分页、不展示提示词 -->
       <div v-else-if="viewMode === 'card'" class="rc-grid">
-        <div v-for="r in pagedCards" :key="'cd' + r.char_id" class="rc-card" :class="{ 'no-ref': !r.has_ref }">
+        <div v-for="r in filtered" :key="'cd' + r.char_id" class="rc-card" :class="{ 'no-ref': !r.has_ref }" @click="openDetail(r)">
           <div class="rc-card-cover">
             <img v-if="r.portrait_thumb" :src="r.portrait_thumb" :alt="r.name" loading="lazy" />
             <div v-else class="rc-cover-ph">{{ (r.name || '?').slice(0, 1) }}</div>
@@ -80,31 +81,70 @@
           <div class="rc-card-body">
             <div class="rc-card-name">{{ r.name }}</div>
             <div class="rc-card-series">{{ r.series || '—' }}</div>
-            <div class="rc-card-tags">{{ r.tags_en || '无标签' }}</div>
           </div>
         </div>
         <div v-if="!filtered.length" class="rc-empty">没有匹配的角色</div>
-        <div v-if="filtered.length > 12" class="rc-pager">
-          <n-pagination v-model:page="cardPage" :page-count="Math.ceil(filtered.length / 12)" size="small" />
-        </div>
       </div>
 
-      <!-- 列表视图（分页，不截断） -->
+      <!-- 列表视图：点击行打开详情 -->
       <div v-else class="rc-list-wrap">
         <n-data-table :columns="columns" :data="filtered" :bordered="false" size="small"
-          :scroll-x="780" :pagination="{ pageSize: 20, showSizePicker: true, pageSizes: [10, 20, 50] }" />
+          :scroll-x="720" :pagination="{ pageSize: 20, showSizePicker: true, pageSizes: [10, 20, 50] }"
+          :row-props="rowProps" />
         <div v-if="!filtered.length" class="rc-empty">没有匹配的角色</div>
       </div>
     </div>
+
+    <!-- 详情抽屉 -->
+    <n-drawer v-model:show="detailShow" :width="440" placement="right">
+      <n-drawer-content :title="detail?.name || '角色详情'" closable>
+        <div v-if="detail" class="detail-body">
+          <div class="detail-portrait">
+            <img v-if="detail.portrait_thumb" :src="detail.portrait_thumb" :alt="detail.name" />
+            <div v-else class="detail-ph">{{ (detail.name || '?').slice(0, 1) }}</div>
+            <img v-if="detail.avatar_thumb" class="detail-avatar" :src="detail.avatar_thumb" :alt="detail.name + '头像'" />
+          </div>
+          <div class="detail-name">{{ detail.name }}</div>
+          <div class="detail-series">{{ detail.series || '未填作品' }}</div>
+
+          <n-divider style="margin:14px 0" />
+          <div class="detail-section">
+            <div class="detail-label">别名</div>
+            <div class="detail-value">{{ (detail.aliases || []).join(' / ') || '—' }}</div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-label">主参考图</div>
+            <div class="detail-value">
+              <n-tag :type="detail.has_ref ? 'success' : 'warning'" size="small" :bordered="false">
+                {{ detail.has_ref ? '已绑定 · 可参与角色卡图生图' : '缺失 · 不参与角色卡生图' }}
+              </n-tag>
+            </div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-label">英文标签（tags_en）</div>
+            <div class="detail-tags">
+              <n-tag v-for="(t, i) in detailTagList" :key="i" size="small" :bordered="false">{{ t }}</n-tag>
+              <span v-if="!detailTagList.length" class="detail-value">—</span>
+            </div>
+          </div>
+
+          <n-divider style="margin:14px 0" />
+          <n-button type="primary" block @click="goStudio">用这个角色生图 →</n-button>
+          <div class="detail-hint">跳转在线生图并把角色名填入提示词，出图时自动走角色卡链路（强制工作流 + 主参考图）。</div>
+        </div>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { NTag, useMessage } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 
 const message = useMessage();
+const router = useRouter();
 const loading = ref(false);
 const installed = ref(false);
 const roles = ref<any[]>([]);
@@ -114,14 +154,13 @@ const withRef = ref(0);
 const q = ref("");
 const seriesFilter = ref<string | null>(null);
 const refFilter = ref("all");
-const viewMode = ref<"avatar" | "card" | "list">("avatar");  // v8.2.1：默认头像墙
-const cardPage = ref(1);
+const viewMode = ref<"avatar" | "card" | "list">("avatar");
 
-const refFilterOptions = [
-  { label: "全部角色", value: "all" },
-  { label: "有主参考图", value: "yes" },
-  { label: "无主参考图", value: "no" },
-];
+// 详情抽屉
+const detailShow = ref(false);
+const detail = ref<any>(null);
+const detailTagList = computed(() => String((detail.value || {}).tags_en || "")
+  .split(",").map((s) => s.trim()).filter(Boolean));
 
 // 工作流配置
 const fullCfg = ref<Record<string, any>>({});
@@ -131,9 +170,14 @@ const wfOptions = ref<Array<{ label: string; value: string }>>([]);
 const savingWf = ref(false);
 const wfDirty = computed(() => (wfValue.value || "") !== (wfSaved.value || ""));
 
+const refFilterOptions = [
+  { label: "全部角色", value: "all" },
+  { label: "有主参考图", value: "yes" },
+  { label: "无主参考图", value: "no" },
+];
+
 const withAvatar = computed(() => roles.value.filter((r: any) => !!r.avatar_thumb).length);
 const missingText = computed(() => missing.value.slice(0, 15).join("、") + (missing.value.length > 15 ? "…" : ""));
-// 作品选项：从角色数据提取、去重排序（可搜索下拉）
 const seriesOptions = computed(() => {
   const set = new Set<string>();
   roles.value.forEach((r: any) => { const s = String(r.series || "").trim(); if (s) set.add(s); });
@@ -152,21 +196,16 @@ const filtered = computed(() => {
   });
 });
 
-// 卡片视图分页（12/页），筛选或搜索变化时页码归 1
-const pagedCards = computed(() => filtered.value.slice((cardPage.value - 1) * 12, cardPage.value * 12));
-watch([q, refFilter, seriesFilter], () => { cardPage.value = 1; });
-
 const columns = [
   {
-    title: "头像", key: "avatar", width: 62,
+    title: "头像", key: "avatar", width: 48,
     render: (r: any) => r.avatar_thumb
       ? h("img", { src: r.avatar_thumb, alt: r.name, class: "rc-list-avatar" })
       : h("span", { class: "rc-list-noavatar" }, "—"),
   },
-  { title: "角色", key: "name", width: 140, render: (r: any) => h("b", r.name) },
-  { title: "别名", key: "aliases", width: 150, render: (r: any) => (r.aliases || []).join(" / ") || "—" },
-  { title: "作品", key: "series", width: 130, render: (r: any) => r.series || "—" },
-  { title: "标签", key: "tags_en", render: (r: any) => h("span", { class: "rc-tags" }, r.tags_en || "—") },
+  { title: "角色", key: "name", width: 130, render: (r: any) => h("b", r.name) },
+  { title: "别名", key: "aliases", width: 140, render: (r: any) => (r.aliases || []).join(" / ") || "—" },
+  { title: "作品", key: "series", width: 120, render: (r: any) => r.series || "—" },
   {
     title: "主参考图", key: "has_ref", width: 100,
     render: (r: any) => r.has_ref
@@ -174,6 +213,18 @@ const columns = [
       : h(NTag, { type: "warning", size: "small", bordered: false }, { default: () => "缺失" }),
   },
 ];
+function rowProps(row: any) {
+  return { style: "cursor:pointer", onClick: () => openDetail(row) };
+}
+function openDetail(r: any) {
+  detail.value = r;
+  detailShow.value = true;
+}
+function goStudio() {
+  const name = String((detail.value || {}).name || "");
+  detailShow.value = false;
+  router.push({ path: "/studio", query: name ? { role: name } : {} });
+}
 
 async function load(force = false) {
   loading.value = true;
@@ -231,36 +282,36 @@ onMounted(() => load());
 
 <style scoped>
 .rc-page { height: 100%; display: flex; flex-direction: column; min-height: 0; }
-.rc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex: 0 0 auto; }
+.rc-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; flex: 0 0 auto; }
 .rc-head h2 { margin: 0 0 4px; font-size: 20px; }
 .rc-head p { margin: 0; color: var(--text-sub); font-size: 12px; line-height: 1.5; }
 .rc-head-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.rc-controls { flex: 0 0 auto; }
 .rc-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; }
 
-.rc-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.rc-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
 .stat-item {
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 12px 8px; border-radius: 10px;
+  padding: 10px 8px; border-radius: 10px;
   background: var(--bg-panel); border: 1px solid var(--border-color);
 }
-.stat-num { font-size: 22px; font-weight: 700; line-height: 1.1; }
+.stat-num { font-size: 20px; font-weight: 700; line-height: 1.1; }
 .stat-label { font-size: 12px; color: var(--text-sub); }
 .stat-item.ok .stat-num { color: #18a058; }
 .stat-item.warn .stat-num { color: #d03050; }
 
-.rc-panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
-.rc-panel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.rc-panel { background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+.rc-panel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .rc-panel-title { font-weight: 600; font-size: 14px; }
 .rc-panel-sub { color: var(--text-sub); font-size: 12px; }
 .rc-wf-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
-.rc-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-.rc-view-switch { display: flex; gap: 4px; }
+.rc-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .rc-count { margin-left: auto; color: var(--text-sub); font-size: 13px; }
 
-/* 头像视图：圆形头像墙（同老婆插件） */
+/* 头像视图 */
 .av-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 12px; }
-.av-tile { position: relative; cursor: default; }
+.av-tile { position: relative; cursor: pointer; }
 .av-pic {
   position: relative; width: 100%; aspect-ratio: 1/1; border-radius: 50%; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
@@ -286,22 +337,23 @@ onMounted(() => load());
 .av-hover span { font-size: 10.5px; opacity: .72; }
 .av-tile:hover .av-hover { opacity: 1; transform: translate(-50%, 0); }
 
+/* 卡片视图 */
 .rc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
 .rc-card {
   border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;
-  background: var(--bg-panel); display: flex; flex-direction: column;
+  background: var(--bg-panel); display: flex; flex-direction: column; cursor: pointer;
   transition: transform .15s, box-shadow .15s;
 }
 .rc-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.18); }
 .rc-card.no-ref { opacity: .8; }
 .rc-card-cover { position: relative; aspect-ratio: 7/12; max-height: 320px; background: var(--bg-body); overflow: hidden; }
-.rc-card-cover > img:first-child { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rc-card-cover > img:first-child { width: 100%; height: 100%; object-fit: cover; object-position: 50% 12%; display: block; }
 .rc-cover-ph {
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
-  font-size: 54px; font-weight: 700; color: var(--text-sub); opacity: .5;
+  font-size: 48px; font-weight: 700; color: var(--text-sub); opacity: .5;
 }
 .rc-card-avatar {
-  position: absolute; left: 8px; bottom: 8px; width: 44px; height: 44px;
+  position: absolute; left: 8px; bottom: 8px; width: 40px; height: 40px;
   border-radius: 50%; object-fit: cover; border: 2px solid #fff;
   box-shadow: 0 2px 8px rgba(0,0,0,.35);
 }
@@ -314,22 +366,37 @@ onMounted(() => load());
 .rc-card-body { padding: 8px 10px 10px; }
 .rc-card-name { font-weight: 600; font-size: 14px; height: 20px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-card-series { color: var(--text-sub); font-size: 11px; height: 15px; line-height: 15px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-pager { display: flex; justify-content: center; margin-top: 16px; }
-.rc-card-tags {
-  color: var(--text-sub); font-size: 11px; margin-top: 6px; line-height: 1.35;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
 
+/* 列表视图 */
 .rc-list-wrap { background: var(--bg-panel); border-radius: 10px; padding: 6px; }
-.rc-list-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+.rc-list-avatar { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; display: block; }
 .rc-list-noavatar { color: var(--text-sub); }
-.rc-tags { color: var(--text-sub); font-size: 12px; word-break: break-all; }
 .rc-empty { color: var(--text-sub); text-align: center; padding: 48px 12px; }
+
+/* 详情抽屉 */
+.detail-body { padding-bottom: 12px; }
+.detail-portrait {
+  position: relative; width: 100%; aspect-ratio: 7/10; max-height: 360px; border-radius: 10px;
+  overflow: hidden; background: var(--bg-body); display: flex; align-items: center; justify-content: center;
+}
+.detail-portrait > img:first-child { width: 100%; height: 100%; object-fit: cover; object-position: 50% 12%; }
+.detail-ph { font-size: 72px; font-weight: 700; color: var(--text-sub); opacity: .4; }
+.detail-avatar {
+  position: absolute; left: 14px; bottom: 14px; width: 64px; height: 64px;
+  border-radius: 50%; object-fit: cover; border: 3px solid #fff;
+  box-shadow: 0 3px 10px rgba(0,0,0,.4);
+}
+.detail-name { font-size: 20px; font-weight: 700; margin-top: 12px; }
+.detail-series { color: var(--text-sub); font-size: 13px; margin-top: 2px; }
+.detail-section { margin-bottom: 12px; }
+.detail-label { color: var(--text-sub); font-size: 12px; margin-bottom: 4px; }
+.detail-value { font-size: 13px; }
+.detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail-hint { color: var(--text-sub); font-size: 12px; line-height: 1.5; margin-top: 10px; }
 
 @media (max-width: 768px) {
   .rc-head { flex-direction: column; }
   .rc-stats { grid-template-columns: repeat(2, 1fr); }
-  .rc-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
   .rc-count { margin-left: 0; }
 }
 </style>

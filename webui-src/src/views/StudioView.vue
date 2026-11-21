@@ -164,6 +164,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { useMessage, useDialog } from "naive-ui";
 import ImageViewer from "@/components/ImageViewer.vue";
 import WorkflowPicker from "@/components/studio/WorkflowPicker.vue";
@@ -194,6 +195,7 @@ import { useRefresh } from "@/composables/useRefresh";
 
 const message = useMessage();
 const dialog = useDialog();
+const route = useRoute();
 
 // ── 状态 ────────────────────────────────────────────────────────── //
 const loading = ref(false);
@@ -351,6 +353,12 @@ async function loadAll() {
     ]);
     overview.value = ov;
     roleCards.value = (rc?.roles || []).filter((r: any) => r.has_ref);
+    // 从角色卡详情抽屉跳转过来（/studio?role=角色名）→ 自动选中并插入提示词
+    const wantRole = String(route.query.role || "").trim();
+    if (wantRole && roleCards.value.some((r: any) => r.name === wantRole)) {
+      roleCardSel.value = wantRole;
+      onRoleCardPick(wantRole);
+    }
     ensureWorkflowSelected();
     ensureUrlsForVisible();
     fetchSamplers();
