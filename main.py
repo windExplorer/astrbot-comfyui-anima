@@ -8346,6 +8346,16 @@ class ComfyUIDrawPlugin(Star):
                                 "character sheet, multiple views, three views, turnaround, "
                                 "split screen, comic panels, multi-panel, 三视图, 多视图, 分栏, 设定板"
                             )
+                            # v8.8.0：角色卡默认近景——压制远景小人；用户明确要全身/远景时不加
+                            _fullbody_intent = re.search(
+                                r"全身|全身照|全身立绘|远景|大场景|全景|合影|群像|wide|full.?body|distant|far.?away",
+                                _u_msg, re.I,
+                            )
+                            if not _fullbody_intent:
+                                _sheet_neg += (
+                                    ", full body shot, wide shot, distant view, far away, "
+                                    "tiny character, small figure, character small in frame, 远景小人"
+                                )
                             negative = (f"{negative.strip()}, {_sheet_neg}" if (negative or "").strip()
                                         else _sheet_neg)
                         # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
@@ -16434,6 +16444,9 @@ class ComfyUIDrawPlugin(Star):
           ③光线/氛围：不要只写 `soft lighting`——写清光源方向与质感
              （如 `warm afternoon sunlight through window, gentle rim light on hair, soft shadows`）；
           ④镜头/构图：`close-up / medium shot / from above` + 明确主体在画面里的位置与景深。
+          ★单人角色卡**默认近景 / 半身、人物占画面主要面积**（upper body / close-up / cowboy shot），
+          不要把人画成远景小人；用户明确说「全身 / 远景 / 合影」才用 full body / wide shot。
+          场景光影只作衬托，别为了写环境把人物推远。
           标签系照常给 15~25 个**具体**标签；自然语言系把上面四块写成 2~4 句有画面感的整句。
         - 画质前缀由插件自动补（按底模分档），**你不需要写** masterpiece / score_9 / very aesthetic 这类词；
           写了也不会重复加。
@@ -18281,10 +18294,22 @@ class ComfyUIDrawPlugin(Star):
                 "每部分都要有具体细节——不要空泛重复、不要「simple background / soft lighting」这类空话。"
                 "不要写成逗号标签堆，不要编号与解释。"
             )
+        # v8.8.0：景别——默认单人近景、角色占画面大（用户明确要全身/远景时不强制）
+        _fullbody_re = re.compile(r"全身|全身照|全身立绘|远景|大场景|全景|合影|群像|wide|full.?body|distant|far.?away")
+        _want_full = bool(_fullbody_re.search(hint))
+        _framing_rule = (
+            ""
+            if _want_full else
+            "【景别·默认近景】用户没明确要全身 / 远景：请写**单人近景或半身特写**"
+            "（如 upper body portrait / close-up / cowboy shot），"
+            "人物要占画面的主要面积、清晰可辨——**不要写成远景小人**（不要 full body / wide shot / 人物缩在画面中间）。"
+            "场景与光影只作为衬衬托人物，别为了写足环境把人物推远。\n"
+        )
         prompt = (
             "你是顶级的 AI 绘画提示词创作师。用户给了一句画面想法，请围绕它"
             "**自由创作**一幅丰富、有记忆点的画面提示词（可补充细节，但不要偏离原意）。\n\n"
             f"{fmt}\n\n"
+            f"{_framing_rule}"
             "【角色卡·最高优先级约束】本次出图会使用该角色的**主参考图**做图生图，"
             "形象（长相 / 发色 / 瞳色 / 兽耳角尾 / 体型 / 服装 / 配饰）完全由参考图锁定。"
             "⛔ **绝对禁止写**：角色名、作品名、角色标签、发色、发型、瞳色、耳朵、角、尾巴、"

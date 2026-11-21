@@ -4,6 +4,36 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.8.0（角色卡出图默认近景、人物占画面大）
+
+现象：角色卡出图经常把人物画成远景小人、看不清；用户想要「角色立绘、近一点、
+角色在图中占比大」。
+
+根因：全链路只把「景别」当可选枚举列举，没有任何一处要求「占画面大」；而
+`auto_detail` 程序化创作（v8.6.0，默认开）的 prompt 只要求「构图镜头写清楚」，
+场景/光影写太足反而把人物挤成远景。这条链路上 docstring 不生效（v8.6.0 已验证
+LLM 不听 docstring），必须改**决定性的 prompt 构造**。
+
+修复（纯 prompt/negative，不加配置开关）：
+- `_role_card_detail_prompt`（决定性）：两种 fmt 前插入「【景别·默认近景】用户没明确
+  要全身/远景：写单人近景或半身特写（upper body / close-up / cowboy shot），
+  人物占画面主要面积、清晰可辨，不要远景小人；场景光影只作衬托」。
+  用 `_want_full`（hint 含 全身/远景/大场景/全景/合影/群像/wide/full body/distant）
+  短路——用户明确要全身时不强制近景。
+- 角色卡 negative（anti_sheet 段，v8.5.4 挂点）：未命中全身意图时追加
+  `full body shot, wide shot, distant view, far away, tiny character, small figure,
+  character small in frame, 远景小人`；用户明确要全身/远景时不加。
+  只挂角色卡单人链路——不加到全局 default_negative、不加到多人 negative
+  （多人贴身必须用 full body/cowboy shot，加了会打架）。
+- `comfyui_draw` docstring 四块构图、`skills/comfyui-draw/SKILL.md` 角色卡段同步口径，
+  覆盖非 auto_detail 链路。
+
+尺寸词禁令（portrait/landscape/2K）保持不变——近景是构图词，不覆盖工作流尺寸。
+竖版 832×1216 兜底 + force_own_size 仍然生效。
+
+验证：`test_role_card`（近景约束 / 全身意图判定 / negative 远景压制 / docstring
+口径）、`test_self_methods_defined`、`test_static_lint` 全过。
+
 ## v8.7.0（续画「再来一张」沿用上次角色，不再串角色/工作流）
 
 现象：先出一张曳尔沐（命中角色卡、用主参考图 + 角色卡工作流），接着说「再来一张」

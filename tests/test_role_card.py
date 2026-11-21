@@ -142,6 +142,11 @@ check("读记忆回退", "g_session_role.get(_skey)" in src)
 check("写记忆", 'g_session_role[_skey] = {"cid"' in src)
 check("续画正则", "再来|继续|接着" in src)
 check("schema 有 reuse_last_role", '"reuse_last_role"' in _sch)
+# v8.8.0：默认近景、角色占比大（用户明确全身/远景时不强制）
+check("详细创作有近景约束", "人物要占画面的主要面积" in src and "不要写成远景小人" in src)
+check("有全身意图判定", "_fullbody_intent" in src or "_want_full" in src)
+check("negative 压制远景小人", "tiny character, small figure" in src)
+check("docstring 默认近景", "默认近景 / 半身" in src)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 
