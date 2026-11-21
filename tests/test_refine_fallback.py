@@ -263,7 +263,6 @@ def test_char_sheet():
     got = _run(fn, s, real, zh, "partner")
     assert got.startswith("白底 CG 少女设定板"), got
     assert s.sheet_calls == 1 and s.qwen_calls == 0 and s.translate_called == 0
-    assert "t-1" in s._sheet_ok_traces, "应打标以便后续跳过英文锚点注入"
 
     # ⑯ 设定板改写失败 + 中文 → 原样（纯中文规范，绝不翻译成英文）
     s = FakeSelf(qwen=True, sheet=True, sheet_ok=False)
@@ -290,20 +289,17 @@ def test_char_sheet():
     print("== 角色设定板分支（5 组：规范改写/失败保留中文/关闭整理/非Qwen不启用/原生英文） OK")
 
 
-def test_char_sheet_doc_and_context():
-    """规范文档读取 + 用户点名的角色卡资料会带进设定板改写输入。"""
+def test_char_sheet_doc():
+    """规范文档读取（角色卡删除后，设定板只剩规范文档本身）。"""
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
     # v7.8.17：按类名定位——_HeadlessEvent 在插件类之前，不能再取「第一个 ClassDef」
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
     fn_doc = next(n for n in cls.body
                   if isinstance(n, ast.FunctionDef) and n.name == "_char_sheet_skill_text")
-    fn_ctx = next(n for n in cls.body
-                  if isinstance(n, ast.FunctionDef) and n.name == "_char_sheet_context")
     ns = {"logger": _Log(), "Path": Path, "__file__": str(ROOT / "main.py")}
     exec(compile(ast.get_source_segment(src, fn_doc), "<x>", "exec"), ns)  # noqa: S102
-    exec(compile(ast.get_source_segment(src, fn_ctx), "<x>", "exec"), ns)  # noqa: S102
-    read_doc, build_ctx = ns["_char_sheet_skill_text"], ns["_char_sheet_context"]
+    read_doc = ns["_char_sheet_skill_text"]
 
     class DocSelf:
         _SHEET_SKILL_DIR = "skills/character-sheet"
@@ -313,24 +309,7 @@ def test_char_sheet_doc_and_context():
     doc = read_doc(DocSelf())
     assert "角色设定板生成器 v5.4" in doc, doc[:160]
     assert "内置精简规则" not in doc, "应读到 skills/character-sheet/ 下的规范文档"
-
-    class FakeStore:
-        def list_characters(self):
-            return [{"id": 1, "name": "白芷", "aliases": ["baizhi"],
-                     "work": "《测试》", "note": "银发红瞳的少女剑士"}]
-
-        def get_anchor(self, cid):
-            return {"positive": "1girl, silver hair, red eyes", "negative": "lowres"}
-
-    class CtxSelf:
-        character = FakeStore()
-
-    ctx = build_ctx(CtxSelf(), "给白芷画一张三视图设定板")
-    assert "银发红瞳的少女剑士" in ctx, ctx
-    assert "silver hair" in ctx and "禁止出现在输出里" in ctx, ctx
-    # 没点名的角色不进上下文
-    assert build_ctx(CtxSelf(), "画一张三视图设定板") == ""
-    print("== 设定板规范文档 + 角色资料上下文（点名才带、英文标签转写要求） OK")
+    print("== 设定板规范文档读取 OK")
 
 
 def test_qwen_skill_doc():
@@ -407,6 +386,6 @@ if __name__ == "__main__":
     test_refine_fallback()
     test_qwen_skill_doc()
     test_char_sheet()
-    test_char_sheet_doc_and_context()
+    test_char_sheet_doc()
     test_prompt_skill_binding()
     print("提示词回退链 + Qwen 规范 + 角色设定板 + 关联 skill 全部通过")

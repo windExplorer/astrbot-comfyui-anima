@@ -53,8 +53,7 @@ def _load(want_methods: set[str], want_modfuncs: set[str], want_consts: set[str]
 
 
 NS = _load(
-    {"_prompt_boost_cfg", "_prompt_style", "_should_enhance", "_guard_appearance",
-     "_boost_positive"},
+    {"_prompt_boost_cfg", "_prompt_style", "_should_enhance", "_boost_positive"},
     {"_default_prompt_boost_cfg"},
     {"_APPEARANCE_NOUNS", "_APPEARANCE_CHANGE_RE"},
 )
@@ -77,8 +76,6 @@ class _FakePlugin:
             return self.hard_cap
         if key == "llm_rewrite_timeout":
             return 60
-        if key == "character_card":
-            return {"enabled": True}
         return default
 
     def _basemodel_of_workflow(self, wf):
@@ -99,8 +96,7 @@ class _FakePlugin:
         return self._enrich if self._enrich is not None else positive
 
 
-for _name in ("_prompt_boost_cfg", "_prompt_style", "_should_enhance", "_guard_appearance",
-              "_boost_positive"):
+for _name in ("_prompt_boost_cfg", "_prompt_style", "_should_enhance", "_boost_positive"):
     setattr(_FakePlugin, _name, NS[_name])
 # v7.15.2：_load 已把 _prompt_boost_cfg exec 进 NS，这里显式绑到类，
 # 让 fake self 能走真实的总开关逻辑（老配置缺 enabled 时默认开、关掉时三项全关）。
@@ -157,46 +153,6 @@ def test_should_enhance():
     ok, _ = NS["_should_enhance"](pl4, "   ", "tags", pl4.boost)
     assert not ok
     print("== 2. 扩写触发条件（短描述/角色冻结/风格/LLM/预算） OK")
-
-
-def test_guard_appearance():
-    pl = _p()
-    hits = [({"name": "薄荷"}, {"name": "默认", "positive": "long hair, green hair, green eyes"})]
-    out = NS["_guard_appearance"](pl, "1girl, white hair, smile, night", hits)
-    assert "white hair" not in out and "smile" in out and "night" in out, out
-    # 用户明确要改外观 → 放行（两种语序都认）
-    for _said in ("把头发染成粉色", "换成红裙子", "眼睛改成红色"):
-        out2 = NS["_guard_appearance"](pl, "1girl, pink hair, night", hits, user_text=_said)
-        assert "pink hair" in out2, (_said, out2)
-    # v7.15.1：只命中 prompt_guard 宽版正则的说法也必须放行（此前 main 窄版会误剥）。
-    # 这些句子不会被 main 的「改成/换成/染成」命中，只有宽版认。
-    for _said, _tag in (
-        ("把头发剪短", "short hair"),
-        ("加上猫耳", "cat ears"),
-        ("脱下外套", "no jacket"),
-        ("dye her hair pink", "pink hair"),
-    ):
-        out2b = NS["_guard_appearance"](pl, f"1girl, {_tag}, night", hits, user_text=_said)
-        assert _tag in out2b, (_said, _tag, out2b)
-    # 只是普通说话 → 不放行（照剥）
-    out2b = NS["_guard_appearance"](pl, "1girl, pink hair, night", hits,
-                                    user_text="画一张樱花树下的图")
-    assert "pink hair" not in out2b, out2b
-    # 开关关闭 → 不动
-    pl2 = _p({"guard_appearance": False})
-    raw = "1girl, white hair, night"
-    assert NS["_guard_appearance"](pl2, raw, hits) == raw
-    # 没命中角色卡 → 不动
-    assert NS["_guard_appearance"](pl, raw, []) == raw
-    # 多人（两组锚点）：括号分组不剥，组外冲突照剥
-    multi_hits = [
-        ({"name": "A"}, {"name": "默认", "positive": "green hair, cat ears"}),
-        ({"name": "B"}, {"name": "默认", "positive": "white hair, fox ears"}),
-    ]
-    multi = "2girls, (cat ears, green hair:1.20), white hair, night"
-    out3 = NS["_guard_appearance"](pl, multi, multi_hits)
-    assert "(cat ears, green hair:1.20)" in out3 and "night" in out3, out3
-    print("== 3. 外观护栏（冲突剥除/用户改外观放行/多人分组保护） OK")
 
 
 def test_boost_positive():
@@ -273,11 +229,6 @@ def test_master_switch_disables_everything():
     out2 = asyncio.run(NS["_boost_positive"](pl, raw, style="tags", cfg=forced_open))
     assert out2 == raw, out2
 
-    # 外观护栏：总开关关掉后不剥除冲突标签
-    hits = [({"name": "薄荷"}, {"name": "默认", "positive": "green hair, green eyes"})]
-    guarded = NS["_guard_appearance"](pl, "1girl, white hair, night", hits,
-                                      cfg={"enabled": False, "guard_appearance": True})
-    assert "white hair" in guarded, guarded
     print("== 6. 总开关一键关闭（三项全停 / 老配置兼容 / 各路径一票否决） OK")
 
 
@@ -299,7 +250,6 @@ def test_llm_rewrite_no_hardcoded_quality_prefix():
 if __name__ == "__main__":
     test_prompt_style()
     test_should_enhance()
-    test_guard_appearance()
     test_boost_positive()
     test_master_switch_disables_everything()
     test_llm_rewrite_no_hardcoded_quality_prefix()

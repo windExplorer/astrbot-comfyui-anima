@@ -280,7 +280,7 @@ def test_clean_multi_count_conflicts():
     assert "standing on the left" not in out, out
     assert dropped == ["1girl standing on the left and 1girl standing on the right"], dropped
     assert "2girls" in out and "(suomingwuwa, armor:1.2)" in out, out
-    # 分组内的裸计数标签也要清（此前只在 character.py 归一时清过）
+    # 分组内的裸计数标签也要清（此前只在角色归一逻辑里清过）
     out2, dropped2 = clean_multi_count_conflicts(
         "2girls, (1girl, red hair:1.2), (1boy, blue hair:1.2), night")
     assert "1girl" not in out2 and "1boy" not in out2, out2

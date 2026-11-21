@@ -229,8 +229,6 @@ class StandaloneWebUI:
         app.router.add_get("/lora/file", self._handle_lora_file)
         app.router.add_get("/workflow/file", self._handle_lora_file)
         app.router.add_get("/basemodel/file", self._handle_lora_file)
-        # 角色卡参考图直链（原图不缩放、可缓存），必须排在下面的通配静态路由之前
-        app.router.add_get("/char/ref", self._handle_char_ref)
         # 静态资源：index.html 之外的 js/css/图等
         app.router.add_get("/{path:.+}", self._handle_static)
 
@@ -300,55 +298,6 @@ class StandaloneWebUI:
         except Exception as e:
             return _err(f"读取图片失败: {e}", status=500)
         ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-        return web.Response(body=raw, content_type=ctype,
-                            headers={"Cache-Control": "public, max-age=31536000"})
-
-    async def _handle_char_ref(self, request: web.Request) -> web.Response:
-        """角色卡参考图直链：/char/ref?id=<refId>[&size=N]。
-
-        为什么要有这条路由：查看大图原先只能走 `character/ref/image` 的 base64 + JSON 通道，
-        几 MB 的原图编成 data URL 动辄几秒，超过 bridge 默认 6s 就被前端静默退回 640px 缩略图
-        —— 用户看到的就是「大图不清楚」。直链让 <img> 直接加载原图二进制并可被浏览器缓存。
-
-        路径取自数据库而非用户拼接，所以只校验文件存在；给了 `size` 才缩放。
-        """
-        denied = self._authed(request)
-        if denied is not None:
-            return denied
-        store = getattr(self.plugin, "character", None)
-        if store is None:
-            return _err("角色卡片模块未启用", status=500)
-        _id = (request.query.get("id", "") or "").strip()
-        if not _id.isdigit():
-            return _err("缺少 id 参数", status=400)
-        ref = store.get_ref(int(_id))
-        if ref is None:
-            return _err("参考图不存在", status=404)
-        p = Path(str(ref.get("path") or ""))
-        if not p.exists() or not p.is_file():
-            return _err("参考图文件缺失", status=404)
-        size = self._qint(request, "size", 0)
-        if 0 < size < 200000:
-            try:
-                data_url = await asyncio.to_thread(self._thumb_cached, p, size)
-                if data_url and data_url.startswith("data:"):
-                    header, _, b64 = data_url.partition(",")
-                    ctype = header.replace("data:", "").split(";")[0] or "image/jpeg"
-                    try:
-                        raw = base64.b64decode(b64)
-                    except Exception:
-                        raw = await asyncio.to_thread(p.read_bytes)
-                        ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-                    return web.Response(body=raw, content_type=ctype,
-                                        headers={"Cache-Control": "public, max-age=86400"})
-            except Exception as e:
-                _log.warning(f"[独立WebUI] 角色参考图缩略失败（回退原图）: {e}")
-        try:
-            raw = await asyncio.to_thread(p.read_bytes)
-        except Exception as e:
-            return _err(f"读取图片失败: {e}", status=500)
-        ctype = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-        # 参考图按内容寻址落盘、id 不会换文件，前端再带 ?v=<sha> 兜底，故可长缓存
         return web.Response(body=raw, content_type=ctype,
                             headers={"Cache-Control": "public, max-age=31536000"})
 
@@ -559,85 +508,6 @@ class StandaloneWebUI:
         except (TypeError, ValueError):
             return default
 
-    async def _api_character(self, path: str, request: web.Request) -> web.Response:
-        """独立版角色卡片接口：复用 WebUIApi 实现（经 aiohttp 适配器 + 串行锁）。
-
-        与内嵌页接口同一套写法：AstrBot 内嵌页的 handler 直接读模块级 `request`，
-        这里临时替换 `webui_api.request` 并串行化，避免与内嵌页并发冲突。
-        """
-        if self._api is None:
-            return _err("角色卡片模块未初始化")
-        sub = path[len("/character/"):].split("?", 1)[0].rstrip("/")
-        method = request.method.upper()
-        name = None
-        if sub == "list" and method == "GET":
-            name = "character_list"
-        elif sub == "detail" and method == "GET":
-            name = "character_detail"
-        elif sub == "export" and method == "GET":
-            name = "character_export"
-        elif sub == "save" and method == "POST":
-            name = "character_save"
-        elif sub == "delete" and method == "POST":
-            name = "character_delete"
-        elif sub == "anchor/save" and method == "POST":
-            name = "character_anchor_save"
-        elif sub == "anchor/delete" and method == "POST":
-            name = "character_anchor_delete"
-        elif sub == "anchor/primary" and method == "POST":
-            name = "character_anchor_primary"
-        elif sub == "ref/upload" and method == "POST":
-            name = "character_ref_upload"
-        elif sub == "ref/image" and method == "GET":
-            name = "character_ref_image"
-        elif sub == "ref/delete" and method == "POST":
-            name = "character_ref_delete"
-        elif sub == "ref/from_gallery" and method == "POST":
-            name = "character_ref_from_gallery"
-        elif sub == "ref/anchor" and method == "POST":
-            name = "character_ref_anchor"
-        elif sub == "cover/set" and method == "POST":
-            name = "character_cover_set"
-        elif sub == "options" and method == "GET":
-            name = "character_options"
-        elif sub == "suggest" and method == "POST":
-            name = "character_suggest"
-        elif sub == "import" and method == "POST":
-            name = "character_import"
-        if name is None:
-            return _err("Not Found: " + path, status=404)
-        if not hasattr(self._api, name):
-            return _err("角色卡片接口不可用（WebUIApi 缺少该方法，请重启插件或等待热更新）")
-        adapter = self._AioReqAdapter(request)
-
-        def _ok_dict(payload):
-            return {"__ok__": True, "data": payload}
-
-        def _err_dict(msg):
-            return {"__ok__": False, "error": str(msg)}
-
-        async with self._request_lock:
-            had_req = hasattr(webui_api, "request")
-            prev_req = getattr(webui_api, "request", None)
-            had_ok = hasattr(webui_api, "json_response")
-            prev_ok = getattr(webui_api, "json_response", None)
-            had_err = hasattr(webui_api, "error_response")
-            prev_err = getattr(webui_api, "error_response", None)
-            try:
-                webui_api.request = adapter
-                webui_api.json_response = _ok_dict
-                webui_api.error_response = _err_dict
-                result = await getattr(self._api, name)()
-            finally:
-                webui_api.request = prev_req if had_req else None
-                webui_api.json_response = prev_ok if had_ok else None
-                webui_api.error_response = prev_err if had_err else None
-        if isinstance(result, dict) and result.get("__ok__") is not None:
-            if result.get("__ok__"):
-                return _ok(result["data"])
-            return _err(result.get("error", "处理失败"))
-        return _ok(result)
-
     async def _dispatch(self, path: str, method: str, request: web.Request) -> web.Response:
         g = self.plugin.gallery
         op = self.plugin.oplog
@@ -650,6 +520,31 @@ class StandaloneWebUI:
             if not sp.exists():
                 return _err("找不到 _conf_schema.json")
             return _ok(json.loads(sp.read_text(encoding="utf-8")))
+        # 老婆插件角色 + 主参考图状态（WebUI 展示；refresh=1 强制清缓存）
+        if path == "/waifu/roles" and method == "GET":
+            try:
+                from . import waifu_role
+            except ImportError:
+                import waifu_role
+            try:
+                if self._q(request, "refresh", "0") == "1":
+                    waifu_role.clear_cache()
+                data, missing = await waifu_role.load_ref_map(self.plugin.context)
+                rows = [{
+                    "char_id": cid,
+                    "name": str((e or {}).get("name") or cid),
+                    "aliases": list((e or {}).get("aliases") or []),
+                    "series": str((e or {}).get("series") or ""),
+                    "tags_en": str((e or {}).get("tags_en") or ""),
+                    "ref": str((e or {}).get("ref") or ""),
+                    "has_ref": bool((e or {}).get("ref")),
+                } for cid, e in sorted(data.items(),
+                                        key=lambda kv: str((kv[1] or {}).get("name") or ""))]
+                return _ok({"ok": True, "installed": bool(data), "roles": rows,
+                            "missing": missing, "total": len(rows),
+                            "with_ref": sum(1 for r in rows if r["has_ref"])})
+            except Exception as e:
+                return _err(f"读取老婆插件角色失败: {e}")
         if path == "/config" and method == "GET":
             return _ok(dict(self.plugin.config))
         if path == "/config" and method == "POST":
@@ -821,10 +716,6 @@ class StandaloneWebUI:
         # ---------- 统计 ----------
         if path.startswith("/stats/"):
             return await self._api_stats(path, request)
-
-        # ---------- 角色卡片 ----------
-        if path.startswith("/character/"):
-            return await self._api_character(path, request)
 
         # ---------- 在线生图工作台（v7.9.0，studio_api.py） ----------
         if path == "/studio" or path.startswith("/studio/"):

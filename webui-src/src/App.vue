@@ -149,6 +149,7 @@ function refreshAll() {
 const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/config" }, { default: () => "配置" }), key: "config", icon: () => iconSvg("⚙️") },
   { label: () => h(RouterLink, { to: "/studio" }, { default: () => "在线生图" }), key: "studio", icon: () => iconSvg("🖌️") },
+  { label: () => h(RouterLink, { to: "/waifu-roles" }, { default: () => "老婆角色" }), key: "waifu-roles", icon: () => iconSvg("🎭") },
   { label: () => h(RouterLink, { to: "/logs" }, { default: () => "日志" }), key: "logs", icon: () => iconSvg("📋") },
   { label: () => h(RouterLink, { to: "/stats" }, { default: () => "统计" }), key: "stats", icon: () => iconSvg("📊") },
   { label: () => h(RouterLink, { to: "/workflows" }, { default: () => "工作流" }), key: "workflows", icon: () => iconSvg("🗂️") },
@@ -163,7 +164,6 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/sessions" }, { default: () => "会话管理" }), key: "sessions", icon: () => iconSvg("💬") },
   { label: () => h(RouterLink, { to: "/token" }, { default: () => "Token" }), key: "token", icon: () => iconSvg("🔑") },
   { label: () => h(RouterLink, { to: "/share-manage" }, { default: () => "分享管理" }), key: "share-manage", icon: () => iconSvg("🔗") },
-  { label: () => h(RouterLink, { to: "/character" }, { default: () => "角色卡" }), key: "character", icon: () => iconSvg("🎭") },
 ];
 
 function iconSvg(text: string) {

@@ -25,7 +25,6 @@ TARGETS = [
     "draw_card.py",
     "basemodel_store.py",
     "option_store.py",
-    "character_store.py",
 ]
 
 # pyflakes 的告警里，哪些属于「运行时必炸」级别（其余视为风格问题忽略）

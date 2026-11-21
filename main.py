@@ -1,4 +1,4 @@
-﻿"""AstrBot ComfyUI 绘图插件（支持多服务器、多工作流、LoRA 管理、Anima 标签翻译）。"""
+"""AstrBot ComfyUI 绘图插件（支持多服务器、多工作流、LoRA 管理、Anima 标签翻译）。"""
 
 import os
 import json
@@ -734,11 +734,6 @@ except ImportError:
     import session_store
 
 try:
-    from . import character
-except ImportError:
-    import character
-
-try:
     from . import prompt_guard
 except ImportError:
     import prompt_guard
@@ -747,6 +742,11 @@ try:
     from . import token_store
 except ImportError:
     import token_store
+
+try:
+    from . import waifu_role
+except ImportError:
+    import waifu_role
 
 # 全局保存插件实例，用于 LLM 工具等无法稳定获取 self 的调用场景兜底
 _PLUGIN_INSTANCE = None
@@ -1480,7 +1480,7 @@ def _default_prompt_boost_cfg() -> dict:
         "enhance_llm": True,             # 短描述自动扩写（LLM，只补非外观维度）
         "enhance_max_tags": 8,           # 顶层标签数 ≤ 此值才考虑扩写
         "enhance_only_tag_family": True,  # 只对 Danbooru 标签系底模扩写
-        "guard_appearance": True,        # 外观冲突剥除（与角色卡锚点冲突的标签）
+        "guard_appearance": True,        # 外观冲突剥除（与用户提示词冲突的标签）
     }
 
 
@@ -1917,19 +1917,6 @@ class ComfyUIDrawPlugin(Star):
         except Exception as e:
             logger.warning(f"【初始化】 头像缓存初始化失败: {e}")
 
-        # 角色卡片：独立 SQLite（character.db）维护角色 / 锚点 / 参考图，
-        # 解决「模型/LoRA/danbooru 都找不到某角色」与「角色设定每轮漂移」的问题。
-        self.character = None
-        try:
-            try:
-                from .character_store import CharacterStore
-            except ImportError:
-                from character_store import CharacterStore
-            self.character = CharacterStore(self.data_dir)
-            logger.info(f"【初始化】 角色卡片已就绪: {self.character.db_path}")
-        except Exception as e:
-            logger.warning(f"【初始化】 角色卡片初始化失败（功能不可用）: {e}", exc_info=True)
-
         # 底模库（v7.0.0）：底模实体化管理（支持语言/提示词风格/C站链接/封面）
         self.basemodels = None
         try:
@@ -2033,13 +2020,12 @@ class ComfyUIDrawPlugin(Star):
                 # v7.7.67：prompt_guard 此前漏在重载列表外，热更新后跑的仍是旧提示词护栏
                 "prompt_guard",
                 "danbooru_client", "image_store",
-                "character_store", "character",
                 "draw_card",
                 "basemodel_store",
                 "workflow_store",
                 "option_store",
                 "quota_store", "session_store", "oplog_store", "token_store",
-                "nsfw_detector", "translate_client",
+                "nsfw_detector", "translate_client", "waifu_role",
             ):
                 try:
                     _dn = f"{__package__}.{_dep_name}" if __package__ else _dep_name
@@ -2184,8 +2170,7 @@ class ComfyUIDrawPlugin(Star):
                 "comfyui_draw": ["prompt"],
                 "comfyui_img2img": ["prompt"],
                 "comfyui_gallery": ["mode"],
-                "comfyui_character": ["action"],
-                # comfyui_workflows 无参数，无需 required
+                                # comfyui_workflows 无参数，无需 required
             }
             patched = []
             empty = []
@@ -3902,7 +3887,7 @@ class ComfyUIDrawPlugin(Star):
         re.IGNORECASE,
     )
     _SHEET_RULE = (
-        "你是专业级角色设定板视觉设计师 / 概念艺术总监。根据用户提供的角色描述（可含参考角色卡"
+        "你是专业级角色设定板视觉设计师 / 概念艺术总监。根据用户提供的角色描述（可含参考角色资料"
         "资料）生成一张专业游戏美术、动画、影视前期设计流程感的**角色设定板**提示词。\n"
         "输出格式（最高优先级）：只输出设定板的中文提示词正文——不写开场白/收尾/创作思路，"
         "无标题、无代码围栏、无 Markdown 包装、不分块不编号、不反问不出图；**通篇中文**，"
@@ -3995,60 +3980,12 @@ class ComfyUIDrawPlugin(Star):
             logger.warning(f"【设定板】 读取规范文档失败（改用内置规则）: {e}")
         return self._SHEET_RULE
 
-    def _char_sheet_context(self, text: str) -> str:
-        """设定板模式下，把用户点名的角色卡资料整理成上下文（外观标签需由 LLM 转写成中文）。
-
-        角色卡的外观锚点多为英文标签，设定板规范要求输出纯中文——所以这里把锚点作为
-        「仅供理解、必须转写」的素材交给 LLM，而不是事后把英文标签追加进提示词。
-        """
-        store = getattr(self, "character", None)
-        if store is None or not (text or "").strip():
-            return ""
-        # v7.7.53：总开关关闭 → 设定板改写也不再引用角色卡资料
-        try:
-            _cc = self._cfg("character_card", {}) or {}
-            if not (isinstance(_cc, dict) and _cc.get("enabled", True)):
-                return ""
-        except Exception:
-            pass
-        low = (text or "").lower()
-        blocks: list[str] = []
-        try:
-            chars = store.list_characters() or []
-        except Exception as e:
-            logger.debug(f"【设定板】 读取角色卡失败（忽略）: {e}")
-            return ""
-        for c in chars[:80]:
-            try:
-                names = [str(c.get("name") or "")] + [str(a) for a in (c.get("aliases") or [])]
-                if not any(n and (n in text or n.lower() in low) for n in names):
-                    continue
-                lines = [f"- 角色：{c.get('name')}"]
-                if str(c.get("work") or "").strip():
-                    lines.append(f"  作品：{str(c.get('work')).strip()}")
-                if str(c.get("note") or "").strip():
-                    lines.append(f"  设定说明（中文）：{str(c.get('note')).strip()[:400]}")
-                _a = store.get_anchor(c.get("id"))
-                if _a and str(_a.get("positive") or "").strip():
-                    lines.append(
-                        "  已确认外观标签（英文，仅供你理解外观，"
-                        "必须转写成中文描述、禁止出现在输出里）："
-                        f"{str(_a.get('positive')).strip()[:400]}"
-                    )
-                if _a and str(_a.get("negative") or "").strip():
-                    lines.append(f"  排除项：{str(_a.get('negative')).strip()[:200]}")
-                blocks.append("\n".join(lines))
-            except Exception:
-                continue
-        return "\n".join(blocks)
-
     async def _rewrite_to_char_sheet_llm(self, text: str, lora_ref: str = "") -> str:
         """按角色设定板规范改写提示词（纯中文设定板提示词）。失败抛异常，由调用方保留原文。"""
         provider_id = self._resolve_translate_provider_id()
         if not provider_id:
             raise RuntimeError("设定板改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
         skill = self._char_sheet_skill_text()
-        ctx = self._char_sheet_context(text)
         prompt = (
             f"{skill}\n\n---\n\n"
             "【本次任务】用户想要一张角色设定板（三视图/四视图等）。请按上面的规范，"
@@ -4056,11 +3993,6 @@ class ComfyUIDrawPlugin(Star):
             f"用户需求：\n{text}\n"
             f"{self._lora_ref_tail(lora_ref)}\n"
         )
-        if ctx:
-            prompt += (
-                "\n该角色在本插件里有已确认的角色卡资料，外观必须以此为准（英文标签仅供你理解，"
-                f"输出里不得出现任何英文，全部转写成中文）：\n{ctx}\n"
-            )
         prompt += "\n角色设定板中文提示词："
         try:
             timeout = max(1, int(self._cfg("llm_rewrite_timeout", 60) or 60))
@@ -4123,17 +4055,9 @@ class ComfyUIDrawPlugin(Star):
         return self._MOSS_RULE
 
     @staticmethod
-    def _is_moss_layout_request(text: str, char_names=()) -> bool:
-        """是否有 MOSS Layout 意图：命中意图词，或同时点到 ≥2 个已配置角色。
-
-        多人同框是「角色互串」的最高发场景（两人合一、饰品互串），哪怕用户没说
-        「漫画/排版」，只要同时点了两个角色卡里的角色就走 Layout——空间隔离 +
-        身份重复锚定正是治这个的。
-        """
-        if _MOSS_LAYOUT_INTENT_RE.search(text or ""):
-            return True
-        _t = text or ""
-        return len({n for n in (char_names or ()) if n and n in _t}) >= 2
+    def _is_moss_layout_request(text: str) -> bool:
+        """是否有 MOSS Layout 意图：命中意图词（漫画/排版/分格等）。"""
+        return bool(_MOSS_LAYOUT_INTENT_RE.search(text or ""))
 
     def _is_moss_image(self, wf: dict | None) -> bool:
         """底模是否为 MOSS-Image（OpenMOSS 5B，原生支持 JSON Layout 版面提示词）。"""
@@ -4158,111 +4082,6 @@ class ComfyUIDrawPlugin(Star):
             pass
         return False
 
-    def _moss_char_context(self, text: str) -> str:
-        """MOSS 模式下把用户点名的角色卡资料整理成「身份锚定」上下文。
-
-        与设定板模式的区别：MOSS 描述性正文默认**英文**，角色卡锚点（英文标签）正是
-        身份锚定的最佳素材——原样注入、逐字采用，不要求转写中文。「和原著一模一样」
-        靠的就是这段：LLM 不再凭记忆编外观。
-        """
-        store = getattr(self, "character", None)
-        if store is None or not (text or "").strip():
-            return ""
-        try:
-            _cc = self._cfg("character_card", {}) or {}
-            if not (isinstance(_cc, dict) and _cc.get("enabled", True)):
-                return ""
-        except Exception:
-            pass
-        low = (text or "").lower()
-        blocks: list[str] = []
-        try:
-            chars = store.list_characters() or []
-        except Exception as e:
-            logger.debug(f"【MOSS】 读取角色卡失败（忽略）: {e}")
-            return ""
-        for c in chars[:80]:
-            try:
-                names = [str(c.get("name") or "")] + [str(a) for a in (c.get("aliases") or [])]
-                if not any(n and (n in text or n.lower() in low) for n in names):
-                    continue
-                lines = [f"- {c.get('name')}"]
-                if str(c.get("work") or "").strip():
-                    lines.append(f"  work: {str(c.get('work')).strip()}")
-                _a = store.get_anchor(c.get("id"))
-                if _a and str(_a.get("positive") or "").strip():
-                    lines.append(
-                        "  official appearance (identity anchor, use verbatim, "
-                        f"do not alter): {str(_a.get('positive')).strip()[:500]}"
-                    )
-                if _a and str(_a.get("negative") or "").strip():
-                    lines.append(f"  avoid: {str(_a.get('negative')).strip()[:200]}")
-                _note = str(c.get("note") or "").strip()
-                if _note:
-                    lines.append(f"  notes: {_note[:300]}")
-                blocks.append("\n".join(lines))
-            except Exception:
-                continue
-        return "\n".join(blocks)
-
-    @staticmethod
-    def _looks_moss_layout(text: str) -> bool:
-        """正向提示词是否是 MOSS JSON Layout。
-
-        决定后续所有「追加/扩写/前缀」是否跳过——那些全是标签系语法，会把 JSON 结构
-        打穿（角色卡锚点追加、触发词追加、画质前缀、多人计数清理等都算）。
-        """
-        try:
-            d = json.loads((text or "").strip())
-        except Exception:
-            return False
-        if not isinstance(d, dict) or not isinstance(d.get("items"), list):
-            return False
-        return any(isinstance(it, dict) and "bbox" in it for it in d["items"])
-
-    @staticmethod
-    def _rescale_moss_layout(text: str, real_w: int, real_h: int,
-                             plan: int = 1024) -> str:
-        """把 Layout JSON 的 bbox 从规划画布（plan×plan，默认 1024）等比缩放到实际尺寸。
-
-        bbox 是 abs_centralized 绝对坐标，不会随出图尺寸自动伸缩——用户改尺寸/说「竖版」
-        时版面会整体偏移。这里在尺寸定下来后按轴等比缩放并重新注入。
-        只改 bbox，其它字段原样；解析/序列化失败原样返回（绝不阻断出图）。
-        """
-        try:
-            d = json.loads((text or "").strip())
-            if not isinstance(d, dict) or not isinstance(d.get("items"), list):
-                return text
-            _sx = float(real_w) / float(plan)
-            _sy = float(real_h) / float(plan)
-            _hx, _hy = float(real_w) / 2.0, float(real_h) / 2.0
-
-            def _c(v: float, lim: float) -> int:
-                return int(max(-lim, min(lim, round(v))))
-
-            changed = False
-            for it in d["items"]:
-                if not isinstance(it, dict):
-                    continue
-                bb = it.get("bbox")
-                if not (isinstance(bb, list) and len(bb) == 4):
-                    continue
-                if not all(
-                    isinstance(v, (int, float)) and not isinstance(v, bool) for v in bb
-                ):
-                    continue
-                y0, x0, y1, x1 = bb
-                nb = [_c(y0 * _sy, _hy), _c(x0 * _sx, _hx),
-                      _c(y1 * _sy, _hy), _c(x1 * _sx, _hx)]
-                if nb != list(bb):
-                    it["bbox"] = nb
-                    changed = True
-            if not changed:
-                return text
-            return json.dumps(d, ensure_ascii=False)
-        except Exception:
-            return text
-
     async def _rewrite_to_moss_llm(self, text: str, *, lang: str = "",
                                    lora_ref: str = "") -> str:
         """按 MOSS-Image 规范改写提示词（A 档 caption / B 档 JSON Layout，v7.7.96）。
@@ -4275,7 +4094,6 @@ class ComfyUIDrawPlugin(Star):
         if not provider_id:
             raise RuntimeError("MOSS 提示词改写未配置可用模型（translate_llm_model 留空且无默认 provider）")
         skill = self._moss_skill_text()
-        _char_ctx = self._moss_char_context(text)
         _lang_tail = ""
         if (lang or "").strip() == "中文":
             _lang_tail = (
@@ -4289,10 +4107,6 @@ class ComfyUIDrawPlugin(Star):
             "送进 MOSS-Image 的提示词（A 档一段描述 / B 档 layout JSON，按规范里的模式判定决定）。"
             "只输出提示词本体，不要任何解释、标题或代码块标记。\n\n"
             f"用户需求：\n{text}\n"
-            + (f"\n【角色身份资料（外观唯一真相，逐字采用、禁止改写特征）】\n{_char_ctx}\n"
-               if _char_ctx else
-               "\n【身份来源】本次未提供角色卡资料——画面中如有点名角色，请按规范 3.5 节"
-               "用你自己的知识写全量身份锚定（规范英文名+作品、只写有把握的特征、全局一致）。\n")
             + (f"\n{lora_ref}\n" if lora_ref else "")
             + (_lang_tail + "\n" if _lang_tail else "")
         )
@@ -4575,7 +4389,7 @@ class ComfyUIDrawPlugin(Star):
                 # 含中文要进（描述默认英文）；优先语种=中文但提示词是英文写法也要进
                 # （按底模契约归一化）。纯英文简单需求模型原生能吃，不折腾。
                 return bool(
-                    self._is_moss_layout_request(positive, self._known_character_names())
+                    self._is_moss_layout_request(positive)
                     or _zh
                     or (_want_cn and self._looks_english(positive))
                 )
@@ -4685,14 +4499,6 @@ class ComfyUIDrawPlugin(Star):
                 return ""
             if _r and _r.strip():
                 logger.info(f"【设定板】 {_why}，改写结果: {_r[:160]}")
-                # 打标：本次设定板提示词已由 LLM 融入角色资料 → 后续跳过英文锚点标签注入
-                try:
-                    _flags = getattr(self, "_sheet_ok_traces", None)
-                    if _flags is None:
-                        _flags = self._sheet_ok_traces = set()
-                    _flags.add(trace_id)
-                except Exception:
-                    pass
                 return _r
             return ""
 
@@ -4709,13 +4515,6 @@ class ComfyUIDrawPlugin(Star):
                 return ""
             if _r and _r.strip():
                 logger.info(f"【MOSS】 {_why}，改写结果: {_r[:160]}")
-                # 多人 Layout 但没绑角色卡：身份由 LLM 自身知识生成（规范 3.5 节纪律兜底）。
-                # 给一条提示——想更稳可去角色卡页补外观锚点，但不强制、不阻断。
-                if self._looks_moss_layout(_r) and not self._moss_char_context(positive):
-                    logger.info(
-                        "【MOSS】 多人 Layout 未绑定角色卡，角色外观由模型知识生成；"
-                        "若与原著有偏差，可在「角色卡」页为该角色添加外观锚点后重试"
-                    )
                 return _r
             return ""
 
@@ -4803,7 +4602,7 @@ class ComfyUIDrawPlugin(Star):
                 if _got:
                     return _got
             elif _moss and (
-                self._is_moss_layout_request(positive, self._known_character_names())
+                self._is_moss_layout_request(positive)
                 or self._has_chinese(positive)
                 or self._prompt_skill_of(wf) == "moss-image"
                 or (_want_cn and self._looks_english(positive))
@@ -4848,7 +4647,7 @@ class ComfyUIDrawPlugin(Star):
 
     # ------------------------------------------------------------------ #
     # 提示词丰富化与防漂移（v7.6.0）
-    # 设计见 prompt_guard.py：外观维度是冻结区（只能来自角色卡锚点/用户明说），
+    # 设计见 prompt_guard.py：外观维度是冻结区（只能来自用户明说 / 权威 tag），
     # 镜头/构图/光影/氛围/材质是自由区——「让提示词更丰富」只该发生在自由区。
     # ------------------------------------------------------------------ #
 
@@ -4876,39 +4675,6 @@ class ComfyUIDrawPlugin(Star):
             cfg["enhance_llm"] = False
             cfg["guard_appearance"] = False
         return cfg
-
-    def _known_character_names(self) -> tuple[str, ...]:
-        """已配置的角色卡名 + 别名（用于「文本里是否点了某个角色」的判定，5 秒缓存）。"""
-        # v7.7.53：总开关关闭 → 视为「没有角色」（提示词扩写不再按角色名跳过外观）
-        try:
-            _cc = self._cfg("character_card", {}) or {}
-            if not (isinstance(_cc, dict) and _cc.get("enabled", True)):
-                return ()
-        except Exception:
-            pass
-        _now = time.time()
-        _cached = getattr(self, "_known_char_names_cache", None)
-        if _cached and (_now - float(_cached[1] or 0)) < 5.0:
-            return _cached[0]
-        names: list[str] = []
-        try:
-            store = getattr(self, "character", None)
-            if store is not None:
-                for c in (store.list_characters() or []):
-                    _n = str(c.get("name") or "").strip()
-                    if _n:
-                        names.append(_n)
-                    for a in (c.get("aliases") or []):
-                        if str(a).strip():
-                            names.append(str(a).strip())
-        except Exception as e:
-            logger.debug(f"【角色卡】 读取角色名列表失败（忽略）: {e}")
-        out = tuple(dict.fromkeys(names))
-        try:
-            self._known_char_names_cache = (out, _now)
-        except Exception:
-            pass
-        return out
 
     def _remember_last_event(self, event) -> None:
         """记住「最近一次绘图事件」：全局槽 + **按会话**各存一份。
@@ -5034,7 +4800,7 @@ class ComfyUIDrawPlugin(Star):
             "把细节补足**，让出图更精致、更有氛围。要求：\n"
             "1. 原有标签必须**逐字保留、顺序不变**，你只能在其后追加新标签；\n"
             "2. ⛔严禁新增或修改任何「外观」标签：发色/发型/刘海/瞳色/兽耳/尾巴/角/翅膀/"
-            "体型/服装/配饰/角色名/作品名。这些由角色卡决定，你写错会把角色画成另一个人"
+            "体型/服装/配饰/角色名/作品名。这些由权威资料决定，你写错会把角色画成另一个人"
             "（这是本插件历史上最严重的事故，绝对不允许）；\n"
             f"3. 只允许补充这些维度：{_want_free}；\n"
             "4. 每个维度最多补 2~3 个真实存在的 Danbooru 标签（如 depth of field、"
@@ -5138,51 +4904,6 @@ class ComfyUIDrawPlugin(Star):
             except Exception as e:
                 logger.warning(f"【画质前缀】 追加失败（忽略）: {e}")
         return out
-
-    def _guard_appearance(self, positive: str, hits: list, *, user_text: str = "",
-                          cfg: dict | None = None) -> str:
-        """外观冲突剥除：角色卡锚点是权威，模型/用户写的冲突外观标签剥掉。
-
-        用户明确要求改外观（「把头发染成粉色」）时整体跳过——那是用户意图而非臆造。
-        """
-        _cfg = cfg if isinstance(cfg, dict) else self._prompt_boost_cfg()
-        # v7.15.2：总开关一票否决（调用方可能直接传原始 cfg dict，没经过 _prompt_boost_cfg
-        # 的强制关闭逻辑，这里再兜一道，确保「一键关」在任何调用路径都生效）。
-        if _cfg.get("enabled", True) is False:
-            return positive
-        if not _cfg.get("guard_appearance", True):
-            return positive
-        if not hits or not (positive or "").strip():
-            return positive
-        # v7.15.1：放行判定统一到 prompt_guard 的宽版正则——main 里的 _APPEARANCE_CHANGE_RE
-        # 只认「改成/换成/染成」，漏了「剪短/留长/加猫耳/去掉/脱下/dye/cut hair」等说法，
-        # 导致用户明确要改外观时护栏仍把 AI 写的短发/猫耳当冲突剥掉。LoRA 链路(16754)
-        # 早就在用宽版，两处结论不一致。取并集兼容旧正则，语义 = 宽版。
-        if user_text and (
-            _APPEARANCE_CHANGE_RE.search(user_text)
-            or prompt_guard.appearance_change_intent(user_text)
-        ):
-            logger.info("【外观护栏】 用户明确要求改外观，跳过冲突剥除")
-            return positive
-        try:
-            _auth_parts: list[str] = []
-            for _card, _anchor in hits:
-                _auth_parts.append(str(_anchor.get("positive") or ""))
-            authority = ", ".join(p for p in _auth_parts if p.strip())
-            if not authority.strip():
-                return positive
-            _new, _dropped = prompt_guard.strip_conflicting_appearance(
-                positive, authority, include_groups=(len(hits) == 1),
-            )
-            if _dropped:
-                logger.info(
-                    f"【外观护栏】 剥掉与角色卡锚点冲突的外观标签 {_dropped}"
-                    f"（权威：{authority[:80]}）"
-                )
-            return _new or positive
-        except Exception as e:
-            logger.warning(f"【外观护栏】 校验异常（忽略）: {e}")
-            return positive
 
     async def _translate_prompt(self, wf: dict | None, positive: str) -> str:
         """按翻译模式翻译提示词中「含中文的片段」，已有英文片段原样保留。
@@ -7729,39 +7450,14 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(f"【平台】 回退翻译失败，保留原提示词: {e}")
 
         # ── 提示词丰富化 + 角色保真（v7.6.0 补齐平台链路缺口）─────────────
-        # 此前平台链路（NAI / OpenAI 兼容 / 自定义）完全跳过画质前缀与角色卡锚点注入，
+        # 此前平台链路（NAI / OpenAI 兼容 / 自定义）完全跳过画质前缀注入，
         # 角色保真在这条链路上等于零。这里按平台性质补：
         #   ① 画质前缀：NAI 走 nai 档，其它平台按自然语言系（自然语言系不加质量词）；
-        #   ② 角色卡锚点注入（纯文本标签，与 ComfyUI 链路同一套规则）；
-        #   ③ 外观护栏：剥掉与锚点冲突的外观标签（用户明确改外观时放行）。
         try:
             _pb_cfg = self._prompt_boost_cfg()
             if (positive or "").strip():
                 _plat_style = "nai" if ptype == "nai" else "natural"
                 _u_txt = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
-                _cc_cfg2 = self._cfg("character_card", {}) or {}
-                if (
-                    isinstance(_cc_cfg2, dict)
-                    and _cc_cfg2.get("enabled", True)
-                    and _cc_cfg2.get("auto_inject", True)
-                    and getattr(self, "character", None) is not None
-                ):
-                    _plat_hits = await character.resolve_hits(self, event, _u_txt, positive)
-                    if _plat_hits:
-                        _pres = character.inject(
-                            self, positive, _plat_hits, _cc_cfg2, negative=negative
-                        )
-                        if (_pres.get("prompt") or "").strip():
-                            positive = _pres["prompt"]
-                        if (_pres.get("negative") or "").strip():
-                            negative = _pres["negative"]
-                        positive = self._guard_appearance(
-                            positive, _plat_hits, user_text=_u_txt, cfg=_pb_cfg
-                        )
-                        logger.info(
-                            f"【平台·角色卡】 注入 {len(_plat_hits)} 个角色锚点"
-                            f"（模式={_pres.get('mode')}）: {positive[:200]}"
-                        )
                 if _pb_cfg.get("quality_prefix", True):
                     _new_pos, _added = prompt_guard.ensure_quality_prefix(
                         positive, _plat_style,
@@ -8527,26 +8223,79 @@ class ComfyUIDrawPlugin(Star):
             ):
                 yield _pn, _pp
             return
+        # ── 老婆插件角色链路（v7.17.0）─────────────────────────────
+        # 用户消息 / 提示词命中老婆插件角色 → 强制用配置的工作流 + 该角色主参考图出图。
+        # LoRA 优先且本次命中 LoRA 时跳过（走常规工作流选择）。
+        _wr_force_wf = ""
+        _wr_hit_name = ""
+        try:
+            _wr_cfg = self._cfg("waifu_role", {}) or {}
+            _wr_on = isinstance(_wr_cfg, dict) and _wr_cfg.get("enabled", True)
+            _lora_first_skip = (
+                isinstance(_wr_cfg, dict)
+                and _wr_cfg.get("priority") == "lora_first"
+                and bool(lora_map or {})
+            )
+            if _wr_on and not _lora_first_skip and event is not None:
+                _u_msg = (getattr(event, "message_str", "") or "").strip()
+                _ref_map, _wr_missing = await waifu_role.load_ref_map(self.context)
+                _wr_cid, _wr_entry = waifu_role.match_role(f"{_u_msg} {positive}", _ref_map)
+                if _wr_entry:
+                    _wr_hit_name = str(_wr_entry.get("name") or _wr_cid or "")
+                    _wr_ref = str(_wr_entry.get("ref") or "").strip()
+                    if _wr_ref:
+                        # 参考图作为图生图输入（放在用户自带图之前，角色主体优先）
+                        init_images = list(init_images or [])
+                        if _wr_ref not in init_images:
+                            init_images.insert(0, _wr_ref)
+                        is_img2img = True
+                        # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
+                        if _wr_cfg.get("auto_tags", True):
+                            positive = waifu_role.build_role_prompt(_wr_entry, positive)
+                        # 强制工作流：配置项可直接填工作流名；填数字则按 base_id 反查工作流名
+                        _wf_ref = str(_wr_cfg.get("workflow") or "").strip()
+                        if _wf_ref:
+                            if _wf_ref.isdigit():
+                                for _wc in (self._workflows() or []):
+                                    if str(_wc.get("base_id") or "") == _wf_ref:
+                                        _wr_force_wf = str(_wc.get("name") or "")
+                                        break
+                            else:
+                                _wr_force_wf = _wf_ref
+                        logger.info(
+                            f"【老婆角色】 命中 {_wr_hit_name!r}（{_wr_cid}）｜"
+                            f"主参考图={_wr_ref[:80]}｜强制工作流={_wr_force_wf or '(未配置)'}"
+                        )
+                    else:
+                        logger.info(
+                            f"【老婆角色】 命中 {_wr_hit_name!r} 但无主参考图，本次不走角色卡链路"
+                        )
+        except Exception as _wr_e:
+            logger.warning(f"【老婆角色】 解析异常（降级为普通出图）: {_wr_e}")
+
         wf = None  # 解析失败时 except 里的失败卡也要能安全取到（wf or {}），避免 UnboundLocalError
         try:
             # fallback_on_missing=True：绘图真正入口可能收到伴侣/LLM 传入的无效工作流名
             # （如 "ComfyUI default"），此时不报错中断，容错回退到配置的默认工作流。
             # intercept_disabled：只要本次请求**显式指定**了工作流名（workflow_name 非空），
             # 该工作流若已停用就直接拦截提示，避免用户/LLM 指定的停用工作流被静默替换。
+            # 老婆角色强制工作流：优先级高于会话固定（apply_session_pin=False），
+            # 且不因「显式指定停用工作流」而拦截（角色卡链路是插件内部选择）。
+            _wf_name = _wr_force_wf or workflow_name
             wf = self._resolve_workflow(
-                workflow_name,
+                _wf_name,
                 is_img2img=is_img2img,
                 fallback_on_missing=True,
                 positive=positive,
-                explicit_default=explicit_default,
-                intercept_disabled=bool(workflow_name and workflow_name.strip()),
+                explicit_default=explicit_default and not _wr_force_wf,
+                intercept_disabled=bool(workflow_name and workflow_name.strip()) and not _wr_force_wf,
                 session_id=getattr(event, "session_id", "") or "",
-                apply_session_pin=True,
+                apply_session_pin=not bool(_wr_force_wf),
                 session_umo=self._session_umo_of(event),
             )
             logger.info(
                 f"【绘图·解析】 解析工作流：请求名={workflow_name!r}, is_img2img={is_img2img}, "
-                f"实际选用工作流={wf.get('name')!r}"
+                f"实际选用工作流={wf.get('name')!r}（老婆角色={_wr_hit_name or '-'}）"
                 f"（server_key={wf.get('server_key')!r}, 旧值 server_name={wf.get('server_name')!r}）"
             )
             # v7.1.0：优先按服务器唯一 key 绑定，兼容旧的「名字」引用
@@ -8653,7 +8402,6 @@ class ComfyUIDrawPlugin(Star):
         # 下方「参考图上传」并行，少等一段串行时间；结果在提示词定稿处统一 await。
         _t_llm0 = time.time()
         _llm_task = None
-        # ── 角色卡片注入（v5.16.0；v6.0.0 调整了注入时序）────────────────────
         # 注入原本就地执行（在 sanitize 清理与 LLM 改写**之前**），审计发现两个副作用：
         #   ① `_sanitize_prompt_syntax` 的「元描述降权」会把注入生成的 `(…:1.20)` 分组
         #      降权成裸标签——锚点里只要含 `hair between eyes` 这类带 and/with/between
@@ -8661,10 +8409,6 @@ class ComfyUIDrawPlugin(Star):
         #   ② `_llm_refine_prompt` 的返回值会**整体覆盖** positive，模型改写时可能把
         #      分组拉平成平铺标签，与「确定性注入」的承诺相悖。
         # 现改为「先清理不可信的模型产物（sanitize → LLM 改写/翻译），再叠加用户确认过的
-        # 确定性锚点」，注入点移到下方 `await _llm_task` 之后（见「角色卡片注入（时序后移）」）。
-        _card_lora_names: list[str] = []
-        # 本次命中的 (角色卡, 锚点)：出图成功后要按锚点把成品图自动关联回卡片（v6.3.0）
-        _card_hits: list = []
         # ── 跨后端语法垃圾清理（v5.14.0，确定性，不赌 LLM 自觉）────────────
         # 必须在 LLM 翻译/整理之前：<lora:>、@语法、score_9 这类垃圾不会被子流程剔除。
         if not _fixed_prompt and (positive or "").strip():
@@ -8844,9 +8588,9 @@ class ComfyUIDrawPlugin(Star):
             )
 
         # ── 提示词丰富化（v7.6.0）──────────────────────────────────────
-        # 位置很关键：放在 sanitize / LLM 翻译之后、角色卡注入**之前**——
+        # 位置很关键：放在 sanitize / LLM 翻译之后——
         #   ① 扩写只补「镜头/构图/光影/氛围/材质」等自由维度，外观维度由 prompt_guard 把关；
-        #   ② 画质前缀在这里补，才能被角色卡多角色重排逻辑提到最前（_QUALITY_RE）；
+        #   ② 画质前缀在这里补，保证位于提示词开头；
         #   ③ 固定提示词（作者配方）不碰。
         _user_text_for_guard = (
             (getattr(event, "message_str", "") or "").strip() if event is not None else ""
@@ -8858,7 +8602,6 @@ class ComfyUIDrawPlugin(Star):
                 positive = await self._boost_positive(
                     positive, wf=wf, style=self._prompt_style(wf),
                     cfg=self._prompt_boost_cfg(),
-                    known_names=self._known_character_names(),
                     draw_start=_draw_start, trace_id=_trace_id,
                     skip_llm=raw_prompt,
                     # v7.7.74：扩写也只参考「本次要用的 LoRA」的描述
@@ -8866,78 +8609,6 @@ class ComfyUIDrawPlugin(Star):
                 )
             except Exception as _be:
                 logger.warning(f"【提示词丰富化】 异常（保留原提示词）: {_be}")
-
-        # ── 角色卡片注入（时序后移，v6.0.0）──────────────────────────────
-        # 覆盖所有入口（AI 对话 / 指令 / 伴侣插件）。命中规则见 character.py：
-        #   单角色 → 锚点标签追加进正向提示词；多角色 → 计数标签 + 每角色一个权重分组，
-        #   并剥掉模型自己写的分组（它每轮重新发明的那套外观）。
-        # 卡片关联的 LoRA 会并入 lora_map（触发词按既有规则注入）。
-        # ★放在 sanitize 与 LLM 改写之后：锚点标签是用户确认过的确定性内容，
-        #   既不能被「元描述降权」拆掉分组，也不能被模型改写覆盖。
-        try:
-            _cc_cfg = self._cfg("character_card", {}) or {}
-            if (
-                (not _fixed_prompt)
-                and isinstance(_cc_cfg, dict)
-                and _cc_cfg.get("enabled", True)
-                and getattr(self, "character", None) is not None
-            ):
-                _u_text = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
-                _hits = await character.resolve_hits(self, event, _u_text, positive)
-                # v7.7.43：角色设定板（三视图/四视图）模式下，提示词是 LLM 按设定板规范写的
-                # 纯中文长文，且角色资料已在改写时融进去——此时**不追加英文锚点标签**，
-                # 否则会破坏中文设定板（规范明确要求通篇中文）。
-                _sheet_flags = getattr(self, "_sheet_ok_traces", None) or set()
-                _sheet_done = _trace_id in _sheet_flags
-                if _sheet_done:
-                    _sheet_flags.discard(_trace_id)   # 用过即清，避免标志堆积
-                    logger.info(
-                        "【角色卡·注入】 本次为角色设定板（角色资料已按设定板规范融入中文提示词）"
-                        "→ 跳过锚点标签注入"
-                    )
-                elif _hits and self._looks_moss_layout(positive):
-                    # v7.7.96：MOSS JSON Layout 的角色身份已织进版面 JSON（改写时注入了
-                    # 角色卡资料），再追加英文锚点标签只会把 JSON 打穿 → 跳过
-                    logger.info(
-                        "【角色卡·注入】 本次为 MOSS JSON Layout（角色身份已织进版面 JSON）"
-                        "→ 跳过锚点标签注入"
-                    )
-                elif _hits and _cc_cfg.get("auto_inject", True):
-                    _cres = character.inject(self, positive, _hits, _cc_cfg, negative=negative)
-                    # v7.6.0 外观护栏：锚点是权威，把模型/用户写的**冲突外观标签**剥掉。
-                    # docstring 里那句「不要手写与卡片冲突的外观描述（会被插件剥掉）」
-                    # 以前只是吓唬模型——现在真的会剥（历史上绿发被补成 white_hair 的事故）。
-                    if (_cres.get("prompt") or "").strip():
-                        _cres["prompt"] = self._guard_appearance(
-                            _cres["prompt"], _hits,
-                            user_text=_u_text or _user_text_for_guard,
-                        )
-                    # 记下命中的锚点：图出来后按 (角色, 锚点) 自动关联回卡片。
-                    # 只有**真的注入了锚点**才算命中——auto_inject=false 时锚点没参与出图，
-                    # 把图挂上去反而是错误归因。
-                    _card_hits = list(_hits)
-                    if (_cres.get("prompt") or "").strip():
-                        positive = _cres["prompt"]
-                    # 负向：与锚点负向**合并**（旧实现是直接覆盖，会把原有负向提示词丢掉）
-                    if (_cres.get("negative") or "").strip():
-                        negative = _cres["negative"]
-                    _card_lora_names = list(_cres.get("loras") or [])
-                    logger.info(
-                        f"【角色卡·注入】 模式={_cres.get('mode')}｜{_cres.get('note')}｜"
-                        f"正向提示词: {positive[:300]}"
-                    )
-                elif _hits:
-                    logger.info(
-                        f"【角色卡】 命中 {len(_hits)} 个角色，但 character_card.auto_inject=false，仅记录不注入"
-                    )
-        except Exception as _ce:
-            logger.warning(f"【角色卡·注入】 异常（不影响出图）: {_ce}")
-        if _card_lora_names:
-            _lm2 = dict(lora_map or {})
-            for _cn in _card_lora_names:
-                _lm2.setdefault(_cn, None)
-            lora_map = _lm2
-            logger.info(f"【角色卡·注入】 并入关联 LoRA: {_card_lora_names}")
 
         # danbooru 角色/作品 tag 的括号兜底（anima 工作流）：LLM 常把角色 tag 写成
         # `belle (zenless zone zero)`，而 CLIP 把 `(` `)` 当注意力权重符号，不转义会被拆坏、
@@ -8961,7 +8632,7 @@ class ComfyUIDrawPlugin(Star):
             )
 
         # v7.7.54：多人贴在一起时的连体畸形兜底。放在 LoRA 预设追加之后、注入之前——
-        # 此刻 positive 已是最终形态（角色卡分组 / 多人归一 / 预设追加都已完成），
+        # 此刻 positive 已是最终形态（多人归一 / 预设追加都已完成），
         # 多人判定最准；此时补负向也保证不会被后续任何注入逻辑覆盖掉。
         negative, _mf_info, _mf_warn = self._boost_multi_fusion_negative(positive, negative)
         if _mf_info:
@@ -9001,9 +8672,8 @@ class ComfyUIDrawPlugin(Star):
             # 只剩触发词 → 参考所说「只列角色名模型会混淆人物」→ 两人同脸。
             if prompt_guard.is_multi_person(positive):
                 try:
-                    # _card_hits 只在走到角色卡注入分支时才赋值，故用 locals().get 取
                     positive, _mi_note = await self._apply_multi_identity(
-                        positive, event, lora_map, wf, locals().get("_card_hits") or [],
+                        positive, event, lora_map, wf, [],
                         disabled_loras=disabled_loras)
                 except Exception as _mie:
                     _mi_note = ""
@@ -9546,7 +9216,7 @@ class ComfyUIDrawPlugin(Star):
                     logger.warning(
                         f"【LoRA 触发词】 「{nm}」的触发词有 {len(_tw_kept)} 项，"
                         f"疑似整段推荐提示词——建议只保留激活词（1~3 个），"
-                        f"外观细节交给改写 LLM 或角色卡"
+                        f"外观细节交给改写 LLM"
                     )
                 for _tw in _tw_kept:
                     if _tw not in _triggers:
@@ -10138,31 +9808,6 @@ class ComfyUIDrawPlugin(Star):
                             # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。
                             if _final:
                                 img_path = _final
-                                # 角色卡自动关联（v6.3.0）：本次用了谁的锚点，成品就挂回谁的锚点。
-                                # 引用 gallery 里的这张原图（不复制），因此**必须在归档之后**做。
-                                if _card_hits:
-                                    try:
-                                        _ns = -1.0
-                                        # 复用出图链路已跑的 NSFW 结果，不再重复推理一次
-                                        if (
-                                            isinstance(_nsfw_pre, tuple)
-                                            and len(_nsfw_pre) >= 3
-                                            and _nsfw_pre[2]
-                                            and _nsfw_pre[1] is not None
-                                        ):
-                                            _ns = float(_nsfw_pre[1])
-                                        _linked = await character.auto_link_generated(
-                                            self, _card_hits, img_path,
-                                            actor=character.actor_label(event) or (user_name or ""),
-                                            nsfw_score=_ns,
-                                        )
-                                        if _linked:
-                                            logger.info(
-                                                f"【角色卡】 成品图已自动关联参考图 "
-                                                f"{[int(x['id']) for x in _linked]}"
-                                            )
-                                    except Exception as _ae:
-                                        logger.warning(f"【角色卡】 出图自动关联异常（不影响出图）: {_ae}")
                         except Exception as _ge:
                             logger.warning(f"【图库】 归档失败（不影响出图）: {_ge}")
 
@@ -10479,482 +10124,6 @@ class ComfyUIDrawPlugin(Star):
         # 收尾时再终止事件：避免开头 stop_event 导致 pipeline 在第一个 yield
         # 后中断 _do_draw 的协程（等待/下载图片的代码不再执行，temp 无图）。
         event.stop_event()
-
-    @filter.command("角色", alias={"角色卡", "character", "charcard"})
-    async def cmd_character(self, event: AstrMessageEvent):
-        """角色卡片管理：查看 / 记住 / 修改 / 锚点 / 绑定人格 / 删除。
-
-        用法：
-        /角色                              列出所有角色卡
-        /角色 看 <角色名>                   查看卡片与全部锚点
-        /角色 记住 <角色名> <标签串> [--别名 a,b] [--作品 xx] [--人格 xx] [--lora xx] [--锚点 名]
-        /角色 改 <角色名> <字段>=<值>        字段：别名/作品/人格/lora/备注
-        /角色 锚点 add <角色名> <锚点名> <标签串> [--negative xx] [--weight 1.2] [--lora xx]
-        /角色 锚点 set <角色名> <锚点名> <标签串>
-        /角色 锚点 use <角色名> <锚点名>     把该锚点设为主锚点
-        /角色 锚点 del <角色名> <锚点名>
-        /角色 参考图 列表 <角色名>           列出该角色已落地的参考图（含归属锚点与封面标记）
-        /角色 参考图 记住 <角色名> [锚点名]    把本条消息附带的图片存为该角色的参考图（可多张；带锚点名则挂到该锚点下）
-        /角色 参考图 删 <角色名> <图片id>     删除一张参考图
-        /角色 参考图 封面 <角色名> [图片id]    查看/设置角色封面（不写 id 为查看；设过封面后列表与表格用它展示）
-        /角色 参考图 取消封面 <角色名>        清除封面设置（改回自动用第一张图）
-        /角色 补全 <角色名> [作品名]          用 danbooru 标签服务查候选标签（人工确认后再落库）
-        /角色 删 <角色名>                   删除角色卡（含其锚点与参考图）
-        """
-        store = getattr(self, "character", None)
-        if store is None:
-            await self._send(event, "角色卡片功能未启用（存储初始化失败）。")
-            return
-        # v7.7.53：总开关 = 彻底停用——`/角色` 指令（查/改都算）一并拒绝
-        _cc_gate = self._cfg("character_card", {}) or {}
-        if isinstance(_cc_gate, dict) and not _cc_gate.get("enabled", True):
-            await self._send(
-                event,
-                "角色卡片功能已在配置里关闭（character_card.enabled=false），指令暂不可用。",
-            )
-            return
-        args = self._strip_command(
-            (event.message_str or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
-            "角色", ("角色卡", "character", "charcard"),
-        )
-        _cfg = self._cfg("character_card", {}) or {}
-        cfg = _cfg if isinstance(_cfg, dict) else {}
-        _tokens = (args or "").split()
-        if not _tokens:
-            await self._send(event, self._character_list_text(store))
-            return
-        _action = _tokens[0].lower()
-        # 写操作权限：allow_user_edit 关闭时仅管理员
-        _write_actions = {"记住", "改", "锚点", "删", "删除", "add", "set", "use", "del"}
-        if _action in _write_actions and not cfg.get("allow_user_edit", True):
-            if not self._is_admin(event):
-                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
-                return
-        try:
-            if _action in ("列表", "list", "ls"):
-                await self._send(event, self._character_list_text(store))
-                return
-            if _action in ("看", "查看", "show", "get"):
-                if len(_tokens) < 2:
-                    await self._send(event, "用法：/角色 看 <角色名>")
-                    return
-                await self._send(event, self._character_detail_text(store, _tokens[1]))
-                return
-            if _action in ("记住", "新增", "add", "save"):
-                await self._character_save(event, store, _tokens[1:], args)
-                return
-            if _action in ("改", "修改", "update", "edit"):
-                await self._character_update(event, store, _tokens[1:])
-                return
-            if _action in ("锚点", "anchor", "anchors"):
-                await self._character_anchor(event, store, _tokens[1:])
-                return
-            if _action in ("参考图", "ref", "refs"):
-                await self._character_ref(event, store, _tokens[1:], cfg)
-                return
-            if _action in ("补全", "suggest", "fetch"):
-                await self._character_suggest(event, store, _tokens[1:], cfg)
-                return
-            if _action in ("删", "删除", "delete", "del", "rm"):
-                if len(_tokens) < 2:
-                    await self._send(event, "用法：/角色 删 <角色名>")
-                    return
-                ch = store.get_character(_tokens[1])
-                if ch is None:
-                    await self._send(event, f"没找到角色「{_tokens[1]}」。")
-                    return
-                store.delete_character(int(ch["id"]))
-                await self._send(event, f"已删除角色卡「{ch['name']}」及其锚点。")
-                return
-            await self._send(event, f"未知子命令「{_tokens[0]}」。用 /角色 查看用法。")
-        except ValueError as e:
-            await self._send(event, f"操作失败：{e}")
-        except Exception as e:
-            logger.warning(f"【角色卡】 指令执行失败: {e}", exc_info=True)
-            await self._send(event, f"操作失败：{e}")
-
-    # ------------------------------------------------------------------ #
-    # /角色 指令的辅助渲染与子命令实现
-    # ------------------------------------------------------------------ #
-    def _character_list_text(self, store) -> str:
-        rows = store.list_characters()
-        if not rows:
-            return (
-                "暂无角色卡片。\n"
-                "新增：/角色 记住 薄荷 teal hair, long hair, red eyes, cat ears, black corset --人格 薄荷V4\n"
-                "（标签串用英文 danbooru 标签，逗号分隔；「--人格」把这张卡绑到某个 bot 人格，"
-                "这样用户说「画你」时能自动命中）"
-            )
-        lines = [f"角色卡片（{len(rows)} 张）："]
-        for c in rows:
-            _bind = f" ← 绑定人格 {c['persona_name']}" if (c.get("persona_name") or "").strip() else ""
-            _lora = f" · LoRA {c['lora_name']}" if (c.get("lora_name") or "").strip() else ""
-            _alias = f" · 别名 {','.join(c.get('aliases') or [])}" if c.get("aliases") else ""
-            lines.append(
-                f"- {c['name']}（锚点 {c.get('anchor_count', 0)} 个）{_alias}{_lora}{_bind}"
-            )
-        lines.append("查看详情：/角色 看 <角色名>")
-        return "\n".join(lines)
-
-    def _character_detail_text(self, store, key: str) -> str:
-        ch = store.get_character(key)
-        if ch is None:
-            return f"没找到角色「{key}」。用 /角色 可列出全部卡片。"
-        anchors = store.list_anchors(int(ch["id"]))
-        _pid = int(ch.get("primary_anchor_id") or 0)
-        lines = [
-            f"【{ch['name']}】"
-            + (f"（别名：{'、'.join(ch.get('aliases') or [])}）" if ch.get("aliases") else "")
-            + ("（已停用）" if not ch.get("enabled", True) else ""),
-            f"作品：{ch.get('work') or '—'}   绑定人格：{ch.get('persona_name') or '—'}"
-            f"   关联 LoRA：{ch.get('lora_name') or '—'}",
-        ]
-        if not anchors:
-            lines.append("锚点：无（用 /角色 锚点 add <角色> <锚点名> <标签串> 添加）")
-        for a in anchors:
-            _mark = "★主" if int(a["id"]) == _pid else "  "
-            lines.append(
-                f"{_mark} [{a['name']}]（权重 {a.get('weight')}）{a.get('positive')}"
-                + (f"\n      负向：{a['negative']}" if (a.get("negative") or "").strip() else "")
-            )
-        return "\n".join(lines)
-
-    @staticmethod
-    def _pop_flags(tokens: list[str]) -> tuple[list[str], dict]:
-        """把 `--key value` 从 token 列表里摘出来（返回剩余的与 flags）。"""
-        rest: list[str] = []
-        flags: dict = {}
-        i = 0
-        while i < len(tokens):
-            t = tokens[i]
-            if t.startswith("--") and len(t) > 2:
-                key = t[2:].strip().lower()
-                if i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
-                    flags[key] = tokens[i + 1]
-                    i += 2
-                    continue
-                flags[key] = ""
-                i += 1
-                continue
-            rest.append(t)
-            i += 1
-        return rest, flags
-
-    async def _character_save(self, event, store, tokens: list[str], raw_args: str):
-        rest, flags = self._pop_flags(tokens)
-        if len(rest) < 2:
-            await self._send(
-                event,
-                "用法：/角色 记住 <角色名> <标签串> [--别名 a,b] [--作品 xx] [--人格 xx] [--lora xx] [--锚点 名]",
-            )
-            return
-        name = rest[0]
-        positive = raw_args.split(name, 1)[1].split("--", 1)[0].strip()
-        if not positive:
-            await self._send(event, "标签串不能为空（英文 danbooru 标签，逗号分隔）。")
-            return
-        ch = store.create_character(
-            name,
-            aliases=flags.get("别名") or flags.get("alias") or "",
-            persona_name=flags.get("人格") or flags.get("persona") or "",
-            work=flags.get("作品") or flags.get("work") or "",
-            lora_name=flags.get("lora") or "",
-            source="command",
-            created_by=character.actor_label(event),
-        )
-        anchor_name = flags.get("锚点") or flags.get("anchor") or "默认装"
-        _want_new = True
-        for a in store.list_anchors(int(ch["id"])):
-            if (a["name"] or "").strip() == anchor_name.strip():
-                store.update_anchor(int(a["id"]), positive=positive)
-                _want_new = False
-                break
-        if _want_new:
-            store.add_anchor(
-                int(ch["id"]), anchor_name, positive,
-                created_by=character.actor_label(event), source="command",
-            )
-        await self._send(
-            event,
-            f"已记住「{ch['name']}」的锚点「{anchor_name}」：\n{positive}"
-            + (f"\n绑定人格：{ch['persona_name']}" if (ch.get("persona_name") or "").strip() else ""),
-        )
-
-    async def _character_update(self, event, store, tokens: list[str]):
-        if len(tokens) < 2:
-            await self._send(event, "用法：/角色 改 <角色名> <字段>=<值>（字段：别名/作品/人格/lora/备注）")
-            return
-        ch = store.get_character(tokens[0])
-        if ch is None:
-            await self._send(event, f"没找到角色「{tokens[0]}」。")
-            return
-        _map = {
-            "别名": "aliases", "alias": "aliases", "作品": "work", "work": "work",
-            "人格": "persona_name", "persona": "persona_name",
-            "lora": "lora_name", "备注": "note", "note": "note",
-            "启用": "enabled", "enabled": "enabled",
-        }
-        upd: dict = {}
-        # v6.0.0：值允许含空格——按「字段=」贪婪切分（旧实现逐 token split，
-        # `/角色 改 卡 作品=Neverness to Everness` 只会写入「Neverness」）。
-        _raw = " ".join(tokens[1:]).strip()
-        for _seg in re.split(r"\s+(?=[^\s=]+=)", _raw):
-            if "=" not in _seg:
-                continue
-            k, v = _seg.split("=", 1)
-            field = _map.get(k.strip().lower()) or _map.get(k.strip())
-            if not field:
-                continue
-            if field == "aliases":
-                upd[field] = [p.strip() for p in v.replace("，", ",").split(",") if p.strip()]
-            elif field == "enabled":
-                upd[field] = v.strip().lower() not in ("0", "false", "关", "否", "off", "")
-            else:
-                upd[field] = v.strip()
-        if not upd:
-            await self._send(event, "没有可识别的字段。字段：别名/作品/人格/lora/备注/启用")
-            return
-        store.update_character(int(ch["id"]), **upd)
-        await self._send(event, f"已更新「{ch['name']}」：{', '.join(f'{k}={v}' for k, v in upd.items())}")
-
-    async def _character_anchor(self, event, store, tokens: list[str]):
-        if len(tokens) < 2:
-            await self._send(
-                event,
-                "用法：\n"
-                "/角色 锚点 add <角色> <锚点名> <标签串> [--weight 1.2] [--negative xx] [--lora xx]\n"
-                "/角色 锚点 set <角色> <锚点名> <标签串>\n"
-                "/角色 锚点 use <角色> <锚点名>\n"
-                "/角色 锚点 del <角色> <锚点名>",
-            )
-            return
-        sub = tokens[0].lower()
-        ch = store.get_character(tokens[1])
-        if ch is None:
-            await self._send(event, f"没找到角色「{tokens[1]}」。")
-            return
-        rest, flags = self._pop_flags(tokens[2:])
-        if sub in ("del", "删", "删除"):
-            if not rest:
-                await self._send(event, "用法：/角色 锚点 del <角色> <锚点名>")
-                return
-            a = store.get_anchor(int(ch["id"]), rest[0])
-            if a is None:
-                await self._send(event, f"角色「{ch['name']}」没有锚点「{rest[0]}」。")
-                return
-            store.delete_anchor(int(a["id"]))
-            await self._send(event, f"已删除「{ch['name']}」的锚点「{a['name']}」。")
-            return
-        if sub in ("use", "用", "设为主"):
-            a = store.set_primary_anchor(int(ch["id"]), rest[0] if rest else None)
-            if a is None:
-                await self._send(event, f"没找到锚点「{rest[0] if rest else '(默认)'}」。")
-                return
-            await self._send(event, f"「{ch['name']}」主锚点已设为「{a['name']}」。")
-            return
-        if sub in ("add", "新增", "set", "改"):
-            if len(rest) < 2:
-                await self._send(event, "用法：/角色 锚点 add <角色> <锚点名> <标签串>")
-                return
-            anchor_name, positive = rest[0], " ".join(rest[1:]).strip()
-            if not positive:
-                await self._send(event, "标签串不能为空。")
-                return
-            _w = flags.get("weight") or flags.get("权重")
-            try:
-                _wv = float(_w) if _w else 1.2
-            except (TypeError, ValueError):
-                _wv = 1.2
-            # v5.18.1：同名锚点一律视为**更新**（此前 `add` 是纯插入，同名会多出一条
-            # 同名锚点，而按名查找/注入都只取第一条 → 第二条永远隐形，用户以为改了其实没改）。
-            # v6.0.0：判定改用**精确名**（`get_anchor` 有子串回退，会把「泳」误判为「泳装」）。
-            exist = store.find_anchor_exact(int(ch["id"]), anchor_name)
-            if exist is not None:
-                store.update_anchor(
-                    int(exist["id"]), positive=positive,
-                    negative=flags.get("negative") or flags.get("负向") or "",
-                    weight=_wv, lora_name=flags.get("lora") or "",
-                )
-                await self._send(
-                    event,
-                    f"「{ch['name']}」已有同名锚点「{anchor_name}」，已改为更新：\n{positive}",
-                )
-                return
-            _new_a = store.add_anchor(
-                int(ch["id"]), anchor_name, positive,
-                negative=flags.get("negative") or flags.get("负向") or "",
-                weight=_wv, lora_name=flags.get("lora") or "",
-                created_by=character.actor_label(event), source="command",
-            )
-            await self._send(
-                event,
-                f"已为「{ch['name']}」新增锚点「{a['name']}」（权重 {a['weight']}）：\n{a['positive']}"
-                if a else "新增锚点失败。",
-            )
-            return
-        await self._send(event, f"未知锚点子命令「{tokens[0]}」。")
-
-    async def _character_ref(self, event, store, tokens: list[str], cfg: dict):
-        """`/角色 参考图 列表|记住|删|封面`：参考图落地与管理（M3；v6.1.0 支持锚点归属与封面）。"""
-        if len(tokens) < 2:
-            await self._send(
-                event,
-                "用法：\n"
-                "/角色 参考图 列表 <角色名>\n"
-                "/角色 参考图 记住 <角色名> [锚点名]   （本条消息附图；带锚点名则挂到该锚点下）\n"
-                "/角色 参考图 删 <角色名> <图片id>\n"
-                "/角色 参考图 封面 <角色名> <图片id>    （不写 id 则查看当前封面）\n"
-                "/角色 参考图 取消封面 <角色名>",
-            )
-            return
-        sub = tokens[0].lower()
-        ch = store.get_character(tokens[1])
-        if ch is None:
-            await self._send(event, f"没找到角色「{tokens[1]}」。")
-            return
-        # 锚点 id → 名字（列表展示用）
-        _aid2name = {int(a["id"]): a["name"] for a in store.list_anchors(int(ch["id"]))}
-        if sub in ("列表", "list", "ls"):
-            refs = store.list_refs(int(ch["id"]))
-            if not refs:
-                await self._send(
-                    event,
-                    f"「{ch['name']}」还没有参考图。发一张图并配 `/角色 参考图 记住 {ch['name']} [锚点名]` 即可存下。",
-                )
-                return
-            lines = [f"「{ch['name']}」参考图（{len(refs)} 张）："]
-            for r in refs:
-                _n = float(r.get("nsfw_score") or -1)
-                _ns = "未检测" if _n < 0 else f"NSFW {_n:.2f}"
-                _aid = int(r.get("anchor_id") or 0)
-                _at = f"  @{_aid2name.get(_aid, '锚点' + str(_aid))}" if _aid else "  @角色级"
-                lines.append(
-                    f"- id={r['id']}{'  ★封面' if r.get('is_cover') else ''}  {r.get('sha256', '')[:12]}  {_ns}{_at}"
-                    + ("  ⚠文件缺失" if not r.get("exists", True) else "")
-                    + (f"  来源 {r.get('url')}" if r.get("url") else "")
-                )
-            if any(r.get("is_cover_auto") for r in refs):
-                lines.append("（★封面：未显式设置时自动用第一张；用「参考图 封面 <角色> <id>」固定）")
-            await self._send(event, "\n".join(lines))
-            return
-        if sub in ("封面", "cover", "设封面"):
-            if not cfg.get("allow_user_edit", True) and not self._is_admin(event):
-                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
-                return
-            if len(tokens) < 3 or not tokens[2].strip().isdigit():
-                _cur = store.get_cover_ref(int(ch["id"]))
-                if _cur is None:
-                    await self._send(event, f"「{ch['name']}」还没有任何图片，无法设置封面。")
-                else:
-                    await self._send(
-                        event,
-                        f"「{ch['name']}」当前封面：id={_cur['id']}"
-                        + ("（显式设置）" if _cur.get("is_cover") else "（自动：第一张）")
-                        + f"\n设置封面：/角色 参考图 封面 {ch['name']} <图片id>",
-                    )
-                return
-            _rid = int(tokens[2])
-            try:
-                store.set_cover_ref(int(ch["id"]), _rid)
-            except ValueError as e:
-                await self._send(event, f"设置封面失败：{e}")
-                return
-            await self._send(event, f"已把 id={_rid} 设为「{ch['name']}」的封面。")
-            return
-        if sub in ("取消封面", "clearcover", "uncover"):
-            if not cfg.get("allow_user_edit", True) and not self._is_admin(event):
-                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
-                return
-            store.clear_cover_ref(int(ch["id"]))
-            await self._send(event, f"已清除「{ch['name']}」的封面设置（改为自动用第一张图）。")
-            return
-        if sub in ("删", "删除", "del", "delete"):
-            # v6.0.0：补权限校验（此前只有「记住」校验了 allow_user_edit，
-            # 「删」能绕过开关被非管理员执行——删除不可撤销）
-            if not cfg.get("allow_user_edit", True) and not self._is_admin(event):
-                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
-                return
-            if len(tokens) < 3 or not tokens[2].strip().isdigit():
-                await self._send(event, "用法：/角色 参考图 删 <角色名> <图片id>（id 见「参考图 列表」）")
-                return
-            ref = store.get_ref(int(tokens[2]))
-            if ref is None or int(ref.get("character_id") or 0) != int(ch["id"]):
-                await self._send(event, f"「{ch['name']}」下没有 id={tokens[2]} 的参考图。")
-                return
-            store.delete_ref(int(tokens[2]))
-            await self._send(event, f"已删除「{ch['name']}」的参考图 id={tokens[2]}。")
-            return
-        if sub in ("记住", "add", "新增"):
-            if not cfg.get("allow_user_edit", True) and not self._is_admin(event):
-                await self._send(event, "当前配置仅允许管理员修改角色卡片（character_card.allow_user_edit=false）。")
-                return
-            # v6.1.0：可选第 3 个参数 = 锚点名，给了就挂到该锚点下（前端/列表按锚点分组展示）
-            _aid = 0
-            if len(tokens) >= 3 and tokens[2].strip():
-                _a = store.get_anchor(int(ch["id"]), tokens[2])
-                if _a is None:
-                    await self._send(
-                        event,
-                        f"「{ch['name']}」没有锚点「{tokens[2]}」。"
-                        f"可先用 `/角色 锚点 add {ch['name']} {tokens[2]} <标签串>` 添加，"
-                        "或不写锚点名（存为角色级图）。",
-                    )
-                    return
-                _aid = int(_a["id"])
-            imgs = await self._extract_images(event)
-            if not imgs:
-                await self._send(event, "请把图片和这条指令一起发（或引用一张图）。")
-                return
-            _ok_n = 0
-            for p in imgs[:5]:
-                try:
-                    # 读盘放线程池（大图 read_bytes 会阻塞事件循环）
-                    _data = await asyncio.to_thread(Path(p).read_bytes)
-                    ref = await character.land_ref(
-                        self, int(ch["id"]), _data,
-                        filename=Path(p).name, note="指令录入",
-                        anchor_id=_aid,
-                        created_by=character.actor_label(event), origin="command",
-                    )
-                    if ref is not None:
-                        _ok_n += 1
-                except Exception as e:
-                    logger.warning(f"【角色卡】 参考图落地失败 {p}: {e}")
-                    await self._send(event, f"有一张图存储失败：{e}")
-            if _ok_n:
-                _where = f"锚点「{_aid2name.get(_aid, _aid)}」下" if _aid else "（角色级）"
-                await self._send(
-                    event,
-                    f"已为「{ch['name']}」{_where}存下 {_ok_n} 张参考图"
-                    f"（可用 `/角色 参考图 列表 {ch['name']}` 查看）。",
-                )
-            return
-        await self._send(event, f"未知参考图子命令「{tokens[0]}」。")
-
-    async def _character_suggest(self, event, store, tokens: list[str], cfg: dict):
-        """`/角色 补全 <角色名> [作品]`：用 danbooru 标签服务查候选标签（人工确认后落库）。"""
-        _rest, _flags = self._pop_flags(tokens)
-        if not _rest:
-            await self._send(event, "用法：/角色 补全 <角色名> [作品名]\n查到的标签会用消息发给你，确认后再用 /角色 锚点 add 落库。")
-            return
-        ch = store.get_character(_rest[0])
-        _name = (ch or {}).get("name") or _rest[0]
-        _work = _flags.get("作品") or _flags.get("work") or ((ch or {}).get("work") or "")
-        _res = await character.suggest_anchor(self, _name, _work)
-        if not _res.get("ok"):
-            await self._send(
-                event,
-                f"补全失败：{_res.get('msg')}\n（也可以直接 /角色 记住 {_name} <标签串> 手填）",
-            )
-            return
-        _tags = _res.get("tags") or ""
-        await self._send(
-            event,
-            f"「{_name}」候选标签（来源：{_res.get('source')}，查询词「{_res.get('query')}」）：\n"
-            f"{_tags}\n"
-            f"确认无误后落库：\n/角色 锚点 add {_name} 默认装 {_tags}\n"
-            "（⚠️请人工核对：标签服务返回的可能包含不适用的服装/场景词，删掉不需要的再落库。）",
-        )
 
     @filter.command("无限绘图", alias={"无限发图", "持续发图", "unlimited_draw", "连发图"})
     async def cmd_unlimited_draw(self, event: AstrMessageEvent):
@@ -14185,8 +13354,7 @@ class ComfyUIDrawPlugin(Star):
             "/queuestatus [--wf 工作流]  查看队列与排队位置\n"
             "/workflows [set 名称 | set_img2img 名称 | enable 名称 | disable 名称]   列出/设置默认/启用停用工作流（enable/disable 可写中文 启用/停用）\n"
             "/角色 [列表 | 看 角色 | 记住 角色 标签串 | 改 角色 字段=值 | 锚点 add/set/use/del | 参考图 列表/记住/删 | 补全 角色 | 删 角色]\n"
-            "    角色卡片：把「某角色长什么样」落库（一个角色可有多套锚点），画到时插件自动注入，避免每张图长相不一样\n"
-            '也可直接对 AI 说"画一只猫，使用 xxx lora"，由 AI 自动调用绘图工具。'
+                        '也可直接对 AI 说"画一只猫，使用 xxx lora"，由 AI 自动调用绘图工具。'
         )
         await self._send(event, text)
         event.stop_event()
@@ -14210,8 +13378,7 @@ class ComfyUIDrawPlugin(Star):
             "· /绘图排行 [今天|昨天|周|月|全部]   绘图排行前五\n"
             "· /绘图状态   服务器状态与生图限额\n"
             "· /图库 列表|搜索|收藏…   图库管理\n"
-            "· /角色 列表|看|记住|锚点|参考图…   角色卡片（让同一角色每张图长得一致）\n"
-            "· /涩图检测（引用图片）   检测图片是否为涩涩内容\n"
+                        "· /涩图检测（引用图片）   检测图片是否为涩涩内容\n"
             "· 想查看详细参数，回复「画画帮助」即可"
         )
         # 优先发静态帮助图（随插件打包，零渲染开销），失败回退文字
@@ -16584,7 +15751,7 @@ class ComfyUIDrawPlugin(Star):
             if _api is None:
                 logger.info(
                     f"【身份锚点】 未启用 Danbooru，无法为「{trigger}」校正标准 tag"
-                    "（可在工作流里把翻译模式设为 danbooru，或用角色卡保存锚点）"
+                    "（可在工作流里把翻译模式设为 danbooru）"
                 )
                 cache[key] = []
                 return []
@@ -16607,9 +15774,8 @@ class ComfyUIDrawPlugin(Star):
 
         优先级与参考一致（锚点是外观身份的唯一依据）：
 
-        1. **角色卡锚点**（离线、最可靠）——等价参考 `fixed_characters`，用户存一次永久生效；
-        2. **Danbooru 校正**——按角色 LoRA 触发词联网查标准 tag（参考 `prompting.md:7`）；
-        3. 都没有 → 空（调用方据此放弃重构，不硬写）。
+        1. **Danbooru 校正**——按角色 LoRA 触发词联网查标准 tag（参考 `prompting.md:7`）；
+        2. 都没有 → 空（调用方据此放弃重构，不硬写）。
 
         ★v7.7.81：Danbooru 查询只认**每个角色 LoRA 触发词字段的第一个有效激活词**
         （净化后首个 token）——整段推荐提示词里的外观/服装/人数 token 拿去查只会
@@ -16618,12 +15784,6 @@ class ComfyUIDrawPlugin(Star):
         """
         out: list[dict] = []
         names, triggers = self._char_lora_triggers(lora_map, wf, event=event, disabled_loras=disabled_loras)
-        for card, anchor in (card_hits or []):
-            _pos = anchor.get("positive") or ""
-            _tags = prompt_guard.identity_anchor_tags(_pos, limit=5)
-            if _tags:
-                out.append({"name": card.get("name") or "", "anchors": _tags,
-                            "source": f"角色卡「{card.get('name')}」"})
         if out:
             return out
         _seen_entries: set[int] = set()
@@ -16649,7 +15809,7 @@ class ComfyUIDrawPlugin(Star):
     ) -> list[dict]:
         """v7.7.74：身份锚点来源加一档 **LoRA 库描述**（原创角色的救命档）。
 
-        顺序：角色卡锚点 → **LoRA 描述** → Danbooru 校正 → 空。
+        顺序：**LoRA 描述** → Danbooru 校正 → 空。
         用户在 LoRA 库写的 `description` 通常就是角色设定本身（"红发双丸子头金铃、灰渐变双马尾、
         红瞳、黑无肩带裙"），对 Danbooru 查不到的原创角色比联网查更准、也不依赖网络。
         """
@@ -16709,12 +15869,12 @@ class ComfyUIDrawPlugin(Star):
                 if _roles:
                     logger.info(
                         "【身份锚点】 只解析到 1 个角色的锚点，多人混合式渲染需要每个角色都有锚点，"
-                        "本次保持原提示词（建议用角色卡把两个角色的锚点都存上）"
+                        "本次保持原提示词（建议用 danbooru 校正两个角色的 tag）"
                     )
                 else:
                     logger.info(
-                        "【身份锚点】 没解析到任何权威锚点（角色卡未存 + Danbooru 无该角色），"
-                        "多人提示词保持原样。建议用角色卡（comfyui_character / 角色指令）"
+                        "【身份锚点】 没解析到任何权威锚点（Danbooru 无该角色），"
+                        "多人提示词保持原样。建议用 Danbooru 校正"
                         "把这两个角色的标准 tag 各存一次——参考 fixed_characters 就是干这个的。"
                     )
                 return positive, ""
@@ -16748,8 +15908,7 @@ class ComfyUIDrawPlugin(Star):
         用户诉求（2026-10-14）：「画角色并加了她的 LoRA，为什么还要写发色发型？角色 LoRA
         自带画风与形象，只有我说了穿什么衣服、做什么动作才需要加。」
 
-        为什么以前没人拦：这条兜底只对**角色卡**（character_card 锚点）存在
-        （`_guard_appearance` → `prompt_guard.strip_conflicting_appearance`），
+        为什么以前没人拦：这类拼贴畸形此前没有通用兜底，
         角色 **LoRA** 路径完全没有约束——LLM 照 skill 里那条「每个角色的分组里还必须再写
         2~4 个最有辨识度的外观标签」把外形复述一遍，后果是①用弱文本标签稀释/覆盖 LoRA
         训练进去的形象 ②凭记忆写外形会写错 ③两个角色外形词写得越像越画成同一张脸。
@@ -16761,7 +15920,7 @@ class ComfyUIDrawPlugin(Star):
 
         保守前提（任一不满足就**什么都不剥**）：
         1. 本次确实启用了 category=角色 的 LoRA，且其触发词出现在正向里（否则说明角色是
-           用 danbooru 角色 tag / 角色卡表达的，另有锚点机制管，别插手）；
+           用 danbooru 角色 tag 表达的，另有锚点机制管，别插手）；
         2. 用户本轮**没有**干预对应维度——外形（染/剪/换发色）与服装（穿/戴/脱/说了服饰名）
            各自独立判定：说了才保留那一维，没说才剥那一维。
         """
@@ -16980,18 +16139,6 @@ class ComfyUIDrawPlugin(Star):
         两处都查不到时，如实告诉用户「没找到该角色的绘图锚点」并请用户提供，
         **绝不凭常识编造 bot 自身的形象**（用户已投诉过"现在都不去找了"）。
 
-        ★★角色卡片（最高优先级来源）：插件维护「角色卡片库」（角色 + 多套锚点标签）。
-        画某个已建卡的角色时，**插件会自动查卡片并把锚点标签注入提示词**（多人时自动渲染
-        计数标签与每角色一个权重分组），你**不需要**再凭记忆写该角色的外观；卡片命中时也
-        不必重复查 danbooru 角色 tag。因此：
-        - 用户提到某角色名时，照常按下面的查找链查 LoRA（卡片只保证「像」，LoRA 保证「是」）；
-        - **不要**手写与卡片冲突的外观描述（会被插件剥掉，白写）；
-        - 用户**给出或修正**角色设定（「记住X的样子是…」「X换成蓝发」）→ 调 `comfyui_character`
-          写入卡片（action=save / update_anchor / add_anchor），这样以后每张图都稳定；
-        - 想看某角色现有锚点（如用户指定用「泳装」那套）→ 调 `comfyui_character`（action=get）。
-        - （若角色卡功能已在配置里关闭，上面整段都无效：插件不会注入，`comfyui_character` 也会
-          返回「已关闭」——此时按用户的描述正常写外观即可，不要再尝试角色卡工具。）
-
         ★★★多人/合照规则（2 人及以上必守，违反必然融脸/串味）：
         1) 计数标签紧跟画质前缀：2girls / 1boy 1girl / 3girls…（多人绝不写 solo）。
            ★ 多人提示词里**任何位置**都不该再出现 1girl / 1boy / solo——包括写进自然语言句子里
@@ -17067,14 +16214,11 @@ class ComfyUIDrawPlugin(Star):
         · 参考插件结论：「第一版不提供每角色独立 LoRA、区域遮罩或 Regional Prompting。角色相似…
           仍可能需要多生成几个种子筛选」（docs/prompting.md:57）。在参考实现里**多角色 LoRA 同开是
           他们不支持的场景**，两人同脸是模型层面的限制，不要为此反复改写提示词。
-        · 参考保证身份一致靠「角色名 + 权威标准 tag」（角色卡 / Danbooru 校正），**不靠 LoRA**；
+        · 参考保证身份一致靠「角色名 + 权威标准 tag」（Danbooru 校正），**不靠 LoRA**；
           参考插件明确「只列角色名，模型可能混淆人物」——所以**你不需要写这些角色的外形**。
-        · 出图链路已内置：剥掉模型编造的外形/服装 → 取权威锚点（角色卡优先，其次 Danbooru 校正）
+        · 出图链路已内置：剥掉模型编造的外形/服装 → 取权威锚点（Danbooru 校正）
           → 改写成参考混合式（公共 tag + 每角色一个自然语言块 `red-haired fox: …`）。
           日志：`【身份锚点】`、`【多人混合式】`、`【LoRA 形象】`。
-        · ★权威锚点拿不到时（原创/冷门角色 Danbooru 查不到），最有用的动作是**把角色存进角色卡**
-          （comfyui_character / 角色指令，等价参考 fixed_characters），例：
-          `锁暝 = 1girl, red hair, twin hair buns, red eyes, black coat`；存一次以后永久生效。
         · ★参考插件建议多人**多种子筛选**：可在同一次调用里用 `prompts` 传 2~3 条同画面变体，
           这是承认"角色相似"后的正解；但**不要在用户没要求时擅自加张数**。
 
@@ -17122,7 +16266,7 @@ class ComfyUIDrawPlugin(Star):
         ★★★细节密度（默认要写丰富，别只丢一句主体就交差）：
         - 除非用户明确说「简单/白底/证件照」这类要求，否则按下面这张维度清单把画面补完整，
           **至少覆盖 6 个维度**：
-          ①主体与人数（含计数标签）②外观（角色 tag / 角色卡锚点，**只写有来源的**）
+          ①主体与人数（含计数标签）②外观（角色 tag，**只写有来源的**）
           ③表情与动作 ④构图与镜头（close-up / upper body / full body / from above / from behind）
           ⑤场景与环境（室内外、天气、时间）⑥光影与氛围（backlighting / rim light / cinematic lighting）
           ⑦材质与细节（detailed background / intricate details / fabric texture）
@@ -17131,7 +16275,7 @@ class ComfyUIDrawPlugin(Star):
         - 自然语言系底模（flux/qwen/z-image/krea2）：1~3 句整句，写清「主体 + 动作 + 环境 + 镜头 + 光影」，
           可加材质与氛围描述；**不要**写成标签堆。
         - ⛔这张清单**只覆盖「非外观维度」**：发色/发型/瞳色/耳角尾兽化/体型/服装/配饰属于外观维度，
-          只在三种情况写——用户明确说了、命中角色卡锚点、或用户要的是泛化人物（「画个少女」）需要你自己定。
+          只在两种情况写——用户明确说了、或用户要的是泛化人物（「画个少女」）需要你自己定。
           别为了「写丰富」给已定角色补外观（这是本插件最高频的翻车原因）。
         - 画质前缀由插件自动补（按底模分档），**你不需要写** masterpiece / score_9 / very aesthetic 这类词；
           写了也不会重复加。
@@ -17151,7 +16295,7 @@ class ComfyUIDrawPlugin(Star):
            拿不准就什么都不写；只有用户明确要求改某外观（如"头发染成粉色"）才加那一项。泛化人物（"画个少女"）不受此限。
           ★但「不准补外观」≠「不许写细节」：镜头/构图/光影/氛围/场景/材质这些**非外观维度**照常写丰富
           （见上方「细节密度」）——把它们写足，画面才不干瘪。
-          ★插件侧已强制校验：命中角色卡时，与锚点冲突的外观标签会被自动剥掉（白写），所以别赌。
+          ★外观以用户描述为准，别赌模型自己编的特征。
         ★中文→英文标签：优先用 danbooru MCP 查/确认标准标签再填 prompt，不要臆造、不要透传中文、更不要抓官网。
         ★括号写法：角色/作品 tag 里的 `(` `)` 必须写成 `\\(` `\\)`（如 belle \\(zenless zone zero\\)）；MCP 返回什么就照抄什么。
         工作流（★★不许乱换）：用户没点名工作流就**留空**——插件会自动沿用本会话之前定过的工作流或全局默认，
@@ -17515,27 +16659,6 @@ class ComfyUIDrawPlugin(Star):
             ]
             _multi_declared = any(self._is_multi_person_prompt(t) for t in _texts)
             _need_ly = (not _plat_skip) and (len(_char_loras) >= 2 or _multi_declared)
-            # 角色卡片命中 ≥2 张时让路：_do_draw 会用卡片锚点注入规范分组（卡片是权威来源），
-            # 这里再拦一次只会让模型白重写一轮。
-            if _need_ly:
-                try:
-                    _cc_on = isinstance(self._cfg("character_card", {}) or {}, dict) and (
-                        self._cfg("character_card", {}) or {}
-                    ).get("enabled", True)
-                    if _cc_on and getattr(self, "character", None) is not None:
-                        _u_txt = (getattr(event, "message_str", "") or "").strip()
-                        _card_n = len(
-                            character.collect_hits(
-                                self, " ".join([_u_txt, *_texts]), prefer_anchor_text=_u_txt
-                            )
-                        )
-                        if _card_n >= 2:
-                            logger.info(
-                                f"【角色卡】 命中 {_card_n} 个角色，跳过多人分组拦截（改由卡片注入分组）"
-                            )
-                            _need_ly = False
-                except Exception as _cc_e:
-                    logger.warning(f"【角色卡】 拦截让路检查异常（按原逻辑拦截）: {_cc_e}")
             if _need_ly:
                 _best_groups = max((self._count_weight_groups(t) for t in _texts), default=0)
                 if _best_groups < 2 and not _norm_ok:
@@ -17564,7 +16687,7 @@ class ComfyUIDrawPlugin(Star):
                         "  · 计数标签紧跟画质前缀（2girls / 1girl 1boy），绝不写 solo；\n"
                         "  · 每个角色一个括号分组，组内只放该角色触发词 + 用户明说的衣服/动作；\n"
                         "  · 不要自己给角色编衣服/外形：插件会剥除这类复述，并自动补回"
-                        "权威锚点（角色卡或 Danbooru 校正）后改写成参考混合式；\n"
+                        "权威锚点（Danbooru 校正）后改写成参考混合式；\n"
                         "  · 绝不写 <lora:xxx>、@xxx、score_9 这类语法（插件会自动剔除）。\n"
                         f"  本次角色 LoRA 与触发词：\n{_tw_lines}"
                     )
@@ -18951,7 +18074,7 @@ class ComfyUIDrawPlugin(Star):
     async def _force_draw_execute(self, event, text: str, cfg: dict) -> None:
         """兜底补画：复用 /画 指令的调用形态。
 
-        提示词仍然走 `_do_draw` 的完整链路（Anima 翻译 / LLM 扩写 / 角色卡锚点 / 外观护栏 /
+        提示词仍然走 `_do_draw` 的完整链路（Anima 翻译 / LLM 扩写 / 外观护栏 /
         画质前缀），权限与限额也与其它入口完全一致（白名单、黑名单、生图限额、NSFW、卡片、撤回）。
         """
         try:
@@ -19271,416 +18394,6 @@ class ComfyUIDrawPlugin(Star):
             return "设置可见性失败。"
         else:
             return "未知 mode。可用：recall / search / save / send / list / stats / tag / public / private。"
-
-    # ------------------------------------------------------------------ #
-    # LLM 工具：comfyui_character（角色卡片：查 / 记 / 改 / 锚点 / 绑定人格）
-    # ------------------------------------------------------------------ #
-    @filter.llm_tool(name="comfyui_character")
-    @_safe_llm_tool
-    async def llm_character(
-        self,
-        event: AstrMessageEvent,
-        action: str = "",
-        name: str = "",
-        positive: str = "",
-        anchor_name: str = "",
-        aliases: str = "",
-        persona_name: str = "",
-        work: str = "",
-        lora: str = "",
-        negative: str = "",
-        weight: float = 0,
-        keyword: str = "",
-        note: str = "",
-        ref_url: str = "",
-        ref_id: int = 0,
-    ):
-        """角色卡片管理：为「具体角色」建立可复用的绘图设定（角色 + 多套锚点）。
-
-        角色卡片是画指定角色时**最优先**的信息来源（优先于 LoRA 触发词与 danbooru 查询）：
-        卡片命中时由插件把锚点标签确定性注入提示词，多人时自动渲染成每角色一个权重分组，
-        因此不再依赖你每轮重新回忆角色长什么样。
-
-        什么时候调用：
-        - 用户**指定或修正**某角色设定：「记住小叽的样子是…」「小叽是白发异色瞳猫耳」
-          「薄荷换成蓝发」「给薄荷加一套泳装锚点」→ action=save / update / add_anchor / update_anchor；
-        - 用户问「都有哪些角色卡」「小叽的设定是什么」→ action=list / get；
-        - 用户要把角色绑到某个人格（「把这张卡绑到小叽V4人格」）→ action=bind_persona；
-        - 用户要换默认锚点（「小叽默认用泳装那套」）→ action=set_primary_anchor；
-        - 用户发来角色图 / 说「把这张存成小叽的参考图」→ action=add_ref（ref_url 传本机绝对路径
-          或 http(s) 直链；联网链接需要管理员开启「允许联网补全角色资料」）；若用户说「这是小叽泳装那套的图」
-          就带上 anchor_name 把它挂到「泳装」锚点下；问「有没有参考图」→ action=list_refs；
-          要删 → action=delete_ref。参考图路径可直接给 comfyui_draw 当 image 用于图生图。
-        - 用户要设/换/取消角色封面（列表卡片展示用）→ action=set_cover（ref_id 传图片 id；传 0 表示清除）。
-        - 建卡时不知道怎么填标签（用户说「小叽该用什么标签」）→ action=suggest 查候选标签，
-          **核对后**再 save/add_anchor。若 suggest 不可用（未启用 danbooru 标签服务）而你的工具列表里
-          有 web_search_* 等联网工具，可以联网查该角色资料、整理成 danbooru 风格标签，让用户确认后落库。
-        - 用户明确说删掉某角色/某锚点 → action=delete / delete_anchor（**必须先向用户确认**）。
-        什么时候不要调用：普通画图请求（交给 comfyui_draw 即可，插件会自动查卡片）；
-        用户只是描述画面而没有「设定 / 记住 / 修改角色」的意思时不要写库。
-
-        ★静默调用：调用前后不要输出过程性文字；**写入前**用一句话向用户回显你记了什么
-        （如「记好啦：小叽 / 默认装 / 白发、异色瞳、猫耳」），删除前必须先确认。
-
-        Args:
-            action(string): 必填。取值：list（列表）/ get（看某角色）/ save（建卡或改主锚点）/
-                update（改卡片字段）/ delete（删角色卡）/ add_anchor（新增锚点，**同名则更新**）/
-                update_anchor（改锚点）/ delete_anchor（删锚点）/ set_primary_anchor（设主锚点）/
-                bind_persona（绑定人格）/ list_refs（看参考图）/ add_ref（存参考图，可挂到锚点下）/
-                delete_ref（删参考图）/ set_cover（设/清角色封面，ref_id=0 表示清除）/
-                suggest（联网补全候选标签）。
-            name(string): 角色名。除 list 外都要传（get/save/update/delete/锚点类操作都靠它定位）。
-            positive(string): 锚点标签串（英文 danbooru 标签，逗号分隔）。save / add_anchor /
-                update_anchor 必填。例：「white hair, heterochromia, cat ears, white knit sweater」。
-                不要写自然语言长句、不要写权重（权重用 weight 参数）、不要写 <lora:> 标签。
-            anchor_name(string): 锚点名（如 默认装 / 泳装 / 校服）。save 时默认「默认装」；
-                update_anchor / delete_anchor / set_primary_anchor 用它定位锚点。
-            aliases(string): 角色别名/昵称，逗号分隔（如「小叽,小叽酱」）。save/update 用。
-            persona_name(string): 绑定的人格名（AstrBot 人格名，如 小叽V4）。绑定后用户说
-                「画你」时会自动命中这张卡。save 用；也可走 bind_persona。
-            work(string): 作品/IP 名（如 Neverness to Everness）。save/update 用。
-            lora(string): 该角色（或该锚点）关联的 LoRA 名字（库里的规范名）。命中卡片时插件会自动启用它。
-            negative(string): 锚点负向提示词（可选，逗号分隔）。
-            weight(number): 锚点权重（多人分组用），建议 1.1~1.3，不传或 0 用 1.2。
-            keyword(string): list 时的可选过滤词（按角色名/别名/作品/人格模糊匹配）。
-            note(string): 备注（可选）。
-            ref_url(string): add_ref 必填。参考图来源：http(s) 图片直链，或本机绝对路径
-                （用户发来的图 / 图库里的图都可以）。**联网链接需要管理员在配置里开启
-                「允许联网补全角色资料」**，否则会被拒绝。
-            ref_id(number): delete_ref / set_cover 用，图片 id（先用 action=list_refs 查）；
-                set_cover 传 0 表示**清除**封面设置（回落为自动取第一张）。
-                另：add_ref 可带上 anchor_name，把这张图挂到该锚点下（不传则存为角色级图）。
-
-        工具返回卡片列表 / 详情 / 操作结果；失败会返回可读原因。
-        """
-        plugin = self if isinstance(self, ComfyUIDrawPlugin) else _PLUGIN_INSTANCE
-        if plugin is None:
-            plugin = self
-        store = getattr(plugin, "character", None)
-        if store is None:
-            return "角色卡片功能未启用（存储初始化失败），无法操作。"
-        # v7.7.53：总开关 = 彻底停用——AI 也不能再从卡片读/写资料（此前关了注入，
-        # 但本工具仍能 action=get/list 把锚点标签翻出来写进提示词，等于没关干净）
-        try:
-            _cc_gate = plugin._cfg("character_card", {}) or {}
-        except Exception:
-            _cc_gate = {}
-        if not (isinstance(_cc_gate, dict) and _cc_gate.get("enabled", True)):
-            return (
-                "角色卡片功能已在配置里关闭（character_card.enabled=false），无法查询或写入角色卡。"
-                "请直接按用户的描述写外观，不要再调用本工具。"
-            )
-        _act = (action or "").strip().lower()
-        # 「谁」：工具没有 event 参数，用插件记录的最近事件反推触发者（v6.3.0）。
-        # 取不到就只写渠道名——写清「AI 建的」比留空有用得多。
-        try:
-            _tool_actor = character.actor_label(getattr(plugin, "_last_event", None))
-        except Exception:
-            _tool_actor = ""
-        _actor_llm = f"AI 工具·{_tool_actor}" if _tool_actor else "AI 工具"
-        if not _act:
-            return (
-                "缺少 action 参数。可用：list / get / save / update / delete / add_anchor / "
-                "update_anchor / delete_anchor / set_primary_anchor / bind_persona / "
-                "list_refs / add_ref / delete_ref / set_cover / suggest。"
-            )
-
-        def _fmt_card(c: dict) -> str:
-            anchors = store.list_anchors(int(c["id"]))
-            _pid = int(c.get("primary_anchor_id") or 0)
-            head = f"- {c['name']}"
-            if c.get("aliases"):
-                head += f"（别名 {','.join(c['aliases'])}）"
-            if c.get("work"):
-                head += f"[{c['work']}]"
-            if c.get("persona_name"):
-                head += f" ← 人格 {c['persona_name']}"
-            if c.get("lora_name"):
-                head += f" · LoRA {c['lora_name']}"
-            lines = [head]
-            for a in anchors:
-                lines.append(
-                    f"    锚点{'★' if int(a['id']) == _pid else '·'}「{a['name']}」"
-                    f"(w={a.get('weight')}): {a.get('positive') or ''}"
-                )
-            if not anchors:
-                lines.append("    锚点：无")
-            return "\n".join(lines)
-
-        try:
-            if _act == "list":
-                rows = store.list_characters(keyword or "")
-                if not rows:
-                    return (
-                        "暂无角色卡片。用户要求记住某角色设定时，用 action=save 建卡："
-                        "name=角色名、positive=英文 danbooru 标签串、可选 persona_name/aliases/work/lora。"
-                    )
-                return "角色卡片列表：\n" + "\n".join(_fmt_card(c) for c in rows)
-            if _act == "get":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。可用 action=list 看全部。"
-                return "角色卡片详情：\n" + _fmt_card(ch)
-            if _act == "save":
-                if not (name or "").strip() or not (positive or "").strip():
-                    return "save 需要 name（角色名）与 positive（英文标签串）。"
-                ch = store.create_character(
-                    name, aliases=aliases, persona_name=persona_name,
-                    work=work, lora_name=lora, source="llm",
-                    created_by=_actor_llm,
-                )
-                _an = (anchor_name or "默认装").strip() or "默认装"
-                _w = float(weight or 1.2)
-                _exist = None
-                for a in store.list_anchors(int(ch["id"])):
-                    if (a["name"] or "").strip() == _an:
-                        _exist = a
-                        break
-                if _exist is not None:
-                    store.update_anchor(
-                        int(_exist["id"]), positive=positive, negative=negative,
-                        weight=_w, lora_name=lora,
-                    )
-                    _msg = f"已更新「{ch['name']}」的锚点「{_an}」"
-                else:
-                    store.add_anchor(
-                        int(ch["id"]), _an, positive, negative=negative,
-                        weight=_w, lora_name=lora, created_by=_actor_llm, source="llm",
-                    )
-                    _msg = f"已记住「{ch['name']}」的锚点「{_an}」"
-                if (persona_name or "").strip():
-                    _msg += f"，绑定人格 {persona_name.strip()}"
-                logger.info(f"【角色卡·工具】 {_msg}（{len(positive)} 字）")
-                return f"{_msg}：{positive}"
-            if _act == "update":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                upd: dict = {}
-                if (aliases or "").strip():
-                    upd["aliases"] = [p.strip() for p in re.split(r"[,，]", aliases) if p.strip()]
-                for _k, _v in (("persona_name", persona_name), ("work", work),
-                               ("lora_name", lora), ("note", note)):
-                    if (_v or "").strip():
-                        upd[_k] = _v.strip()
-                if not upd:
-                    return "update 需要至少一个字段：aliases / persona_name / work / lora / note。"
-                store.update_character(int(ch["id"]), **upd)
-                return f"已更新「{ch['name']}」：{', '.join(f'{k}={v}' for k, v in upd.items())}"
-            if _act == "bind_persona":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                if not (persona_name or "").strip():
-                    return "bind_persona 需要 persona_name（AstrBot 人格名，如 小叽V4）。"
-                store.update_character(int(ch["id"]), persona_name=persona_name.strip())
-                return f"已把「{ch['name']}」绑定到人格「{persona_name.strip()}」（用户说「画你」时会命中）。"
-            if _act == "delete":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                store.delete_character(int(ch["id"]))
-                return f"已删除角色卡「{ch['name']}」及其全部锚点（这是不可撤销操作，请确认用户确实要求删除）。"
-            if _act == "add_anchor":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                if not (positive or "").strip():
-                    return "add_anchor 需要 positive（英文标签串）。"
-                if not (anchor_name or "").strip():
-                    return "add_anchor 需要 anchor_name（锚点名，如 泳装 / 校服）。"
-                # v5.18.1：同名锚点视为更新，避免同名重复记录（按名查找只取第一条，
-                # 重复那条会永远隐形，用户以为改上了其实没改）。
-                # v6.0.0：用精确名判定，避免子串回退误伤（「泳」≠「泳装」）。
-                _exist = store.find_anchor_exact(int(ch["id"]), anchor_name)
-                if _exist is not None:
-                    store.update_anchor(
-                        int(_exist["id"]), positive=positive, negative=negative,
-                        weight=float(weight or 1.2), lora_name=lora,
-                    )
-                    return (
-                        f"「{ch['name']}」已有同名锚点「{_exist['name']}」，已更新为："
-                        f"{positive}（权重 {float(weight or 1.2)}）"
-                    )
-                a = store.add_anchor(
-                    int(ch["id"]), anchor_name, positive, negative=negative,
-                    weight=float(weight or 1.2), lora_name=lora,
-                    created_by=_actor_llm, source="llm",
-                )
-                if a is None:
-                    return "新增锚点失败。"
-                return f"已为「{ch['name']}」新增锚点「{a['name']}」（权重 {a['weight']}）：{a['positive']}"
-            if _act == "update_anchor":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                a = store.get_anchor(int(ch["id"]), anchor_name or None)
-                if a is None:
-                    return f"角色「{ch['name']}」没有锚点「{anchor_name}」。"
-                upd = {}
-                if (positive or "").strip():
-                    upd["positive"] = positive.strip()
-                if (negative or "").strip():
-                    upd["negative"] = negative.strip()
-                if weight:
-                    upd["weight"] = float(weight)
-                if (lora or "").strip():
-                    upd["lora_name"] = lora.strip()
-                if not upd:
-                    return "update_anchor 需要至少一个要改的字段：positive / negative / weight / lora。"
-                store.update_anchor(int(a["id"]), **upd)
-                return f"已更新「{ch['name']}」的锚点「{a['name']}」。"
-            if _act == "delete_anchor":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                a = store.get_anchor(int(ch["id"]), anchor_name or None)
-                if a is None:
-                    return f"角色「{ch['name']}」没有锚点「{anchor_name}」。"
-                store.delete_anchor(int(a["id"]))
-                return f"已删除「{ch['name']}」的锚点「{a['name']}」。"
-            if _act == "set_primary_anchor":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                a = store.set_primary_anchor(int(ch["id"]), anchor_name or None)
-                if a is None:
-                    return f"没找到锚点「{anchor_name}」（可用 action=get 看现有锚点名）。"
-                return f"「{ch['name']}」的主锚点已设为「{a['name']}」。"
-            if _act == "list_refs":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                refs = store.list_refs(int(ch["id"]))
-                if not refs:
-                    return (
-                        f"「{ch['name']}」还没有参考图。用 action=add_ref 存一张"
-                        "（ref_url 传图片直链或本机绝对路径）。"
-                    )
-                _aid2name = {
-                    int(a["id"]): a["name"] for a in store.list_anchors(int(ch["id"]))
-                }
-                lines = [f"「{ch['name']}」参考图 {len(refs)} 张："]
-                for r in refs:
-                    _n = float(r.get("nsfw_score") or -1)
-                    _aid = int(r.get("anchor_id") or 0)
-                    _at = f" @{_aid2name.get(_aid, '锚点' + str(_aid))}" if _aid else " @角色级"
-                    lines.append(
-                        f"- id={r['id']}{' ★封面' if r.get('is_cover') else ''} 路径={r.get('path')} "
-                        f"sha={str(r.get('sha256') or '')[:12]}{_at} "
-                        + ("NSFW未检测" if _n < 0 else f"NSFW {_n:.2f}")
-                        + ("" if r.get("exists", True) else " ⚠文件缺失")
-                    )
-                if any(r.get("is_cover_auto") for r in refs):
-                    lines.append("（★封面：未显式设置时自动用第一张；可用 action=set_cover 固定）")
-                lines.append("★其中「路径」可直接作为 comfyui_draw / comfyui_img2img 的 image 参数用于图生图。")
-                return "\n".join(lines)
-            if _act == "add_ref":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                _u = (ref_url or "").strip()
-                if not _u:
-                    return "add_ref 需要 ref_url（http(s) 图片直链，或本机绝对路径）。"
-                _is_web = bool(re.match(r"^https?://", _u, re.I))
-                _MAX = 12 * 1024 * 1024
-                try:
-                    if _is_web:
-                        import aiohttp
-                        async with aiohttp.ClientSession(
-                            timeout=aiohttp.ClientTimeout(total=30)
-                        ) as _ses:
-                            async with _ses.get(_u) as _resp:
-                                _resp.raise_for_status()
-                                data = await _resp.read()
-                        # 不引入 urlparse：去掉 query/fragment 后取文件名即可
-                        _fname = (os.path.basename(_u.split("?", 1)[0].split("#", 1)[0]) or "ref.png")
-                    else:
-                        _p = Path(_u)
-                        if not _p.exists() or not _p.is_file():
-                            return f"本地路径不存在：{_u}"
-                        data = await asyncio.to_thread(_p.read_bytes)
-                        _fname = _p.name
-                except Exception as e:
-                    return f"读取参考图失败：{e}"
-                if len(data) > _MAX:
-                    return f"图片过大（{len(data) // 1024 // 1024} MB > 12 MB），请压缩后再存。"
-                # v6.1.0：可把图片挂到某个锚点下（anchor_name）；不给就是角色级图
-                _aid = 0
-                if (anchor_name or "").strip():
-                    _a = store.get_anchor(int(ch["id"]), anchor_name)
-                    if _a is None:
-                        return (
-                            f"「{ch['name']}」没有锚点「{anchor_name}」——先 add_anchor 建锚点，"
-                            "或省略 anchor_name 存为角色级图。"
-                        )
-                    _aid = int(_a["id"])
-                try:
-                    ref = await character.land_ref(
-                        self, int(ch["id"]), data, filename=_fname,
-                        url=_u if _is_web else "", note="工具录入", anchor_id=_aid,
-                        created_by=_actor_llm,
-                        origin="web" if _is_web else "tool",
-                    )
-                except Exception as e:
-                    return f"参考图落地失败：{e}"
-                if ref is None:
-                    return "参考图落地失败。"
-                _n = float(ref.get("nsfw_score") or -1)
-                return (
-                    f"已为「{ch['name']}」存下参考图 id={ref['id']}"
-                    + ("（同图已存在，复用记录）" if ref.get("dedup") else "")
-                    + (f"，NSFW 置信度 {_n:.2f}" if _n >= 0 else "，NSFW 未检测（检测器不可用）")
-                    + f"。路径：{ref.get('path')}"
-                )
-            if _act == "delete_ref":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                if not ref_id:
-                    return "delete_ref 需要 ref_id（先用 action=list_refs 查）。"
-                ref = store.get_ref(int(ref_id))
-                if ref is None or int(ref.get("character_id") or 0) != int(ch["id"]):
-                    return f"「{ch['name']}」下没有 id={int(ref_id)} 的参考图。"
-                store.delete_ref(int(ref_id))
-                return f"已删除「{ch['name']}」的参考图 id={int(ref_id)}。"
-            if _act == "set_cover":
-                ch = store.get_character(name or "")
-                if ch is None:
-                    return f"没找到角色「{name}」。"
-                if not ref_id:
-                    # ref_id=0 / 未传：清除封面设置（回落为自动取第一张）
-                    store.clear_cover_ref(int(ch["id"]))
-                    return f"已清除「{ch['name']}」的封面设置（改为自动用第一张图）。"
-                try:
-                    _ref = store.get_ref(int(ref_id))
-                    if _ref is None or int(_ref.get("character_id") or 0) != int(ch["id"]):
-                        return f"「{ch['name']}」下没有 id={int(ref_id)} 的图片（先用 action=list_refs 查）。"
-                    store.set_cover_ref(int(ch["id"]), int(ref_id))
-                except ValueError as e:
-                    return f"设置封面失败：{e}"
-                return f"已把 id={int(ref_id)} 设为「{ch['name']}」的封面。"
-            if _act == "suggest":
-                _res = await character.suggest_anchor(self, name or "", work or "")
-                if not _res.get("ok"):
-                    return f"补全失败：{_res.get('msg')}"
-                return (
-                    f"「{name}」候选标签（来源：{_res.get('source')}，查询词「{_res.get('query')}」）：\n"
-                    f"{_res.get('tags')}\n"
-                    "★这是候选：请人工核对后（删掉不适用的服装/场景词、补上角色专有 tag）\n"
-                    f"用 action=save 或 add_anchor 落库（name={name}, positive=核对后的标签串）。"
-                    "落库前必须让用户确认，不要直接写入。"
-                )
-            return (
-                f"未知 action「{action}」。可用：list / get / save / update / delete / "
-                "add_anchor / update_anchor / delete_anchor / set_primary_anchor / bind_persona / "
-                "list_refs / add_ref / delete_ref / set_cover / suggest。"
-            )
-        except ValueError as e:
-            return f"操作失败：{e}"
-        except Exception as e:
-            logger.warning(f"【角色卡·工具】 执行失败: {e}", exc_info=True)
-            return f"操作失败：{e}"
 
     # LLM 工具：comfyui_loras（查询 LoRA 库）
     # ------------------------------------------------------------------ #
@@ -20140,7 +18853,7 @@ class ComfyUIDrawPlugin(Star):
           ★细节照写丰富：镜头（close-up / from above / full body）、光影（backlighting / rim light）、
           氛围、场景、材质这些**非外观**维度写足（同 comfyui_draw 的「细节密度」），
           但别为了丰富去补外观；画质前缀由插件自动加，你不用写。
-          ★插件侧强制校验：与角色卡锚点冲突的外观标签会被自动剥掉（白写）。
+          ★外观以用户描述为准，别赌模型自己编的特征。
         - negative_prompt 同规则。
 
         ★外部插件调用专属两个参数（由调用方在代码层声明，AI 自己不要传）：

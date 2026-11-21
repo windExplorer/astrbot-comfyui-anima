@@ -14,8 +14,8 @@ import SessionView from "@/views/SessionView.vue";
 import TokenView from "@/views/TokenView.vue";
 import ShareView from "@/views/ShareView.vue";
 import ShareManageView from "@/views/ShareManageView.vue";
-import CharacterView from "@/views/CharacterView.vue";
 import StudioView from "@/views/StudioView.vue";
+import WaifuRoleView from "@/views/WaifuRoleView.vue";
 import LoginView from "@/views/LoginView.vue";
 import { authState, checkStandaloneAuth } from "@/composables/auth";
 import { isStandaloneMode } from "@/api/bridge";
@@ -29,6 +29,7 @@ const router = createRouter({
     { path: "/", redirect: "/config" },
     { path: "/login", name: "login", component: LoginView, meta: { title: "访问口令", public: true } },
     { path: "/studio", name: "studio", component: StudioView, meta: { title: "在线生图" } },
+    { path: "/waifu-roles", name: "waifu-roles", component: WaifuRoleView, meta: { title: "老婆角色" } },
     { path: "/config", name: "config", component: ConfigView, meta: { title: "配置" } },
     { path: "/logs", name: "logs", component: LogsView, meta: { title: "日志" } },
     { path: "/stats", name: "stats", component: StatsView, meta: { title: "统计" } },
@@ -45,7 +46,6 @@ const router = createRouter({
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },
     { path: "/share-manage", name: "share-manage", component: ShareManageView, meta: { title: "分享管理" } },
     { path: "/share", name: "share", component: ShareView, meta: { title: "萌绘分享", public: true } },
-    { path: "/character", name: "character", component: CharacterView, meta: { title: "角色卡" } },
     { path: "/:pathMatch(.*)*", redirect: "/config" },
   ],
 });

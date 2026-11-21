@@ -4,6 +4,37 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.0.0（角色卡重构：删除自建库，改用老婆插件角色 + 主参考图）
+
+**重大架构变更（主版本升级）**：彻底移除插件自建角色卡子系统，角色资料统一来自
+「萌萌今日老婆」插件（需 v0.71.12+）。解决「旧模型不认识新角色、文生图画不出，
+但给参考图走图生图就能画对」的问题。
+
+**删除（自建角色卡全链路）**：
+- 模块 `character.py` / `character_store.py`（character.db 三表）；`/角色` 指令与
+  `comfyui_character` LLM 工具；WebUI 角色卡页与 `character/*` API（两条通道）；
+  相关配置块 `character_card` 与 `prompt_boost.guard_appearance`；专用测试与文档。
+- 设定板 / MOSS 里"喂卡片资料给 LLM"的逻辑、外观护栏、多角色身份锚点的卡片来源
+  一并移除；相关 docstring 清理干净，不再诱导模型调用已删除的工具。
+- **注意**：升级后旧的 `data_dir/character.db` 与 `characters/` 目录不再被读写（残留可手动删）。
+  角色设定板 skill（`skills/character-sheet/`）保留，它是独立提示词规范，不是卡片库。
+
+**新增（老婆角色链路）**：
+- 模块 `waifu_role.py`：经 `context.get_registered_star("astrbot_plugin_moe_waifu").star_cls.api`
+  读 `waifu.v1` 契约（`main_ref_map()`），带 1 分钟缓存；契约缺失 / 版本不符 /
+  status!=ok 一律安全降级为普通出图。只取 `strategy.ref`（主参考），**不碰** refs 资料库 / 立绘 / 三视图。
+- 文本命中（用户消息 + 提示词，角色名 / 别名，长名优先）→ 强制用配置的工作流
+  （优先级高于会话固定工作流）+ 主参考图做图生图 + 追加 `tags_en`。
+- 配置 `waifu_role`：总开关 / 工作流（名称或 base_id）/ 优先级（默认角色卡优先；
+  LoRA 优先时命中 LoRA 走常规工作流选择、不走角色卡）/ tags 注入开关。
+- WebUI 新增「老婆角色」页（只读）：角色列表 + 主参考图绑定状态；**无主参考图的角色
+  明确提示且不参与生图**。新增 `waifu/roles` API（两条 WebUI 通道都支持，refresh=1 清缓存）。
+
+**验证**：`test_waifu_role`（契约降级 / 命中 / tags / 接入点）、`test_prompt_boost`、
+`test_refine_fallback`、`test_static_lint`（pyflakes 无未定义名）、`test_module_lists`
+（磁盘/热重载/打包三方一致）、`test_config_groups`、`test_llm_tool_docstrings` 全过；
+前端 vite 构建通过；全仓 grep 自建角色卡引用清零（除 CHANGELOG 历史）。
+
 ## v7.16.0（提示词优化一键总开关）
 
 需求：用户希望一键关闭整个提示词优化，而不是分别去关画质前缀 / 扩写 / 外观护栏三个开关。

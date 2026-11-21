@@ -1,0 +1,9 @@
+refactor!: 角色卡重构——删自建库，改用老婆插件角色+主参考图（v8.0.0）
+
+- 删 character.py/character_store.py、/角色 指令、comfyui_character 工具、
+  WebUI 角色卡页与双通道 API、character_card 配置、相关测试与文档
+- 新增 waifu_role.py：waifu.v1 契约读角色/主参考图，缓存+安全降级
+- _do_draw 接入：文本命中老婆角色→强制工作流(压会话pin)+主参考图图生图+tags_en
+- 配置 waifu_role（总开关/工作流/优先级/tags）；默认角色卡优先
+- WebUI 新增「老婆角色」页（只读，缺失主参考图提示）+ waifu/roles API 双通道
+- test_waifu_role 等全过，包结构核验 OK

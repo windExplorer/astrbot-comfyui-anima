@@ -44,7 +44,6 @@ REQUIRED = {
     "comfyui_img2img": ["prompt", "prompts", "loras", "image"],
     "comfyui_gallery": ["mode", "keyword", "tag", "limit"],
     "comfyui_loras": ["base_model", "keyword", "category"],
-    "comfyui_character": ["action", "name", "positive", "anchor_name", "persona_name"],
     "nai_codex": ["keyword", "scope", "full", "limit"],
 }
 
