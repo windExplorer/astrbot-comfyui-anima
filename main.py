@@ -792,6 +792,12 @@ g_session_i2i_ref: dict[str, list[str]] = {}
 # 「没指定就用默认或之前说过的，图生图不算」）。键为 session_id，值为工作流名。
 g_session_workflow: dict[str, str] = {}
 
+# 每个会话「最近一次命中的老婆角色卡」记忆（v8.7.0）：
+# 「再来一张」这类续画消息不含角色名，靠它沿用上一张的角色/主参考图/强制工作流。
+# 键为完整 UMO（_session_umo_of），值为 {"cid": 角色ID, "ts": 时间戳}；内存态，重启丢失可接受。
+g_session_role: dict[str, dict] = {}
+G_SESSION_ROLE_TTL = 1800.0  # 30 分钟没再用角色就过期
+
 # 跨插件调用的「外部调用」判定（v7.7.58 起收敛到 _is_external_call 一个入口）：
 #   · external=True —— 调用方的**显式声明**：我是外部插件，请把图片路径用 JSON 返回、
 #     由我自己发送（同时享受第三方待遇：默认静默、跳过单轮闸门 / 发图白名单 / 已读回执）。
@@ -8303,10 +8309,27 @@ class ComfyUIDrawPlugin(Star):
                 _u_msg = (getattr(event, "message_str", "") or "").strip()
                 _ref_map, _wr_missing = await role_card.load_ref_map(self.context)
                 _wr_cid, _wr_entry = role_card.match_role(f"{_u_msg} {positive}", _ref_map)
+                # v8.7.0：会话内沿用上次角色——「再来一张」消息没有角色名时，
+                # 若像续画（未提到别的角色）则复用上次命中的角色卡，避免变成别的角色/工作流。
+                _reuse_cfg = _wr_cfg.get("reuse_last_role", True) if isinstance(_wr_cfg, dict) else True
+                _skey = self._session_umo_of(event)
+                _continue_re = re.compile(r"^(再|再来|继续|接着|还|还要|来一张|画一张|同样|一样|这个|按上面|照着|另(一)?张)")
+                if (not _wr_entry and _reuse_cfg and _skey and _ref_map
+                        and _continue_re.search(_u_msg) and (positive or "").strip()):
+                    _prev = g_session_role.get(_skey)
+                    if (_prev and isinstance(_prev, dict)
+                            and time.time() - float(_prev.get("ts") or 0) <= G_SESSION_ROLE_TTL
+                            and str(_prev.get("cid") or "") in _ref_map):
+                        _wr_cid = str(_prev.get("cid"))
+                        _wr_entry = _ref_map.get(_wr_cid)
+                        logger.info(f"【角色卡】 续画沿用上次角色 {_wr_cid}（{_wr_entry.get('name') if _wr_entry else ''}）")
                 if _wr_entry:
                     _wr_hit_name = str(_wr_entry.get("name") or _wr_cid or "")
                     _wr_ref = str(_wr_entry.get("ref") or "").strip()
                     if _wr_ref:
+                        # v8.7.0：记入会话记忆（仅本次真命中角色名时覆盖，续画沿用不刷新也无害）
+                        if _skey and _wr_cid:
+                            g_session_role[_skey] = {"cid": str(_wr_cid), "ts": time.time()}
                         # 参考图作为图生图输入（放在用户自带图之前，角色主体优先）
                         init_images = list(init_images or [])
                         if _wr_ref not in init_images:

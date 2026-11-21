@@ -4,6 +4,35 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.7.0（续画「再来一张」沿用上次角色，不再串角色/工作流）
+
+现象：先出一张曳尔沐（命中角色卡、用主参考图 + 角色卡工作流），接着说「再来一张」
+却变成别的角色、别的文生图工作流。
+
+根因（两条叠加）：
+- 角色卡命中只吃**当次消息文本**（`main.py:8305` `match_role(f"{_u_msg} {positive}")`），
+  「再来一张」无角色名；而 hook 又要求 LLM「prompt 里不写角色名」→ 命中必然落空。
+- 未命中时 `apply_session_pin=not bool(_wr_force_wf)` 变 True → 会话固定的**文生图**
+  工作流强制覆盖，且主参考图不注入 → 完全偏离上一张。
+
+修复（会话级角色记忆，仿 `g_session_workflow`）：
+- 新增 `g_session_role: dict[str, dict]`（键 = 完整 UMO `_session_umo_of`，值
+  `{"cid","ts"}`）+ `G_SESSION_ROLE_TTL=1800`（30 分钟过期）。真命中角色名且有主参考图
+  时写入。
+- `_do_draw` 角色卡链路：`match_role` 未命中时，若用户消息是**续画意图**
+  （再来 / 再画 / 继续 / 接着 / 还 / 来一张 / 同样 / 照着 / 另(一)张…）且 positive 非空，
+  从记忆取上次 cid 回 `_ref_map` 还原 entry，直接走现有角色卡链路——于是主参考图、
+  强制角色卡工作流（绕过会话固定 pin）、auto_detail 全部照旧生效。
+- 用户明确提了别的角色名 → 正常覆盖记忆、切换角色；跨会话靠 UMO 键天然隔离；
+  续画沿用不会重复触发 `auto_detail`（消息去掉角色名后为空）。
+- 配置 `role_card.reuse_last_role`（默认开）可关；关闭则每次都按当次消息判断，
+  行为回到 v8.6.0。
+- 内存态，重启丢失可接受；不改 DB schema / WebUI，最小改动。
+
+验证：`test_role_card`（新增记忆 dict / TTL / 读写 / 续画正则 / 配置守卫）、
+`test_self_methods_defined`、`test_config_groups`、`test_static_lint`（pyflakes）、
+`test_refine_fallback`、`test_draw_size_decision`（800 组）全过。
+
 ## v8.6.0（角色卡短描述自动详细创作：一句话 → 几百~上千字画面）
 
 需求：聊天出图时 bot 生成的提示词太干瘪（`elyms, 1girl, solo, upper body portrait...`），

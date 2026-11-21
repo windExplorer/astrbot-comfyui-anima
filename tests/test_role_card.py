@@ -135,6 +135,13 @@ check("创作后跳过二次扩写", "skip_llm=raw_prompt or _detail_done" in sr
 check("排除用户自带图场景", "not _user_had_images" in src)
 _sch = (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
 check("schema 有 auto_detail", '"auto_detail"' in _sch and '"auto_detail_max_chars"' in _sch)
+# v8.7.0：会话内沿用上次角色（续画不串角色/工作流）
+check("有会话角色记忆 dict", "g_session_role: dict[str, dict]" in src)
+check("有 TTL", "G_SESSION_ROLE_TTL" in src)
+check("读记忆回退", "g_session_role.get(_skey)" in src)
+check("写记忆", 'g_session_role[_skey] = {"cid"' in src)
+check("续画正则", "再来|继续|接着" in src)
+check("schema 有 reuse_last_role", '"reuse_last_role"' in _sch)
 check("强制工作流绕过 session pin", "apply_session_pin=not bool(_wr_force_wf)" in src)
 check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 
