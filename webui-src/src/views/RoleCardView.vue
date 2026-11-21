@@ -43,8 +43,10 @@
 
       <!-- 工具栏：搜索 + 筛选 + 视图切换 -->
       <div class="rc-toolbar">
-        <n-input v-model:value="q" placeholder="搜索角色名 / 别名 / 作品 / 标签" clearable style="max-width:340px" />
-        <n-select v-model:value="refFilter" :options="refFilterOptions" size="small" style="width:150px" />
+        <n-input v-model:value="q" placeholder="搜索角色名 / 别名 / 作品 / 标签" clearable style="max-width:300px" />
+        <n-select v-model:value="seriesFilter" :options="seriesOptions" size="small" filterable clearable
+          placeholder="全部作品" style="width:170px" />
+        <n-select v-model:value="refFilter" :options="refFilterOptions" size="small" style="width:140px" />
         <n-radio-group v-model:value="viewMode" size="small">
           <n-radio-button value="avatar">头像</n-radio-button>
           <n-radio-button value="card">卡片</n-radio-button>
@@ -110,6 +112,7 @@ const missing = ref<string[]>([]);
 const total = ref(0);
 const withRef = ref(0);
 const q = ref("");
+const seriesFilter = ref<string | null>(null);
 const refFilter = ref("all");
 const viewMode = ref<"avatar" | "card" | "list">("avatar");  // v8.2.1：默认头像墙
 const cardPage = ref(1);
@@ -130,10 +133,17 @@ const wfDirty = computed(() => (wfValue.value || "") !== (wfSaved.value || ""));
 
 const withAvatar = computed(() => roles.value.filter((r: any) => !!r.avatar_thumb).length);
 const missingText = computed(() => missing.value.slice(0, 15).join("、") + (missing.value.length > 15 ? "…" : ""));
+// 作品选项：从角色数据提取、去重排序（可搜索下拉）
+const seriesOptions = computed(() => {
+  const set = new Set<string>();
+  roles.value.forEach((r: any) => { const s = String(r.series || "").trim(); if (s) set.add(s); });
+  return [...set].sort((a, b) => a.localeCompare(b, "zh-CN")).map((s) => ({ label: s, value: s }));
+});
 
 const filtered = computed(() => {
   const s = (q.value || "").trim().toLowerCase();
   return roles.value.filter((r: any) => {
+    if (seriesFilter.value && String(r.series || "").trim() !== seriesFilter.value) return false;
     if (refFilter.value === "yes" && !r.has_ref) return false;
     if (refFilter.value === "no" && r.has_ref) return false;
     if (!s) return true;
@@ -144,7 +154,7 @@ const filtered = computed(() => {
 
 // 卡片视图分页（12/页），筛选或搜索变化时页码归 1
 const pagedCards = computed(() => filtered.value.slice((cardPage.value - 1) * 12, cardPage.value * 12));
-watch([q, refFilter], () => { cardPage.value = 1; });
+watch([q, refFilter, seriesFilter], () => { cardPage.value = 1; });
 
 const columns = [
   {
