@@ -45,16 +45,30 @@
       <div class="rc-toolbar">
         <n-input v-model:value="q" placeholder="搜索角色名 / 别名 / 作品 / 标签" clearable style="max-width:340px" />
         <n-select v-model:value="refFilter" :options="refFilterOptions" size="small" style="width:150px" />
-        <div class="rc-view-switch">
-          <n-button size="small" :type="viewMode === 'grid' ? 'primary' : 'default'" @click="viewMode = 'grid'">卡片</n-button>
-          <n-button size="small" :type="viewMode === 'list' ? 'primary' : 'default'" @click="viewMode = 'list'">列表</n-button>
-        </div>
+        <n-radio-group v-model:value="viewMode" size="small">
+          <n-radio-button value="avatar">头像</n-radio-button>
+          <n-radio-button value="card">卡片</n-radio-button>
+          <n-radio-button value="list">列表</n-radio-button>
+        </n-radio-group>
         <span class="rc-count">{{ filtered.length }} / {{ total }}</span>
       </div>
 
-      <!-- 卡片视图 -->
-      <div v-if="viewMode === 'grid'" class="rc-grid">
-        <div v-for="r in filtered" :key="r.char_id" class="rc-card" :class="{ 'no-ref': !r.has_ref }">
+      <!-- 头像视图（默认）：圆形头像墙 + 悬停名字气泡（同老婆插件） -->
+      <div v-if="viewMode === 'avatar'" class="av-wall">
+        <div v-for="r in filtered" :key="'av' + r.char_id" class="av-tile">
+          <div class="av-pic">
+            <img v-if="r.avatar_thumb" :src="r.avatar_thumb" :alt="r.name" loading="lazy" />
+            <span v-else class="av-letter">{{ (r.name || '?').slice(0, 1) }}</span>
+            <span class="av-ref" :class="r.has_ref ? 'ok' : 'warn'" :title="r.has_ref ? '有主参考图' : '缺主参考图'"></span>
+          </div>
+          <div class="av-hover"><b>{{ r.name }}</b><span>{{ r.series || '未填作品' }}</span></div>
+        </div>
+        <div v-if="!filtered.length" class="rc-empty">没有匹配的角色</div>
+      </div>
+
+      <!-- 卡片视图：竖版封面 7:12 + 定高信息行 -->
+      <div v-else-if="viewMode === 'card'" class="rc-grid">
+        <div v-for="r in pagedCards" :key="'cd' + r.char_id" class="rc-card" :class="{ 'no-ref': !r.has_ref }">
           <div class="rc-card-cover">
             <img v-if="r.portrait_thumb" :src="r.portrait_thumb" :alt="r.name" loading="lazy" />
             <div v-else class="rc-cover-ph">{{ (r.name || '?').slice(0, 1) }}</div>
@@ -68,6 +82,9 @@
           </div>
         </div>
         <div v-if="!filtered.length" class="rc-empty">没有匹配的角色</div>
+        <div v-if="filtered.length > 12" class="rc-pager">
+          <n-pagination v-model:page="cardPage" :page-count="Math.ceil(filtered.length / 12)" size="small" />
+        </div>
       </div>
 
       <!-- 列表视图（分页，不截断） -->
@@ -81,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { NTag, useMessage } from "naive-ui";
 import { apiGet, apiPost } from "@/api/bridge";
 
@@ -94,7 +111,8 @@ const total = ref(0);
 const withRef = ref(0);
 const q = ref("");
 const refFilter = ref("all");
-const viewMode = ref<"grid" | "list">("grid");
+const viewMode = ref<"avatar" | "card" | "list">("avatar");  // v8.2.1：默认头像墙
+const cardPage = ref(1);
 
 const refFilterOptions = [
   { label: "全部角色", value: "all" },
@@ -123,6 +141,10 @@ const filtered = computed(() => {
       .join(" ").toLowerCase().includes(s);
   });
 });
+
+// 卡片视图分页（12/页），筛选或搜索变化时页码归 1
+const pagedCards = computed(() => filtered.value.slice((cardPage.value - 1) * 12, cardPage.value * 12));
+watch([q, refFilter], () => { cardPage.value = 1; });
 
 const columns = [
   {
@@ -226,7 +248,35 @@ onMounted(() => load());
 .rc-view-switch { display: flex; gap: 4px; }
 .rc-count { margin-left: auto; color: var(--text-sub); font-size: 13px; }
 
-.rc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+/* 头像视图：圆形头像墙（同老婆插件） */
+.av-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 12px; }
+.av-tile { position: relative; cursor: default; }
+.av-pic {
+  position: relative; width: 100%; aspect-ratio: 1/1; border-radius: 50%; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(128,128,128,.22); background: var(--bg-panel);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.av-tile:hover .av-pic {
+  transform: translateY(-2px) scale(1.03); border-color: var(--wf-brand, #f07fb0);
+  box-shadow: 0 8px 20px -10px rgba(160,50,120,.85);
+}
+.av-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.av-letter { font-size: 26px; font-weight: 700; line-height: 1; color: var(--text-sub); user-select: none; }
+.av-ref { position: absolute; right: 2px; bottom: 2px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg-body); }
+.av-ref.ok { background: #18a058; }
+.av-ref.warn { background: #d03050; }
+.av-hover {
+  position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translate(-50%, 4px);
+  z-index: 6; pointer-events: none; display: flex; flex-direction: column; gap: 2px;
+  align-items: center; padding: 5px 10px; border-radius: 8px; white-space: nowrap;
+  background: rgba(28,18,26,.92); color: #fff; opacity: 0; transition: opacity .15s, transform .15s;
+}
+.av-hover b { font-size: 12px; }
+.av-hover span { font-size: 10.5px; opacity: .72; }
+.av-tile:hover .av-hover { opacity: 1; transform: translate(-50%, 0); }
+
+.rc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
 .rc-card {
   border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden;
   background: var(--bg-panel); display: flex; flex-direction: column;
@@ -234,7 +284,7 @@ onMounted(() => load());
 }
 .rc-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.18); }
 .rc-card.no-ref { opacity: .8; }
-.rc-card-cover { position: relative; aspect-ratio: 3/4; background: var(--bg-body); overflow: hidden; }
+.rc-card-cover { position: relative; aspect-ratio: 7/12; max-height: 320px; background: var(--bg-body); overflow: hidden; }
 .rc-card-cover > img:first-child { width: 100%; height: 100%; object-fit: cover; display: block; }
 .rc-cover-ph {
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
@@ -252,8 +302,9 @@ onMounted(() => load());
 .rc-card-badge.ok { background: rgba(24,160,88,.9); }
 .rc-card-badge.warn { background: rgba(208,48,80,.9); }
 .rc-card-body { padding: 8px 10px 10px; }
-.rc-card-name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-card-series { color: var(--text-sub); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-card-name { font-weight: 600; font-size: 14px; height: 20px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-card-series { color: var(--text-sub); font-size: 11px; height: 15px; line-height: 15px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-pager { display: flex; justify-content: center; margin-top: 16px; }
 .rc-card-tags {
   color: var(--text-sub); font-size: 11px; margin-top: 6px; line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
