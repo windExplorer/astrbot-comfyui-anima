@@ -146,6 +146,8 @@ function refreshAll() {
   emitRefresh();
 }
 
+// PC 侧边栏菜单（硬编码，独立于 router/nav.ts 的 NAV_ITEMS——后者只供移动端抽屉）。
+// 新增页面时这里与 nav.ts 的 NAV_ITEMS 必须两处同步（v8.13.0 漏加「图片复核」的教训）。
 const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/config" }, { default: () => "配置" }), key: "config", icon: () => iconSvg("⚙️") },
   { label: () => h(RouterLink, { to: "/studio" }, { default: () => "在线生图" }), key: "studio", icon: () => iconSvg("🖌️") },
@@ -160,6 +162,7 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: "/baseworkflows" }, { default: () => "基础工作流" }), key: "baseworkflows", icon: () => iconSvg("📄") },
   { label: () => h(RouterLink, { to: "/platforms" }, { default: () => "生图平台" }), key: "platforms", icon: () => iconSvg("🌐") },
   { label: () => h(RouterLink, { to: "/gallery" }, { default: () => "图库" }), key: "gallery", icon: () => iconSvg("🖼️") },
+  { label: () => h(RouterLink, { to: "/review" }, { default: () => "图片复核" }), key: "review", icon: () => iconSvg("🛡️") },
   { label: () => h(RouterLink, { to: "/quota" }, { default: () => "限额" }), key: "quota", icon: () => iconSvg("🚦") },
   { label: () => h(RouterLink, { to: "/sessions" }, { default: () => "会话管理" }), key: "sessions", icon: () => iconSvg("💬") },
   { label: () => h(RouterLink, { to: "/token" }, { default: () => "Token" }), key: "token", icon: () => iconSvg("🔑") },
