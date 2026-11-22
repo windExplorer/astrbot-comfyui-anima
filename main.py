@@ -14875,7 +14875,7 @@ class ComfyUIDrawPlugin(Star):
             _remote_on = bool(str(self._cfg("gallery.nsfw.check_url", "") or "").strip())
             _remote_note = (
                 "\n🌐 已配置 nsfw-check 远程判定：/涩图检测 优先走远程（Blue-Eye 主判，"
-                "结果按 safe/中间带/nsfw 分档并附部位信号），本地阈值仅作远程不可用时的回退。"
+                "结果按 安全/擦边/涩涩 分档并附部位说明），本地阈值仅作远程不可用时的回退。"
                 if _remote_on else ""
             )
             await self._send(
@@ -14965,10 +14965,44 @@ class ComfyUIDrawPlugin(Star):
             event.stop_event()
             return
 
-        # 通俗话术：把 P(nsfw) 描述成「涩涩内容的可能性」，每张图都带百分比
+        # 通俗话术：把 P(nsfw) 描述成「涩涩内容的可能性」，每张图都带百分比。
+        # 部位标签的通俗中文映射（词表对齐 nsfw-check nudenet 类目与副模型露点类，
+        # 未收录的标签原样展示）。安全档的部位只是画面证据，措辞用「画面」；
+        # review/nsfw 档才是「命中部位」，避免安全图挂一排术语信号吓到用户。
+        _NSFW_LABEL_ZH = {
+            "FEMALE_FACE": "女性面部",
+            "MALE_FACE": "男性面部",
+            "EYE": "眼部",
+            "FEMALE_BREAST_COVERED": "女性胸部(有遮挡)",
+            "MALE_BREAST_COVERED": "男性胸部(有遮挡)",
+            "FEMALE_BREAST_EXPOSED": "女性胸部暴露",
+            "MALE_BREAST_EXPOSED": "男性胸部暴露",
+            "NIPPLE_EXPOSED": "露点",
+            "FEMALE_GENITALIA_COVERED": "女性私处(有遮挡)",
+            "MALE_GENITALIA_COVERED": "男性私处(有遮挡)",
+            "FEMALE_GENITALIA_EXPOSED": "女性私处暴露",
+            "MALE_GENITALIA_EXPOSED": "男性私处暴露",
+            "VAGINA_EXPOSED": "私处暴露",
+            "PENIS_EXPOSED": "男性私处暴露",
+            "BUTTOCKS_COVERED": "臀部(有遮挡)",
+            "BUTTOCKS_EXPOSED": "臀部暴露",
+            "ANUS_COVERED": "肛部(有遮挡)",
+            "ANUS_EXPOSED": "肛部暴露",
+            "ARMPITS_EXPOSED": "腋下暴露",
+            "BELLY_EXPOSED": "腹部暴露",
+            "FEET_COVERED": "足部(有遮挡)",
+            "FEET_EXPOSED": "足部暴露",
+        }
+
+        def _labels_zh(r: dict) -> str:
+            labels = [str(x).strip() for x in (r.get("labels") or [])][:4]
+            return "、".join(
+                _NSFW_LABEL_ZH.get(x.upper(), x) for x in labels if x
+            )
+
         def _desc(r: dict) -> str:
             if r.get("remote"):
-                # 远程判定（nsfw-check Blue-Eye 主判）：按 level 分档，附部位信号
+                # 远程判定（nsfw-check Blue-Eye 主判）：按 level 分档，附部位说明
                 pct = r["score"] * 100
                 lv = r.get("level")
                 if lv == "safe":
@@ -14981,8 +15015,9 @@ class ComfyUIDrawPlugin(Star):
                     head = f"⚠️ 检测服务未能给出结论（可能性约 {pct:.0f}%）"
                 if r.get("diverge"):
                     head += "；主/副模型有分歧"
-                if r.get("labels"):
-                    head += "；信号：" + "/".join(r["labels"][:4])
+                zh = _labels_zh(r)
+                if zh:
+                    head += ("；画面：" if lv == "safe" else "；命中部位：") + zh
                 return head
             pct = r["score"] * 100
             if r["nsfw"]:
