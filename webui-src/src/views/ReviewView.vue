@@ -84,7 +84,7 @@
               </div>
               <div class="rv-meta">
                 <div class="rv-score">远程分 {{ fmtScore(r.nsfw_remote_score) }}<template v-if="r.nsfw_remote_level"> · {{ r.nsfw_remote_level }}</template></div>
-                <div v-if="(r.labels || []).length" class="rv-labels" :title="r.labels.join(' / ')">{{ r.labels.join(" / ") }}</div>
+                <div v-if="(r.labels || []).length" class="rv-labels" :title="labelsZh(r.labels)">{{ labelsZh(r.labels) }}</div>
                 <div class="rv-status">{{ statusText(r) }}</div>
                 <div class="rv-actions">
                   <n-button size="tiny" type="success" @click.stop="review(r, 'pass')">放行</n-button>
@@ -100,7 +100,8 @@
     </div>
 
     <!-- 大图预览（TODO §7.2：侧栏显示双分/level/分歧 + 操作） -->
-    <n-modal v-model:show="showPreview" preset="card" class="rv-modal" title="复核详情">
+    <!-- 宽度用内联 style：n-modal 传送到 body 外渲染，scoped 的 class 够不到卡片本体 -->
+    <n-modal v-model:show="showPreview" preset="card" title="复核详情" style="width: min(960px, 94vw)">
       <div v-if="previewRow" class="rv-modal-body">
         <div class="rv-modal-img">
           <img v-if="previewSrc" :src="previewSrc" />
@@ -114,7 +115,7 @@
           <div class="rv-kv"><span>分歧</span><b>{{ previewRow.diverge ? "是（主/副模型不一致）" : "否" }}</b></div>
           <div class="rv-kv"><span>当前状态</span><b>{{ statusText(previewRow) }}</b></div>
           <div class="rv-kv" v-if="previewRow.nsfw_record_id"><span>检测记录</span><b :title="previewRow.nsfw_record_id">{{ previewRow.nsfw_record_id }}</b></div>
-          <div class="rv-kv" v-if="(previewRow.labels || []).length"><span>触发部位</span><b>{{ previewRow.labels.join(" / ") }}</b></div>
+          <div class="rv-kv" v-if="(previewRow.labels || []).length"><span>触发部位</span><b>{{ labelsZh(previewRow.labels) }}</b></div>
           <div class="rv-kv" v-if="previewRow.prompt"><span>提示词</span><b class="rv-prompt" :title="previewRow.prompt">{{ previewRow.prompt }}</b></div>
           <div class="rv-actions rv-modal-actions">
             <n-button type="success" @click="review(previewRow, 'pass')">放行</n-button>
@@ -181,6 +182,29 @@ function fmtScore(v: any): string {
   const n = Number(v);
   if (v === null || v === undefined || Number.isNaN(n)) return "—";
   return n.toFixed(3);
+}
+
+// 部位标签通俗中文映射（与后端 /涩图检测 话术同源，未收录的标签原样展示）
+const NSFW_LABEL_ZH: Record<string, string> = {
+  FEMALE_FACE: "女性面部", MALE_FACE: "男性面部", EYE: "眼部",
+  FEMALE_BREAST_COVERED: "女性胸部(有遮挡)", MALE_BREAST_COVERED: "男性胸部(有遮挡)",
+  FEMALE_BREAST_EXPOSED: "女性胸部暴露", MALE_BREAST_EXPOSED: "男性胸部暴露",
+  NIPPLE_EXPOSED: "露点",
+  FEMALE_GENITALIA_COVERED: "女性私处(有遮挡)", MALE_GENITALIA_COVERED: "男性私处(有遮挡)",
+  FEMALE_GENITALIA_EXPOSED: "女性私处暴露", MALE_GENITALIA_EXPOSED: "男性私处暴露",
+  VAGINA_EXPOSED: "私处暴露", PENIS_EXPOSED: "男性私处暴露",
+  BUTTOCKS_COVERED: "臀部(有遮挡)", BUTTOCKS_EXPOSED: "臀部暴露",
+  ANUS_COVERED: "肛部(有遮挡)", ANUS_EXPOSED: "肛部暴露",
+  ARMPITS_EXPOSED: "腋下暴露", BELLY_EXPOSED: "腹部暴露",
+  FEET_COVERED: "足部(有遮挡)", FEET_EXPOSED: "足部暴露",
+};
+
+function labelsZh(list: any): string {
+  const arr = (Array.isArray(list) ? list : [])
+    .map((x: any) => String(x).trim())
+    .filter(Boolean);
+  if (!arr.length) return "";
+  return arr.map((x: string) => NSFW_LABEL_ZH[x.toUpperCase()] || x).join(" / ");
 }
 
 function levelText(r: any): string {
@@ -390,8 +414,7 @@ onMounted(loadAll);
 .rv-status { margin-top: 2px; }
 .rv-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* 预览弹窗 */
-.rv-modal { max-width: min(920px, 92vw); }
+/* 预览弹窗（宽度走 n-modal 内联 style，这里不再管卡片尺寸） */
 .rv-modal-body { display: flex; gap: 16px; }
 .rv-modal-img { flex: 1 1 auto; min-width: 0; }
 .rv-modal-img img { max-width: 100%; max-height: 70vh; border-radius: 8px; display: block; }

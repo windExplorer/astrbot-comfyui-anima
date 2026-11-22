@@ -68,6 +68,12 @@
           @update:value="doSearch(1)"
         />
         <n-checkbox v-model:checked="starred" size="small" @update:checked="doSearch(1)">仅收藏</n-checkbox>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-checkbox v-model:checked="showPending" size="small" @update:checked="doSearch(1)">显示待复核</n-checkbox>
+          </template>
+          显示远程判定后卡「待人工复核」的图（默认隐藏；复核请到「图片复核」页）
+        </n-tooltip>
         <n-select
           v-model:value="platform"
           size="small"
@@ -167,6 +173,7 @@
             </div>
             <div class="gal-item-overlay">
               <span v-if="img.starred" class="gal-star">★</span>
+              <span v-if="Number(img.review_status) === 0" class="gal-reviewing">待复核</span>
               <span class="gal-type" :class="'t-' + typeKey(img)">{{ typeLabel(img) }}</span>
             </div>
             <!-- 批量模式：左上角勾选框 -->
@@ -356,6 +363,8 @@ const typeOptions = [
 ];
 // NSFW 筛选：""=全部；"0"=仅常规；"1"=仅NSFW
 const nsfwFilter = ref("");
+// 是否把「待人工复核」的图也列出来（传 only_reviewed=0 旁路后端默认过滤）
+const showPending = ref(false);
 const nsfwOptions = [
   { label: "全部（含 NSFW）", value: "" },
   { label: "仅常规", value: "0" },
@@ -538,6 +547,8 @@ async function doSearch(p: number) {
       trash: activeTab.value === "trash" ? 1 : 0,
       nsfw: nsfwFilter.value || undefined,
       platform: platform.value || undefined,
+      // 展示策略旁路（TODO §6.2）：默认隐藏待人工复核的图，开关打开传 only_reviewed=0
+      only_reviewed: showPending.value ? 0 : undefined,
       page: p,
       size: pageSize,
     });
@@ -998,6 +1009,17 @@ onUnmounted(() => window.removeEventListener("anima:nsfw-updated", onNsfwUpdated
 .gal-type.t-img2img { background: linear-gradient(135deg, #ff9ecb, #ff7ea8); }
 .gal-type.t-ref { background: linear-gradient(135deg, #a8d8ff, #7eb6ff); }
 .gal-type.t-user { background: linear-gradient(135deg, #ffd98a, #ffb347); }
+/* 待人工复核角标（仅「显示待复核」开启时可见） */
+.gal-reviewing {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 20px;
+  color: #fff;
+  background: rgba(230, 162, 60, 0.92);
+  backdrop-filter: blur(3px);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
 
 /* ===================== 移动端适配 ===================== */
 @media (max-width: 768px) {
