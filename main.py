@@ -812,6 +812,15 @@ _ROLE_CONTINUE_RE = re.compile(
     r"这张|上一张|刚才|按原样|保持原样|改一下|改成|把.{0,8}改为",
     re.I,
 )
+# v8.12.5：用户的原话有时是聊天追问（「还有的其他衣服吗」「换一个」「再来」），
+# 不是画面描述。拼回机制只该兜底「LLM 把用户点名的画面元素换掉」，
+# 不该把问句/附和塞进最终绘图 prompt（实测末句「严格按用户要求执行：还有的其他衣服吗。」）。
+_HINT_CHATTER_RE = re.compile(
+    r"(吗|呢|么|吧)\s*[？?。!！]?\s*$"
+    r"|[？?]\s*$"
+    r"|^(继续|再来|换一个|换一套|好的|嗯|哦|对|不是|是的|谢谢)\s*[。!！？?]?\s*$",
+    re.I,
+)
 
 # 通用画风词表：三档写法（danbooru 标签 / qwen 中文整句 / natural 英文整句）。
 # 用户说画风时由工具返回，避免 LLM 凭记忆写「柔和氛围」这种无效模糊词。
@@ -8910,9 +8919,16 @@ class ComfyUIDrawPlugin(Star):
                             # hint 来自 LLM 完整画面时，其内容本就该被创作保留，若丢了仍拼回；
                             # 但拼回用「严格按以下画面执行」措辞（英文描写也合适）。
                             _raw_title = "严格按用户要求执行" if len(_raw_hint) <= 80 else "严格保留以下画面内容"
-                            if _raw_hint and _raw_hint not in _created:
+                            # v8.12.5：先剥掉自动追加的画风后缀再判「是不是聊天追问」。
+                            # 「还有的其他衣服吗」这类是用户接着聊，不是画面要求，
+                            # 拼进 prompt 只会让编辑模型收到一句无意义问话。
+                            _chatter_src = re.sub(r"[，,]?画成.+?风格\s*$", "", (_hint or "").strip())
+                            _is_chatter = bool(_HINT_CHATTER_RE.search(_chatter_src))
+                            if _raw_hint and _raw_hint not in _created and not _is_chatter:
                                 _created = f"{_created}。{_raw_title}：{_raw_hint}。"
                                 logger.info(f"【角色卡·详细创作】 用户原话已强制拼回：{_raw_hint}")
+                            elif _is_chatter:
+                                logger.info(f"【角色卡·详细创作】 用户原话是聊天追问，不拼回 prompt：{_chatter_src}")
                             positive = _created
                             _detail_done = True
                             logger.info(

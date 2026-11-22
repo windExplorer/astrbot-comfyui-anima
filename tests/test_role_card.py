@@ -5,6 +5,7 @@ main.py 依赖 astrbot 运行时装不了，role_card.py 是纯模块可直接 i
 """
 import ast
 import asyncio
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -223,6 +224,19 @@ check("角色卡命中变量先初始化",
       and _dd_src.index("_wr_entry = None") < _dd_src.index("if (_wr_entry and str("))
 # v8.12.4：确定性指令接管的 positive 不能再当创作源，否则提示词重复两遍。
 check("确定性指令不当创作源", "not _wr_instr_applied and _llm_hint" in src)
+# v8.12.5：聊天追问不能拼回绘图 prompt，但具体画面要求必须仍能拼回。
+_chatter_node = next(
+    n for n in _tree.body
+    if isinstance(n, ast.Assign)
+    and any(getattr(t, "id", "") == "_HINT_CHATTER_RE" for t in n.targets)
+)
+_ns = {"re": re}
+exec(compile(ast.get_source_segment(src, _chatter_node), "<x>", "exec"), _ns)
+_chatter = _ns["_HINT_CHATTER_RE"]
+check("聊天追问不拼回",
+      bool(_chatter.search("还有的其他衣服吗"))
+      and bool(_chatter.search("再来一张？"))
+      and not _chatter.search("把衣服换成制服，背景改为海边"))
 check("denoise可配", '"denoise"' in _sch and '_wr_cfg.get("denoise", -1)' in src)
 
 if FAILURES:
