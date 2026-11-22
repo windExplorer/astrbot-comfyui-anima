@@ -4,6 +4,26 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.13.1（会话固定工作流不再越界覆盖其他插件出图）
+
+**现象 / 需求**：在「会话管理」里给某个群固定了工作流后，其他插件（星语 / 萌萌日程 /
+今日老婆 / Studio 等）在同一群用合成 event 调 `comfyui_draw` 出图时，也被强制用这个
+固定工作流，没有用插件在自己配置里显式指定的 workflow。会话固定应当只管【本插件的
+聊天出图】，不该管辖别的插件主动发图。
+
+**根因**：`_do_draw` 调 `_resolve_workflow` 时写死 `apply_session_pin=not bool(_wr_force_wf)`，
+对所有出图调用一视同仁套上「会话固定工作流」。外部插件合成 event 经 `_session_umo_of`
+归一到同一群 UMO，`pinned_workflow()` 命中后覆盖了调用方传入的 `workflow` 名。外部插件
+其实已经通过 `external=True` / `source` 自我标记，但解析链路从未据此把它们排除。
+
+**修复**：
+- `_do_draw` 调用点新增外部调用判定 `_ext_call = _is_external_call(source, external)`，
+  `apply_session_pin` 改为 `not bool(_wr_force_wf) and not _ext_call`——角色卡强制、
+  外部插件两道开关任一命中都绕开会话固定工作流，交还调用方指定 / 插件默认。
+- 原生聊天出图（无 `external`、无 `source`）行为完全不变，群固定工作流照旧生效。
+- 新增 `tests/test_session_pin_external.py`（3 组：解析器 pin 开关行为 / 外部判定 /
+  调用点守卫），`uv --no-project --python 3.12` 实跑全过。
+
 ## v8.13.0（NSFW 复核后台 + 展示策略 + 远程判定零配置接入）
 
 **背景**：nsfw-check（Blue-Eye 多模型检测服务）稳定在 v0.3.0；本插件 v7.12.1 只

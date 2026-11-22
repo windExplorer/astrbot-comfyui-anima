@@ -8671,6 +8671,12 @@ class ComfyUIDrawPlugin(Star):
             # 该工作流若已停用就直接拦截提示，避免用户/LLM 指定的停用工作流被静默替换。
             # 角色卡强制工作流：优先级高于会话固定（apply_session_pin=False），
             # 且不因「显式指定停用工作流」而拦截（角色卡链路是插件内部选择）。
+            # v8.13.1：外部插件调用（星语 / 老婆工坊 / 日程 / Studio 等，external=True 或带
+            # source）必须一并绕开「会话固定工作流」——固定工作流是【本群聊天出图】的会话
+            # 偏好，不该越界覆盖别的插件在自己配置里显式指定的工作流。此前望文生义地把所有
+            # _do_draw 都套上会话 pin，导致给某群固定工作流后，任何外部插件在该群合成 event
+            # 出图（_session_umo_of 归一到同一群 UMO）都被强制成这同一个工作流。
+            _ext_call = _is_external_call(source, external)
             _wf_name = _wr_force_wf or workflow_name
             wf = self._resolve_workflow(
                 _wf_name,
@@ -8680,7 +8686,7 @@ class ComfyUIDrawPlugin(Star):
                 explicit_default=explicit_default and not _wr_force_wf,
                 intercept_disabled=bool(workflow_name and workflow_name.strip()) and not _wr_force_wf,
                 session_id=getattr(event, "session_id", "") or "",
-                apply_session_pin=not bool(_wr_force_wf),
+                apply_session_pin=not bool(_wr_force_wf) and not _ext_call,
                 session_umo=self._session_umo_of(event),
             )
             logger.info(
