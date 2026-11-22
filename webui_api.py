@@ -112,6 +112,64 @@ BASE_MODEL_WHITELIST = (
 )
 
 
+async def _nsfw_check_sync_review(plugin, record_id: str, decision: str) -> bool:
+    """把插件侧人工复核结论写通 nsfw-check（best-effort，插件侧为真值）。
+
+    两级解析（与指令远程检测一致）：
+    ① gallery.nsfw.check_url 显式配置 → 直连 nsfw-check /records/{id}/review；
+    ② 默认走 TaskHub 中转（与绘图同地址，POST /nsfw/review），nsfw-check
+       地址/令牌由中转站持有，插件零配置。
+    decision 映射：pass→pass / nsfw→block；pending 无对应语义（nsfw-check
+    不支持撤销），跳过。失败一律 False，绝不影响本地复核结论。
+    """
+    if not record_id:
+        return False
+    action = {"pass": "pass", "nsfw": "block"}.get(str(decision or "").lower())
+    if not action:
+        return False
+    try:
+        import aiohttp
+        try:
+            from .http_session import get_session
+        except ImportError:
+            from http_session import get_session
+        candidates = []
+        _direct = str(plugin._cfg("gallery.nsfw.check_url", "") or "").strip().rstrip("/")
+        if _direct:
+            candidates.append((f"{_direct}/records/{record_id}/review",
+                               str(plugin._cfg("gallery.nsfw.check_token", "") or "").strip()))
+        try:
+            _relay = str(plugin._nsfw_relay_base() or "").strip().rstrip("/")
+        except Exception:
+            _relay = ""
+        if _relay:
+            candidates.append((f"{_relay}/nsfw/review", ""))
+        if not candidates:
+            return False
+        s = get_session(trust_env=False)
+        for url, token in candidates:
+            try:
+                headers = {}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                async with s.post(
+                    url,
+                    json={"record_id": record_id, "decision": action,
+                          "note": "synced from menghui webui review"},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return True
+                    # 中转端点 404（上游是裸 ComfyUI 没有中转站）→ 试下一个候选
+                    logger.warning(f"[nsfw] 复核写通 {url} http {resp.status}")
+            except Exception as e:
+                logger.warning(f"[nsfw] 复核写通 {url} 失败: {e}")
+        return False
+    except Exception:
+        return False
+
+
 async def run_platform_test(plugin, plat: dict, prompt: str) -> dict:
     """生图平台连通性测试：用传入配置真实生图一张并归档入库（打「平台测试」标签）。
 
@@ -2935,6 +2993,9 @@ class WebUIApi:
             nsfw = str(request.query.get("nsfw", "") or "").strip() or ""
             tag = str(request.query.get("tag", "") or "").strip() or ""
             platform = str(request.query.get("platform", "") or "").strip() or ""
+            # 展示策略（TODO §6.2）：图库默认只展示已审核（review_status!=0）；
+            # 前端「显示待复核」开关传 only_reviewed=0 旁路。
+            only_reviewed = request.query.get("only_reviewed", "1") != "0"
             try:
                 page = request.query.get("page", 1, type=int)
             except Exception:
@@ -2952,10 +3013,12 @@ class WebUIApi:
             offset = (page - 1) * size
             rows = await g.asearch(keyword=kw, type=stype, starred_only=starred,
                                    trash=trash, limit=size, offset=offset, user_filter=user_filter,
-                                   nsfw=nsfw, tag=tag, platform=platform)
+                                   nsfw=nsfw, tag=tag, platform=platform,
+                                   only_reviewed=only_reviewed)
             total = await g.acount_search(keyword=kw, type=stype,
                                           starred_only=starred, trash=trash, user_filter=user_filter,
-                                          nsfw=nsfw, tag=tag, platform=platform)
+                                          nsfw=nsfw, tag=tag, platform=platform,
+                                          only_reviewed=only_reviewed)
             # 列表只返回元数据（含 sha256），不内联任何缩略图 base64——避免一次几十张
             # 图导致响应体爆炸/超时。缩略图由前端经 bridge 调用 gallery_thumb 按需、
             # 懒加载、带 LRU 缓存地拉取单张 data URL（参考 astrbot_plugin_stealer 图库）。
@@ -3173,6 +3236,155 @@ class WebUIApi:
             })
         except Exception as e:
             return error_response(f"检测失败: {e}")
+
+    async def gallery_review_stats(self):
+        """复核页汇总卡（TODO §7.2）。GET，返回 {pending, passed, blocked, diverge}。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            return json_response(await g.areview_stats())
+        except Exception as e:
+            return error_response(f"复核统计失败: {e}")
+
+    async def gallery_review_list(self):
+        """复核队列（TODO §7.1）。GET ?status=0&diverge=0&kw=&page=1&size=40
+
+        status: 0=待复核(默认) 1=已放行 2=已拦截 auto=已自动审 manual=已人工审
+        all=全部。列表只回元数据，缩略图由前端按 sha 懒加载（同 gallery_search）。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            status = str(request.query.get("status", "0") or "0").strip() or "0"
+            diverge_only = request.query.get("diverge", "0") == "1"
+            kw = str(request.query.get("kw", "") or "").strip()
+            try:
+                page = request.query.get("page", 1, type=int)
+            except Exception:
+                page = 1
+            try:
+                size = request.query.get("size", 40, type=int)
+            except Exception:
+                size = 40
+            page = max(1, page)
+            size = min(max(1, size), 200)
+            offset = (page - 1) * size
+            rows = await g.areview_list(status=status, diverge_only=diverge_only,
+                                        keyword=kw, limit=size, offset=offset)
+            total = await g.areview_count(status=status, diverge_only=diverge_only,
+                                          keyword=kw)
+            for r in rows:
+                r["sha"] = (r.get("sha256") or "").strip()
+                r.pop("thumb", None)
+                r.pop("thumb_url", None)
+                # nsfw_labels 存的是 JSON 字符串，列表页解析成数组给前端
+                try:
+                    r["labels"] = json.loads(r.get("nsfw_labels") or "[]")
+                except Exception:
+                    r["labels"] = []
+            return json_response({"images": rows, "total": total, "page": page, "size": size})
+        except Exception as e:
+            return error_response(f"复核列表查询失败: {e}")
+
+    async def gallery_review(self):
+        """人工复核结论（TODO §7.3）。POST {sha, decision: pass|nsfw|pending, level?}
+
+        结论写插件库（真值在插件侧）；图关联了 nsfw-check 检测记录
+        （nsfw_record_id）时同步写通 /records/{id}/review（best-effort，
+        失败只影响返回的 synced 字段，不回滚本地结论）。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            sha = str(payload.get("sha", "") or "").strip()
+            decision = str(payload.get("decision", "") or "").strip().lower()
+            level = str(payload.get("level", "") or "").strip()
+            if not sha:
+                return error_response("缺少 sha")
+            if decision not in ("pass", "nsfw", "pending"):
+                return error_response("decision 必须是 pass/nsfw/pending")
+            ok = await g.areview_set(sha, decision, level=level, by="webui")
+            if not ok:
+                return error_response("未找到该图")
+            synced = False
+            try:
+                row = await g.async_call(g.get_by_sha, sha)
+                rid = str((row or {}).get("nsfw_record_id") or "").strip()
+                if rid:
+                    synced = await _nsfw_check_sync_review(self.plugin, rid, decision)
+            except Exception:
+                pass
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_review", f"人工复核：{decision}", ref_sha=sha)
+            except Exception:
+                pass
+            msg = {"pass": "已放行", "nsfw": "已标记 NSFW", "pending": "已退回待复核"}[decision]
+            if decision in ("pass", "nsfw") and not synced:
+                # 有 record_id 却没同步成功才提示；无关联记录属正常（本地模式归档）
+                row = None
+                try:
+                    row = await g.async_call(g.get_by_sha, sha)
+                except Exception:
+                    pass
+                if row and row.get("nsfw_record_id"):
+                    msg += "（nsfw-check 同步失败）"
+            return json_response({"msg": msg, "synced": synced})
+        except Exception as e:
+            return error_response(f"复核操作失败: {e}")
+
+    async def gallery_review_batch(self):
+        """批量复核（TODO §7.3）。POST {shas: [...], decision: pass|nsfw, level?}
+
+        上限 50 张；逐张写本地结论并 best-effort 写通 nsfw-check。"""
+        g = self._gallery()
+        if g is None:
+            return error_response("图库未启用或初始化失败")
+        try:
+            payload = await request.json(default={}) or {}
+            shas = payload.get("shas") or []
+            decision = str(payload.get("decision", "") or "").strip().lower()
+            level = str(payload.get("level", "") or "").strip()
+            if not isinstance(shas, list) or not shas:
+                return error_response("缺少 shas")
+            if decision not in ("pass", "nsfw"):
+                return error_response("批量复核 decision 只支持 pass/nsfw")
+            shas = [str(s or "").strip() for s in shas[:50] if str(s or "").strip()]
+            ok_cnt, fail_cnt = 0, 0
+            sync_fail = 0
+            for sha in shas:
+                try:
+                    ok = await g.areview_set(sha, decision, level=level, by="webui")
+                except Exception:
+                    ok = False
+                if ok:
+                    ok_cnt += 1
+                    try:
+                        row = await g.async_call(g.get_by_sha, sha)
+                        rid = str((row or {}).get("nsfw_record_id") or "").strip()
+                        if rid and not await _nsfw_check_sync_review(self.plugin, rid, decision):
+                            sync_fail += 1
+                    except Exception:
+                        sync_fail += 1
+                else:
+                    fail_cnt += 1
+            try:
+                _op = getattr(self.plugin, "oplog", None)
+                if _op is not None:
+                    _op.add("gallery_review_batch",
+                            f"批量复核：{decision}（成功 {ok_cnt} 失败 {fail_cnt}）")
+            except Exception:
+                pass
+            msg = f"批量复核完成：成功 {ok_cnt}，失败 {fail_cnt}"
+            if sync_fail:
+                msg += f"，nsfw-check 同步失败 {sync_fail}"
+            return json_response({"msg": msg, "ok": ok_cnt, "fail": fail_cnt,
+                                  "sync_fail": sync_fail})
+        except Exception as e:
+            return error_response(f"批量复核失败: {e}")
 
     async def gallery_delete(self):
         g = self._gallery()
@@ -3805,6 +4017,11 @@ def register_web_api(plugin) -> None:
         (f"{prefix}/gallery/scan_nsfw", _h("gallery_scan_nsfw"), ["GET"], "图库NSFW一键扫描"),
         (f"{prefix}/gallery/scan_nsfw_progress", _h("gallery_scan_nsfw_progress"), ["GET"], "图库NSFW扫描进度"),
         (f"{prefix}/gallery/check_nsfw", _h("gallery_check_nsfw"), ["GET"], "图库单图NSFW检测"),
+        # 人工复核后台（v8.13.0，TODO-审核与NSFW展示策略.md §7）
+        (f"{prefix}/gallery/review_stats", _h("gallery_review_stats"), ["GET"], "复核汇总统计"),
+        (f"{prefix}/gallery/review_list", _h("gallery_review_list"), ["GET"], "复核队列"),
+        (f"{prefix}/gallery/review", _h("gallery_review"), ["POST"], "人工复核结论"),
+        (f"{prefix}/gallery/review_batch", _h("gallery_review_batch"), ["POST"], "批量复核"),
         (f"{prefix}/gallery/delete", _h("gallery_delete"), ["POST"], "图库删除(移入回收站)"),
         (f"{prefix}/gallery/trash", _h("gallery_trash"), ["GET"], "图库回收站"),
         (f"{prefix}/gallery/restore", _h("gallery_restore"), ["POST"], "图库恢复"),

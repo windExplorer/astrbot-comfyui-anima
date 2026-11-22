@@ -1880,7 +1880,46 @@
               "auto"
             ],
             "description": "远程判定模式（实验性）",
-            "hint": "local（默认，推荐）：始终用内置 open_nsfw 检测，升级后行为不变、无需任何设置。auto（实验性）：当 ComfyUI 中转站往 history 注入了 nsfw 结论时才用远程判定（需另部署 nsfw-check 服务），未注入则自动回退本地；注意当前版本尚无人工复核后台，远程判为待复核的图不会进复核队列，完整方案见 docs/TODO-审核与NSFW展示策略.md。"
+            "hint": "local（默认，推荐）：始终用内置 open_nsfw 检测，升级后行为不变、无需任何设置。auto（实验性）：当 ComfyUI 中转站往 history 注入了 nsfw 结论时才用远程判定（需另部署 nsfw-check 服务）；远程不可用时该图卡待人工复核（不按本地分放行）。复核结论可在 WebUI 复核页人工裁决并写回 nsfw-check。"
+          },
+          "check_url": {
+            "type": "string",
+            "default": "",
+            "description": "nsfw-check 直连地址（一般留空）",
+            "hint": "一般留空：留空时远程检测与复核写通自动走 TaskHub 中转（与绘图链路同地址，/nsfw/* 端点），nsfw-check 地址/令牌由中转站持有，插件零配置。仅当不想经过中转站时才填直连地址（形如 http://127.0.0.1:8890），配合下方令牌使用。"
+          },
+          "check_token": {
+            "type": "string",
+            "default": "",
+            "description": "nsfw-check API 令牌（仅直连模式用）",
+            "hint": "只在上面填了直连地址时才需要：nsfw-check .env 里 API 令牌的值。走 TaskHub 中转时令牌由中转站持有，此处留空。"
+          },
+          "show_nsfw_global": {
+            "type": "string",
+            "default": "blur",
+            "options": [
+              "never",
+              "blur",
+              "original"
+            ],
+            "description": "分享站 NSFW 展示策略",
+            "hint": "never=分享站不展示 NSFW 图；blur=展示但强制模糊（忽略访客个人设置）；original=原样展示。仅作用于分享站（/world、/gallery）；本机 WebUI 图库不受此限制。"
+          },
+          "show_nsfw_per_user": {
+            "type": "string",
+            "default": "",
+            "description": "分享站 NSFW 用户级覆盖",
+            "hint": "格式「用户ID:模式」逗号分隔，如 123456:never,234567:original；按分享链接创建者的 user_id 匹配并覆盖全局策略。留空则全用 show_nsfw_global。"
+          },
+          "review_send_policy": {
+            "type": "string",
+            "default": "send",
+            "options": [
+              "send",
+              "block_group"
+            ],
+            "description": "待复核图的发送策略",
+            "hint": "send（默认，先发后审）：远程判为待复核（action=review）的图照常发到聊天，复核只影响图库/分享站展示。block_group：群聊（NSFW 白名单外的群）不直接发送待复核图，提示已进入人工复核；私聊照发。判为 NSFW/block 的图不受此策略影响，始终按 NSFW 拦截规则处理。"
           }
         }
       },

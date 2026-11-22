@@ -2458,7 +2458,21 @@ class ComfyUIDrawPlugin(Star):
     # ------------------------------------------------------------------ #
     def _cfg(self, key: str, default=None):
         try:
-            val = self.config.get(key, default)
+            # v8.13.0：支持「a.b.c」点号路径。config 是普通嵌套 dict，此前单层
+            # .get("gallery.nsfw.remote_mode") 永远落 default——remote_mode=auto
+            # 就是这样静默失效的。无点号的键保持原语义。
+            if "." in str(key):
+                val = self.config
+                for _part in str(key).split("."):
+                    if not isinstance(val, dict):
+                        val = default
+                        break
+                    val = val.get(_part, None)
+                    if val is None:
+                        val = default
+                        break
+            else:
+                val = self.config.get(key, default)
         except Exception:
             val = default
         return val if val is not None else default
@@ -7364,16 +7378,120 @@ class ComfyUIDrawPlugin(Star):
             pass
         return None
 
+    def _nsfw_remote_expected(self) -> bool:
+        """remote_mode 是否处于 auto（远程判定预期启用）。归档时区分
+        「本地模式」与「auto 但远程不可用」：后者按 TODO §5.3 卡待人工复核，
+        不按本地分自动放行。"""
+        try:
+            return str(self._cfg("gallery.nsfw.remote_mode", "local") or "local").lower() == "auto"
+        except Exception:
+            return False
+
+    def _nsfw_review_block_group_enabled(self) -> bool:
+        """「待复核图群聊不直接发送」策略是否启用（gallery.nsfw.review_send_policy）。
+
+        send（默认）= 先发后审：待复核图照常发到聊天，复核只影响图库/分享站展示；
+        block_group = 群聊（NSFW 白名单外的群）不直接发送待复核图，私聊照发。
+        判为 NSFW/block 的图不受此策略影响（始终按 NSFW 拦截规则处理）。"""
+        try:
+            return str(self._cfg("gallery.nsfw.review_send_policy", "send") or "send").strip().lower() == "block_group"
+        except Exception:
+            return False
+
+    def _nsfw_review_withhold(self, remote_verdict) -> bool:
+        """出图链路：block_group 策略下，远程判为待复核(action=review)的图群聊不直接发送。
+
+        仅远程判定有「复核」概念——local 模式/无远程结论恒 False（先发后审）；
+        上游是裸 ComfyUI（无远程结论注入）同样恒 False。"""
+        if not self._nsfw_review_block_group_enabled():
+            return False
+        try:
+            return str((remote_verdict or {}).get("action") or "") == "review"
+        except Exception:
+            return False
+
+    def _nsfw_relay_base(self) -> str:
+        """TaskHub 中转站地址：与绘图链路同源——取解析出的 ComfyUI 服务器 url。
+
+        绘图走的就是中转站（TaskHub 伪装成 ComfyUI 上游），nsfw-check 的地址/
+        令牌它手里都有，所以远程检测与复核写通默认复用这条链路（/nsfw/* 中转
+        端点），插件无需再配 nsfw-check 地址。解析失败返回空串。"""
+        try:
+            s = self._resolve_server()
+            return str((s or {}).get("url") or "").strip().rstrip("/")
+        except Exception:
+            return ""
+
+    async def _nsfw_detect_remote(self, image_path: str) -> dict | None:
+        """远程检测任意图片（供 /涩图检测 指令用），两级解析：
+
+        ① gallery.nsfw.check_url 显式配置 → 直连 nsfw-check（兼容保留，不想
+           经过 TaskHub 的人用）；
+        ② 默认走 TaskHub 中转（与绘图同地址，POST /nsfw/detect/simple），
+           nsfw-check 地址/令牌由中转站持有，插件零配置。
+        都不可用返回 None（指令回退本地 OpenNSFW），绝不抛异常。
+        """
+        candidates = []
+        _direct = str(self._cfg("gallery.nsfw.check_url", "") or "").strip().rstrip("/")
+        if _direct:
+            candidates.append((f"{_direct}/detect/simple",
+                               str(self._cfg("gallery.nsfw.check_token", "") or "").strip()))
+        _relay = self._nsfw_relay_base()
+        if _relay and f"{_relay}/detect/simple" != (candidates[0][0] if candidates else ""):
+            candidates.append((f"{_relay}/nsfw/detect/simple", ""))
+        if not candidates:
+            return None
+        try:
+            import aiohttp
+            try:
+                from .http_session import get_session
+            except ImportError:
+                from http_session import get_session
+            p = Path(image_path)
+            s = get_session(trust_env=False)
+            for url, token in candidates:
+                try:
+                    form = aiohttp.FormData()
+                    form.add_field("file", p.read_bytes(), filename=p.name or "image.png",
+                                   content_type="application/octet-stream")
+                    form.add_field("source", "plugin-cmd")
+                    headers = {}
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                    async with s.post(url, data=form, headers=headers,
+                                      timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"【NSFW】 指令远程检测 {url} http {resp.status}")
+                            continue
+                        body = await resp.json()
+                        if isinstance(body, dict) and body.get("ok"):
+                            return body
+                except Exception as e:
+                    logger.warning(f"【NSFW】 指令远程检测 {url} 失败: {e}")
+                    continue
+            return None
+        except Exception as e:
+            logger.warning(f"【NSFW】 指令远程检测失败（回退本地）: {e}")
+            return None
+
     def _nsfw_pre_from_remote(self, remote: dict):
         """远程结论 → 本地契约三元组 (is_nsfw, score, available)。
 
         映射：level=nsfw 或 action=block → 拦截；其余放行（review 交给图库人工复核）。
+        例外：level=unavailable（远程在但没判成，推理失败/超时）→ 返回 None，
+        由 _detect_nsfw 回落本地检测——与服务停机同口径（发送闸回落本地、
+        归档侧由 remote_nsfw 的 action=review 卡待人工），避免推理故障期间
+        群聊生图被全部拦停。
         """
         try:
             level = str(remote.get("level") or "")
             action = str(remote.get("action") or "")
             score = remote.get("score")
             score_f = float(score) if isinstance(score, (int, float)) else None
+            if level == "unavailable":
+                logger.warning(
+                    "【NSFW】 远程判定不可用（level=unavailable），发送判定回落本地检测")
+                return None
             is_nsfw = (level == "nsfw") or (action == "block")
             logger.info(
                 f"【NSFW】 使用远程判定（TaskHub/nsfw-check）：level={level} "
@@ -10167,6 +10285,7 @@ class ComfyUIDrawPlugin(Star):
                                 # v7.12：TaskHub/nsfw-check 远程判定（Blue-Eye 主判），
                                 # 打标/复核字段优先级高于本地 Yahoo 分数
                                 remote_nsfw=_remote_verdict,
+                                remote_expected=self._nsfw_remote_expected(),
                             )
                             # archive_image 会把文件从 temp/ 移动到 gallery/，必须用
                             # 返回的最终路径继续发送/上报，否则会指向已不存在的临时文件。
@@ -10240,6 +10359,22 @@ class ComfyUIDrawPlugin(Star):
                             _nsfw_blocked = True
                             if stats is not None:
                                 stats["nsfw_blocked"] = int(stats.get("nsfw_blocked", 0)) + 1
+                        elif (
+                            ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                             or self._nsfw_session_denied(event))
+                            and self._nsfw_review_withhold(_remote_verdict)
+                        ):
+                            # v8.13.0：block_group 策略——远程判为待复核(action=review)的图
+                            # 群聊（白名单外）不直接发送；归档照常（review_status=0 待人工）
+                            logger.warning(
+                                f"【NSFW】 群聊出图拦截（待人工复核）user={user_id} "
+                                f"workflow={wf.get('name') or '(未命名)'} path={_send_img_path}"
+                            )
+                            await self._send(
+                                event,
+                                "🛡️ 这张图被判为「待人工复核」，群聊里暂不发送；复核通过后可在图库查看。",
+                            )
+                            _nsfw_blocked = True
                     # ── 图文消息：把配文 / 出图报告与图片合成【一条】消息 ──────────
                     # 必须在发图前算好（旧逻辑是发图后单独发一条）。报告并入后不再重复发送。
                     _report_merged = False
@@ -11376,6 +11511,16 @@ class ComfyUIDrawPlugin(Star):
                         await self._send(
                             event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。"
                         )
+                    elif (
+                            ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                             or self._nsfw_session_denied(event))
+                            and self._nsfw_review_withhold(_remote_verdict)):
+                        # v8.13.0：block_group 策略——待复核图群聊不直接发送，私聊照发
+                        _blocked = True
+                        logger.warning(f"【NSFW】 放大结果拦截（待人工复核）workflow={_wfname}")
+                        await self._send(
+                            event, "🛡️ 这张图被判为「待人工复核」，群聊里暂不发送；复核通过后可在图库查看。"
+                        )
                 # 图库归档（移动转正）：必须用返回路径发送，不能再用 temp 路径
                 _send_path = img_path
                 if self.gallery is not None:
@@ -11420,6 +11565,7 @@ class ComfyUIDrawPlugin(Star):
                             is_img2img=True,
                             ref_sha256=_ref_sha,
                             remote_nsfw=_remote_verdict,
+                            remote_expected=self._nsfw_remote_expected(),
                             user_id=_uid,
                             user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                             session_id=_sid,
@@ -12094,6 +12240,16 @@ class ComfyUIDrawPlugin(Star):
                         await self._send(
                             event, f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。"
                         )
+                    elif (
+                            ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                             or self._nsfw_session_denied(event))
+                            and self._nsfw_review_withhold(_remote_verdict)):
+                        # v8.13.0：block_group 策略——待复核图群聊不直接发送，私聊照发
+                        _blocked = True
+                        logger.warning(f"【NSFW】 抠图结果拦截（待人工复核）workflow={_wfname}")
+                        await self._send(
+                            event, "🛡️ 这张图被判为「待人工复核」，群聊里暂不发送；复核通过后可在图库查看。"
+                        )
                 # 图库归档（移动转正）：必须用返回路径发送，不能再用 temp 路径
                 _send_path = img_path
                 if self.gallery is not None:
@@ -12136,6 +12292,7 @@ class ComfyUIDrawPlugin(Star):
                             is_img2img=True,
                             ref_sha256=_ref_sha,
                             remote_nsfw=_remote_verdict,
+                            remote_expected=self._nsfw_remote_expected(),
                             user_id=_uid,
                             user_name=(getattr(event, "get_sender_name", lambda: "")() or ""),
                             session_id=_sid,
@@ -14656,6 +14813,19 @@ class ComfyUIDrawPlugin(Star):
                     f"这张图被标记为 NSFW{_sc}，不能发到群里哦～ 已为你拦截。",
                 )
                 return False
+            # v8.13.0：block_group 策略——待人工复核的图群聊不直接发送（私聊可发）。
+            # 编号/标签/列表召回已排除待复核图，这里兜住按 sha 直取的场景。
+            if (
+                row.get("review_status") == 0
+                and self._nsfw_review_block_group_enabled()
+                and ((not self._is_private_event(event) and not self._nsfw_group_allowed(event))
+                     or self._nsfw_session_denied(event))
+            ):
+                await self._send(
+                    event,
+                    "🛡️ 这张图还在人工复核中，群聊里暂不发送；复核通过后可再取。",
+                )
+                return False
         path = self.gallery.path_of(sha)
         if not path:
             await self._send(event, "没找到这张图，可能已被清理或从未入库。")
@@ -14696,11 +14866,18 @@ class ComfyUIDrawPlugin(Star):
                 t = float((self._cfg("gallery", {}).get("nsfw") or {}).get("threshold", 0.5))
             except (TypeError, ValueError):
                 t = 0.5
+            _remote_on = bool(str(self._cfg("gallery.nsfw.check_url", "") or "").strip())
+            _remote_note = (
+                "\n🌐 已配置 nsfw-check 远程判定：/涩图检测 优先走远程（Blue-Eye 主判，"
+                "结果按 safe/中间带/nsfw 分档并附部位信号），本地阈值仅作远程不可用时的回退。"
+                if _remote_on else ""
+            )
             await self._send(
                 event,
                 f"🎯 当前 NSFW 判定阈值：{t:.2f}\n"
                 "说明：图片 P(nsfw) 置信度 ≥ 阈值即判为 NSFW。泳装/紧身/露肤等易被误判，"
-                "可适当调高阈值（如 0.7）来降低误报（在插件配置 gallery.nsfw.threshold 中修改）。",
+                "可适当调高阈值（如 0.7）来降低误报（在插件配置 gallery.nsfw.threshold 中修改）。"
+                f"{_remote_note}",
             )
             event.stop_event()
             return
@@ -14742,12 +14919,23 @@ class ComfyUIDrawPlugin(Star):
         async def _detect_one(p):
             if not p or not os.path.exists(p):
                 return None, False
+            # v8.13.0：配置了 nsfw-check 直连地址时优先远程判定（Blue-Eye 主判 +
+            # 部位标签），失败/未配置回退本地 OpenNSFW——指令是查询用途，回退无害。
+            remote = await self._nsfw_detect_remote(p)
+            if remote is not None:
+                _sc = remote.get("score")
+                return ({"remote": True,
+                         "nsfw": str(remote.get("level")) == "nsfw" or str(remote.get("action")) == "block",
+                         "score": _sc if isinstance(_sc, (int, float)) else 0.0,
+                         "level": str(remote.get("level") or ""),
+                         "diverge": bool(remote.get("diverge")),
+                         "labels": [str(x) for x in (remote.get("labels") or [])]}, False)
             try:
                 is_nsfw, score, available = await _asyncio.to_thread(det.detect, p)
             except Exception as e:  # pragma: no cover
                 logger.warning(f"【NSFW】 指令检测失败: {e}")
                 is_nsfw, score, available = False, 0.0, False
-            return ({"nsfw": is_nsfw, "score": score}, not available)
+            return ({"remote": False, "nsfw": is_nsfw, "score": score}, not available)
 
         results = []
         unavailable = False
@@ -14773,6 +14961,23 @@ class ComfyUIDrawPlugin(Star):
 
         # 通俗话术：把 P(nsfw) 描述成「涩涩内容的可能性」，每张图都带百分比
         def _desc(r: dict) -> str:
+            if r.get("remote"):
+                # 远程判定（nsfw-check Blue-Eye 主判）：按 level 分档，附部位信号
+                pct = r["score"] * 100
+                lv = r.get("level")
+                if lv == "safe":
+                    head = f"✅ 安全（远程判定，涩涩内容可能性约 {pct:.0f}%）"
+                elif lv == "nsfw":
+                    head = f"🔞 涩涩内容（远程判定，可能性约 {pct:.0f}%）"
+                elif lv == "review":
+                    head = f"⚠️ 擦边中间带（远程判定，可能性约 {pct:.0f}%，建议人工再看一眼）"
+                else:
+                    head = f"⚠️ 检测服务未能给出结论（可能性约 {pct:.0f}%）"
+                if r.get("diverge"):
+                    head += "；主/副模型有分歧"
+                if r.get("labels"):
+                    head += "；信号：" + "/".join(r["labels"][:4])
+                return head
             pct = r["score"] * 100
             if r["nsfw"]:
                 return f"🔞 涩涩内容（可能性约 {pct:.0f}%）"
@@ -15087,12 +15292,13 @@ class ComfyUIDrawPlugin(Star):
                     pass
             # 全库模式：管理员可查看所有用户的图片（owner 传空表示不过滤）
             eff_owner = "" if all_view else owner
-            total = await self.gallery.acount_search(session=session_scope, owner=eff_owner)
+            total = await self.gallery.acount_search(session=session_scope, owner=eff_owner,
+                                                     only_reviewed=True)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
             rows = await self.gallery.asearch(
                 limit=page_size, offset=(page - 1) * page_size,
-                session=session_scope, owner=eff_owner,
+                session=session_scope, owner=eff_owner, only_reviewed=True,
             )
             if not rows:
                 await self._send(event, "画廊还是空的～先画点图或收藏点图吧。")
@@ -15139,12 +15345,13 @@ class ComfyUIDrawPlugin(Star):
                     pass
             eff_owner = "" if all_view else owner
             # 收藏也遵循会话范围：群聊仅本群，私聊跨会话；「全部」子命令（管理员）强制跨会话。
-            total = await self.gallery.acount_search(starred_only=True, owner=eff_owner, session=session_scope)
+            total = await self.gallery.acount_search(starred_only=True, owner=eff_owner,
+                                                     session=session_scope, only_reviewed=True)
             total_pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, total_pages)
             rows = await self.gallery.asearch(
                 starred_only=True, limit=page_size, offset=(page - 1) * page_size,
-                owner=eff_owner, session=session_scope,
+                owner=eff_owner, session=session_scope, only_reviewed=True,
             )
             if not rows:
                 await self._send(event, "你还没收藏任何图。收藏后可用 /图库 收藏列表 查看。")
@@ -15193,7 +15400,8 @@ class ComfyUIDrawPlugin(Star):
                     except (TypeError, ValueError):
                         page_size = 5
                     eff_owner = "" if all_view else owner
-                    total = await self.gallery.acount_search(keyword=kw, session=session_scope, owner=eff_owner)
+                    total = await self.gallery.acount_search(keyword=kw, session=session_scope,
+                                                             owner=eff_owner, only_reviewed=True)
                     if not total:
                         await self._send(event, f"没找到含「{kw}」的图。")
                     else:
@@ -15201,7 +15409,7 @@ class ComfyUIDrawPlugin(Star):
                         page = min(page, total_pages)
                         rows = await self.gallery.asearch(
                             keyword=kw, limit=page_size, offset=(page - 1) * page_size,
-                            session=session_scope, owner=eff_owner,
+                            session=session_scope, owner=eff_owner, only_reviewed=True,
                         )
                         if not rows:
                             await self._send(event, f"没找到含「{kw}」的图。")

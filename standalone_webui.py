@@ -791,15 +791,19 @@ class StandaloneWebUI:
             nsfw = self._q(request, "nsfw", "")
             tag = self._q(request, "tag", "")
             platform = self._q(request, "platform", "") or ""
+            # 展示策略（TODO §6.2）：默认只展示已审核，only_reviewed=0 旁路（同内嵌通道）
+            only_reviewed = self._q(request, "only_reviewed", "1") != "0"
             page = max(1, self._qint(request, "page", 1))
             size = min(self._qint(request, "size", 40), 200)
             offset = (page - 1) * size
             rows = await g.asearch(keyword=kw, type=stype, starred_only=starred, trash=trash,
                                    limit=size, offset=offset, user_filter=user_filter,
-                                   nsfw=nsfw, tag=tag, platform=platform)
+                                   nsfw=nsfw, tag=tag, platform=platform,
+                                   only_reviewed=only_reviewed)
             total = await g.acount_search(keyword=kw, type=stype, starred_only=starred,
                                           trash=trash, user_filter=user_filter,
-                                          nsfw=nsfw, tag=tag, platform=platform)
+                                          nsfw=nsfw, tag=tag, platform=platform,
+                                          only_reviewed=only_reviewed)
             for r in rows:
                 r["sha"] = r.get("sha256", "")
                 r.pop("thumb", None)
@@ -896,6 +900,92 @@ class StandaloneWebUI:
             return _ok({"nsfw": res.get("nsfw", False),
                         "nsfw_score": res.get("nsfw_score"),
                         "msg": res.get("msg", "检测完成")})
+        # 人工复核后台（v8.13.0，TODO-审核与NSFW展示策略.md §7；与内嵌通道同语义）
+        if path == "/gallery/review_stats":
+            return _ok(await g.areview_stats())
+        if path == "/gallery/review_list":
+            status = self._q(request, "status", "0") or "0"
+            diverge_only = self._q(request, "diverge", "0") == "1"
+            kw = self._q(request, "kw", "")
+            page = max(1, self._qint(request, "page", 1))
+            size = min(max(1, self._qint(request, "size", 40)), 200)
+            offset = (page - 1) * size
+            rows = await g.areview_list(status=status, diverge_only=diverge_only,
+                                        keyword=kw, limit=size, offset=offset)
+            total = await g.areview_count(status=status, diverge_only=diverge_only,
+                                          keyword=kw)
+            import json as _json
+            for r in rows:
+                r["sha"] = (r.get("sha256") or "").strip()
+                r.pop("thumb", None)
+                r.pop("thumb_url", None)
+                try:
+                    r["labels"] = _json.loads(r.get("nsfw_labels") or "[]")
+                except Exception:
+                    r["labels"] = []
+            return _ok({"images": rows, "total": total, "page": page, "size": size})
+        if path == "/gallery/review":
+            body = await request.json() if request.body_exists else {}
+            if not isinstance(body, dict):
+                body = {}
+            sha = str(body.get("sha") or "").strip()
+            decision = str(body.get("decision") or "").strip().lower()
+            level = str(body.get("level") or "").strip()
+            if not sha:
+                return _err("缺少 sha")
+            if decision not in ("pass", "nsfw", "pending"):
+                return _err("decision 必须是 pass/nsfw/pending")
+            ok = await g.areview_set(sha, decision, level=level, by="webui")
+            if not ok:
+                return _err("未找到该图")
+            synced = False
+            try:
+                row = await g.async_call(g.get_by_sha, sha)
+                rid = str((row or {}).get("nsfw_record_id") or "").strip()
+                if rid:
+                    synced = await webui_api._nsfw_check_sync_review(self.plugin, rid, decision)
+            except Exception:
+                pass
+            self._oplog_add("gallery_review", f"人工复核：{decision}", ref_sha=sha,
+                            extra={"decision": decision, "synced": synced})
+            msg = {"pass": "已放行", "nsfw": "已标记 NSFW", "pending": "已退回待复核"}[decision]
+            return _ok({"msg": msg, "synced": synced})
+        if path == "/gallery/review_batch":
+            body = await request.json() if request.body_exists else {}
+            if not isinstance(body, dict):
+                body = {}
+            shas = body.get("shas") or []
+            decision = str(body.get("decision") or "").strip().lower()
+            level = str(body.get("level") or "").strip()
+            if not isinstance(shas, list) or not shas:
+                return _err("缺少 shas")
+            if decision not in ("pass", "nsfw"):
+                return _err("批量复核 decision 只支持 pass/nsfw")
+            shas = [str(s or "").strip() for s in shas[:50] if str(s or "").strip()]
+            ok_cnt, fail_cnt, sync_fail = 0, 0, 0
+            for sha in shas:
+                try:
+                    ok = await g.areview_set(sha, decision, level=level, by="webui")
+                except Exception:
+                    ok = False
+                if ok:
+                    ok_cnt += 1
+                    try:
+                        row = await g.async_call(g.get_by_sha, sha)
+                        rid = str((row or {}).get("nsfw_record_id") or "").strip()
+                        if rid and not await webui_api._nsfw_check_sync_review(self.plugin, rid, decision):
+                            sync_fail += 1
+                    except Exception:
+                        sync_fail += 1
+                else:
+                    fail_cnt += 1
+            self._oplog_add("gallery_review_batch",
+                            f"批量复核：{decision}（成功 {ok_cnt} 失败 {fail_cnt}）",
+                            extra={"decision": decision})
+            msg = f"批量复核完成：成功 {ok_cnt}，失败 {fail_cnt}"
+            if sync_fail:
+                msg += f"，nsfw-check 同步失败 {sync_fail}"
+            return _ok({"msg": msg, "ok": ok_cnt, "fail": fail_cnt, "sync_fail": sync_fail})
         if path == "/gallery/set_nsfw":
             body = await request.json() if request.body_exists else {}
             sha = (body.get("sha") or "") if isinstance(body, dict) else ""
@@ -1366,11 +1456,40 @@ class StandaloneWebUI:
         except Exception as e:
             return _err(f"处理失败: {e}")
 
+    def _share_nsfw_policy(self, owner_uid: str) -> str:
+        """分享站 NSFW 展示策略（TODO §6.3）：全局 gallery.nsfw.show_nsfw_global，
+        按「分享链接创建者 user_id」取 show_nsfw_per_user 覆盖（never/blur/original）。
+
+        per_user 格式「uid:mode」逗号分隔（中英文冒号/分号均容忍）。解析失败一律
+        回退全局默认 blur——宁可多模糊也不多露。"""
+        try:
+            glob = str(self.plugin._cfg("gallery.nsfw.show_nsfw_global", "blur") or "blur").strip().lower()
+            if glob not in ("never", "blur", "original"):
+                glob = "blur"
+            overrides = str(self.plugin._cfg("gallery.nsfw.show_nsfw_per_user", "") or "")
+            for part in overrides.replace("；", ",").replace(";", ",").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                _uid, _sep, _mode = part.replace("：", ":").partition(":")
+                if not _sep:
+                    continue
+                if _uid.strip() == str(owner_uid or "").strip():
+                    m = _mode.strip().lower()
+                    if m in ("never", "blur", "original"):
+                        return m
+            return glob
+        except Exception:
+            return "blur"
+
     async def _dispatch_share(self, path: str, method: str, request: web.Request, info: dict) -> web.Response:
         g = self.plugin.gallery
         if g is None:
             return _err("图库未启用", status=500)
         uid = info.get("user_id", "")
+        # v8.13.0 展示策略：待复核不进分享站；NSFW 按（用户级覆盖的）全局策略处理
+        _policy = self._share_nsfw_policy(uid)
+        _never, _blur = (_policy == "never"), (_policy == "blur")
 
         async def _body() -> dict:
             try:
@@ -1386,18 +1505,21 @@ class StandaloneWebUI:
         if path == "/world" and method == "GET":
             limit = max(1, min(self._qint(request, "limit", 40), 100))
             offset = max(0, self._qint(request, "offset", 0))
-            return _ok(g.world_list(user_id=uid, limit=limit, offset=offset))
+            return _ok(g.world_list(user_id=uid, limit=limit, offset=offset,
+                                    only_reviewed=True, nsfw_never=_never, force_blur=_blur))
         if path == "/gallery" and method == "GET":
             vis = (self._q(request, "vis", "all") or "all").strip().lower()
             if vis not in ("all", "public", "private"):
                 vis = "all"
             limit = max(1, min(self._qint(request, "limit", 40), 100))
             offset = max(0, self._qint(request, "offset", 0))
-            return _ok(g.gallery_list(user_id=uid, visibility=vis, limit=limit, offset=offset))
+            return _ok(g.gallery_list(user_id=uid, visibility=vis, limit=limit, offset=offset,
+                                      only_reviewed=True, nsfw_never=_never, force_blur=_blur))
         if path == "/favorites" and method == "GET":
             limit = max(1, min(self._qint(request, "limit", 60), 200))
             offset = max(0, self._qint(request, "offset", 0))
-            return _ok(g.favorites_list(user_id=uid, limit=limit, offset=offset))
+            return _ok(g.favorites_list(user_id=uid, limit=limit, offset=offset,
+                                        only_reviewed=True, nsfw_never=_never, force_blur=_blur))
         if path == "/profile" and method == "GET":
             return _ok(g.profile_stats(user_id=uid))
         if path == "/recycle" and method == "GET":

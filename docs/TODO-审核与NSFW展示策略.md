@@ -1,37 +1,71 @@
 # TODO：审核与 NSFW 展示策略（插件 WebUI 新功能）
 
-> 状态：**方案已定稿；第一阶段「远程判定接入」已落地（v7.12.1，默认 local 关闭），其余待实现**
+> 状态：**方案已定稿；第一/二阶段已落地（v8.13.0，2026-11-22）——远程判定接入 + 复核后台 + 展示策略，剩余为精简项**
 > 范围：**本插件 WebUI 侧**功能（图库 / 分享站 / 审核页）
-> 关联：远程检测服务部署见 `nsfw-detection-service.md`（本功能消费其 `/detect` 返回的 score/level）
+> 关联：远程检测服务部署见 `nsfw-detection-service.md`；nsfw-check 已稳定在 v0.3.0（/detect/simple 契约）
 
 ---
 
-## 0. 当前进展（v7.12.1，2026-11-21）
+## 0. 当前进展（v8.13.0，2026-11-22）
 
-**已落地（实验性，默认关闭）**：
-- `gallery.nsfw.remote_mode` 配置（`local` 默认 / `auto` 实验性）；默认 `local` 时完全
-  走原内置 open_nsfw 检测，升级无需任何设置、行为与之前一致。
-- `main.py._remote_nsfw_verdict` 读取 ComfyUI history 里中转站注入的 `nsfw` 结论；
-  `_detect_nsfw` 在 `auto` 且有远程结论时优先用远程，否则回退本地。
-- `image_store` 的 images 表新增 5 列：`nsfw_remote_level` / `nsfw_remote_score` /
-  `diverge` / `review_status` / `review_auto`，归档时若有远程结论则一并写入。
-  默认 local 模式下这些列恒为 NULL，不影响任何现有图库查询。
+**已落地**：
+- **TaskHub 送检切 `/detect/simple`**（精简响应，无部位框；TaskHub 侧补 `available=True`
+  维持 history['nsfw'] 契约，插件无感）；`labels`（触发部位标签）与 `record_id`
+  （nsfw-check 记录 ID）随结论入库（`nsfw_labels` / `nsfw_record_id` 列）。
+- **★修复：`main.py._cfg` 点号路径**——config 是普通嵌套 dict，此前
+  `_cfg("gallery.nsfw.remote_mode")` 永远落 default，`remote_mode=auto` 静默失效。
+- **归档全路径写 `review_status`**：
+  - 远程可用 → `action` 映射（review→0 待人工 / block→2 / allow→1，auto=1），
+    nsfw-check 的 REVIEW_POLICY 已把 safe+diverge 视作中间带（action=review），
+    插件只消费 action，**不再实现 §2.2 的本地 0.35/0.8 双阈值**（策略单一来源在 nsfw-check，/config 可热调）；
+  - auto 模式远程不可用 → 0 待人工（§5.3 降级口径，新增 `remote_expected` 参数区分）；
+  - 纯 local 模式 → 本地结论按 nsfw 位自动裁决 1/2（与迁移口径一致，展示行为不变）。
+- **存量迁移（§6.4）**：`review_status IS NULL` 的旧图按旧 nsfw 位标已审核（幂等，启动时执行）。
+- **展示策略（§6）**：图库 `search()` 加 `only_reviewed`（内嵌/独立两通道默认只展示已审核，
+  `only_reviewed=0` 旁路）；分享站 `/world /gallery /favorites` 过滤待复核 + `show_nsfw_global`
+  （never/blur/original）+ `show_nsfw_per_user`（按分享链接创建者覆盖）；blur 策略对 NSFW 图
+  强制写 `nsfw_blur=1`，前端瀑布流对 `nsfw_blur===1` 无视访客开关强制模糊。
+- **复核后台（§7）**：`gallery/review_stats` `/review_list` `/review` `/review_batch`
+  四个端点（内嵌 + 独立 WebUI 两通道均注册）+ ReviewView 页面（汇总卡/筛选/缩略图网格/
+  批量/大图预览，路由 `/review`，侧栏菜单「图片复核」）；sha 前缀匹配，写 `review_auto=0`
+  与 review_level/by/at 明细，同步收敛 `nsfw` / `nsfw_blur` / `nsfw_checked` 位。
+- **复核写通 nsfw-check**（决策：插件侧为真值）：有关联 `nsfw_record_id` 时 POST
+  nsfw-check `/records/{id}/review`（pass/nsfw→pass/block，pending 不同步——nsfw-check
+  不支持撤销），best-effort 不影响本地结论；配置 `gallery.nsfw.check_url` / `check_token`。
+- **`/涩图检测` 指令远程化（零配置）**：远程检测与复核写通默认走 **TaskHub 中转**
+  （与绘图链路同地址，TaskHub 新增 `/nsfw/detect/simple` 与 `/nsfw/review` 两个中转
+  端点，Token 注入只发生在中转站）——插件无需配置 nsfw-check 地址/令牌；
+  `check_url`/`check_token` 保留为显式直连的兼容项（不填走中转，中转不可用自动试
+  直连，都失败回退本地 OpenNSFW）。回复按 safe/中间带/nsfw 分档并附部位信号与分歧
+  提示；`/nsfw阈值` 回复注明当前是否走远程。上游若是裸 ComfyUI（无中转端点）→
+  404 降级，行为同未启用。nsfw-check 侧为此新增来源 `plugin-cmd`（VALID_SOURCES +
+  记录页筛选/统计，**需重启 8890 生效**，未重启前指令检测的记录暂记 `api`）。
+- **diverge 语义**（决策 3）：沿用 nsfw-check 的主/副模型分歧语义直接透传，
+  不做本地 OpenNSFW vs 远程的插件侧分歧计算（`nsfw_local_score` 列不引入）。
+- **待复核图发送策略（2026-11-22 用户拍板）**：`gallery.nsfw.review_send_policy`——
+  `send`（默认，先发后审）：action=review 的图照常发到聊天；`block_group`：群聊
+  （NSFW 白名单外）不直接发送待复核图（文生图/放大/抠图三链路发送闸 + 取图按
+  sha 直取兜底，提示已进入人工复核），私聊照发。判 NSFW/block 的图不受影响。
+  聊天侧召回（get_by_global_no/recall_by_tag/列表/搜索/收藏列表）排除
+  `review_status=0`，`_gidx_rank` 同口径——**待复核图移出编号空间**（重编号紧凑），
+  chat 编号与 WebUI gidx 一致，放行后自动回归。
+- **`_row_to_dict` 补暴露** v7.12 以来从未吐给前端的远程/复核字段。
 
-**未落地（后续完善，本文剩余章节即完整方案）**：
-1. 三级自动判定（分数门槛 0.35 / 0.8）当前只在归档侧做了简化的 level/action 映射，
-   **未按远程分数做 LOW/HIGH 分档**。
-2. 人工复核后台（第 7 节）：`review_list` / `review` / `review_batch` API 与 ReviewView
-   页面全都没有。远程判为 `review` 的图会写 `review_status=0`，但**没有任何地方消费
-   这个字段**——既不从图库隐藏，也不进复核队列，等于白写。
-3. 展示策略（第 6 节）：图库 `search()` 未按 `review_status!=0` 过滤；分享站无
-   `show_nsfw` 全局/用户级策略。
-4. 升级迁移（第 6.4 节）：无存量图补 `review_status` 的迁移脚本（当前新列默认 NULL，
-   不会清空图库，但也没有"已审核"语义）。
-5. 双分数对照：`nsfw_local_score` 未单独存储（本地分数仍只写 `nsfw_score`），无法做
-   本地/远程分歧(`diverge`)的真实计算——当前 `diverge` 直接取远程结论里的值。
+**验证**：py_compile 全过；TaskHub NsfwChecker 真实 8890 冒烟（probe/warm 预热跳过/detect
+simple 契约/available 归一）；ImageStore 十项断言冒烟（五条归档路径/过滤/迁移/复核读写/
+diverge）；/records/{id}/review 写通实测 `review_state=passed`。
 
-**何时做**：等 nsfw-check 远程服务稳定、且插件主线功能排期空出后，按本文第 8 节
-分阶段补齐。**在此之前，`auto` 模式仅供内部验证，不建议普通用户开启。**
+**剩余（低优先）**：
+1. §7.1 的分数区间筛选未做（kw + 分歧筛选已覆盖主要场景，按需再补）。
+2. `scan_nsfw_start` 一键扫描的结果只写 nsfw 位，不写 `review_status`（扫描是人工
+   纠正入口，暂不进复核队列）。
+3. §8.5 微调 CLIP 头（nsfw-check 侧事项）。
+
+**聊天侧召回已过滤（v8.13.0 补）**：详见上方「待复核图发送策略」条目——五个召回入口
+排除 `review_status=0`，编号空间同步收紧。
+
+**v7.12.1 首阶段记录**：`gallery.nsfw.remote_mode`（local/auto）、`_remote_nsfw_verdict`、
+`_detect_nsfw(remote=)` 三链路接入、images 表首批 5 列——细节见 git 历史。
 
 ---
 

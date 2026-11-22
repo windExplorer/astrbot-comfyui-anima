@@ -16,8 +16,10 @@
       <div v-for="v in visible" :key="v.m.sha256 || v.m.sha" class="vf-item" :style="itemStyle(v)">
         <div class="wf-card" :style="{ height: v.cardH + 'px' }">
           <div class="wf-img" :style="{ height: v.h + 'px' }" @click="onClick(v.m)">
-            <img :src="imgSrc(v.m)" loading="lazy" :class="{ 'nsfw-blur': nsfw && isNsfw(v.m) }" />
-            <div v-if="nsfw && isNsfw(v.m)" class="nsfw-mask">
+            <!-- nsfw_force_blur 为分享站策略强制模糊（后端临时写入），无视访客个人开关；
+                 nsfw_blur 是用户/全局持久设置，仍随开关切换 -->
+            <img :src="imgSrc(v.m)" loading="lazy" :class="{ 'nsfw-blur': (nsfw && isNsfw(v.m)) || v.m.nsfw_force_blur === 1 }" />
+            <div v-if="(nsfw && isNsfw(v.m)) || v.m.nsfw_force_blur === 1" class="nsfw-mask">
               <span>🔞</span><span class="nsfw-tip">点击查看</span>
             </div>
             <slot name="badges" :item="v.m"></slot>

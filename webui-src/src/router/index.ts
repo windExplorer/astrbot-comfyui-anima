@@ -9,6 +9,7 @@ import OptionsView from "@/views/OptionsView.vue";
 import BaseWorkflowsView from "@/views/BaseWorkflowsView.vue";
 import PlatformsView from "@/views/PlatformsView.vue";
 import GalleryView from "@/views/GalleryView.vue";
+import ReviewView from "@/views/ReviewView.vue";
 import QuotaView from "@/views/QuotaView.vue";
 import SessionView from "@/views/SessionView.vue";
 import TokenView from "@/views/TokenView.vue";
@@ -41,6 +42,7 @@ const router = createRouter({
     { path: "/baseworkflows", name: "baseworkflows", component: BaseWorkflowsView, meta: { title: "基础工作流" } },
     { path: "/platforms", name: "platforms", component: PlatformsView, meta: { title: "生图平台" } },
     { path: "/gallery", name: "gallery", component: GalleryView, meta: { title: "图库" } },
+    { path: "/review", name: "review", component: ReviewView, meta: { title: "图片复核" } },
     { path: "/quota", name: "quota", component: QuotaView, meta: { title: "限额" } },
     { path: "/sessions", name: "sessions", component: SessionView, meta: { title: "会话管理" } },
     { path: "/token", name: "token", component: TokenView, meta: { title: "Token" } },

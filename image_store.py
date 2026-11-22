@@ -72,6 +72,7 @@ def build_search_where(
     nsfw: str = "",
     tag: str = "",
     platform: str = "",
+    only_reviewed: bool = False,
 ) -> tuple[str, list]:
     """search / count_search 共用的完整 WHERE 条件（片段 + 参数）。
 
@@ -124,6 +125,10 @@ def build_search_where(
     if platform and platform.strip():
         sql += " AND platform=?"
         args.append(platform.strip())
+    if only_reviewed:
+        # 展示策略（TODO §6.2）：待人工复核(review_status=0)不进图库/分享站。
+        # NULL 视为已过审（未参与复核流程的历史行，保持旧展示行为）。
+        sql += " AND (review_status IS NULL OR review_status != 0)"
     return sql, args
 
 
@@ -331,6 +336,16 @@ class ImageStore:
             ("diverge", "INTEGER DEFAULT NULL"),
             ("review_status", "INTEGER DEFAULT NULL"),
             ("review_auto", "INTEGER DEFAULT NULL"),
+            # v8.13.0：复核后台（docs/TODO-审核与NSFW展示策略.md §7）。
+            # nsfw_record_id 关联 nsfw-check 检测记录（人工复核经
+            # /records/{id}/review 写通，保持两侧结论一致）；nsfw_labels 为
+            # /detect/simple 返回的触发部位标签 JSON（复核页展示「触发原因」）；
+            # review_level/by/at 为人工结论明细（评级/审核员/时间）。
+            ("nsfw_record_id", "TEXT DEFAULT NULL"),
+            ("nsfw_labels", "TEXT DEFAULT NULL"),
+            ("review_level", "TEXT DEFAULT NULL"),
+            ("review_by", "TEXT DEFAULT NULL"),
+            ("review_at", "REAL DEFAULT NULL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE images ADD COLUMN {_col} {_type}")
@@ -340,6 +355,27 @@ class ImageStore:
                 # 且迁移阶段毫无线索，排查成本极高。
                 if "duplicate column" not in str(e).lower():
                     logger.warning(f"[图库] 迁移补列 {_col} 失败（可能需要手动处理）: {e}")
+        # 存量图复核字段迁移（TODO §6.4，幂等只补 NULL 行）：老图按旧 nsfw 位
+        # 标「已审核」，防止展示策略（review_status!=0 过滤）开启后存量图从
+        # 图库/分享站整体消失。review_level 仅按 nsfw 位粗标，人工可在复核页改。
+        try:
+            _cur = conn.execute(
+                """
+                UPDATE images
+                SET review_status = CASE WHEN nsfw=1 THEN 2 ELSE 1 END,
+                    review_auto   = 1,
+                    review_level  = CASE WHEN nsfw=1 THEN 'explicit' ELSE 'safe' END,
+                    review_by     = 'auto',
+                    review_at     = strftime('%s','now')
+                WHERE review_status IS NULL
+                """
+            )
+            if _cur.rowcount:
+                conn.commit()
+                logger.info(
+                    f"[图库] 存量图复核字段迁移：{_cur.rowcount} 张按旧 NSFW 位标为已审核")
+        except Exception as e:
+            logger.warning(f"[图库] 存量图复核字段迁移失败（忽略，不影响使用）: {e}")
         _ddl(
             "image_tags 表",
             """CREATE TABLE IF NOT EXISTS image_tags (
@@ -699,6 +735,18 @@ class ImageStore:
     async def asearch(self, *args, **kwargs):
         return await self.async_call(self.search, *args, **kwargs)
 
+    async def areview_list(self, *args, **kwargs):
+        return await self.async_call(self.review_list, *args, **kwargs)
+
+    async def areview_count(self, *args, **kwargs):
+        return await self.async_call(self.review_count, *args, **kwargs)
+
+    async def areview_stats(self, *args, **kwargs):
+        return await self.async_call(self.review_stats, *args, **kwargs)
+
+    async def areview_set(self, *args, **kwargs):
+        return await self.async_call(self.set_review, *args, **kwargs)
+
     def _size_of(self, row) -> int:
         """返回图片字节数；历史老图 size_bytes 列为 NULL 时，按磁盘真实文件补算。
 
@@ -762,6 +810,10 @@ class ImageStore:
         # v7.12：TaskHub/nsfw-check 远程判定结果（dict：level/action/score/diverge/...）。
         # 可用时打标与复核字段以远程为主（Blue-Eye 主判比本地 Yahoo 分数准得多）。
         remote_nsfw: dict | None = None,
+        # v8.13.0：远程判定是否处于「预期启用」状态（remote_mode=auto）。
+        # 为 True 但 remote_nsfw 不可用时 → review_status=0 待人工复核
+        # （TODO §5.3：远程不可用不回退本地判定口径，宁可卡人审也不瞎放行）。
+        remote_expected: bool = False,
         # v7.8.2：只复制、不搬走源文件。第三方插件（如萌萌今日老婆）把参考图
         # 传进来时，源图在它自己的数据目录里，os.replace 会直接把它的图搬走。
         keep_src: bool = False,
@@ -901,6 +953,9 @@ class ImageStore:
         # v7.12：远程判定字段（TaskHub/nsfw-check，Blue-Eye 主判）
         _remote_level, _remote_score, _diverge = None, None, None
         _review_status, _review_auto = None, None
+        # v8.13.0：复核明细 + nsfw-check 记录关联 + 触发部位标签（复核页展示用）
+        _review_level, _review_by, _review_at = None, None, None
+        _nsfw_record_id, _nsfw_labels = None, None
         if nsfw_pre is not None:
             try:
                 _p_is, _p_score, _p_avail = nsfw_pre
@@ -943,12 +998,43 @@ class ImageStore:
                 if _level == "nsfw" or _act == "block":
                     _nsfw, _nsfw_checked = 1, 1
                     _nsfw_score = _remote_score if _remote_score is not None else _nsfw_score
+                    _review_level = _review_level or "explicit"
                 elif _level == "safe" and not remote_nsfw.get("diverge"):
                     _nsfw, _nsfw_checked = 0, 1
                     _nsfw_score = _remote_score if _remote_score is not None else _nsfw_score
-                # level=review：nsfw 位保持本地结论（0），留 review_status=0 待人工
+                    _review_level = _review_level or "safe"
+                # level=review（含 safe+diverge：nsfw-check 侧已视作中间带）：
+                # nsfw 位保持本地结论（0），留 review_status=0 待人工
+                # v8.13.0：关联 nsfw-check 检测记录与触发标签（/detect/simple 回传）
+                _rid = remote_nsfw.get("record_id")
+                if _rid:
+                    _nsfw_record_id = str(_rid)
+                _lbls = remote_nsfw.get("labels")
+                if isinstance(_lbls, list) and _lbls:
+                    try:
+                        _nsfw_labels = json.dumps(
+                            [str(x) for x in _lbls], ensure_ascii=False)
+                    except Exception:
+                        _nsfw_labels = None
+                if _review_status is not None and _review_auto:
+                    _review_by, _review_at = "auto", time.time()
             except Exception:
                 pass
+        elif remote_expected:
+            # remote_mode=auto 但远程不可用/未注入（TODO §5.3 降级口径）：
+            # 不按本地分自动放行，卡待人工复核；本地检测结果仍写 nsfw 位作参考
+            _review_status, _review_auto = 0, 0
+        elif self._nsfw_enabled():
+            # 纯本地模式（remote_mode=local）：本地检测结论视作自动裁决，与存量
+            # 迁移口径一致（nsfw=1→2 / 否则 1），图库展示行为不变
+            _review_status = 2 if _nsfw == 1 else 1
+            _review_auto = 1
+            _review_level = "explicit" if _nsfw == 1 else "safe"
+            _review_by, _review_at = "auto", time.time()
+        else:
+            # NSFW 检测整体关闭：无判定依据，按放行处理保持旧展示行为
+            _review_status, _review_auto = 1, 1
+            _review_level, _review_by, _review_at = "safe", "auto", time.time()
 
         try:
             conn.execute(
@@ -961,9 +1047,11 @@ class ImageStore:
                  nsfw, nsfw_score, nsfw_blur, nsfw_checked, cfg, steps,
                  platform, model, negative, extra, platform_name,
                  in_w, in_h, upscale,
-                 nsfw_remote_level, nsfw_remote_score, diverge, review_status, review_auto)
+                 nsfw_remote_level, nsfw_remote_score, diverge, review_status, review_auto,
+                 nsfw_record_id, nsfw_labels, review_level, review_by, review_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?,?,
                         ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                        ?,?,?,?,?,
                         ?,?,?,?,?)
                 """,
                 (
@@ -978,6 +1066,7 @@ class ImageStore:
                     platform or "comfyui", model or "", negative or "", extra_json, platform_name or "",
                     in_w, in_h, upscale or "",
                     _remote_level, _remote_score, _diverge, _review_status, _review_auto,
+                    _nsfw_record_id, _nsfw_labels, _review_level, _review_by, _review_at,
                 ),
             )
             conn.commit()
@@ -1251,6 +1340,19 @@ class ImageStore:
             "nsfw_score": row["nsfw_score"] if "nsfw_score" in row.keys() else None,
             "nsfw_blur": row["nsfw_blur"] if "nsfw_blur" in row.keys() else None,
             "nsfw_checked": bool(row["nsfw_checked"]) if "nsfw_checked" in row.keys() else False,
+            # v8.13.0：远程判定与复核字段（复核页展示/操作依赖；v7.12 加列时未暴露）
+            "nsfw_remote_level": row["nsfw_remote_level"] if "nsfw_remote_level" in row.keys() else None,
+            "nsfw_remote_score": row["nsfw_remote_score"] if "nsfw_remote_score" in row.keys() else None,
+            "nsfw_record_id": row["nsfw_record_id"] if "nsfw_record_id" in row.keys() else None,
+            "nsfw_labels": row["nsfw_labels"] if "nsfw_labels" in row.keys() else None,
+            "diverge": int(row["diverge"]) if ("diverge" in row.keys() and row["diverge"] is not None) else 0,
+            "review_status": (int(row["review_status"])
+                              if ("review_status" in row.keys() and row["review_status"] is not None) else None),
+            "review_auto": (int(row["review_auto"])
+                            if ("review_auto" in row.keys() and row["review_auto"] is not None) else None),
+            "review_level": row["review_level"] if "review_level" in row.keys() else None,
+            "review_by": row["review_by"] if "review_by" in row.keys() else None,
+            "review_at": row["review_at"] if "review_at" in row.keys() else None,
             "tags": self.tags_of(row["sha256"]),
         }
 
@@ -1565,13 +1667,42 @@ class ImageStore:
             out.append(d)
         return out
 
-    def world_list(self, user_id: str = "", limit: int = 40, offset: int = 0) -> dict:
-        """世界：全部公开图，按热度(点赞+收藏)降序、再生成时间倒序。"""
+    def world_list(self, user_id: str = "", limit: int = 40, offset: int = 0,
+                   only_reviewed: bool = False, nsfw_never: bool = False,
+                   force_blur: bool = False) -> dict:
+        """世界：全部公开图，按热度(点赞+收藏)降序、再生成时间倒序。
+
+        v8.13.0 分享站展示策略（TODO §6.3）：only_reviewed 排除待人工复核；
+        nsfw_never 排除 NSFW 图；force_blur 对 NSFW 图强制模糊（忽略个人设置）。
+        """
         if not self.enabled() or not _HAS_SQLITE:
             return {"images": [], "total": 0}
         conn = self._conn_get()
         where = "i.is_public=1 AND i.deleted=0 AND i.status=0"
+        where, extra_args = self._share_policy_where(where, only_reviewed, nsfw_never)
         base = "FROM images i WHERE " + where
+        total = 0
+        try:
+            row = conn.execute(f"SELECT COUNT(*) c {base}", extra_args).fetchone()
+            total = int(row["c"]) if row else 0
+        except Exception:
+            pass
+        rows = []
+        try:
+            # v7.8.11：试过改成聚合后 LEFT JOIN（省掉逐行相关子查询），
+            # A/B 实测反而慢 16%——派生表要每次全扫点赞/收藏表，而原相关子查询
+            # 有 sha256 索引、每行只需两次查找。保留原写法。
+            sql = (
+                "SELECT i.*, "
+                "(SELECT COUNT(*) FROM image_likes l WHERE l.sha256=i.sha256) AS lc, "
+                "(SELECT COUNT(*) FROM image_favorites f WHERE f.sha256=i.sha256) AS fc "
+                f"{base} ORDER BY (lc+fc) DESC, i.created_at DESC LIMIT ? OFFSET ?"
+            )
+            rows = conn.execute(sql, extra_args + [int(limit), int(offset)]).fetchall()
+        except Exception as e:
+            logger.warning(f"[图库] 世界列表失败: {e}")
+        return {"images": self._share_apply_blur(
+            self._share_enrich(conn, rows, user_id), force_blur), "total": total}
         total = 0
         try:
             row = conn.execute(f"SELECT COUNT(*) c {base}").fetchone()
@@ -1594,8 +1725,12 @@ class ImageStore:
             logger.warning(f"[图库] 世界列表失败: {e}")
         return {"images": self._share_enrich(conn, rows, user_id), "total": total}
 
-    def gallery_list(self, user_id: str, visibility: str = "all", limit: int = 40, offset: int = 0) -> dict:
-        """图库：本人生成的图（不含回收站），按时间倒序。visibility: all/public/private。"""
+    def gallery_list(self, user_id: str, visibility: str = "all", limit: int = 40, offset: int = 0,
+                     only_reviewed: bool = False, nsfw_never: bool = False,
+                     force_blur: bool = False) -> dict:
+        """图库：本人生成的图（不含回收站），按时间倒序。visibility: all/public/private。
+
+        v8.13.0 分享站展示策略参数同 world_list。"""
         if not self.enabled() or not _HAS_SQLITE or not user_id:
             return {"images": [], "total": 0}
         conn = self._conn_get()
@@ -1605,6 +1740,8 @@ class ImageStore:
             where += " AND i.is_public=1"
         elif visibility == "private":
             where += " AND i.is_public=0"
+        where, extra_args = self._share_policy_where(where, only_reviewed, nsfw_never)
+        args += extra_args
         base = "FROM images i WHERE " + where
         total = 0
         try:
@@ -1621,10 +1758,15 @@ class ImageStore:
             rows = conn.execute(sql, args + [int(limit), int(offset)]).fetchall()
         except Exception as e:
             logger.warning(f"[图库] 图库列表失败: {e}")
-        return {"images": self._share_enrich(conn, rows, user_id), "total": total}
+        return {"images": self._share_apply_blur(
+            self._share_enrich(conn, rows, user_id), force_blur), "total": total}
 
-    def favorites_list(self, user_id: str, limit: int = 60, offset: int = 0) -> dict:
-        """收藏：我收藏的图（跨用户）。返回含 owner_is_me 标记。"""
+    def favorites_list(self, user_id: str, limit: int = 60, offset: int = 0,
+                       only_reviewed: bool = False, nsfw_never: bool = False,
+                       force_blur: bool = False) -> dict:
+        """收藏：我收藏的图（跨用户）。返回含 owner_is_me 标记。
+
+        v8.13.0 分享站展示策略参数同 world_list。"""
         if not self.enabled() or not _HAS_SQLITE or not user_id:
             return {"images": [], "total": 0}
         conn = self._conn_get()
@@ -1636,6 +1778,9 @@ class ImageStore:
             "AND (i.is_public=1 OR i.user_id=?)"
         )
         args = [user_id, user_id]
+        _where_frag, extra_args = self._share_policy_where("", only_reviewed, nsfw_never)
+        base = base + _where_frag
+        args += extra_args
         total = 0
         try:
             row = conn.execute(f"SELECT COUNT(*) c {base}", args).fetchone()
@@ -1650,10 +1795,32 @@ class ImageStore:
             rows = conn.execute(sql, args + [int(limit), int(offset)]).fetchall()
         except Exception as e:
             logger.warning(f"[图库] 收藏列表失败: {e}")
-        imgs = self._share_enrich(conn, rows, user_id)
+        imgs = self._share_apply_blur(self._share_enrich(conn, rows, user_id), force_blur)
         for d in imgs:
             d["owner_is_me"] = (d.get("user_id") == user_id)
         return {"images": imgs, "total": total}
+
+    @staticmethod
+    def _share_policy_where(where: str, only_reviewed: bool, nsfw_never: bool) -> tuple[str, list]:
+        """分享站列表的策略 WHERE 片段（TODO §6.3）。返回 (where片段, 追加参数)。"""
+        extra: list = []
+        if only_reviewed:
+            # 待人工复核(review_status=0)不进分享站；NULL 视为已过审
+            where += " AND (i.review_status IS NULL OR i.review_status != 0)"
+        if nsfw_never:
+            where += " AND i.nsfw=0"
+        return where, extra
+
+    @staticmethod
+    def _share_apply_blur(imgs: list[dict], force_blur: bool) -> list[dict]:
+        """show_nsfw=blur 策略：对 NSFW 图强制模糊。写独立的 nsfw_force_blur 标记
+        而非覆盖 nsfw_blur——后者是用户/全局的持久模糊设置，前端要能区分
+        「策略强制（无视访客开关）」与「用户自选（随开关切换）」。"""
+        if force_blur:
+            for d in imgs or []:
+                if d.get("nsfw"):
+                    d["nsfw_force_blur"] = 1
+        return imgs
 
     def recycle_list(self, user_id: str, limit: int = 100, offset: int = 0) -> list:
         if not self.enabled() or not _HAS_SQLITE or not user_id:
@@ -1834,6 +2001,9 @@ class ImageStore:
         """计算某条记录在「基础过滤」下的全局序号（1 起始，用于 gidx）。
 
         「基础过滤」= deleted/status + owner(user_id)，**不含** session/keyword/tag。
+        v8.13.0：待人工复核(review_status=0)的图同步移出编号空间（与 get_by_global_no
+        的过滤同口径），保证「/图库 取图 <编号>」与 WebUI/聊天各处列表显示的编号
+        一致（待复核图在列表里也不显示，编号紧凑无跳号）。
         排序与 get_by_global_no 完全一致（created_at DESC, sha256 DESC 作为次级键），
         因此算出的编号不依赖当前检索范围（会话）或关键词，可直接作为图库唯一编号，
         供 `/图库 取图 <编号>` 或 comfyui_gallery send 无状态定位到同一张图。
@@ -1845,6 +2015,7 @@ class ImageStore:
         where = "deleted=1" if trash else "deleted=0"
         args: list = []
         where += " AND status=0"
+        where += " AND (review_status IS NULL OR review_status != 0)"
         if owner:
             # 公开图(is_public)与全局图(is_global)所有人可见；私有/非全局图仅本人。
             where += " AND (is_public=1 OR is_global=1 OR user_id=?)"
@@ -1873,6 +2044,7 @@ class ImageStore:
         nsfw: str = "",
         tag: str = "",
         platform: str = "",
+        only_reviewed: bool = False,
     ) -> int:
         """与 search 相同的过滤条件，返回命中的总条数（用于 WebUI 分页显示 total）。
         owner: 用户隔离标识，与 search 保持一致。
@@ -1880,7 +2052,8 @@ class ImageStore:
         cross_session=false 场景）。注意：这只是检索范围，不改变权限——
         owner（user_id 归属）与 is_public 过滤始终保留。
         nsfw: ""=不过滤；"0"=仅常规；"1"=仅NSFW。
-        tag: 按标签精确筛选，与 search 保持一致。"""
+        tag: 按标签精确筛选，与 search 保持一致。
+        only_reviewed: 展示策略（TODO §6.2），True 时排除待人工复核的图。"""
         if not self.enabled() or not _HAS_SQLITE:
             return 0
         conn = self._conn_get()
@@ -1889,7 +2062,7 @@ class ImageStore:
         _where, _wargs = build_search_where(
             keyword=keyword, type=type, starred_only=starred_only, trash=trash,
             owner=owner, session=session, user_filter=user_filter, nsfw=nsfw,
-            tag=tag, platform=platform,
+            tag=tag, platform=platform, only_reviewed=only_reviewed,
         )
         sql += _where
         args += _wargs
@@ -1914,6 +2087,7 @@ class ImageStore:
         nsfw: str = "",
         tag: str = "",
         platform: str = "",
+        only_reviewed: bool = False,
     ) -> list[dict]:
         """按 prompt LIKE 检索（中文优先）。type: gen/ref/user/None(全部)。
         trash=True 时只查已移入回收站(deleted=1)的图片；否则默认只看未删除的。
@@ -1923,6 +2097,7 @@ class ImageStore:
         cross_session=false 场景）。这是检索范围缩小，不改变 owner 权限语义。
         nsfw: ""=不过滤；"0"=仅常规（nsfw=0）；"1"=仅NSFW（nsfw=1）。
         tag: 按标签精确筛选。非空时仅返回带该标签的图片（精确匹配 image_tags.tag）。
+        only_reviewed: 展示策略（TODO §6.2），True 时排除待人工复核的图。
         """
         if not self.enabled() or not _HAS_SQLITE:
             return []
@@ -1932,7 +2107,7 @@ class ImageStore:
         _where, _wargs = build_search_where(
             keyword=keyword, type=type, starred_only=starred_only, trash=trash,
             owner=owner, session=session, user_filter=user_filter, nsfw=nsfw,
-            tag=tag, platform=platform,
+            tag=tag, platform=platform, only_reviewed=only_reviewed,
         )
         sql += _where
         args += _wargs
@@ -1973,6 +2148,10 @@ class ImageStore:
         args: list = []
         sql += " AND deleted=0"
         sql += " AND status=0"
+        # v8.13.0：待人工复核(review_status=0)不进聊天召回——图库/分享站已过滤，
+        # 这里不挡的话「/图库 取图 <编号>」能取出 WebUI 里看不见的待复核图。
+        # 与 _gidx_rank 的编号空间同口径（待复核移出编号，重编号紧凑无跳号）。
+        sql += " AND (review_status IS NULL OR review_status != 0)"
         if owner:
             # v6.0.0：统一可见性口径（补 is_global=1）。`_gidx_rank` 算编号时把全局图
             # 算进去了，而 count_search / search / get_by_global_no 没算 →
@@ -2006,6 +2185,7 @@ class ImageStore:
                     SELECT i.* FROM images i
                     JOIN image_tags t ON i.sha256 = t.sha256
                     WHERE t.tag LIKE ? AND i.deleted=0 AND i.status=0
+                      AND (i.review_status IS NULL OR i.review_status != 0)
                       AND (i.is_public=1 OR i.user_id=?)
                     ORDER BY i.created_at DESC, i.sha256 DESC LIMIT ?
                     """,
@@ -2017,6 +2197,7 @@ class ImageStore:
                     SELECT i.* FROM images i
                     JOIN image_tags t ON i.sha256 = t.sha256
                     WHERE t.tag LIKE ? AND i.deleted=0 AND i.status=0
+                      AND (i.review_status IS NULL OR i.review_status != 0)
                     ORDER BY i.created_at DESC, i.sha256 DESC LIMIT ?
                     """,
                     (kw, int(limit)),
@@ -2248,6 +2429,154 @@ class ImageStore:
             return True
         except Exception as e:
             logger.warning(f"[图库] 人工标记 NSFW 失败: {e}")
+            return False
+
+    # ------------------------------------------------------------------ #
+    # 人工复核后台（v8.13.0，docs/TODO-审核与NSFW展示策略.md §7）
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _review_where(status: str, diverge_only: bool, keyword: str) -> tuple[str, list]:
+        """review_list / review_count 共用 WHERE（口径只写一遍）。"""
+        sql = " AND deleted=0 AND status=0"
+        args: list = []
+        st = str(status or "0").strip().lower()
+        if st == "0":
+            sql += " AND review_status=0"
+        elif st == "1":
+            sql += " AND review_status=1"
+        elif st == "2":
+            sql += " AND review_status=2"
+        elif st == "auto":
+            sql += " AND review_status IN (1,2) AND review_auto=1"
+        elif st == "manual":
+            # 已人工审：review_auto=0 且已有结论（1/2）——待复核行(action=review 归档)
+            # 的 review_auto 也是 0，必须排除，否则「已人工审」会混进待复核图
+            sql += " AND review_auto=0 AND review_status IN (1,2)"
+        # all：无附加条件
+        if diverge_only:
+            sql += " AND diverge=1"
+        if keyword and keyword.strip():
+            kw = f"%{keyword.strip()}%"
+            sql += " AND (sha256 LIKE ? OR user_id LIKE ? OR user_name LIKE ? OR prompt LIKE ?)"
+            args += [kw, kw, kw, kw]
+        return sql, args
+
+    def review_list(
+        self,
+        status: str = "0",
+        diverge_only: bool = False,
+        keyword: str = "",
+        limit: int = 40,
+        offset: int = 0,
+    ) -> list[dict]:
+        """复核队列（TODO §7.1）。status: 0=待复核(默认) 1=已放行 2=已拦截
+        auto=已自动审 manual=已人工审 all=全部；diverge_only 只看主/副模型分歧图。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return []
+        conn = self._conn_get()
+        _where, _wargs = self._review_where(status, diverge_only, keyword)
+        sql = "SELECT * FROM images WHERE 1=1" + _where
+        sql += " ORDER BY created_at DESC, sha256 DESC LIMIT ? OFFSET ?"
+        _wargs = _wargs + [int(limit), int(offset)]
+        try:
+            rows = conn.execute(sql, _wargs).fetchall()
+        except Exception as e:
+            logger.warning(f"[图库] 复核列表查询失败: {e}")
+            return []
+        return [self._row_to_dict(r) for r in rows]
+
+    def review_count(
+        self, status: str = "0", diverge_only: bool = False, keyword: str = ""
+    ) -> int:
+        """与 review_list 相同过滤条件的总数（复核页分页用）。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return 0
+        conn = self._conn_get()
+        _where, _wargs = self._review_where(status, diverge_only, keyword)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM images WHERE 1=1" + _where, _wargs
+            ).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception as e:
+            logger.warning(f"[图库] 复核计数失败: {e}")
+            return 0
+
+    def review_stats(self) -> dict:
+        """复核页顶部汇总卡（TODO §7.2）：待复核/已放行/已拦截/分歧图计数。"""
+        if not self.enabled() or not _HAS_SQLITE:
+            return {}
+        conn = self._conn_get()
+        try:
+            row = conn.execute(
+                """
+                SELECT
+                  SUM(CASE WHEN review_status=0 THEN 1 ELSE 0 END) AS pending,
+                  SUM(CASE WHEN review_status=1 THEN 1 ELSE 0 END) AS passed,
+                  SUM(CASE WHEN review_status=2 THEN 1 ELSE 0 END) AS blocked,
+                  SUM(CASE WHEN diverge=1 THEN 1 ELSE 0 END) AS diverge
+                FROM images WHERE deleted=0 AND status=0
+                """
+            ).fetchone()
+            return {
+                "pending": int(row["pending"] or 0) if row else 0,
+                "passed": int(row["passed"] or 0) if row else 0,
+                "blocked": int(row["blocked"] or 0) if row else 0,
+                "diverge": int(row["diverge"] or 0) if row else 0,
+            }
+        except Exception as e:
+            logger.warning(f"[图库] 复核统计失败: {e}")
+            return {}
+
+    def set_review(
+        self, sha256: str, decision: str, level: str = "", by: str = ""
+    ) -> bool:
+        """写人工复核结论（TODO §7.3）。sha256 支持前缀匹配（与 set_nsfw 一致）。
+
+        decision: pass=放行 / nsfw=标记 NSFW / pending=退回待复核。
+        - pass  → review_status=1, nsfw=0, nsfw_blur=0, nsfw_checked=1
+        - nsfw  → review_status=2, nsfw=1（模糊交由展示层按 show_nsfw 策略处理）
+        - pending → review_status=0（撤销此前结论）
+        均写 review_auto=0 / review_level / review_by / review_at。
+        返回是否命中（False = 未找到该图）。
+        """
+        if not sha256:
+            return False
+        d = {"pass": (1, 0), "nsfw": (2, 1), "pending": (0, None)}.get(
+            str(decision or "").strip().lower())
+        if d is None:
+            return False
+        status, nsfw_bit = d
+        conn = self._conn_get()
+        try:
+            row = conn.execute(
+                "SELECT sha256 FROM images WHERE sha256 LIKE ? ORDER BY sha256 LIMIT 1",
+                (f"{sha256.strip()}%",),
+            ).fetchone()
+            if not row:
+                return False
+            sets = ["review_status=?", "review_auto=0", "review_at=?"]
+            args: list = [status, time.time()]
+            if level and str(level).strip():
+                sets.append("review_level=?")
+                args.append(str(level).strip())
+            if by and str(by).strip():
+                sets.append("review_by=?")
+                args.append(str(by).strip())
+            if nsfw_bit is not None:
+                sets.append("nsfw=?")
+                args.append(nsfw_bit)
+                sets.append("nsfw_checked=1")
+            if decision == "pass":
+                sets.append("nsfw_blur=0")
+            args.append(row["sha256"])
+            conn.execute(
+                f"UPDATE images SET {', '.join(sets)} WHERE sha256=?", args)
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.warning(f"[图库] 写复核结论失败: {e}")
             return False
 
     def delete(self, sha256: str) -> bool:

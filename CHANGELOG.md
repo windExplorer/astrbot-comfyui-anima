@@ -4,6 +4,45 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.13.0（NSFW 复核后台 + 展示策略 + 远程判定零配置接入）
+
+**背景**：nsfw-check（Blue-Eye 多模型检测服务）稳定在 v0.3.0；本插件 v7.12.1 只
+落了第一阶段远程判定，且因 `_cfg` 点号路径 bug（config 是普通嵌套 dict，
+`_cfg("gallery.nsfw.remote_mode")` 永远落 default）**从未真正生效**。本次完成
+TODO-审核与NSFW展示策略.md 第二阶段并修复该 bug。
+
+**主要改动**：
+- **零配置接入**：远程检测与复核写通默认走 TaskHub 中转（与绘图链路同地址，
+  TaskHub 侧新增 `/nsfw/detect/simple`、`/nsfw/review` 中转端点，Token 只在中转站
+  注入）；`check_url`/`check_token` 降级为显式直连兼容项，中转 404 自动试直连。
+- **归档全路径写 review_status**：远程 action 映射（review→待人工/block→拦截/
+  allow→放行）、auto 模式远程不可用卡待人工（不按本地分放行）、纯 local 模式本地
+  自动裁决；存量图启动时幂等迁移（NULL→按旧 nsfw 位标已审核，图库不清空）。
+- **展示策略**：图库 WebUI、分享站 `/world /gallery /favorites`、聊天侧召回
+  （取图/最新/找标签/列表/搜索/收藏列表）全部排除待复核图；`_gidx_rank` 与取图
+  同口径，待复核图移出编号空间（重编号紧凑，放行后回归）。
+- **分享站 NSFW 策略**：`show_nsfw_global`（never/blur/original）+ 用户级覆盖
+  `show_nsfw_per_user`；blur 由后端写独立标记 `nsfw_force_blur` 强制模糊，不影响
+  用户自选的 `nsfw_blur`（图库单图模糊/全局开关不受破坏）。
+- **人工复核后台**：WebUI 新增「图片复核」页（路由 /review，汇总卡/筛选/缩略图
+  网格/批量/1200px 大图预览/触发部位标签），四端点内嵌+独立两通道均注册；
+  复核结论 best-effort 写通 nsfw-check `/records/{id}/review`（插件侧为真值）。
+- **`/涩图检测` 指令远程化**：safe/中间带/nsfw 分档 + 部位信号 + 分歧提示；
+  失败回退本地 OpenNSFW。`/nsfw阈值` 回复注明是否走远程。
+- **待复核图发送策略** `review_send_policy`：`send`（默认，先发后审）/
+  `block_group`（群聊白名单外不直接发送待复核图，文生图/放大/抠图三闸 +
+  取图 sha 直取兜底；私聊照发；NSFW 拦截不受影响）。
+- **故障语义统一**：远程给不出结论（停机/level=unavailable）→ 发送闸回落本地
+  检测、归档一律待人工，都不能当"安全"放行；unavailable 此前会被当安全图放行，
+  已修。
+- 其余：`_row_to_dict` 补暴露远程/复核字段；`_nsfw_pre_from_remote` unavailable
+  回落本地；图库 review 相关 5 个新列（record_id/labels/review_level/by/at）。
+
+**验证**：py_compile 全过；TaskHub NsfwChecker 真实 8890 冒烟（simple 契约/预热
+跳过/available 归一）；中转层 detect/review/404 透传冒烟；ImageStore 复核链路
+19 项断言（归档五路径/迁移/过滤/复核读写/重编号）；`/records/{id}/review` 端到端
+review_state=passed；双前端构建 + vue-tsc 新文件零错误。
+
 ## v8.12.5（聊天追问不拼回绘图 prompt）
 
 **用户实测**：v8.12.4 的换装提示词已经写对（具体新服装、不再重复），

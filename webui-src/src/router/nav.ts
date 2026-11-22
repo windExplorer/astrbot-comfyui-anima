@@ -21,6 +21,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/loras", name: "loras", label: "LoRA", icon: "🎨", key: "loras" },
   { path: "/platforms", name: "platforms", label: "生图平台", icon: "🌐", key: "platforms" },
   { path: "/gallery", name: "gallery", label: "图库", icon: "🖼️", key: "gallery" },
+  { path: "/review", name: "review", label: "图片复核", icon: "🛡️", key: "review" },
   { path: "/quota", name: "quota", label: "限额", icon: "🚦", key: "quota" },
   { path: "/sessions", name: "sessions", label: "会话管理", icon: "💬", key: "sessions" },
   { path: "/token", name: "token", label: "Token", icon: "🔑", key: "token" },
