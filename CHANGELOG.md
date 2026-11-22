@@ -4,6 +4,24 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.12.2（角色卡回归本位：只对原生聊天生效，老婆插件不再被萌绘反向接管）
+
+**用户指正**：老婆插件本来就有自己的角色卡，萌绘的角色卡数据就是从它那边同步来的；它自己调萌绘时还要走萌绘的角色卡链路，是本末倒置。
+
+**核实证据**（老婆插件仓库）：
+- `main_ref_map()` 只是它**对外暴露的只读契约**，老婆自己的出图代码完全不读它（`main.py:82-89,137-148`）。
+- 老婆自己走 `strategy.ref / draw_ref / refs`（`draw.py:350-369,445-456`），提示词由 `prompt_gen.py`（`build_artist_prompt` / `build_generation_prompt`，含 `tags_en` 与角色固有特征）生成。
+- 它调萌绘时已备好 prompt / workflow / 显式参考图，并固定传 `source="萌萌今日老婆" / external=True / silent=True / raw_prompt=True`（`draw.py:278-287,462-527`）。
+- 而萌绘旧逻辑在 prompt 含角色名时会读它的映射、**用合成桩的空 `message_str` 重拼一条通用编辑指令覆盖掉这段准备好的 prompt**，还翻转 i2i、覆盖工作流/尺寸/negative。纯破坏。
+- 萌绘 Studio 同样受害：角色页「用这个角色生图」只是把名字追加进 `positive`（`StudioView.vue:289-297`），命中后用户的最终文本被同一条通用指令覆盖。
+
+**修复**：
+- 废弃 v8.12.1 的 `_ROLE_CARD_EXTERNAL_SOURCES` 白名单。`_role_card_source_allowed()` 现在只对**原生聊天**（`source` 空、非 external）返回真；所有外部调用（老婆插件 / 日程 / 星语 / 伴侣 / 未来第三方）默认完全不进角色卡链路，**都不需要改自己的代码或配置**。
+- 确需角色卡的外部调用方必须显式传 `use_role_card=True`。Studio 的「用这个角色生图」是显式意图，已在 `studio_api.py` 显式 opt-in 保留该功能。
+- `raw_prompt=True` 的调用方 prompt 视为最终文本：角色卡只**追加**保身份/重设计服装姿势的约束，不再整条替换；合成桩（`message_str=""`）改以调用方 `positive` 作画面来源。
+- v8.12.0 的「画自己可退出 / 换装换姿势不贴参考图 / denoise 可配」全部保留，只对原生聊天生效。
+- 守卫：`test_third_party_flags` 验证四类外部来源全部拦下且 Studio 显式 opt-in；`test_role_card` 验证 `raw_prompt` 不覆盖；`test_static_lint` / `test_config_groups` 全过。
+
 ## v8.12.1（角色卡改为默认安全：外部插件一律跳过，不再逐个插件加参数）
 
 **用户质疑**：v8.12.0 的 `use_role_card=False` 要每个调用方插件都改一遍——那以后星语、伴侣、任何第三方插件是不是都要跟着改？答案是不该这样。

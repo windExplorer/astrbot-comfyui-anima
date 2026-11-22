@@ -13,9 +13,6 @@ import time
 logger = logging.getLogger(__name__)
 
 WAIFU_PLUGIN = "astrbot_plugin_moe_waifu"
-# 老婆插件调用萌绘时传的 source（draw.py:PLUGIN_SOURCE）。用于萌绘侧判定
-# 「哪些外部调用方本就该走角色卡」——角色卡的数据源就是它自己。
-WAIFU_SOURCE = "萌萌今日老婆"
 CONTRACT = "waifu.v1"
 CACHE_TTL = 60.0  # 角色库不常变，缓存 1 分钟；WebUI 手动刷新可清
 

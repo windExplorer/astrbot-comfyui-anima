@@ -201,7 +201,9 @@ check("续画意图收窄", "_ROLE_CONTINUE_RE.search(_u_msg)" in src)
 check("跨插件跳过角色卡", "use_role_card: bool | None = None" in src
       and "use_role_card is True" in src and "use_role_card=use_role_card" in src)
 check("外部来源默认不进角色卡", "_role_card_source_allowed" in src
-      and "_ROLE_CARD_EXTERNAL_SOURCES" in src and "萌萌今日老婆" in src)
+      and "_ROLE_CARD_EXTERNAL_SOURCES" not in src
+      and "return not _is_external_call(source, external)" in src)
+check("raw_prompt不覆盖调用方prompt", "raw_prompt and _wr_orig_positive" in src)
 check("denoise可配", '"denoise"' in _sch and '_wr_cfg.get("denoise", -1)' in src)
 
 if FAILURES:

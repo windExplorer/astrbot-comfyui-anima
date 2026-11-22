@@ -278,34 +278,26 @@ def test_signatures_and_wiring():
 
 
 def test_role_card_source_allowlist():
-    """v8.12.1：外部插件默认不进角色卡，避免人格名被当成老婆角色名命中。"""
+    """v8.12.2：角色卡只对原生聊天生效；外部调用必须显式 use_role_card=True。"""
     src = _source()
-    tree = ast.parse(src)
-    node = next(
-        n for n in tree.body
-        if isinstance(n, ast.Assign)
-        and any(getattr(t, "id", "") == "_ROLE_CARD_EXTERNAL_SOURCES" for t in n.targets)
-    )
-    allowed = set(ast.literal_eval(node.value))
-    assert "萌萌今日老婆" in allowed and "webui_studio" in allowed, \
-        "老婆插件与在线生图本就该走角色卡，必须在白名单里"
-    assert "萌萌日程" not in allowed and "萌萌星语" not in allowed, \
-        "日程/星语等外部调用方不该出现在角色卡白名单里"
+    assert "_ROLE_CARD_EXTERNAL_SOURCES" not in src, \
+        "外部来源白名单已废弃——老婆插件自己是角色卡数据源，不该再走萌绘角色卡"
     fn = _load_module_funcs(
         ("_is_external_call", "_role_card_source_allowed"),
-        {
-            "SOURCE_COMPANION_PLUGIN": "我会永远陪着你",
-            "_ROLE_CARD_EXTERNAL_SOURCES": allowed,
-        },
+        {"SOURCE_COMPANION_PLUGIN": "我会永远陪着你"},
     )["_role_card_source_allowed"]
-    assert fn("", False) is True, "原生聊天照旧允许角色卡"
-    assert fn("萌萌今日老婆", True) is True, "老婆插件批量补图必须继续走角色卡"
-    assert fn("webui_studio", True) is True, "在线生图的「用这个角色生图」要继续走角色卡"
-    assert fn("萌萌日程", True) is False, "日程必须被默认拦在角色卡之外"
-    assert fn("萌萌星语", True) is False, "星语也必须被默认拦在角色卡之外"
-    assert fn("我会永远陪着你", False) is False, "伴侣兼容来源不再自动进角色卡"
-    assert "_role_card_source_allowed(source, external)" in src, "_do_draw 未应用来源白名单"
-    print("== _role_card_source_allowed（仅老婆插件/在线生图放行，其它外部默认跳过） OK")
+    assert fn("", False) is True, "原生聊天（用户直接说画某角色）照旧允许角色卡"
+    assert fn("萌萌今日老婆", True) is False, "老婆插件自己已有 prompt/ref/角色卡，萌绘不该插手"
+    assert fn("webui_studio", True) is False, "Studio 默认不进，要用必须显式 opt-in"
+    assert fn("萌萌日程", True) is False, "日程必须被拦在角色卡之外"
+    assert fn("萌萌星语", True) is False, "星语也必须被拦在角色卡之外"
+    assert fn("我会永远陪着你", False) is False, "伴侣兼容来源不自动进角色卡"
+    assert "_role_card_source_allowed(source, external)" in src, "_do_draw 未应用来源判定"
+    studio = (ROOT / "studio_api.py").read_text(encoding="utf-8-sig")
+    assert "use_role_card=True" in studio, "Studio 的「用这个角色生图」必须显式 opt-in"
+    assert "raw_prompt and _wr_orig_positive" in src, \
+        "raw_prompt 调用方的最终 prompt 不能被角色卡整条覆盖"
+    print("== _role_card_source_allowed（仅原生聊天默认走角色卡，外部必须显式 opt-in） OK")
 
 
 if __name__ == "__main__":

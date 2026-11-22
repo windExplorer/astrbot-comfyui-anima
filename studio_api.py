@@ -608,6 +608,10 @@ class StudioJobManager:
                 raw_prompt=True,
                 custom_size=clean["custom_size"],
                 external=True,
+                # v8.12.2：角色卡现在只对原生聊天生效；Studio 的「用这个角色生图」
+                # 是显式意图（角色页把名字写进 prompt），这里显式 opt-in 保留该功能。
+                # raw_prompt=True 下角色卡只追加约束，不会覆盖用户写好的画面。
+                use_role_card=True,
                 disabled_loras=clean["disabled_loras"] or None,
                 size_from_prompt=clean["size_from_prompt"],
             )

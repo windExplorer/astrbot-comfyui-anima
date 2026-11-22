@@ -896,22 +896,17 @@ def _is_external_call(source: str = "", external: bool = False) -> bool:
     return bool(external) or str(source or "").strip() == SOURCE_COMPANION_PLUGIN
 
 
-# v8.12.1：角色卡链路的「外部调用白名单」。角色卡的数据源是老婆插件自己；在线生图
-# 工作台的「用这个角色生图」也明确要角色卡。除此之外的外部插件（萌萌日程 / 萌萌星语 /
-# 未来任何第三方）默认不进角色卡——它们提示词里的人格名/角色名会被 match_role 误命中，
-# 导致工作流与主参考图被劫持。新增「本就该走角色卡」的调用方只在这里登记一次，
-# 不需要每个调用方插件都改一遍。use_role_card=True 可显式越过白名单。
-_ROLE_CARD_EXTERNAL_SOURCES = {
-    "萌萌今日老婆",  # 老婆插件 draw.py:PLUGIN_SOURCE
-    "webui_studio",  # SOURCE_WEBUI_STUDIO：写死字面量，守卫测试可直接 literal_eval
-}
-
-
 def _role_card_source_allowed(source: str = "", external: bool = False) -> bool:
-    """原生聊天放行；外部调用仅放行已登记为角色卡消费者的来源。"""
-    if not _is_external_call(source, external):
-        return True
-    return str(source or "").strip() in _ROLE_CARD_EXTERNAL_SOURCES
+    """v8.12.2：角色卡只对「用户直接跟 bot 对话画某个角色」生效。
+
+    老婆插件本身就是角色卡的数据源：main_ref_map() 是它对外暴露的只读契约，
+    它自己出图走 strategy.ref / draw_ref / refs + prompt_gen.py（已含 tags_en 与
+    角色固有特征），调萌绘时 prompt / workflow / 参考图都已备好，并声明
+    raw_prompt=True。萌绘再反过来读它的映射、用空消息合成桩重拼指令覆盖它的
+    prompt，是本末倒置。其它外部插件同理。需要角色卡的调用方必须显式传
+    use_role_card=True（如在线生图的「用这个角色生图」）。
+    """
+    return not _is_external_call(source, external)
 
 
 class _HeadlessEvent:
@@ -8484,8 +8479,10 @@ class ComfyUIDrawPlugin(Star):
                                         else _sheet_neg)
                         # v8.11.0：确定性编辑指令——不管 auto_detail 开关/LLM 是否配合，
                         # 角色卡出图的提示词必须是 Qwen 图生图要的中文编辑指令，不能是英文 tag 罗列。
-                        # 用用户消息（去角色名）+ 页面默认画风程序化拼装，画风不会丢。
-                        _plain = (getattr(event, "message_str", "") or "").strip()
+                        # v8.12.2：raw_prompt=True 的调用方 prompt 是最终文本，只能追加约束不能覆盖；
+                        # 合成桩（老婆工坊 / Studio）message_str 为空时用调用方 prompt 当画面来源。
+                        _wr_orig_positive = (positive or "").strip()
+                        _plain = (getattr(event, "message_str", "") or "").strip() or _wr_orig_positive
                         _nm0 = str(_wr_entry.get("name") or "")
                         if _nm0:
                             _plain = _plain.replace(_nm0, "")
@@ -8497,8 +8494,14 @@ class ComfyUIDrawPlugin(Star):
                         _style0 = str(_wr_cfg.get("default_style") or "").strip()
                         _instr = role_card.build_edit_instruction(_plain, _style0)
                         if _instr:
-                            positive = _instr
-                            logger.info(f"【角色卡】 确定性编辑指令：{_instr[:80]}...")
+                            if raw_prompt and _wr_orig_positive:
+                                # Studio 等显式 opt-in 的外部调用：prompt 是调用方写好的最终文本，
+                                # 角色卡只追加保身份/重设计服装姿势的约束，绝不整条替换。
+                                positive = f"{_wr_orig_positive}。{_instr}"
+                                logger.info(f"【角色卡】 编辑指令已追加到调用方 prompt：{_instr[:80]}...")
+                            else:
+                                positive = _instr
+                                logger.info(f"【角色卡】 确定性编辑指令：{_instr[:80]}...")
                         # tags_en 追加，帮助旧模型认人（不覆盖用户原词）
                         if _wr_cfg.get("auto_tags", False):  # 默认关：有主参考图就靠参考图锁外观，不再塞 tags_en
                             positive = role_card.build_role_prompt(_wr_entry, positive)
