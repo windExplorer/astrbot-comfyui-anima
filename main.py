@@ -797,6 +797,21 @@ g_session_workflow: dict[str, str] = {}
 # 键为完整 UMO（_session_umo_of），值为 {"cid": 角色ID, "ts": 时间戳}；内存态，重启丢失可接受。
 g_session_role: dict[str, dict] = {}
 G_SESSION_ROLE_TTL = 1800.0  # 30 分钟没再用角色就过期
+# v8.12.0：会话记忆必须能「退出」。旧逻辑把「本次没提任何角色名」一律当成续画，
+# 于是用户说「画你自己」也会复活上次角色，永远回不到人格/知识库里的自身形象。
+# 显式退出词优先清记忆并跳过本次角色卡；续画词才允许沿用记忆。
+_ROLE_EXIT_RE = re.compile(
+    r"画(一?张)?(我|自己|我自己|原本|原来|默认)(的)?(形象|样子|图|画)?"
+    r"|(我|自己)的?(原本|原来|默认)(形象|样子)"
+    r"|取消角色|清除角色|退出角色|不用角色(卡)?|不要角色(卡)?|别用角色(卡)?"
+    r"|回到(初始|原来|原本|默认|自己)",
+    re.I,
+)
+_ROLE_CONTINUE_RE = re.compile(
+    r"再来|再画|再发|再出|继续|接着|换一张|换张|换幅|同样|一样|"
+    r"这张|上一张|刚才|按原样|保持原样|改一下|改成|把.{0,8}改为",
+    re.I,
+)
 
 # 通用画风词表：三档写法（danbooru 标签 / qwen 中文整句 / natural 英文整句）。
 # 用户说画风时由工具返回，避免 LLM 凭记忆写「柔和氛围」这种无效模糊词。
@@ -8199,6 +8214,10 @@ class ComfyUIDrawPlugin(Star):
         # 改写尺寸。默认 True 保持聊天侧旧行为；工作台「自动尺寸」关闭时传 False，
         # 让「跟随工作流默认」真正不被 AI 生成的提示词悄悄改掉。
         size_from_prompt: bool = True,
+        # v8.12.0：跨插件 opt-out。外部插件（如萌萌日程）显式传 False 时完全跳过角色卡
+        # 链路——不读老婆插件映射、不沿用会话角色、不注入主参考图、不覆盖显式工作流。
+        # None/True 保持旧行为（老婆插件批量补图等仍靠角色卡锁形象）。
+        use_role_card: bool | None = None,
     ):
         # raw_prompt（v7.7.46）：调用方声明「提示词已由它自己的 LLM 润色 + 翻译完成」时，
         # 本次出图完全跳过本插件的 LLM 处理（Anima/Qwen 改写、翻译兜底、短描述扩写），
@@ -8355,25 +8374,35 @@ class ComfyUIDrawPlugin(Star):
         _user_had_images = bool(init_images)  # v8.6.0：角色卡注入前用户是否自带图（自带=变换，不创作）
         try:
             _wr_cfg = self._cfg("role_card", {}) or {}
-            _wr_on = isinstance(_wr_cfg, dict) and _wr_cfg.get("enabled", True)
+            _u_msg = (getattr(event, "message_str", "") or "").strip() if event is not None else ""
+            _skey = self._session_umo_of(event) if event is not None else ""
+            # v8.12.0：显式退出——「画自己 / 取消角色 / 回到原本形象」必须能回到
+            # 人格 / 知识库里的自身形象。清掉本次会话记忆，并整段跳过角色卡链路。
+            _wr_exit = bool(_ROLE_EXIT_RE.search(_u_msg))
+            if _wr_exit:
+                if _skey:
+                    g_session_role.pop(_skey, None)
+                logger.info("【角色卡】 用户要求画自己/取消角色：已清除会话角色记忆，本次不走角色卡")
+            _wr_on = (
+                isinstance(_wr_cfg, dict)
+                and _wr_cfg.get("enabled", True)
+                and use_role_card is not False
+                and not _wr_exit
+            )
             _lora_first_skip = (
                 isinstance(_wr_cfg, dict)
                 and _wr_cfg.get("priority") == "lora_first"
                 and bool(lora_map or {})
             )
             if _wr_on and not _lora_first_skip and event is not None:
-                _u_msg = (getattr(event, "message_str", "") or "").strip()
                 _ref_map, _wr_missing = await role_card.load_ref_map(self.context)
                 _wr_cid, _wr_entry = role_card.match_role(f"{_u_msg} {positive}", _ref_map)
-                # v8.7.0：会话内沿用上次角色——「再来一张」消息没有角色名时，
-                # 若像续画（未提到别的角色）则复用上次命中的角色卡，避免变成别的角色/工作流。
+                # v8.7.0：会话内沿用上次角色——续画消息没有角色名时沿用上次参考图/工作流。
                 _reuse_cfg = _wr_cfg.get("reuse_last_role", True) if isinstance(_wr_cfg, dict) else True
-                _skey = self._session_umo_of(event)
-                # v8.9.1：不再靠「再来一张」这类前缀正则——用户实际说法千变万化
-                # （「帮我再来一张」「换张图」「同样的再来」都匹配不上）。
-                # 改为：本次没提到任何角色名 + 会话有记忆 + 有画面描述 → 一律沿用上次角色。
-                # 用户若明确提了别的角色，match_role 会命中新角色，根本走不到这里。
-                if (not _wr_entry and _reuse_cfg and _skey and _ref_map
+                # v8.12.0：只有「像续画」才沿用。v8.9.1 放宽成「没提任何角色名就沿用」，
+                # 导致「画你自己」「画个新场景」都被上一次角色卡劫持，永远回不到自己。
+                _wr_continue = bool(_ROLE_CONTINUE_RE.search(_u_msg))
+                if (not _wr_entry and _reuse_cfg and _wr_continue and _skey and _ref_map
                         and (positive or "").strip()):
                     _prev = g_session_role.get(_skey)
                     if (_prev and isinstance(_prev, dict)
@@ -8394,6 +8423,16 @@ class ComfyUIDrawPlugin(Star):
                         if _wr_ref not in init_images:
                             init_images.insert(0, _wr_ref)
                         is_img2img = True
+                        # v8.12.0：角色卡重绘幅度可配。旧版完全沿用工作流 default_denoise，
+                        # 低 denoise 会把服装/姿势钉死在参考图上（用户「强调换衣服也没换」）。
+                        # -1 = 保持旧行为；>=0 时本次强制覆盖（建议 0.7~0.9 才有改动空间）。
+                        try:
+                            _rc_dn = float(_wr_cfg.get("denoise", -1))
+                            if _rc_dn >= 0:
+                                denoise = _rc_dn
+                                logger.info(f"【角色卡】 denoise 覆盖为 {_rc_dn}")
+                        except (TypeError, ValueError):
+                            pass
                         # v8.5.4：主参考图常是横版三视图——强制用工作流自己的尺寸，
                         # 不继承参考图 latent 的尺寸与构图（否则输出跟着变横图/三视图）。
                         if _wr_cfg.get("force_own_size", True):
@@ -16300,6 +16339,10 @@ class ComfyUIDrawPlugin(Star):
         # LLM 不可见，避免它自作主张改尺寸）。None=用工作流配置；True=本次自定义尺寸
         # （需给出 width/height 或比例词，否则用工作流默认宽高）；False=强制跟随参考图。
         custom_size: bool | None = None,
+        # v8.12.0：跨插件 opt-out（刻意不写进 docstring 的 Args 段，LLM 看不到）。
+        # 外部插件显式传 False 时完全跳过老婆角色卡链路，保证「日程绑定的人格形象 +
+        # 日程自配工作流」不被角色卡的参考图/工作流覆盖。旧版萌绘会按未知参数丢弃，安全。
+        use_role_card: bool | None = None,
     ):
         """使用 ComfyUI 根据文本提示词生成图片并返回给用户。同时支持文生图与图生图。
 
@@ -17460,6 +17503,8 @@ class ComfyUIDrawPlugin(Star):
                     custom_size=_item_csize,
                     # v7.8.3：外部插件调用 → 图库归属记插件来源
                     external=_ext,
+                    # v8.12.0：跨插件「不要角色卡」开关透传
+                    use_role_card=use_role_card,
                 ),
                 event, _silent,
             ):
@@ -18378,7 +18423,9 @@ class ComfyUIDrawPlugin(Star):
         """v8.10.0：角色卡图生图的提示词 = Qwen-Image-2.1 **编辑指令**（照搬老婆插件成熟做法）。
 
         不是「成品画面长描写」！是「动作 + 目标 + 约束」的短指令串（≤330 字）：
-        以操作动词开头写清改什么，句尾一句总括「保持身份不变、**只做上述改动**」。
+        以操作动词开头写清改什么，句尾只锁身份（脸/发型发色/辨识度）；
+        v8.12.0 起句尾不再要求「仅执行上述改动」——那句话让编辑模型保留参考图未点名的
+        服装/姿势，用户强调换衣服也换不动。服装/姿势/背景/光影必须按描述重新设计。
         保持只锁身份（脸/发型发色/辨识度），不锁服装/画风；换装必须写明
         「完全替换原服装、原款式轮廓不要残留」，否则编辑模型会保留原衣服。
         失败抛异常，由调用方保留原提示词。
@@ -18401,8 +18448,10 @@ class ComfyUIDrawPlugin(Star):
             "你为 Qwen-Image-2.1 图生图撰写**中文编辑指令**（输入图=该角色的主参考图，"
             "这是编辑任务，绝不是从零文生图）。\n\n"
             "【写法·动作+目标+约束】以**操作动词开头**（把…改为／换成／让角色…），"
-            "一句话里说清「改什么」，并把改动推到强烈明确；句尾统一强调"
-            "「保持人物的面部特征、发型发色与角色辨识度不变，**只做上述改动**」。\n"
+            "一句话里说清「改什么」，并把改动推到强烈明确；句尾只锁身份，"
+            "**不要要求仅执行上述改动**——那句话让编辑模型保留参考图未点名的服装与姿势。"
+            "句尾统一写「只保留人物的面部特征、发型发色与角色辨识度；"
+            "服装、姿势动作、背景与光影按本次描述重新设计，不要照搬参考图的服装与姿势」。\n"
             "★★【用户点名的具体元素=硬事实，必须逐字保留，绝不许替换成你编的】"
             "用户说「厨房里冲热可可」就必须写厨房、热可可；说「教室/海边/阳台」就照写。"
             "真实事故：用户说「厨房里冲热可可」，LLM 却写成「教室/公寓+书桌/落地窗」，"

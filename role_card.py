@@ -133,6 +133,16 @@ def build_edit_instruction(user_text: str, style: str = "", *,
         if _t and not re.match(r"^(把|将|让|换|改|裁|脱|戴|置于|确保|保持)", _t):
             _t = f"按以下内容调整画面：{_t}"
         parts.append(_t)
+    # v8.12.0：换装意图必须点名「完全替换」——编辑模型默认保留参考图那套衣服，
+    # 不写这句就会出现「用户强调换衣服、结果还是同一件」。
+    if re.search(
+        r"换装|换衣服|换衣|换穿搭|换造型|换一套|换一身|改穿|穿上|穿个|穿件|换上"
+        r"|衣服|服装|裙子|外套|制服|泳装|比基尼|dress|outfit|costume|clothes",
+        txt, re.I,
+    ):
+        parts.append("新服装完全替换参考图原有服装，原服装的款式与轮廓不要残留")
+    # v8.12.0：姿势也要重新设计——用户反馈「动作姿势很呆、和参考图一样」。
+    parts.append("姿势动作与表情按本次描述重新设计，不要沿用参考图的姿势")
     # 画风固定句式（老婆插件同款：把整体画风改为X（人物面部与发型保持可辨认））
     if style:
         parts.append(f"将整体画风改为{style}（人物面部与发型保持可辨认）")
@@ -141,9 +151,11 @@ def build_edit_instruction(user_text: str, style: str = "", *,
         parts.append("裁切为半身近景，人物占画面主要面积，不要远景小人")
     # 三视图参考图收敛
     parts.append("若参考图为多视角拼接，只保留其中一个正面视角，去掉其余拼接")
-    # 句尾总括：只锁身份，锁的是内容不是改动强度
-    tail = "保持人物的面部特征、发型发色与角色辨识度不变，只做上述改动。"
-    return "。".join(p.rstrip("。") for p in parts if p) + "。" + tail
+    # v8.12.0：句尾只锁身份，绝不锁服装/姿势——旧句「只做上述改动」直接要求
+    # 保留参考图未点名的一切，是「出图像参考图复印」的根因。
+    tail = ("只保留人物的面部特征、发型发色与角色辨识度；"
+            "服装、姿势动作、背景与光影按本次描述重新设计，不要照搬参考图的服装与姿势。")
+    return "。".join(p.rstrip("。") for p in parts if p) + tail
 
 
 def build_role_prompt(entry: dict, positive: str) -> str:

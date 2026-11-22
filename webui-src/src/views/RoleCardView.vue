@@ -35,9 +35,11 @@
           <span class="rc-panel-sub">默认画风</span>
           <n-select v-model:value="styleValue" :options="styleOptions" clearable
             placeholder="留空 = 由对话决定" style="width:170px" />
+          <span class="rc-panel-sub">重绘幅度</span>
+          <n-input-number v-model:value="denoiseValue" :min="-1" :max="1" :step="0.05" style="width:110px" />
           <n-button type="primary" size="small" :loading="savingWf" :disabled="!wfDirty" @click="saveWorkflow">保存</n-button>
         </div>
-        <div class="form-hint">默认画风会作为一句要求交给 LLM 自由发挥生成提示词；对话里临时说「换成 X 风」会覆盖它（只影响那一张）。</div>
+        <div class="form-hint">默认画风会作为一句要求交给 LLM 自由发挥生成提示词；对话里临时说「换成 X 风」会覆盖它（只影响那一张）。重绘幅度 -1 = 沿用工作流原值；换衣服/换姿势不生效时调高到 0.7~0.9。</div>
       </div>
 
       <n-alert v-if="missing.length" type="info" style="margin-bottom:12px">
@@ -173,6 +175,8 @@ const wfSaved = ref<string | null>(null);
 const wfOptions = ref<Array<{ label: string; value: string }>>([]);
 const styleValue = ref<string | null>(null);
 const styleSaved = ref<string | null>(null);
+const denoiseValue = ref<number>(-1);
+const denoiseSaved = ref<number>(-1);
 const styleOptions = [
   "", "现代日式动画", "新海诚式电影动画", "清透厚涂插画", "轻小说插画", "潮流插画", "赛璐璐上色",
   "韩漫半写实", "电影感厚涂", "赛博霓虹", "3D 渲染", "清透水彩", "国风水墨", "扁平矢量插画",
@@ -180,7 +184,8 @@ const styleOptions = [
 ].map((s) => ({ label: s || "留空 = 由对话决定", value: s }));
 const savingWf = ref(false);
 const wfDirty = computed(() => (wfValue.value || "") !== (wfSaved.value || "")
-  || (styleValue.value || "") !== (styleSaved.value || ""));
+  || (styleValue.value || "") !== (styleSaved.value || "")
+  || Number(denoiseValue.value ?? -1) !== Number(denoiseSaved.value ?? -1));
 
 const refFilterOptions = [
   { label: "全部角色", value: "all" },
@@ -271,6 +276,9 @@ async function load(force = false) {
     const cs = String((cfg?.role_card || {}).default_style || "");
     styleValue.value = cs || null;
     styleSaved.value = cs || null;
+    const dn = Number((cfg?.role_card || {}).denoise ?? -1);
+    denoiseValue.value = Number.isFinite(dn) ? dn : -1;
+    denoiseSaved.value = denoiseValue.value;
   } finally {
     loading.value = false;
   }
@@ -282,11 +290,13 @@ async function saveWorkflow() {
   try {
     const next = String(wfValue.value || "");
     const st = String(styleValue.value || "");
-    const rc = { ...(fullCfg.value.role_card || {}), workflow: next, default_style: st };
+    const dn = Number(denoiseValue.value ?? -1);
+    const rc = { ...(fullCfg.value.role_card || {}), workflow: next, default_style: st, denoise: dn };
     await apiPost("config", { config: { ...fullCfg.value, role_card: rc } });
     wfSaved.value = next || null;
     styleSaved.value = st || null;
-    message.success(`已保存角色卡设置${next ? `（工作流：${next}）` : ""}${st ? `（默认画风：${st}）` : ""}`);
+    denoiseSaved.value = dn;
+    message.success(`已保存角色卡设置${next ? `（工作流：${next}）` : ""}${st ? `（默认画风：${st}）` : ""}（重绘幅度：${dn}）`);
   } catch (e: any) {
     message.error(e?.message || "保存失败");
   } finally {
