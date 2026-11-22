@@ -3,6 +3,7 @@
 
 main.py 依赖 astrbot 运行时装不了，role_card.py 是纯模块可直接 import。
 """
+import ast
 import asyncio
 import sys
 from pathlib import Path
@@ -204,6 +205,16 @@ check("外部来源默认不进角色卡", "_role_card_source_allowed" in src
       and "_ROLE_CARD_EXTERNAL_SOURCES" not in src
       and "return not _is_external_call(source, external)" in src)
 check("raw_prompt不覆盖调用方prompt", "raw_prompt and _wr_orig_positive" in src)
+# v8.12.3：外部调用会整段跳过角色卡分支，auto_detail 判断却无条件读 _wr_entry。
+# 必须在分支之前初始化，否则 UnboundLocalError（日程主动配图实测炸过）。
+_tree = ast.parse(src)
+_cls = next(n for n in _tree.body if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin")
+_dd = next(n for n in _cls.body
+           if isinstance(n, ast.AsyncFunctionDef) and n.name == "_do_draw")
+_dd_src = ast.get_source_segment(src, _dd) or ""
+check("角色卡命中变量先初始化",
+      "_wr_entry = None" in _dd_src
+      and _dd_src.index("_wr_entry = None") < _dd_src.index("if (_wr_entry and str("))
 check("denoise可配", '"denoise"' in _sch and '_wr_cfg.get("denoise", -1)' in src)
 
 if FAILURES:

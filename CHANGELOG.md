@@ -4,6 +4,20 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.12.3（修 v8.12.2 外部调用崩溃：_wr_entry 未初始化）
+
+**现象**：用户升级 v8.12.2 后，日程主动配图触发 `llm_draw` 工具异常：
+
+```
+File "main.py", line 8848, in _do_draw
+    if (_wr_entry and str(_wr_entry.get("ref") or "").strip()
+UnboundLocalError: cannot access local variable '_wr_entry' where it is not associated with a value
+```
+
+**根因**：v8.12.2 让外部调用整段跳过角色卡 `try` 分支，而此前 `_wr_entry` 只在分支内 `match_role()` 时赋值；但后面的 `auto_detail` 判断（8848）**无条件**读它。原生聊天仍会走分支所以没暴露，外部调用（日程 / 星语 / 老婆插件）必炸。
+
+**修复**：在角色卡分支之前初始化 `_wr_cid = None` / `_wr_entry = None`，保证任何路径都有定义。`test_role_card` 新增 AST 守卫：从 `_do_draw` 真身代码确认 `_wr_entry = None` 出现在首次读取之前。测试全过。
+
 ## v8.12.2（角色卡回归本位：只对原生聊天生效，老婆插件不再被萌绘反向接管）
 
 **用户指正**：老婆插件本来就有自己的角色卡，萌绘的角色卡数据就是从它那边同步来的；它自己调萌绘时还要走萌绘的角色卡链路，是本末倒置。

@@ -8382,6 +8382,11 @@ class ComfyUIDrawPlugin(Star):
         # LoRA 优先且本次命中 LoRA 时跳过（走常规工作流选择）。
         _wr_force_wf = ""
         _wr_hit_name = ""
+        # v8.12.3：外部调用 / 退出词 / LoRA 优先会在下面的 try 里整段跳过角色卡分支，
+        # 但 8848 行的 auto_detail 判断无条件读 _wr_entry——必须先初始化，否则
+        # UnboundLocalError（实测日程主动配图直接炸，工具执行异常）。
+        _wr_cid = None
+        _wr_entry = None
         _role_card_force_size = False  # v8.5.4：角色卡图生图强制自定义尺寸（不跟参考图尺寸）
         _detail_done = False  # v8.6.0：已做详细创作 → 后续 boost 只补画质前缀、不再二次扩写
         _user_had_images = bool(init_images)  # v8.6.0：角色卡注入前用户是否自带图（自带=变换，不创作）
