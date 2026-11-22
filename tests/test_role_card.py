@@ -170,6 +170,12 @@ check("确定性指令含近景", "半身近景" in ins, ins)
 check("确定性指令重设计姿势", "姿势动作与表情按本次描述重新设计" in ins, ins)
 _ins_outfit = role_card.build_edit_instruction("把衣服换成比基尼", "")
 check("确定性指令换装完全替换", "新服装完全替换参考图原有服装" in _ins_outfit, _ins_outfit)
+# v8.12.4：只说「换套衣服」没指定款式时，必须要求写出具体新服装，不能只丢一句约束。
+_ins_generic = role_card.build_edit_instruction("给换套衣服", "")
+check("换装未指定款式要设计具体服装",
+      "设计一套与参考图明显不同的新服装" in _ins_generic
+      and "具体写明颜色、款式与材质" in _ins_generic, _ins_generic)
+check("详细创作要求写出换成什么", "【换装·必须写出「换成什么」】" in src)
 check("main接入确定性指令", "role_card.build_edit_instruction(" in src)
 check("完全替换原服装", "完全替换参考图原有服装" in src and "轮廓不要残留" in src)
 check("不锁参考图服装姿势", "不要照搬参考图的服装与姿势" in src and "只做上述改动" not in src)
@@ -215,6 +221,8 @@ _dd_src = ast.get_source_segment(src, _dd) or ""
 check("角色卡命中变量先初始化",
       "_wr_entry = None" in _dd_src
       and _dd_src.index("_wr_entry = None") < _dd_src.index("if (_wr_entry and str("))
+# v8.12.4：确定性指令接管的 positive 不能再当创作源，否则提示词重复两遍。
+check("确定性指令不当创作源", "not _wr_instr_applied and _llm_hint" in src)
 check("denoise可配", '"denoise"' in _sch and '_wr_cfg.get("denoise", -1)' in src)
 
 if FAILURES:
