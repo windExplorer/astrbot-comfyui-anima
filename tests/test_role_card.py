@@ -199,7 +199,9 @@ check("参考图注入 init_images", "init_images.insert(0, _wr_ref)" in src)
 check("退出词清会话记忆", "_ROLE_EXIT_RE.search(_u_msg)" in src and "g_session_role.pop(_skey, None)" in src)
 check("续画意图收窄", "_ROLE_CONTINUE_RE.search(_u_msg)" in src)
 check("跨插件跳过角色卡", "use_role_card: bool | None = None" in src
-      and "use_role_card is not False" in src and "use_role_card=use_role_card" in src)
+      and "use_role_card is True" in src and "use_role_card=use_role_card" in src)
+check("外部来源默认不进角色卡", "_role_card_source_allowed" in src
+      and "_ROLE_CARD_EXTERNAL_SOURCES" in src and "萌萌今日老婆" in src)
 check("denoise可配", '"denoise"' in _sch and '_wr_cfg.get("denoise", -1)' in src)
 
 if FAILURES:

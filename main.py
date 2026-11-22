@@ -896,6 +896,24 @@ def _is_external_call(source: str = "", external: bool = False) -> bool:
     return bool(external) or str(source or "").strip() == SOURCE_COMPANION_PLUGIN
 
 
+# v8.12.1：角色卡链路的「外部调用白名单」。角色卡的数据源是老婆插件自己；在线生图
+# 工作台的「用这个角色生图」也明确要角色卡。除此之外的外部插件（萌萌日程 / 萌萌星语 /
+# 未来任何第三方）默认不进角色卡——它们提示词里的人格名/角色名会被 match_role 误命中，
+# 导致工作流与主参考图被劫持。新增「本就该走角色卡」的调用方只在这里登记一次，
+# 不需要每个调用方插件都改一遍。use_role_card=True 可显式越过白名单。
+_ROLE_CARD_EXTERNAL_SOURCES = {
+    "萌萌今日老婆",  # 老婆插件 draw.py:PLUGIN_SOURCE
+    "webui_studio",  # SOURCE_WEBUI_STUDIO：写死字面量，守卫测试可直接 literal_eval
+}
+
+
+def _role_card_source_allowed(source: str = "", external: bool = False) -> bool:
+    """原生聊天放行；外部调用仅放行已登记为角色卡消费者的来源。"""
+    if not _is_external_call(source, external):
+        return True
+    return str(source or "").strip() in _ROLE_CARD_EXTERNAL_SOURCES
+
+
 class _HeadlessEvent:
     """外部插件调用没有会话事件时的最小桩（v7.8.4）。
 
@@ -8383,12 +8401,20 @@ class ComfyUIDrawPlugin(Star):
                 if _skey:
                     g_session_role.pop(_skey, None)
                 logger.info("【角色卡】 用户要求画自己/取消角色：已清除会话角色记忆，本次不走角色卡")
+            _wr_source_ok = (
+                use_role_card is True
+                or (use_role_card is not False and _role_card_source_allowed(source, external))
+            )
             _wr_on = (
                 isinstance(_wr_cfg, dict)
                 and _wr_cfg.get("enabled", True)
-                and use_role_card is not False
+                and _wr_source_ok
                 and not _wr_exit
             )
+            if isinstance(_wr_cfg, dict) and _wr_cfg.get("enabled", True) and not _wr_source_ok:
+                logger.info(
+                    f"【角色卡】 外部来源 {source!r} 未登记为角色卡调用方，本次跳过角色卡链路"
+                )
             _lora_first_skip = (
                 isinstance(_wr_cfg, dict)
                 and _wr_cfg.get("priority") == "lora_first"
