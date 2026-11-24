@@ -58,7 +58,7 @@ def test_reply_wording():
     check("无人命中信号兜底", "无明确部位信号" in src)
     check("分歧提示", "主/副模型有分歧" in src)
     check("记录号展示", 'f"记录号 {rid}"' in src)
-    check("等待队列提示", "提交到 TaskHub 队列" in src)
+    check("检测中提示简洁（不堆队列细节）", 'await self._send(event, "⏳ 检测中，请稍候…")' in src)
     # 远程 action=review 也应进擦边档（不只是 level=review）
     check("action=review 并入擦边档", 'elif lv == "review" or action == "review":' in src)
     check("action=block 并入涩涩档", 'elif lv == "nsfw" or action == "block":' in src)

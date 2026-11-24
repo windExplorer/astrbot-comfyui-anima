@@ -14945,11 +14945,10 @@ class ComfyUIDrawPlugin(Star):
             event.stop_event()
             return
 
-        # 立即返回"检测中"提示。远程走 TaskHub 统一队列，显存够直接执行、不够
-        # 会排队（最长等待由 cmd_detect_timeout 控制），故提示里说清可能要等。
+        # 立即返回"检测中"提示，避免排队期间用户以为指令没响应。
+        # 队列/来源等细节在最终判定里给，这里只说一句，不堆技术信息。
         try:
-            await self._send(event, "⏳ 检测中（远程检测提交到 TaskHub 队列，显存够直接执行、"
-                                    "否则排队等待，请稍候）…")
+            await self._send(event, "⏳ 检测中，请稍候…")
         except Exception:
             pass
 
