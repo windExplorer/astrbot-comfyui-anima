@@ -14909,27 +14909,18 @@ class ComfyUIDrawPlugin(Star):
                 _has_relay = bool(str(self._nsfw_relay_base() or "").strip())
             except Exception:
                 _has_relay = False
-            try:
-                _timeout_s = int(self._cfg("gallery.nsfw.cmd_detect_timeout", 240) or 240)
-            except (TypeError, ValueError):
-                _timeout_s = 240
+            # 用户提示只用大白话：内部链路名（中转站/检测服务/配置键）一律不出现。
             _remote_note = (
-                "\n🌐 远程检测已就绪（"
-                + ("nsfw-check 直连" if _has_direct else "TaskHub 中转队列")
-                + f"）：/涩图检测 优先走远程，结果按 安全/擦边/涩涩 分档并附命中部位、"
-                f"来源与排队信息；入队后显存够直接执行、不够排队，最长等待 {_timeout_s}s，"
-                "超时才回退本地 open_nsfw（此时无部位说明）。"
+                "\n🌐 已启用云端检测：检测优先走云端，结果按 安全/擦边/涩涩 分档并附命中部位；"
+                "云端判定不受此阈值影响。"
                 if (_has_direct or _has_relay) else
-                "\n💻 当前未接入远程检测：/涩图检测 走本地 open_nsfw，只给整体概率、"
-                "无法定位命中部位。接入方式：把绘图服务器指向 TaskHub（自动走 /nsfw/* 中转），"
-                "或配置 gallery.nsfw.check_url 直连 nsfw-check。"
+                "\n💻 当前为本地检测：只给整体概率，无法定位命中部位。"
             )
             await self._send(
                 event,
-                f"🎯 当前 NSFW 判定阈值：{t:.2f}\n"
-                "说明：该阈值仅用于本地 open_nsfw（P(nsfw) ≥ 阈值即判 NSFW）；"
-                "远程检测由 nsfw-check 按自身策略分档，不受此阈值影响。"
-                "泳装/紧身/露肤等本地易误判，可调高阈值（在插件配置 gallery.nsfw.threshold 中修改）。"
+                f"🎯 当前涩涩判定阈值：{t:.2f}\n"
+                "说明：本地检测时，可能性 ≥ 阈值就判为涩涩。泳装/紧身/露肤等容易被误判，"
+                "可适当调高阈值降低误报（在插件配置里修改）。"
                 f"{_remote_note}",
             )
             event.stop_event()
@@ -15055,16 +15046,10 @@ class ComfyUIDrawPlugin(Star):
             )
 
         def _source_of(r: dict) -> str:
-            """检测来源 + 排队信息：让用户知道结论出自哪条链路、是否等过队列。"""
+            """检测来源：用户只看「云端 / 本地」，内部链路名只在日志里出现。"""
             if not r.get("remote"):
-                return "本地 open_nsfw（仅整体概率，无部位定位）"
-            via = r.get("via")
-            if via == "relay":
-                src = "TaskHub 队列（远程）"
-            elif via == "direct":
-                src = "nsfw-check 直连（远程）"
-            else:
-                src = "远程检测"
+                return "本地检测（仅整体概率，无部位定位）"
+            src = "云端检测"
             qp = r.get("queue_pos")
             if isinstance(qp, int) and qp > 0:
                 src += f"·排队第{qp}位"
@@ -15107,8 +15092,6 @@ class ComfyUIDrawPlugin(Star):
             else:
                 head = f"✅ 安全（涩涩内容可能性很低，约 {pct:.0f}%）"
             parts = [head, f"来源：{_source_of(r)}"]
-            if not brief:
-                parts.append("如需命中部位，请让 TaskHub 接入 nsfw-check 后重试")
             return "；".join(parts) + "。"
 
         if len(valid) == 1:

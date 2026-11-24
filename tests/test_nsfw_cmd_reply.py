@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import ast
 import json
 import sys
 from pathlib import Path
@@ -52,7 +53,7 @@ def test_reply_wording():
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     check("回复含来源字段", 'f"来源：{_source_of(r)}"' in src)
     check("有 _source_of 来源函数", "def _source_of(r: dict) -> str:" in src)
-    check("TaskHub 队列来源标注", '"TaskHub 队列（远程）"' in src)
+    check("云端来源标注（对用户不说内部链路名）", '"云端检测"' in src)
     check("本地来源标注无部位定位", "仅整体概率，无部位定位" in src)
     check("命中部位标注", '"命中部位："' in src)
     check("无人命中信号兜底", "无明确部位信号" in src)
@@ -62,6 +63,35 @@ def test_reply_wording():
     # 远程 action=review 也应进擦边档（不只是 level=review）
     check("action=review 并入擦边档", 'elif lv == "review" or action == "review":' in src)
     check("action=block 并入涩涩档", 'elif lv == "nsfw" or action == "block":' in src)
+
+
+def test_no_internal_terms_in_user_text():
+    """发给用户的字符串不得含内部链路名/依赖名/配置路径（注释与日志不受此限）。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+               and n.name == "ComfyUIDrawPlugin")
+    fn = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef)
+              and n.name == "cmd_nsfw")
+    banned = ("taskhub", "nsfw-check", "nsfw_check", "open_nsfw", "gallery.nsfw", "p(nsfw)")
+    offenders = []
+    # 豁免：docstring（不是对用户说的）与 self._cfg(...) 的配置 key（代码内部读配置用）
+    doc_node = fn.body[0].value if (fn.body and isinstance(fn.body[0], ast.Expr)
+                                    and isinstance(fn.body[0].value, ast.Constant)) else None
+    cfg_args = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "_cfg":
+            for arg in node.args:
+                cfg_args.update(id(x) for x in ast.walk(arg))
+    for node in ast.walk(fn):
+        if (node is doc_node or id(node) in cfg_args
+                or not isinstance(node, ast.Constant) or not isinstance(node.value, str)):
+            continue
+        low = node.value.lower()
+        for b in banned:
+            if b in low:
+                offenders.append((node.lineno, b, node.value[:50]))
+    check("用户文案无内部技术名词", not offenders, offenders)
 
 
 def test_label_map():
@@ -80,5 +110,6 @@ if __name__ == "__main__":
     test_schema()
     test_remote_timeout_and_queue_header()
     test_reply_wording()
+    test_no_internal_terms_in_user_text()
     test_label_map()
     print("RESULT: nsfw_cmd_reply OK")
