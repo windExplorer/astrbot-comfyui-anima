@@ -14966,7 +14966,8 @@ class ComfyUIDrawPlugin(Star):
                 return None, False
             # v8.13.5：指令检测优先走 TaskHub 中转队列（零配置）/ nsfw-check 直连，
             # 拿不到远程结论才回退本地 OpenNSFW。远程把 level/action/score/部位标签
-            # 连同来源元信息（via/排队位置/耗时/记录号）一并带回，供回复完整展示。
+            # 连同来源元信息（via/排队位置/耗时）一并带回；回复只展示来源与耗时，
+            # 排队位置在指令提交时说明、结果里不再重复，记录号不展示。
             remote = await self._nsfw_detect_remote(p)
             if remote is not None:
                 _sc = remote.get("score")
@@ -15039,26 +15040,28 @@ class ComfyUIDrawPlugin(Star):
             "FEET_EXPOSED": "足部暴露",
         }
 
-        def _labels_zh(r: dict) -> str:
-            labels = [str(x).strip() for x in (r.get("labels") or [])][:4]
-            return "、".join(
-                _NSFW_LABEL_ZH.get(x.upper(), x) for x in labels if x
-            )
+        # 真正算 NSFW 证据的标签白名单：只认「暴露类」。
+        # FEMALE_FACE / EYE / *_COVERED / FEET_* 等只是 nudenet 看到的身体部位，
+        # 不是涩涩命中证据——露脸、露眼睛说明不了任何 NSFW 问题，一律不展示。
+        _NSFW_EVIDENCE = {
+            "FEMALE_BREAST_EXPOSED", "MALE_BREAST_EXPOSED", "NIPPLE_EXPOSED",
+            "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED",
+            "VAGINA_EXPOSED", "PENIS_EXPOSED",
+            "BUTTOCKS_EXPOSED", "ANUS_EXPOSED",
+        }
+
+        def _evidence_zh(r: dict) -> str:
+            """只挑暴露类标签作为命中证据（最多 4 个），其余部位一律忽略。"""
+            labels = [str(x).strip().upper() for x in (r.get("labels") or [])]
+            hits = [x for x in labels if x in _NSFW_EVIDENCE][:4]
+            return "、".join(_NSFW_LABEL_ZH.get(x, x) for x in hits)
 
         def _source_of(r: dict) -> str:
-            """检测来源：用户只看「云端 / 本地」，内部链路名只在日志里出现。"""
-            if not r.get("remote"):
-                return "本地检测（仅整体概率，无部位定位）"
-            src = "云端检测"
-            qp = r.get("queue_pos")
-            if isinstance(qp, int) and qp > 0:
-                src += f"·排队第{qp}位"
-            elif isinstance(qp, int) and qp == 0:
-                src += "·免排队"
-            return src
+            """来源只写服务名，不带排队位置——队列信息提交时就说明，结果里不再重复。"""
+            return "TaskHub" if r.get("remote") else "本地检测"
 
         def _desc(r: dict, brief: bool = False) -> str:
-            """完整判定：结论 + 可能性 + 来源 + 命中部位 + 分歧（单图另附记录号/耗时）。"""
+            """完整判定：结论 + 可能性 + 来源 + 命中证据 + 分歧（单图另附耗时）。"""
             pct = r["score"] * 100
             if r.get("remote"):
                 lv = r.get("level")
@@ -15072,14 +15075,14 @@ class ComfyUIDrawPlugin(Star):
                 else:
                     head = f"❓ 检测服务未给出明确结论（可能性约 {pct:.0f}%）"
                 parts = [head, f"来源：{_source_of(r)}"]
-                zh = _labels_zh(r)
-                parts.append(("画面证据：" if lv == "safe" else "命中部位：") + (zh or "无明确部位信号"))
+                # 只有真正判成涩涩/擦边时才报命中部位；安全档的暴露部位是画面内容，不是「命中」。
+                if lv != "safe":
+                    ev = _evidence_zh(r)
+                    if ev:
+                        parts.append(f"命中部位：{ev}")
                 if r.get("diverge"):
                     parts.append("主/副模型有分歧")
                 if not brief:
-                    rid = r.get("record_id")
-                    if rid:
-                        parts.append(f"记录号 {rid}")
                     el = r.get("elapsed")
                     if isinstance(el, (int, float)):
                         parts.append(f"耗时 {el:.1f}s")
@@ -15091,14 +15094,13 @@ class ComfyUIDrawPlugin(Star):
                 head = f"⚠️ 有点擦边（涩涩内容可能性约 {pct:.0f}%）"
             else:
                 head = f"✅ 安全（涩涩内容可能性很低，约 {pct:.0f}%）"
-            parts = [head, f"来源：{_source_of(r)}"]
-            return "；".join(parts) + "。"
+            return f"{head}；来源：{_source_of(r)}。"
 
         if len(valid) == 1:
-            # 单张图：完整结论（含来源/部位/分歧/记录号/耗时）
+            # 单张图：完整结论（含来源/命中证据/分歧/耗时）
             await self._send(event, _desc(valid[0]))
         else:
-            # 多张图：列表形式，每张精简（省掉记录号/耗时，避免刷屏）
+            # 多张图：列表形式，每张精简（省掉耗时，避免刷屏）
             lines = [f"{i}. {_desc(r, brief=True)}" for i, r in enumerate(valid, 1)]
             await self._send(event, "📊 涩图检测结果：\n" + "\n".join(lines))
         event.stop_event()

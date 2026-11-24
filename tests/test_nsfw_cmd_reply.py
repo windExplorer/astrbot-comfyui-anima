@@ -53,12 +53,14 @@ def test_reply_wording():
     src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
     check("回复含来源字段", 'f"来源：{_source_of(r)}"' in src)
     check("有 _source_of 来源函数", "def _source_of(r: dict) -> str:" in src)
-    check("云端来源标注（对用户不说内部链路名）", '"云端检测"' in src)
-    check("本地来源标注无部位定位", "仅整体概率，无部位定位" in src)
-    check("命中部位标注", '"命中部位："' in src)
-    check("无人命中信号兜底", "无明确部位信号" in src)
+    check("来源标注 TaskHub", 'return "TaskHub" if r.get("remote") else "本地检测"' in src)
+    check("结果里不再写排队位置", "·免排队" not in src and "·排队第" not in src)
+    check("命中部位标注", 'f"命中部位：{ev}"' in src)
+    check("命中证据只看暴露类白名单", "_NSFW_EVIDENCE = {" in src)
+    check("脸/眼不算证据（不在白名单）", '"FEMALE_FACE"' not in src.split("_NSFW_EVIDENCE = {")[1].split("}")[0])
+    check("安全档不报命中部位", 'if lv != "safe":' in src)
     check("分歧提示", "主/副模型有分歧" in src)
-    check("记录号展示", 'f"记录号 {rid}"' in src)
+    check("记录号不再展示", 'f"记录号' not in src and '"记录号 "' not in src)
     check("检测中提示简洁（不堆队列细节）", 'await self._send(event, "⏳ 检测中，请稍候…")' in src)
     # 远程 action=review 也应进擦边档（不只是 level=review）
     check("action=review 并入擦边档", 'elif lv == "review" or action == "review":' in src)
@@ -73,7 +75,8 @@ def test_no_internal_terms_in_user_text():
                and n.name == "ComfyUIDrawPlugin")
     fn = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef)
               and n.name == "cmd_nsfw")
-    banned = ("taskhub", "nsfw-check", "nsfw_check", "open_nsfw", "gallery.nsfw", "p(nsfw)")
+    # TaskHub 允许出现（v8.13.8 起用户要求来源就写 TaskHub）；其余内部名词仍禁止。
+    banned = ("nsfw-check", "nsfw_check", "open_nsfw", "gallery.nsfw", "p(nsfw)")
     offenders = []
     # 豁免：docstring（不是对用户说的）与 self._cfg(...) 的配置 key（代码内部读配置用）
     doc_node = fn.body[0].value if (fn.body and isinstance(fn.body[0], ast.Expr)
