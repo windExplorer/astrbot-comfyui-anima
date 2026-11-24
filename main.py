@@ -7429,19 +7429,36 @@ class ComfyUIDrawPlugin(Star):
            经过 TaskHub 的人用）；
         ② 默认走 TaskHub 中转（与绘图同地址，POST /nsfw/detect/simple），
            nsfw-check 地址/令牌由中转站持有，插件零配置。
+
+        ★v8.13.5 排队语义：TaskHub 中转是把请求提交到**统一任务队列**，显存够
+        就直接执行、不够则排队（通用调度器内部阻塞等待槽位，不返回 429）。所以
+        这里超时必须覆盖最坏排队等待（queue_wait + infer_timeout，默认 240s），
+        否则插件先断连 → 回退本地 open_nsfw → 拿不到部位标签/level，这正是
+        「检测不说明哪里命中」的根因。超时由 gallery.nsfw.cmd_detect_timeout 控制。
+
+        返回值在 nsfw-check 响应体基础上附加下划线前缀的内部键（不影响契约）：
+        - `_via`：direct（直连）/ relay（TaskHub 中转）
+        - `_queue_pos`：入队时前方任务数（X-Queue-Position 响应头，None=未提供）
+        - `_elapsed`：本次往返秒数（含排队）
         都不可用返回 None（指令回退本地 OpenNSFW），绝不抛异常。
         """
-        candidates = []
+        candidates = []  # (via, url, token)
         _direct = str(self._cfg("gallery.nsfw.check_url", "") or "").strip().rstrip("/")
         if _direct:
-            candidates.append((f"{_direct}/detect/simple",
+            candidates.append(("direct", f"{_direct}/detect/simple",
                                str(self._cfg("gallery.nsfw.check_token", "") or "").strip()))
         _relay = self._nsfw_relay_base()
-        if _relay and f"{_relay}/detect/simple" != (candidates[0][0] if candidates else ""):
-            candidates.append((f"{_relay}/nsfw/detect/simple", ""))
+        if _relay and f"{_relay}/nsfw/detect/simple" != (candidates[0][1] if candidates else ""):
+            candidates.append(("relay", f"{_relay}/nsfw/detect/simple", ""))
         if not candidates:
             return None
         try:
+            # 超时对齐 TaskHub 队列最坏等待，避免排队时插件先断连回退本地。
+            try:
+                _timeout = int(self._cfg("gallery.nsfw.cmd_detect_timeout", 240) or 240)
+            except (TypeError, ValueError):
+                _timeout = 240
+            _timeout = max(30, min(_timeout, 900))
             import aiohttp
             try:
                 from .http_session import get_session
@@ -7449,7 +7466,8 @@ class ComfyUIDrawPlugin(Star):
                 from http_session import get_session
             p = Path(image_path)
             s = get_session(trust_env=False)
-            for url, token in candidates:
+            for via, url, token in candidates:
+                _t0 = time.time()
                 try:
                     form = aiohttp.FormData()
                     form.add_field("file", p.read_bytes(), filename=p.name or "image.png",
@@ -7458,13 +7476,27 @@ class ComfyUIDrawPlugin(Star):
                     headers = {}
                     if token:
                         headers["Authorization"] = f"Bearer {token}"
-                    async with s.post(url, data=form, headers=headers,
-                                      timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    async with s.post(
+                        url, data=form, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=_timeout, sock_read=_timeout),
+                    ) as resp:
                         if resp.status != 200:
                             logger.warning(f"【NSFW】 指令远程检测 {url} http {resp.status}")
                             continue
                         body = await resp.json()
                         if isinstance(body, dict) and body.get("ok"):
+                            body["_via"] = via
+                            _qp = resp.headers.get("X-Queue-Position")
+                            try:
+                                body["_queue_pos"] = int(_qp) if _qp is not None else None
+                            except (TypeError, ValueError):
+                                body["_queue_pos"] = None
+                            body["_elapsed"] = round(time.time() - _t0, 1)
+                            logger.info(
+                                f"【NSFW】 指令远程检测成功 via={via} level={body.get('level')} "
+                                f"action={body.get('action')} score={body.get('score')} "
+                                f"queue_pos={body.get('_queue_pos')} 用时={body['_elapsed']}s"
+                            )
                             return body
                 except Exception as e:
                     logger.warning(f"【NSFW】 指令远程检测 {url} 失败: {e}")
@@ -14872,17 +14904,32 @@ class ComfyUIDrawPlugin(Star):
                 t = float((self._cfg("gallery", {}).get("nsfw") or {}).get("threshold", 0.5))
             except (TypeError, ValueError):
                 t = 0.5
-            _remote_on = bool(str(self._cfg("gallery.nsfw.check_url", "") or "").strip())
+            _has_direct = bool(str(self._cfg("gallery.nsfw.check_url", "") or "").strip())
+            try:
+                _has_relay = bool(str(self._nsfw_relay_base() or "").strip())
+            except Exception:
+                _has_relay = False
+            try:
+                _timeout_s = int(self._cfg("gallery.nsfw.cmd_detect_timeout", 240) or 240)
+            except (TypeError, ValueError):
+                _timeout_s = 240
             _remote_note = (
-                "\n🌐 已配置 nsfw-check 远程判定：/涩图检测 优先走远程（Blue-Eye 主判，"
-                "结果按 安全/擦边/涩涩 分档并附部位说明），本地阈值仅作远程不可用时的回退。"
-                if _remote_on else ""
+                "\n🌐 远程检测已就绪（"
+                + ("nsfw-check 直连" if _has_direct else "TaskHub 中转队列")
+                + f"）：/涩图检测 优先走远程，结果按 安全/擦边/涩涩 分档并附命中部位、"
+                f"来源与排队信息；入队后显存够直接执行、不够排队，最长等待 {_timeout_s}s，"
+                "超时才回退本地 open_nsfw（此时无部位说明）。"
+                if (_has_direct or _has_relay) else
+                "\n💻 当前未接入远程检测：/涩图检测 走本地 open_nsfw，只给整体概率、"
+                "无法定位命中部位。接入方式：把绘图服务器指向 TaskHub（自动走 /nsfw/* 中转），"
+                "或配置 gallery.nsfw.check_url 直连 nsfw-check。"
             )
             await self._send(
                 event,
                 f"🎯 当前 NSFW 判定阈值：{t:.2f}\n"
-                "说明：图片 P(nsfw) 置信度 ≥ 阈值即判为 NSFW。泳装/紧身/露肤等易被误判，"
-                "可适当调高阈值（如 0.7）来降低误报（在插件配置 gallery.nsfw.threshold 中修改）。"
+                "说明：该阈值仅用于本地 open_nsfw（P(nsfw) ≥ 阈值即判 NSFW）；"
+                "远程检测由 nsfw-check 按自身策略分档，不受此阈值影响。"
+                "泳装/紧身/露肤等本地易误判，可调高阈值（在插件配置 gallery.nsfw.threshold 中修改）。"
                 f"{_remote_note}",
             )
             event.stop_event()
@@ -14898,9 +14945,11 @@ class ComfyUIDrawPlugin(Star):
             event.stop_event()
             return
 
-        # 立即返回"检测中"提示
+        # 立即返回"检测中"提示。远程走 TaskHub 统一队列，显存够直接执行、不够
+        # 会排队（最长等待由 cmd_detect_timeout 控制），故提示里说清可能要等。
         try:
-            await self._send(event, "⏳ 检测中，请稍候…")
+            await self._send(event, "⏳ 检测中（远程检测提交到 TaskHub 队列，显存够直接执行、"
+                                    "否则排队等待，请稍候）…")
         except Exception:
             pass
 
@@ -14925,8 +14974,9 @@ class ComfyUIDrawPlugin(Star):
         async def _detect_one(p):
             if not p or not os.path.exists(p):
                 return None, False
-            # v8.13.0：配置了 nsfw-check 直连地址时优先远程判定（Blue-Eye 主判 +
-            # 部位标签），失败/未配置回退本地 OpenNSFW——指令是查询用途，回退无害。
+            # v8.13.5：指令检测优先走 TaskHub 中转队列（零配置）/ nsfw-check 直连，
+            # 拿不到远程结论才回退本地 OpenNSFW。远程把 level/action/score/部位标签
+            # 连同来源元信息（via/排队位置/耗时/记录号）一并带回，供回复完整展示。
             remote = await self._nsfw_detect_remote(p)
             if remote is not None:
                 _sc = remote.get("score")
@@ -14934,8 +14984,13 @@ class ComfyUIDrawPlugin(Star):
                          "nsfw": str(remote.get("level")) == "nsfw" or str(remote.get("action")) == "block",
                          "score": _sc if isinstance(_sc, (int, float)) else 0.0,
                          "level": str(remote.get("level") or ""),
+                         "action": str(remote.get("action") or ""),
                          "diverge": bool(remote.get("diverge")),
-                         "labels": [str(x) for x in (remote.get("labels") or [])]}, False)
+                         "labels": [str(x) for x in (remote.get("labels") or [])],
+                         "via": str(remote.get("_via") or ""),
+                         "queue_pos": remote.get("_queue_pos"),
+                         "elapsed": remote.get("_elapsed"),
+                         "record_id": str(remote.get("record_id") or "")}, False)
             try:
                 is_nsfw, score, available = await _asyncio.to_thread(det.detect, p)
             except Exception as e:  # pragma: no cover
@@ -15000,39 +15055,69 @@ class ComfyUIDrawPlugin(Star):
                 _NSFW_LABEL_ZH.get(x.upper(), x) for x in labels if x
             )
 
-        def _desc(r: dict) -> str:
-            if r.get("remote"):
-                # 远程判定（nsfw-check Blue-Eye 主判）：按 level 分档，附部位说明
-                pct = r["score"] * 100
-                lv = r.get("level")
-                if lv == "safe":
-                    head = f"✅ 安全（远程判定，涩涩内容可能性约 {pct:.0f}%）"
-                elif lv == "nsfw":
-                    head = f"🔞 涩涩内容（远程判定，可能性约 {pct:.0f}%）"
-                elif lv == "review":
-                    head = f"⚠️ 擦边中间带（远程判定，可能性约 {pct:.0f}%，建议人工再看一眼）"
-                else:
-                    head = f"⚠️ 检测服务未能给出结论（可能性约 {pct:.0f}%）"
-                if r.get("diverge"):
-                    head += "；主/副模型有分歧"
-                zh = _labels_zh(r)
-                if zh:
-                    head += ("；画面：" if lv == "safe" else "；命中部位：") + zh
-                return head
+        def _source_of(r: dict) -> str:
+            """检测来源 + 排队信息：让用户知道结论出自哪条链路、是否等过队列。"""
+            if not r.get("remote"):
+                return "本地 open_nsfw（仅整体概率，无部位定位）"
+            via = r.get("via")
+            if via == "relay":
+                src = "TaskHub 队列（远程）"
+            elif via == "direct":
+                src = "nsfw-check 直连（远程）"
+            else:
+                src = "远程检测"
+            qp = r.get("queue_pos")
+            if isinstance(qp, int) and qp > 0:
+                src += f"·排队第{qp}位"
+            elif isinstance(qp, int) and qp == 0:
+                src += "·免排队"
+            return src
+
+        def _desc(r: dict, brief: bool = False) -> str:
+            """完整判定：结论 + 可能性 + 来源 + 命中部位 + 分歧（单图另附记录号/耗时）。"""
             pct = r["score"] * 100
+            if r.get("remote"):
+                lv = r.get("level")
+                action = r.get("action")
+                if lv == "safe":
+                    head = f"✅ 安全（涩涩内容可能性约 {pct:.0f}%）"
+                elif lv == "nsfw" or action == "block":
+                    head = f"🔞 涩涩内容（可能性约 {pct:.0f}%）"
+                elif lv == "review" or action == "review":
+                    head = f"⚠️ 擦边中间带（可能性约 {pct:.0f}%，建议人工再看一眼）"
+                else:
+                    head = f"❓ 检测服务未给出明确结论（可能性约 {pct:.0f}%）"
+                parts = [head, f"来源：{_source_of(r)}"]
+                zh = _labels_zh(r)
+                parts.append(("画面证据：" if lv == "safe" else "命中部位：") + (zh or "无明确部位信号"))
+                if r.get("diverge"):
+                    parts.append("主/副模型有分歧")
+                if not brief:
+                    rid = r.get("record_id")
+                    if rid:
+                        parts.append(f"记录号 {rid}")
+                    el = r.get("elapsed")
+                    if isinstance(el, (int, float)):
+                        parts.append(f"耗时 {el:.1f}s")
+                return "；".join(parts) + "。"
+            # 本地 open_nsfw：只有一个整体概率，如实说明无法定位部位。
             if r["nsfw"]:
-                return f"🔞 涩涩内容（可能性约 {pct:.0f}%）"
-            # 安全：可能性越低越"安全"
-            if pct >= 20:
-                return f"⚠️ 有点擦边（涩涩内容可能性约 {pct:.0f}%）"
-            return f"✅ 安全（涩涩内容可能性很低，约 {pct:.0f}%）"
+                head = f"🔞 涩涩内容（可能性约 {pct:.0f}%）"
+            elif pct >= 20:
+                head = f"⚠️ 有点擦边（涩涩内容可能性约 {pct:.0f}%）"
+            else:
+                head = f"✅ 安全（涩涩内容可能性很低，约 {pct:.0f}%）"
+            parts = [head, f"来源：{_source_of(r)}"]
+            if not brief:
+                parts.append("如需命中部位，请让 TaskHub 接入 nsfw-check 后重试")
+            return "；".join(parts) + "。"
 
         if len(valid) == 1:
-            # 单张图：直接返回简单结论，不用列表，不展示阈值
+            # 单张图：完整结论（含来源/部位/分歧/记录号/耗时）
             await self._send(event, _desc(valid[0]))
         else:
-            # 多张图：列表形式
-            lines = [f"{i}. {_desc(r)}" for i, r in enumerate(valid, 1)]
+            # 多张图：列表形式，每张精简（省掉记录号/耗时，避免刷屏）
+            lines = [f"{i}. {_desc(r, brief=True)}" for i, r in enumerate(valid, 1)]
             await self._send(event, "📊 涩图检测结果：\n" + "\n".join(lines))
         event.stop_event()
 

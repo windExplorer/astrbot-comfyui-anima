@@ -1894,6 +1894,12 @@
             "description": "nsfw-check API 令牌（仅直连模式用）",
             "hint": "只在上面填了直连地址时才需要：nsfw-check .env 里 API 令牌的值。走 TaskHub 中转时令牌由中转站持有，此处留空。"
           },
+          "cmd_detect_timeout": {
+            "type": "int",
+            "default": 240,
+            "description": "/涩图检测 远程超时（秒）",
+            "hint": "指令检测走远程时的最长等待，默认 240s。远程请求会提交到 TaskHub 统一队列（与绘图同队列），显存够就直接执行、不够则排队等待；排队期间保持连接，超时才回退本地 open_nsfw。应 ≥ TaskHub 的 queue_wait + infer_timeout（默认 120+120=240s），调小会在排队时先断连回退本地（无部位说明）。"
+          },
           "show_nsfw_global": {
             "type": "string",
             "default": "blur",

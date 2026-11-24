@@ -4,6 +4,20 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.13.5（/涩图检测 走 TaskHub 队列 + 判定回复完整化）
+
+**现象**：`/涩图检测` 命中涩涩内容时只回一句「可能性约 xx%」，没说哪里命中、结论出自哪条链路；远程判定偶尔回退本地，看不到部位标签。
+
+**根因**：指令远程检测 `_nsfw_detect_remote` 的 HTTP 超时写死 30s，而 TaskHub 中转是「统一队列 + 内部阻塞等待槽位」（显存够直接执行、不够排队，最坏 queue_wait+infer_timeout≈240s）——排队时插件先断连回退本地 open_nsfw（只有整体概率、无部位定位）。即使远程成功，回复也只拼了 level + 部位，没暴露来源、排队、分歧、记录号。
+
+**修复**：
+- `_nsfw_detect_remote`：超时改为读 `gallery.nsfw.cmd_detect_timeout`（默认 240s，钳制 30~900），`sock_read` 同步；顺带读 TaskHub 的 `X-Queue-Position` 响应头，回填 `_via`（direct/relay）/`_queue_pos`/`_elapsed` 内部键（下划线前缀，不污染 nsfw-check 契约）。
+- `cmd_nsfw`：`_detect_one` 把 action/来源/排队位置/耗时/记录号一并带回；`_desc` 重写为「结论 + 可能性 + 来源 + 命中部位 + 分歧」完整话术，单图另附记录号与耗时、多图精简防刷屏；本地回退如实标注「仅整体概率、无部位定位」并给出接入远程的方法。
+- `/涩图检测 阈值` 回复区分「直连 / TaskHub 中转 / 未接入远程」三种状态，说明远程由 nsfw-check 分档、不受本地阈值影响。
+- 「检测中」提示说明远程走队列、显存够直接执行否则排队。
+- 新增配置 `gallery.nsfw.cmd_detect_timeout`（WebUI 落在「图片图库」分区，无需改 GROUP_META）；WebUI 图库检测接口按约定不变。
+- 自检 `tests/test_nsfw_cmd_reply.py`（30 项断言）全过；`test_nsfw_remote_mode.py` 无回归；`py_compile` 通过。
+
 ## v8.13.4（复核弹窗修复 + 图库可显示待复核图）
 
 **问题 1——复核弹窗 UI**：「图片复核」页大图预览弹窗（n-modal preset=card）用
