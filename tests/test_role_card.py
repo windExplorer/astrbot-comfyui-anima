@@ -7,6 +7,7 @@ import ast
 import asyncio
 import re
 import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -238,6 +239,54 @@ check("聊天追问不拼回",
       and bool(_chatter.search("再来一张？"))
       and not _chatter.search("把衣服换成制服，背景改为海边"))
 check("denoise可配", '"denoise"' in _sch and '_wr_cfg.get("denoise", -1)' in src)
+
+# v8.13.9：自身入画「你自己」必须退出角色卡，不能被上一次画的角色劫持。
+_exit_node = next(
+    n for n in _tree.body
+    if isinstance(n, ast.Assign)
+    and any(getattr(t, "id", "") == "_ROLE_EXIT_RE" for t in n.targets)
+)
+_cont_node = next(
+    n for n in _tree.body
+    if isinstance(n, ast.Assign)
+    and any(getattr(t, "id", "") == "_ROLE_CONTINUE_RE" for t in n.targets)
+)
+_ns_re = {"re": re}
+exec(compile(ast.get_source_segment(src, _exit_node), "<x>", "exec"), _ns_re)
+exec(compile(ast.get_source_segment(src, _cont_node), "<x>", "exec"), _ns_re)
+_role_exit_re = _ns_re["_ROLE_EXIT_RE"]
+_role_cont_re = _ns_re["_ROLE_CONTINUE_RE"]
+for _p in ("发张你自己", "再发张你自己", "画你自己", "画一张你自己", "来一张你自己",
+           "画你", "发张你的自拍", "你的自拍", "画我自己", "画自己", "画原本的样子",
+           "取消角色", "回到自己"):
+    check(f"自身入画退出词命中：{_p}", bool(_role_exit_re.search(_p)), _p)
+for _p in ("画一张初音未来的图", "画你和初音的合照", "再发一张", "画小叽在海边"):
+    check(f"非自身入画不误退：{_p}", not _role_exit_re.search(_p), _p)
+check("自身入画带续画词也优先退出",
+      bool(_role_exit_re.search("再发张你自己")) and bool(_role_cont_re.search("再发张你自己")))
+check("自身入画不引导复用旧角色提示词", "绝不能拿来当「你自己」的形象" in src)
+
+# 群聊按用户隔离角色记忆：A 画过的角色不能被 B 的「再发一张」复活。
+_key_node = next(n for n in _cls.body
+                 if isinstance(n, ast.FunctionDef) and n.name == "_role_session_key")
+_ns_key = {}
+exec(compile(textwrap.dedent(ast.get_source_segment(src, _key_node) or ""), "<x>", "exec"), _ns_key)
+
+
+class _RoleKeyStub:
+    def _session_umo_of(self, event):
+        return event.umo
+
+    _role_session_key = _ns_key["_role_session_key"]
+
+
+_e1 = SimpleNamespace(umo="aiocqhttp:GroupMessage:123", get_sender_id=lambda: "A")
+_e2 = SimpleNamespace(umo="aiocqhttp:GroupMessage:123", get_sender_id=lambda: "B")
+_e3 = SimpleNamespace(umo="aiocqhttp:GroupMessage:123", get_sender_id=lambda: "")
+_stub = _RoleKeyStub()
+check("群聊角色记忆按用户隔离", _stub._role_session_key(_e1) != _stub._role_session_key(_e2))
+check("无 sender_id 回退会话 UMO", _stub._role_session_key(_e3) == "aiocqhttp:GroupMessage:123")
+check("_do_draw 使用按用户隔离的键", "self._role_session_key(event)" in _dd_src)
 
 if FAILURES:
     print("FAILURES:", FAILURES)
