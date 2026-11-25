@@ -806,7 +806,7 @@ G_SESSION_ROLE_TTL = 1800.0  # 30 分钟没再用角色就过期
 # 命中角色卡，positive 被确定性编辑指令覆盖，bot 就一直发那个角色。
 # 「你和 XX 的合照」是多角色请求，用 (?!们|和|跟|与|、) 豁免，保持原有角色卡行为。
 _ROLE_EXIT_RE = re.compile(
-    r"(?:画|发|来|给|出|拍|要|看)(?:一?[张幅个])?(?:你自己|我自己|自己|自拍)(?!和|跟|与|、)(?:的)?(?:自拍|照片|形象|样子|图|画)?"
+    r"(?:画|发|来|给|出|拍|要|看)(?:一?[张幅个])?(?:你自己|我自己|她自己|他自己|自己|自拍)(?!和|跟|与|、)(?:的)?(?:自拍|照片|形象|样子|图|画)?"
     r"|(?:画|发|来|出|看)(?:一?[张幅])?你(?!们|和|跟|与|、)(?:的)?(?:自拍|照片|形象|样子|图|画)?(?=$|[，。！？!?\s])"
     r"|(?:发|来|给|出)(?:一?[张幅])?(?:你|我)(?:的)?(?:照片|图|画|自拍)(?=$|[，。！？!?\s])"
     r"|(?:画|发|来|出|看)(?:一?[张幅])?我(?:的)?(?:自拍|照片|形象|样子|图|画)?(?=$|[，。！？!?\s])"
@@ -8597,7 +8597,17 @@ class ComfyUIDrawPlugin(Star):
             )
             if _wr_on and not _lora_first_skip and event is not None:
                 _ref_map, _wr_missing = await role_card.load_ref_map(self.context)
-                _wr_cid, _wr_entry = role_card.match_role(f"{_u_msg} {positive}", _ref_map)
+                # v8.14.0：角色匹配只吃【用户原话】，绝不再拼 LLM 生成的 positive。
+                # 根因（log333.log 实证）：用户说「那重新来张」想续画自己，LLM 写的画面
+                # 「穿白色吊带背心」里的单字「心」被当角色名命中 xin_wuwa → 强制图生图 +
+                # 主参考图，且 LLM 原画面被确定性指令覆盖，out 变成「另一个角色 + 同一动作」。
+                # positive 是画面描述，里面出现「背心/心情/爱心」等普通词是常态，不能当点名。
+                # 例外：Studio「用这个角色生图」显式 opt-in（use_role_card=True），角色名是
+                # 用户从角色页选好写进 prompt 的，那种场景才继续匹配 positive。
+                _wr_match_text = _u_msg
+                if use_role_card is True and not _wr_match_text:
+                    _wr_match_text = (positive or "").strip()
+                _wr_cid, _wr_entry = role_card.match_role(_wr_match_text, _ref_map)
                 # v8.7.0：会话内沿用上次角色——续画消息没有角色名时沿用上次参考图/工作流。
                 _reuse_cfg = _wr_cfg.get("reuse_last_role", True) if isinstance(_wr_cfg, dict) else True
                 # v8.12.0：只有「像续画」才沿用。v8.9.1 放宽成「没提任何角色名就沿用」，

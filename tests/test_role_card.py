@@ -288,6 +288,24 @@ check("群聊角色记忆按用户隔离", _stub._role_session_key(_e1) != _stub
 check("无 sender_id 回退会话 UMO", _stub._role_session_key(_e3) == "aiocqhttp:GroupMessage:123")
 check("_do_draw 使用按用户隔离的键", "self._role_session_key(event)" in _dd_src)
 
+# v8.14.0：单字角色名禁止裸子串匹配（log333.log 实证「背心」命中「心」）。
+XIN = {"xin_wuwa": REF_MAP["miku"] | {"name": "心", "aliases": ["xin"]}}
+for _p in ("穿着白色吊带背心", "氛围安静温馨", "一份好心情", "爱心形靠垫"):
+    check(f"单字名不被普通词误命中：{_p}", role_card.match_role(_p, XIN)[0] is None, _p)
+for _p in ("画心", "画张心", "来一张心", "画个心酱", "画 xin"):
+    check(f"单字名点名仍能命中：{_p}", role_card.match_role(_p, XIN)[0] == "xin_wuwa", _p)
+# 原样本仍应命中（多字名裸匹配不变）
+check("多字名不受影响", role_card.match_role("画一张初音未来的图", REF_MAP)[0] == "miku")
+
+# 核心：原生聊天只匹配用户原话，绝不拼 LLM 的 positive。
+check("match_role 不拼 positive",
+      "role_card.match_role(f\"{_u_msg} {positive}\"" not in src
+      and "role_card.match_role(_wr_match_text, _ref_map)" in src)
+check("Studio 显式 opt-in 仍吃 positive",
+      "if use_role_card is True and not _wr_match_text" in src)
+check("退出词含她自己/他自己",
+      bool(_role_exit_re.search("画她自己")) and bool(_role_exit_re.search("发张他自己")))
+
 if FAILURES:
     print("FAILURES:", FAILURES)
     sys.exit(1)

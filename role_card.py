@@ -52,10 +52,20 @@ async def load_ref_map(context) -> tuple[dict, list]:
     return data, missing
 
 
+# v8.14.0：单字角色名禁止裸子串匹配。角色库里有单字名（如「心」xin_wuwa），
+# `nm in t` 会在「背心 / 心情 / 爱心 / 下雪」这类普通词里命中，导致用户想画自己
+# 却被劫持成角色卡（log333.log 实证）。单字名要求出现在触发词/标点/句首之后，
+# 且后接量词/标点/句尾——「画心」「画张心」「画个心」「心酱」算命中，
+# 「背心」「爱心-shaped」「好心情」不算。
+_SHORT_LEAD = r"(?:^|[画发来要给用看张个与和，。！？、,.!?\s])"
+_SHORT_TAIL = r"(?:$|[的图张个角色酱、，。！？,.!?\s~])"
+
+
 def match_role(text: str, ref_map: dict):
     """用户文本命中哪个角色卡（名字 / 别名，长名优先避免子串误命中）。
 
-    返回 (char_id, entry)；没命中返回 (None, None)。
+    v8.14.0：单字名不再接受裸子串匹配（见上方常量）。返回 (char_id, entry)；
+    没命中返回 (None, None)。
     """
     t = (text or "").strip().lower()
     if not t or not ref_map:
@@ -67,7 +77,13 @@ def match_role(text: str, ref_map: dict):
         names = [str(entry.get("name") or "")] + list(entry.get("aliases") or [])
         for nm in names:
             nm = nm.strip().lower()
-            if nm and nm in t:
+            if not nm:
+                continue
+            if len(nm) == 1:
+                hit = bool(re.search(_SHORT_LEAD + re.escape(nm) + _SHORT_TAIL, t))
+            else:
+                hit = nm in t
+            if hit:
                 cands.append((len(nm), cid, entry))
                 break
     if not cands:
