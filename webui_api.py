@@ -2095,6 +2095,9 @@ class WebUIApi:
                 "renamed": bool((_info or {}).get("renamed")),
                 "name": (_info or {}).get("name") or name,
                 "msg": (_info or {}).get("msg") or "入库成功",
+                # v8.14.1：让前端明确告知用户「画布保存的 UI 格式已自动转换」，
+                # 入库文本与原始文件不同是有意为之（运行时只认 API 格式）。
+                "converted_ui": bool((_info or {}).get("converted_ui")),
             })
         except Exception as e:
             return error_response(f"上传失败: {e}")

@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 
 try:  # 包内加载（AstrBot 以 astrbot_plugin_comfyui_anima.workflow_store 加载）
-    from .workflow_parser import PARSER_VERSION, parse_workflow
+    from .workflow_parser import PARSER_VERSION, is_ui_format, parse_workflow, ui_to_api
 except ImportError:  # 脚本/单文件加载兜底
-    from workflow_parser import PARSER_VERSION, parse_workflow
+    from workflow_parser import PARSER_VERSION, is_ui_format, parse_workflow, ui_to_api
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +297,15 @@ class WorkflowStore:
         roles, errors = parse_workflow(prompt)
         if errors and not force:
             return None, None, "；".join(errors), {}
+        # v8.14.1：UI 格式（画布直接保存）转成 API 格式后**规范化入库**。
+        # 运行时 _load_from_base 直接 json.loads(wf_json) 做节点手术，存 UI 格式会全盘失效；
+        # 因此这里落盘/入库的都是转换后的文本，原始 UI 文件不再保留（原文件名仍记在 file_name）。
+        converted_ui = False
+        if is_ui_format(prompt):
+            api_prompt = ui_to_api(prompt)
+            if api_prompt:
+                json_text = json.dumps(api_prompt, ensure_ascii=False, indent=2)
+                converted_ui = True
 
         # 原始文件落盘（文件关联：原始文件是唯一真相源头，永不再修改）
         sha = hashlib.sha256(json_text.encode("utf-8")).hexdigest()[:16]
@@ -354,6 +363,7 @@ class WorkflowStore:
         conn.commit()
         return wf_id, roles, None, {
             "updated": updated, "renamed": renamed, "name": name, "id": wf_id, "msg": msg,
+            "converted_ui": converted_ui,
         }
 
     def update_meta(self, wf_id: int, fields: dict) -> str | None:

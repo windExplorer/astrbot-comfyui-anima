@@ -4,6 +4,18 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.14.1（基础工作流库直接吃画布保存的 UI 格式：上传即自动转 API 入库）
+
+**需求**：从 ComfyUI 画布「保存工作流」得到的 JSON（顶层 `nodes`/`links`）无法直接上传到基础工作流库，必须先在 ComfyUI 里再走一遍「导出（API）」。用户给出一份 Z-Image Turbo 画布工作流（含 `widgets_values_named`），实测转成 API 后所有角色定位正常，卡点只在文件格式。
+
+**根因**：`workflow_parser.parse_workflow` 按 v7.0.0 设计只收 API 格式（`{id:{class_type,inputs}}`）；旧版 UI 格式守卫只看 `next(iter(prompt.values()))`，而画布文件顶层第一个键常是 `id`/`version`（字符串），守卫命中不了，用户收到的是误导性的「0 个采样器」。更关键的是出图运行时 `_load_from_base` 直接 `json.loads(wf_json)` 做节点手术——就算解析器吃下 UI 格式、原文入库，运行时仍会全盘失效。
+
+**修复**：
+- `workflow_parser.py`：新增 `ui_to_api()` / `is_ui_format()`，上传时自动把 UI 格式转成 API 格式。连线从 `links` 还原成 `[源节点ID, 槽位]`；widget 值优先用节点自带的 `widgets_values_named` 无损转换，老版本无该字段时按 `_UI_WIDGET_FIELDS` 位置表兜底（只列解析器关心的节点，未收录的不猜）。格式守卫改成按结构判定，非法 JSON 给出明确错误。
+- `workflow_store.py`：`import_json_ex()` 解析通过后把 UI 输入**规范化为 API 文本再落盘/入库**（`converted_ui` 标记随 `info` 回传），保证运行时拿到可手术的 API 图；原始文件名仍保留在 `file_name`，`match_by_filename` 不受影响。
+- `webui_api.py` / `BaseWorkflowsView.vue`：上传返回 `converted_ui`，前端提示「UI 格式已自动转 API」，上传页文案更新为 API / UI 均可。
+- 自检 `tests/test_ui_format.py` 6 组全过（格式识别 / named 无损转换 / 位置表兜底 / 直接解析 / 非法格式报错 / 入库规范化），`test_workflow_v7.py` 25 组全过；用户原始 Z-Image 工作流直接解析 `errors=[]`。
+
 ## v8.14.0（画自己却出成「心」的角色卡图生图：单字名撞上 LLM 提示词里的普通词）
 
 **现象**：一直跟 bot 聊得好好的、它在发自己的图，某一轮突然发成角色卡的图生图；而且每次都是同一个角色（`xin_wuwa` /「心」），动作和之前一模一样。用户明确说了画自己也没用。（log333.log 实证）

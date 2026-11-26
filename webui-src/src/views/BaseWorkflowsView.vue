@@ -3,7 +3,7 @@
     <div class="view-head">
       <div>
         <h2>基础工作流</h2>
-        <p>上传 ComfyUI「导出(API)」格式 JSON，入库并自动解析节点角色。出图工作流从这里引用，替代手动拷文件到 workflow 目录。</p>
+        <p>上传 ComfyUI JSON，支持「导出(API)」与画布直接保存的 UI 格式（自动转换），入库并自动解析节点角色。出图工作流从这里引用，替代手动拷文件到 workflow 目录。</p>
       </div>
       <Teleport to="#mobile-filter-slot" :disabled="!isMobile">
         <div class="view-actions">
@@ -79,7 +79,7 @@
         <div class="dz-inner">
           <div class="dz-icon">🗂️</div>
           <p>把工作流 JSON 拖到这里，或<span class="dz-link">点击选择文件</span></p>
-          <p class="dz-sub">必须是 ComfyUI「导出（API）」格式；解析不通过会被拒绝并说明原因</p>
+          <p class="dz-sub">API 与 UI（画布保存）格式均可，UI 格式自动转 API 入库；解析不通过会被拒绝并说明原因</p>
         </div>
         <input ref="fileInput" type="file" accept=".json" hidden @change="onFileChange" />
       </div>
@@ -351,7 +351,10 @@ async function doUpload() {
       filename: uploadFileName.value || "",
     });
     uploadOk.value = true;
-    uploadOkSummary.value = summarizeRoles(d.roles);
+    const _summary = summarizeRoles(d.roles);
+    uploadOkSummary.value = d.converted_ui
+      ? (_summary ? `${_summary}｜UI 格式已自动转 API` : "UI 格式已自动转 API")
+      : _summary;
     const finalName = d.name || uploadName.value.trim();
     if (d.updated) {
       message.warning(`已覆盖更新同名工作流「${finalName}」`);

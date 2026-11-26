@@ -103,6 +103,95 @@ def _is_resource_field(field: str, node: dict) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------- #
+# ComfyUI UI 格式（画布直接保存）→ API 格式（v8.14.1）
+# --------------------------------------------------------------------------- #
+# 插件的解析注记与出图运行时手术全部基于 API 格式（{id:{class_type,inputs}}）。
+# 用户从 ComfyUI 画布「保存」出来的文件是 UI 格式（顶层 nodes/links），原先
+# 只能手动「导出（API）」才能入库。这里在入库前自动转换一份，转换后的文本
+# **同时**作为 wf_json 落盘，否则运行时 json.loads 拿到 UI 格式会全盘失效。
+#
+# 新版前端（1.59.x）保存的节点带 `widgets_values_named`，字段名完整、可无损转换；
+# 老版本只有 `widgets_values` 数组，按下表按位置兜底（只列解析器关心的节点，
+# 未收录节点的 widget 无法可靠还原，保持为空——宁可解析报错也不猜错写入点）。
+_UI_WIDGET_FIELDS: dict[str, tuple[str, ...]] = {
+    "KSampler": ("seed", "control_after_generate", "steps", "cfg", "sampler_name", "scheduler", "denoise"),
+    "KSamplerAdvanced": ("add_noise", "noise_seed", "control_after_generate", "steps", "cfg",
+                         "sampler_name", "scheduler", "start_at_step", "end_at_step", "return_with_leftover_noise"),
+    "CLIPTextEncode": ("text",),
+    "EmptyLatentImage": ("width", "height", "batch_size"),
+    "EmptySD3LatentImage": ("width", "height", "batch_size"),
+    "SaveImage": ("filename_prefix",),
+    "SaveImageExtended": ("filename_prefix", "output_ext", "quality"),
+    "UNETLoader": ("unet_name", "weight_dtype"),
+    "CheckpointLoaderSimple": ("ckpt_name",),
+    "VAELoader": ("vae_name",),
+    "CLIPLoader": ("clip_name", "type", "device"),
+    "LoraLoader": ("lora_name", "strength_model", "strength_clip"),
+    "LoraLoaderModelOnly": ("lora_name", "strength_model"),
+    "ModelSamplingAuraFlow": ("shift", "sampling"),
+}
+
+
+def is_ui_format(obj) -> bool:
+    """是否为 ComfyUI 画布直接保存的 UI 格式（顶层 nodes 是节点数组）。"""
+    if not isinstance(obj, dict) or not isinstance(obj.get("nodes"), list):
+        return False
+    return any(
+        isinstance(n, dict) and "type" in n and "class_type" not in n
+        for n in obj["nodes"][:8]
+    )
+
+
+def ui_to_api(ui: dict) -> dict | None:
+    """ComfyUI UI 格式 → API 格式。不是 UI 格式 / 转不出节点时返回 None。
+
+    连线从 `links` 取 `[link_id, 源节点ID, 源槽位, ...]` 还原成 `[源ID, 槽位]`；
+    widget 值优先用节点自带的 `widgets_values_named`，缺失才按 `_UI_WIDGET_FIELDS`
+    的位置表兜底。不做 bypass/mute 消解（mode!=0 的节点原样保留）——用户自行
+    在画布里旁路掉的节点，由解析器按连线现状判断，不在这里猜。
+    """
+    if not is_ui_format(ui):
+        return None
+    links: dict[int, list] = {}
+    for l in ui.get("links") or []:
+        if isinstance(l, (list, tuple)) and len(l) >= 3:
+            try:
+                links[int(l[0])] = [str(l[1]), int(l[2])]
+            except (TypeError, ValueError):
+                continue
+    api: dict[str, dict] = {}
+    for n in ui.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        ct = n.get("type")
+        if not isinstance(ct, str) or not ct:
+            continue
+        nid = str(n.get("id"))
+        inputs: dict = {}
+        vals = n.get("widgets_values")
+        named = n.get("widgets_values_named")
+        if isinstance(vals, list) and not isinstance(named, dict):
+            for i, v in enumerate(vals[:len(_UI_WIDGET_FIELDS.get(ct, ()))]):
+                inputs[_UI_WIDGET_FIELDS[ct][i]] = v
+        if isinstance(named, dict):
+            inputs.update({k: v for k, v in named.items() if isinstance(k, str)})
+        for inp in n.get("inputs") or []:
+            if not isinstance(inp, dict) or not isinstance(inp.get("name"), str):
+                continue
+            lid = inp.get("link")
+            if lid is None:
+                continue
+            try:
+                src = links.get(int(lid))
+            except (TypeError, ValueError):
+                src = None
+            if src:
+                inputs[inp["name"]] = list(src)
+        api[nid] = {"class_type": ct, "inputs": inputs}
+    return api or None
+
+
 def _ct(node: dict) -> str:
     return (node.get("class_type") or "").strip().lower()
 
@@ -680,10 +769,16 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
     errors: list[str] = []
     if not isinstance(prompt, dict) or not prompt:
         return None, ["JSON 不是 ComfyUI API 格式（应为 {节点ID: {class_type, inputs}} 对象）"]
-    # UI 格式守卫
-    sample = next(iter(prompt.values()))
-    if isinstance(sample, dict) and ("class_type" not in sample) and ("type" in sample):
-        return None, ["检测到 UI 格式（nodes/links）。请在 ComfyUI 用「导出（API）」另存后再上传。"]
+    # v8.14.1：ComfyUI 画布直接保存的 UI 格式自动转 API 后再解析。
+    # 旧守卫只看 next(iter(prompt.values()))，而 UI 文件顶层第一个键常是 id/version
+    # （字符串），命中不了，用户收到的是误导性的「0 个采样器」——改成按结构判定。
+    if is_ui_format(prompt):
+        prompt = ui_to_api(prompt) or {}
+    elif not any(isinstance(v, dict) and "class_type" in v for v in prompt.values()):
+        return None, [
+            "JSON 既不是 ComfyUI API 格式（{节点ID:{class_type,inputs}}），"
+            "也不是可识别的 UI 格式（顶层 nodes/links）。"
+        ]
 
     nodes = {k: v for k, v in prompt.items() if isinstance(v, dict)}
 
