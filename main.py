@@ -813,7 +813,11 @@ _ROLE_EXIT_RE = re.compile(
     r"|(?:画|发|来|出)(?:一?[张幅])?(?:原本|原来|默认)(?:的)?(?:形象|样子|图|画)?"
     r"|(?:你|我|自己)(?:的)?(?:自拍|原本|原来|默认)(?:形象|样子|图|画)?"
     r"|^自拍$"
-    r"|取消角色|清除角色|退出角色|不用角色(?:卡)?|不要角色(?:卡)?|别用角色(?:卡)?"
+    r"|取消角色|清除角色|退出角色"
+    # v8.14.4：补「不要用角色卡 / 不需要角色卡 / 别走角色卡」。
+    # 旧写法只收「不用角色卡 / 不要角色卡」，中间多一个「用」就漏判——
+    # 用户明说「不要用角色卡」仍被当成点名角色，强制图生图 + 主参考图覆盖画面。
+    r"|(?:不需要|不要|不用|无需|不需|别|不)(?:想要|启用|使用|要|用|走)?角色(?:卡|图生图)?"
     r"|回到(?:初始|原来|原本|默认|自己)",
     re.I,
 )
@@ -886,6 +890,27 @@ STYLE_PRESETS = [
      "复古 90 年代动画（胶片颗粒 + 低饱和）",
      "Retro 1990s anime with film grain and muted palette"),
 ]
+
+# v8.14.4：用户自己给了画风（含「极简风」「用 moss」这种词表外写法）时，
+# 角色卡页配的 default_style 不许再覆盖上去。旧判定只认词表里的「风格 / 画风」等词，
+# 「极简风」的单个「风」不构成「风格」，于是默认「现代日式动画」被拼进 hint，
+# LLM 照着写出「把整体画风改为现代日式动画」，把用户要的极简风冲掉。
+_USER_STYLE_EXTRA_RE = re.compile(
+    r"极简|简约|留白|纯色|扁平|这个风|那种风|moss|openmoss", re.I)
+
+
+def _user_mentioned_style(text: str) -> bool:
+    """用户本轮是否自己指定了画风/模型（命中即不套角色卡默认画风）。"""
+    t = (text or "").lower()
+    if any(str(p[1]).lower() in t for p in STYLE_PRESETS):
+        return True
+    if any(w in t for w in (
+        "水墨", "厚涂", "赛璐璐", "水彩", "油画", "像素", "3d", "渲染", "吉卜力",
+        "写实", "日系", "动漫", "新海诚", "韩漫", "赛博", "轻小说", "扁平", "矢量",
+        "风格", "画风", "paint", "ink", "cel",
+    )):
+        return True
+    return bool(_USER_STYLE_EXTRA_RE.search(t))
 
 
 # 跨插件调用的「外部调用」判定（v7.7.58 起收敛到 _is_external_call 一个入口）：
@@ -8707,7 +8732,10 @@ class ComfyUIDrawPlugin(Star):
                         # v8.12.2：raw_prompt=True 的调用方 prompt 是最终文本，只能追加约束不能覆盖；
                         # 合成桩（老婆工坊 / Studio）message_str 为空时用调用方 prompt 当画面来源。
                         _wr_orig_positive = (positive or "").strip()
-                        _plain = (getattr(event, "message_str", "") or "").strip() or _wr_orig_positive
+                        # v8.14.4：「不要用角色卡」是流程控制话术，不是画面描述，别喂给编辑模型。
+                        _plain = role_card.strip_role_control(
+                            (getattr(event, "message_str", "") or "").strip() or _wr_orig_positive
+                        )
                         _nm0 = str(_wr_entry.get("name") or "")
                         if _nm0:
                             _plain = _plain.replace(_nm0, "")
@@ -8717,6 +8745,9 @@ class ComfyUIDrawPlugin(Star):
                                 _plain = _plain.replace(_a0, "")
                         _plain = re.sub(r"[,，。\s]+", " ", _plain).strip()
                         _style0 = str(_wr_cfg.get("default_style") or "").strip()
+                        # v8.14.4：用户自己点了画风/模型（如「极简风」「用 moss」）→ 默认画风不覆盖。
+                        if _style0 and _user_mentioned_style(_u_msg):
+                            _style0 = ""
                         _instr = role_card.build_edit_instruction(_plain, _style0)
                         if _instr:
                             if raw_prompt and _wr_orig_positive:
@@ -9087,7 +9118,9 @@ class ComfyUIDrawPlugin(Star):
                 _ad_cfg = self._cfg("role_card", {}) or {}
                 if isinstance(_ad_cfg, dict) and _ad_cfg.get("auto_detail", True):
                     _limit = int(_ad_cfg.get("auto_detail_max_chars", 40) or 40)
-                    _hint = (getattr(event, "message_str", "") or "").strip()
+                    # v8.14.4：先剥掉流程控制话术，避免「严格按用户要求执行：…不要用角色卡。」进 prompt。
+                    _hint = role_card.strip_role_control(
+                        (getattr(event, "message_str", "") or "").strip())
                     # 去掉角色名再量长度——「画曳尔沐近景特写」里角色名不该算内容
                     _nm = str(_wr_entry.get("name") or "")
                     if _nm:
@@ -9100,15 +9133,8 @@ class ComfyUIDrawPlugin(Star):
                     # 用户消息里已提到画风则以用户为准（覆盖默认，只影响这一张）。
                     _style_cfg = str((_ad_cfg or {}).get("default_style") or "").strip()
                     if _style_cfg:
-                        _style_words = tuple(p[1].lower() for p in STYLE_PRESETS) + (
-                            "水墨", "厚涂", "赛璐璐", "水彩", "油画", "像素", "3d", "渲染", "吉卜力",
-                            "写实", "日系", "动漫", "新海诚", "韩漫", "赛博", "轻小说", "扁平", "矢量",
-                            "风格", "画风", "paint", "ink", "cel",
-                        )
-                        _user_mentioned_style = any(
-                            w in (getattr(event, "message_str", "") or "").lower() for w in _style_words
-                        )
-                        if not _user_mentioned_style:
+                        # v8.14.4：判定收敛到 _user_mentioned_style（含「极简风 / 用 moss」词表外写法）
+                        if not _user_mentioned_style((getattr(event, "message_str", "") or "")):
                             _hint = f"{_hint}，画成{_style_cfg}风格" if _hint else f"画成{_style_cfg}风格"
                     # v8.10.3：创作 hint 优先用 **LLM 写进 positive 的完整画面** ——
                     # LLM 已经把用户意图（阳台/热可可/夜景）写全了，用它当创作源信息不丢；
@@ -17069,6 +17095,10 @@ class ComfyUIDrawPlugin(Star):
         必须实际调工具查，不许凭自己知识判断「这个角色冷门、库里肯定没有」，不许跳过直接说没找到。
         ⚠️ **角色库命中且 has_ref=true 时：直接调本工具画图，绝不要问用户要参考图 / 图片 / 截图**——
         主参考图已经存在库里，插件出图时会自动读取，用户不需要发任何图。
+        ⛔ **用户明确说「不要用角色卡 / 不用角色卡 / 别走角色卡」时整段跳过角色库**：
+        不调 comfyui_role、不按角色卡口吻写编辑指令；直接把用户点名的画风 / 模型
+        （如「极简风」「moss」）与画面内容写进 prompt 出图，
+        也绝不要把「不要用角色卡」这类流程话术写进 prompt。
         1) **先查角色库**（用户点名某作品/角色时必做）：调 comfyui_role（keyword=角色名/作品名）。
            ★这是「角色卡」的唯一入口——用户说「角色卡里有」「你查查角色卡」时就是让你调它，
            **绝不要说「角色卡我看不到」「你把角色卡贴给我」**。

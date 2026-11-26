@@ -258,7 +258,11 @@ _role_exit_re = _ns_re["_ROLE_EXIT_RE"]
 _role_cont_re = _ns_re["_ROLE_CONTINUE_RE"]
 for _p in ("发张你自己", "再发张你自己", "画你自己", "画一张你自己", "来一张你自己",
            "画你", "发张你的自拍", "你的自拍", "画我自己", "画自己", "画原本的样子",
-           "取消角色", "回到自己"):
+           "取消角色", "回到自己",
+           # v8.14.4：用户实测「不要用角色卡」旧正则漏判（只收「不要角色卡」）
+           "不要用角色卡", "不用角色卡", "不要角色卡", "别用角色卡",
+           "不需要角色卡", "不走角色卡", "别走角色图生图",
+           "你画张鸣潮达妮娅，就用moss和这个极简风，不要用角色卡"):
     check(f"自身入画退出词命中：{_p}", bool(_role_exit_re.search(_p)), _p)
 for _p in ("画一张初音未来的图", "画你和初音的合照", "再发一张", "画小叽在海边"):
     check(f"非自身入画不误退：{_p}", not _role_exit_re.search(_p), _p)
@@ -305,6 +309,37 @@ check("Studio 显式 opt-in 仍吃 positive",
       "if use_role_card is True and not _wr_match_text" in src)
 check("退出词含她自己/他自己",
       bool(_role_exit_re.search("画她自己")) and bool(_role_exit_re.search("发张他自己")))
+
+# v8.14.4：流程控制话术不是画面描述，绝不能拼进绘图 prompt。
+_u_case = "你画张鸣潮达妮娅，就用moss和这个极简风，不要用角色卡"
+check("流程话术剥除（用户原句）",
+      role_card.strip_role_control(_u_case) == "你画张鸣潮达妮娅，就用moss和这个极简风",
+      role_card.strip_role_control(_u_case))
+check("流程话术剥除（句首带逗号）",
+      role_card.strip_role_control("不要角色卡，画初音在海边") == "画初音在海边",
+      role_card.strip_role_control("不要角色卡，画初音在海边"))
+check("正常画面描述不剥除",
+      role_card.strip_role_control("画初音未来在海边") == "画初音未来在海边")
+check("流程话术不进创作源", "role_card.strip_role_control(" in src)
+
+# 用户自己给了画风就不再套角色卡默认画风（「极简风」旧判定认不出）。
+_style_def_nodes = []
+for _n in _tree.body:
+    _is_preset = isinstance(_n, ast.Assign) and any(
+        getattr(t, "id", "") in ("STYLE_PRESETS", "_USER_STYLE_EXTRA_RE")
+        for t in _n.targets)
+    _is_fn = isinstance(_n, ast.FunctionDef) and _n.name == "_user_mentioned_style"
+    if _is_preset or _is_fn:
+        _style_def_nodes.append(_n)
+_ns_style = {"re": re}
+for _n in _style_def_nodes:
+    exec(compile(ast.get_source_segment(src, _n), "<x>", "exec"), _ns_style)
+_ums = _ns_style["_user_mentioned_style"]
+check("极简风视为用户自定画风", _ums("就用moss和这个极简风"))
+check("moss视为用户自定画风", _ums("用moss画"))
+check("普通画面不视为画风", not _ums("画一个女孩在海边"))
+check("默认画风不覆盖用户画风", "if _style0 and _user_mentioned_style(_u_msg)" in src)
+check("工具文档显式退出角色卡", "不要用角色卡 / 不用角色卡 / 别走角色卡" in src)
 
 if FAILURES:
     print("FAILURES:", FAILURES)

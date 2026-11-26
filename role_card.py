@@ -131,6 +131,20 @@ def search_roles(keyword: str, ref_map: dict, limit: int = 30,
     return rows[:limit]
 
 
+# v8.14.4：「不要用角色卡 / 不用角色卡 / 别走角色图生图」是流程控制话术，不是画面描述。
+# 退出词命中时整段角色卡链路会被跳过；但措辞千变万化，万一漏判，
+# 至少不能把这类话术拼进绘图 prompt（实测出现过「严格按用户要求执行：…不要用角色卡。」）。
+_ROLE_CONTROL_RE = re.compile(
+    r"(?:不需要|不要|不用|无需|不需|别|不)(?:想要|启用|使用|要|用|走)?角色(?:卡|图生图)?"
+    r"(?:的)?(?:吗|呢|吧)?[,，。！？!?、\s]*"
+)
+
+
+def strip_role_control(text: str) -> str:
+    """剥掉「不要用角色卡」这类流程控制话术，只留画面描述。"""
+    return _ROLE_CONTROL_RE.sub("", text or "").strip().strip(",，。、")
+
+
 def build_edit_instruction(user_text: str, style: str = "", *,
                            framed: bool = True) -> str:
     """程序化拼一条 Qwen-Image-2.1 图生图的**中文编辑指令**（照搬老婆插件口径）。
