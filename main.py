@@ -1950,6 +1950,41 @@ async def _gif_to_first_frame(path: str) -> str | None:
         return path
 
 
+def _apply_explicit_sampler_overrides(
+    wf: dict, steps=None, cfg=None, sampler=None, noise_schedule=None,
+) -> None:
+    """把调用方显式传来的采样参数覆盖到 wf 副本（就地改，不动配置原件）。
+
+    v8.14.3：`_do_draw` 的 cfg/steps/sampler/noise_schedule 形参此前只喂给 NAI
+    分支（原 8542 行），ComfyUI 链路完全没消费——「在线生图工作台」改了步数/CFG/
+    采样器，提交后仍按工作流页的 ov_* 或基础工作流原值出图，用户看到的就是
+    「提交后没生效」。None / 0 / 空串表示未显式指定，保持工作流配置不变。
+
+    必须在 `_apply_base_overrides` 之前调用：后者读 ov_sampler / ov_scheduler
+    写采样器节点；steps/cfg 则由出图链路末尾统一注入。
+    """
+    if steps is not None:
+        try:
+            _sv = int(float(steps))
+            if _sv > 0:
+                wf["default_steps"] = _sv
+                wf["steps_off"] = False
+        except (TypeError, ValueError):
+            pass
+    if cfg is not None:
+        try:
+            _cv = float(cfg)
+            if _cv > 0:
+                wf["default_cfg"] = _cv
+                wf["cfg_off"] = False
+        except (TypeError, ValueError):
+            pass
+    if isinstance(sampler, str) and sampler.strip():
+        wf["ov_sampler"] = sampler.strip()
+    if isinstance(noise_schedule, str) and noise_schedule.strip():
+        wf["ov_scheduler"] = noise_schedule.strip()
+
+
 @register(
     "astrbot_plugin_comfyui_anima",
     "astrbot-comfyui-anima",
@@ -8834,6 +8869,9 @@ class ComfyUIDrawPlugin(Star):
                 # v7.0.0：新版工作流——从基础工作流库克隆底图，并把解析注记注水进
                 # wf 副本（positive_node/field 等），后续管线零改动直接可用。
                 wf, prompt = self._load_from_base(wf)
+                # v8.14.3：工作台 / LLM 工具显式传的采样参数优先于工作流页的 ov_*
+                # （此前这些形参只走 NAI 分支，ComfyUI 链路根本没读）。
+                _apply_explicit_sampler_overrides(wf, steps, cfg, sampler, noise_schedule)
                 self._apply_base_overrides(wf, prompt)
             else:
                 prompt = workflow_builder.load_workflow(

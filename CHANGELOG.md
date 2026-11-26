@@ -4,6 +4,19 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.14.3（在线生图工作台改步数/CFG 提交后没生效：参数只喂给了 NAI 分支）
+
+**现象**：WebUI「在线生图工作台」高级参数里改 steps / cfg / 采样器 / 调度器，提交后出图仍按工作流页的 ov_* 或基础工作流原值跑。`denoise` 正常，只有「步数等参数」不生效。
+
+**根因**：`_do_draw` 的 `cfg/steps/sampler/noise_schedule` 四个形参只在 NAI 分支传给 `_do_draw_nai_style`，ComfyUI 链路从头到尾没读它们。实际注入 steps/cfg 的只有 `wf["default_steps"]/default_cfg`（来自工作流页 ov_*），sampler/scheduler 只读 `ov_sampler/ov_scheduler`——工作台传的值被完全绕过。
+
+**修复**：
+- `main.py`：新增纯函数 `_apply_explicit_sampler_overrides()`，把显式 steps/cfg（含工作台传来的字符串数字）转成 `default_steps/default_cfg` 并清 `steps_off/cfg_off`，sampler/noise_schedule 写入 `ov_sampler/ov_scheduler`；在 `_load_from_base` 之后、`_apply_base_overrides` 之前调用（顺序有守卫测试）。空值 / 0 / 非法值一律跳过，不覆盖工作流配置。
+- 同一逻辑对 LLM 工具 `comfyui_draw` 显式传的 steps/cfg 也一并生效（此前同样是死参数）。
+- `tests/test_explicit_sampler_params.py` 6 组全过；`test_workflow_v7.py` 25 组全过。
+
+**注意**：只修新版工作流（base_id）路径；旧版工作流仍按老语义只认自身的 `default_steps/default_cfg`，工作台覆盖不适用。
+
 ## v8.14.2（MOSS 鲸鱼娘工作流出图报 batch_size 缺失：EmptyFlux2LatentImage 没进 UI 转换表）
 
 **现象**：上传「MOSS-鲸鱼娘-工作流.json」（画布直接保存的 UI 格式）后入库解析通过，出图失败：
