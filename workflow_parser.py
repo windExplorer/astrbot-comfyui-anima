@@ -121,6 +121,7 @@ _UI_WIDGET_FIELDS: dict[str, tuple[str, ...]] = {
     "CLIPTextEncode": ("text",),
     "EmptyLatentImage": ("width", "height", "batch_size"),
     "EmptySD3LatentImage": ("width", "height", "batch_size"),
+    "EmptyFlux2LatentImage": ("width", "height", "batch_size"),
     "SaveImage": ("filename_prefix",),
     "SaveImageExtended": ("filename_prefix", "output_ext", "quality"),
     "UNETLoader": ("unet_name", "weight_dtype"),
@@ -131,6 +132,24 @@ _UI_WIDGET_FIELDS: dict[str, tuple[str, ...]] = {
     "LoraLoaderModelOnly": ("lora_name", "strength_model"),
     "ModelSamplingAuraFlow": ("shift", "sampling"),
 }
+
+
+def _ui_widget_fields(ct: str) -> tuple[str, ...]:
+    """按类名找 widget 字段表；未收录的空 latent 类节点按通用三元组兜底。
+
+    ComfyUI 各版本空 latent 节点命名不一（EmptyLatentImage / EmptySD3LatentImage /
+    EmptyFlux2LatentImage / EmptyNoise …），widget 顺序统一是 width, height, batch_size。
+    v8.14.2：MOSS-鲸鱼娘工作流用的就是 EmptyFlux2LatentImage，老版 UI 文件没有
+    widgets_values_named，第一版位置表只收录了两个具体类名，整个节点 inputs 转成空，
+    入库解析"通过"但出图被 ComfyUI 以 `batch_size` 缺失拒绝——按类名模式兜底根治。
+    """
+    fields = _UI_WIDGET_FIELDS.get(ct)
+    if fields:
+        return fields
+    low = ct.lower()
+    if ("latent" in low and ("empty" in low or "image" in low)) or "emptynoise" in low:
+        return ("width", "height", "batch_size")
+    return ()
 
 
 def is_ui_format(obj) -> bool:
@@ -172,8 +191,9 @@ def ui_to_api(ui: dict) -> dict | None:
         vals = n.get("widgets_values")
         named = n.get("widgets_values_named")
         if isinstance(vals, list) and not isinstance(named, dict):
-            for i, v in enumerate(vals[:len(_UI_WIDGET_FIELDS.get(ct, ()))]):
-                inputs[_UI_WIDGET_FIELDS[ct][i]] = v
+            _fields = _ui_widget_fields(ct)
+            for i, v in enumerate(vals[:len(_fields)]):
+                inputs[_fields[i]] = v
         if isinstance(named, dict):
             inputs.update({k: v for k, v in named.items() if isinstance(k, str)})
         for inp in n.get("inputs") or []:
@@ -914,6 +934,18 @@ def parse_workflow(prompt: dict) -> tuple[dict | None, list[str]]:
         except (TypeError, ValueError):
             roles["latent"]["default_width"] = None
             roles["latent"]["default_height"] = None
+        # v8.14.2：空 latent 类节点必须真的带 width/height 输入。老版 UI 文件没有
+        # widgets_values_named，widget 靠位置表还原；未收录的节点会静默丢字段
+        # （EmptyFlux2LatentImage 实测整个 inputs 为空，入库"解析通过"但出图被
+        # ComfyUI 以 `batch_size` 缺失拒绝）。这里直接拦住，不带病入库。
+        _lct = _ct(lnode)
+        if ("latent" in _lct or "empty" in _lct) and (
+            "width" not in l_inputs or "height" not in l_inputs
+        ):
+            errors.append(
+                f"宽高节点 {lat_link[0]}（{lnode.get('class_type')}）缺少 width/height 输入；"
+                "若是画布保存的 UI 格式，请在 ComfyUI 用「导出（API）」另存后再上传。"
+            )
 
     # ---- 尺寸来源开关（v7.7.98）----
     # 与「宽高节点」是两件事：latent 解析的是「自定义尺寸往哪写」，这里记的是

@@ -145,6 +145,48 @@ def test_import_normalizes_to_api():
                 store._conn.close()
 
 
+def _moss_ui_latent(missing: bool = False) -> dict:
+    """MOSS 系工作流：EmptyFlux2LatentImage + 无 widgets_values_named + link 源 ID 是字符串。"""
+    nodes = [
+        {"id": 1, "type": "UNETLoader", "inputs": [], "widgets_values": ["moss.safetensors", "default"]},
+        {"id": 2, "type": "CLIPLoader", "inputs": [], "widgets_values": ["qwen.safetensors", "moss_image", "default"]},
+        {"id": 3, "type": "VAELoader", "inputs": [], "widgets_values": ["ae.safetensors"]},
+        {"id": 5, "type": "CLIPTextEncode", "inputs": [{"name": "clip", "link": 2}], "widgets_values": ["POS"]},
+        {"id": 6, "type": "CLIPTextEncode", "inputs": [{"name": "clip", "link": 3}], "widgets_values": ["NEG"]},
+        {"id": 7, "type": "EmptyFlux2LatentImage", "inputs": [],
+         "widgets_values": [] if missing else [1024, 1536, 1]},
+        {"id": 8, "type": "KSampler", "inputs": [
+            {"name": "model", "link": 1}, {"name": "positive", "link": 4},
+            {"name": "negative", "link": 5}, {"name": "latent_image", "link": 6}],
+         "widgets_values": [42, "randomize", 32, 3.0, "er_sde", "normal", 1.0]},
+        {"id": 9, "type": "VAEDecode", "inputs": [
+            {"name": "samples", "link": 7}, {"name": "vae", "link": 8}], "widgets_values": []},
+        {"id": 10, "type": "SaveImage", "inputs": [{"name": "images", "link": 9}], "widgets_values": ["moss_ui"]},
+    ]
+    links = [
+        [1, "1", 0, "8", 0, "MODEL"], [2, "2", 0, "5", 0, "CLIP"], [3, "2", 0, "6", 0, "CLIP"],
+        [4, "5", 0, "8", 1, "CONDITIONING"], [5, "6", 0, "8", 2, "CONDITIONING"],
+        [6, "7", 0, "8", 3, "LATENT"], [7, "8", 0, "9", 0, "LATENT"],
+        [8, "3", 0, "9", 1, "VAE"], [9, "9", 0, "10", 0, "IMAGE"],
+    ]
+    return {"nodes": nodes, "links": links, "version": 0.4}
+
+
+def test_flux2_latent_pattern_fallback():
+    """v8.14.2：EmptyFlux2LatentImage 未收录时会整节点丢 widget，出图报 batch_size 缺失。"""
+    ui = _moss_ui_latent()
+    api = ui_to_api(ui)
+    assert api["7"]["inputs"] == {"width": 1024, "height": 1536, "batch_size": 1}
+    roles, errs = parse_workflow(ui)
+    assert not errs, errs
+    assert roles["latent"]["default_width"] == 1024 and roles["latent"]["default_height"] == 1536
+    assert roles["model_file"] == "moss.safetensors"
+    # 守卫：widget 全丢时直接拒绝入库，不能"解析通过"骗到出图阶段才炸
+    roles2, errs2 = parse_workflow(_moss_ui_latent(missing=True))
+    assert roles2 is None and errs2 and "width/height" in "".join(errs2), errs2
+    print("== 7. EmptyFlux2LatentImage 模式兜底 + 带病入库守卫 OK")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:

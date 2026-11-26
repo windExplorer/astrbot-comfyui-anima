@@ -4,6 +4,20 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.14.2（MOSS 鲸鱼娘工作流出图报 batch_size 缺失：EmptyFlux2LatentImage 没进 UI 转换表）
+
+**现象**：上传「MOSS-鲸鱼娘-工作流.json」（画布直接保存的 UI 格式）后入库解析通过，出图失败：
+`prompt_outputs_failed_validation` / 节点 7 `required_input_missing: batch_size`。
+
+**根因**：v8.14.1 的 UI→API 转换对没有 `widgets_values_named` 的老文件按 `_UI_WIDGET_FIELDS` 位置表还原 widget。该工作流节点 7 是 `EmptyFlux2LatentImage`（`widgets_values=[1024,1536,1]`），表里只登记了 `EmptyLatentImage` / `EmptySD3LatentImage` 两个具体类名，未收录它 → 整个节点 `inputs` 转成空。解析器按默认字段名 `width`/`height` 记为可写，`errors` 却是空的——静默带病入库，直到 ComfyUI 校验才炸。
+
+**修复**：
+- `workflow_parser.py`：新增 `_ui_widget_fields()` 按类名模式兜底——含 latent 且含 empty/image，或含 emptynoise 的节点统一按 `(width, height, batch_size)` 还原，覆盖各版本空 latent 节点命名差异。
+- 解析期守卫：空 latent 类节点若 `inputs` 里根本没有 width/height，直接报错拒绝入库并提示改用「导出（API）」，不再骗到出图阶段。
+- `tests/test_ui_format.py` 新增 MOSS 风格用例（无 named、link 源 ID 是字符串、EmptyFlux2LatentImage）与守卫断言，7 组全过；`test_workflow_v7.py` 25 组全过。
+
+**注意**：已按 v8.14.1 上传的残缺记录不会自动修复（库里存的是缺字段的 API 文本），请到基础工作流页**重新上传原始 UI 文件**（同名同文件会覆盖更新），或手动导出 API 格式再传。
+
 ## v8.14.1（基础工作流库直接吃画布保存的 UI 格式：上传即自动转 API 入库）
 
 **需求**：从 ComfyUI 画布「保存工作流」得到的 JSON（顶层 `nodes`/`links`）无法直接上传到基础工作流库，必须先在 ComfyUI 里再走一遍「导出（API）」。用户给出一份 Z-Image Turbo 画布工作流（含 `widgets_values_named`），实测转成 API 后所有角色定位正常，卡点只在文件格式。
