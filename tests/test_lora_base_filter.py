@@ -138,9 +138,92 @@ def test_lora_matches_wf():
     print("== 4. LoRA 适用性判定（新版按基础工作流底模） OK")
 
 
+def _load_module_fn(name: str):
+    """从 main.py 顶层摘一个模块级纯函数（_lora_reality_hint 不在类里）。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    node = next(
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+    seg = ast.get_source_segment(src, node) or ""
+    ns: dict = {}
+    exec(textwrap.dedent(seg), ns)  # noqa: S102
+    return ns[name]
+
+
+def test_llm_loras_no_cross_basemodel_fallback():
+    """v8.14.6：comfyui_loras 不得在底模没命中时列出全库——
+    那会把其他底模的同名 LoRA 当成「找到了」，再由 LLM 谎报「用了 LoRA」。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(
+        n for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin"
+    )
+    fn = next(
+        n for n in cls.body
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "llm_loras"
+    )
+    body = ast.get_source_segment(src, fn) or ""
+    assert "check_bm=False" not in body, "仍有 check_bm=False 的全库放宽"
+    assert "列出全部供参考" not in body, "仍有跨底模列全库的兜底"
+    assert "_resolve_workflow" in body and "apply_session_pin=True" in body, \
+        "没有按当前会话固定工作流解析底模"
+    print("== 5. comfyui_loras 按固定工作流底模过滤、不跨底模放宽 OK")
+
+
+def test_draw_basemodel_check_uses_effective_model():
+    """v8.14.6：出图底模硬校验必须走 _wf_base_model（覆盖新版 base_id 工作流），
+    不能只读 wf['base_model']（新版恒空 → 校验失效）。"""
+    src = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    tree = ast.parse(src)
+    cls = next(
+        n for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "ComfyUIDrawPlugin"
+    )
+    fn = next(
+        n for n in cls.body
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_do_draw"
+    )
+    body = ast.get_source_segment(src, fn) or ""
+    assert 'self._bm_key(self._wf_base_model(wf or {}))' in body, \
+        "底模硬校验未用生效底模"
+    assert 'stats["lora_rejected"].append' in body, \
+        "被拒 LoRA 未回传给工具层"
+    print("== 6. 出图底模硬校验覆盖新版工作流 + 拒绝回传 OK")
+
+
+def test_lora_reality_hint():
+    """v8.14.6：工具成功返回带上真实启用/拒绝结果，杜绝 LLM 谎报用了 LoRA。"""
+    fn = _load_module_fn("_lora_reality_hint")
+    assert fn(None) == ""
+    assert fn({}) == ""
+    assert fn({"lora_enabled": [], "lora_rejected": []}) == ""
+    # 只有启用
+    out = fn({"lora_enabled": ["鲸鱼娘"], "lora_rejected": []})
+    assert "实际生效：鲸鱼娘" in out and "没有启用任何" not in out
+    # 只有拒绝（用户反馈的场景：LLM 以为用了，实际被底模校验拒绝）
+    out = fn({"lora_enabled": [], "lora_rejected": ["鲸鱼娘（底模不匹配）"]})
+    assert "没有启用任何 LoRA" in out
+    assert "请求但未生效：鲸鱼娘（底模不匹配）" in out
+    assert "绝不能说用了" in out
+    # 同时有启用和拒绝；重名去重
+    out = fn({
+        "lora_enabled": ["A", "A"],
+        "lora_rejected": ["B（底模不匹配）", "B（底模不匹配）"],
+    })
+    assert out.count("实际生效：A。") == 1
+    assert out.count("请求但未生效：B（底模不匹配）。") == 1
+    print("== 7. LoRA 实际结果回传提示（启用/拒绝/去重） OK")
+
+
 if __name__ == "__main__":
     test_normalize()
     test_bm_fits()
     test_wf_base_model_resolve()
     test_lora_matches_wf()
+    test_llm_loras_no_cross_basemodel_fallback()
+    test_draw_basemodel_check_uses_effective_model()
+    test_lora_reality_hint()
     print("LoRA 底模筛选全部通过")

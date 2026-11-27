@@ -449,6 +449,38 @@ def _decide_wait_timeout(
     return timeout, per_extra, max_timeout, hard_cap, squeezed, interval
 
 
+def _lora_reality_hint(stats: dict | None) -> str:
+    """v8.14.6：把本次出图「实际启用 / 请求但被拒」的 LoRA 事实回传给模型。
+
+    此前工具成功返回只说「图已生成」，模型凭「我填过 loras 参数」就邀功
+    「用鲸鱼娘 LoRA 画好啦」，而那条 LoRA 可能早已被底模校验静默拒绝。
+    这里是纯函数（无 IO），返回空串表示没有需要纠正的情况。
+    """
+    if not stats:
+        return ""
+    enabled = list(dict.fromkeys(
+        str(x).strip() for x in (stats.get("lora_enabled") or []) if str(x).strip()
+    ))
+    rejected = list(dict.fromkeys(
+        str(x).strip() for x in (stats.get("lora_rejected") or []) if str(x).strip()
+    ))
+    if not enabled and not rejected:
+        return ""
+    lines = ["\n【本次 LoRA 实际情况（仅你可见，别复述给用户）】"]
+    if enabled:
+        lines.append(f"实际生效：{'、'.join(enabled)}。")
+    else:
+        lines.append("本次没有启用任何 LoRA。")
+    if rejected:
+        lines.append(f"请求但未生效：{'、'.join(rejected)}。这些没有进图，绝不能说用了。")
+    lines.append(
+        "★最终配文只聊画面，不要提 LoRA/底模等技术细节；"
+        "若你之前说过「有 XX LoRA」但它不在上面的实际生效列表里，"
+        "就当没这回事，绝不要再说「用 XX LoRA 画好啦」。"
+    )
+    return "".join(lines)
+
+
 def _merge_active_loras(
     *, loras_cfg, raw_hits: dict, lora_map, disabled_loras=None
 ) -> dict | None:
@@ -8474,6 +8506,10 @@ class ComfyUIDrawPlugin(Star):
         # 「真的出图失败」区分开，避免模型以为失败而反复重试/换提示词重画。
         if stats is not None:
             stats.setdefault("nsfw_blocked", 0)
+            # v8.14.6：把「请求了但被底模校验拒绝」的 LoRA 回传给工具层，
+            # 让 LLM 看到真实结果，避免它凭「我填了 loras 参数」谎报用了 LoRA。
+            stats.setdefault("lora_rejected", [])
+            stats.setdefault("lora_enabled", [])
         # 备份原始提示词：后续可能被翻译/改写（动漫翻译、第三方改写），
         # 但「尺寸比例」触发需基于**用户原话**（竖版/横版/9:16 等词）——
         # v7.0.17：此前这里是 LLM 生成的 positive，英文自然语言描述里的
@@ -9570,14 +9606,19 @@ class ComfyUIDrawPlugin(Star):
                 if lib_l:
                     # 底模兼容硬约束（管理员声明：底模留空=未配置/忘配，没有「通用 LoRA」）：
                     # 工作流已标注底模时，LoRA 底模必须存在且完全一致，否则拒绝注入。
-                    _wf_bm = ((wf.get("base_model") if wf else "") or "").strip().lower()
-                    _lb_bm = (lib_l.get("base_model") or "").strip().lower()
+                    # v8.14.6：改用 _wf_base_model()——新版工作流只有 base_id、
+                    # wf["base_model"] 恒空，旧校验会走「按原样注入」放行其他底模的
+                    # LoRA（实际注入后与底模不兼容，图不对还被当成「用了 LoRA」）。
+                    _wf_bm = self._bm_key(self._wf_base_model(wf or {}))
+                    _lb_bm = self._bm_key(lib_l.get("base_model"))
                     if _wf_bm and not _lb_bm:
                         logger.warning(
                             f"【LoRA】 请求启用「{cmd_name}」被拒绝：该 LoRA 未配置底模"
                             f"（工作流「{wf.get('name') or ''}」底模为 {_wf_bm!r}）。"
                             f"请在全局 LoRA 库补填 base_model 后再使用。"
                         )
+                        if stats is not None:
+                            stats["lora_rejected"].append(f"{cmd_name}（LoRA 未配置底模）")
                         continue
                     if _wf_bm and _lb_bm != _wf_bm:
                         logger.warning(
@@ -9585,6 +9626,8 @@ class ComfyUIDrawPlugin(Star):
                             f"工作流「{wf.get('name') or ''}」底模 {_wf_bm!r} 不一致，本次不注入。"
                             f"请选择同底模的工作流。"
                         )
+                        if stats is not None:
+                            stats["lora_rejected"].append(f"{cmd_name}（底模不匹配）")
                         continue
                     if not _wf_bm:
                         logger.warning(
@@ -9718,6 +9761,15 @@ class ComfyUIDrawPlugin(Star):
                     f"图库该图不会记录此 LoRA。请核对全局 LoRA 库的名称/关键字与 model_name，"
                     f"以及 comfyui_loras 返回的规范名是否被 LLM 正确填入 loras 参数。"
                 )
+                if stats is not None and not any(
+                    _req_n in _rj for _rj in stats["lora_rejected"]
+                ):
+                    stats["lora_rejected"].append(f"{_req_n}（未生效/库里或注入锚点不匹配）")
+        if stats is not None and enabled:
+            # 多张图逐张累积去重（per-item loras 可能不同）
+            for _nm in enabled:
+                if _nm not in stats["lora_enabled"]:
+                    stats["lora_enabled"].append(_nm)
         if enabled:
             logger.info(f"本次启用的 LoRA: {enabled}")
             # 仅记录到日志（含加载的文件名与稳定 ID），不再回显给用户。
@@ -18027,6 +18079,10 @@ class ComfyUIDrawPlugin(Star):
 
         # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
         _nsfw_blocked_n = int(_draw_stats.get("nsfw_blocked", 0) or 0)
+        # v8.14.6：把「本次实际启用 / 被拒」的 LoRA 作为事实回传给模型——
+        # 此前工具只说「成功」，模型凭「我填过 loras 参数」就邀功说「用 XX LoRA 画好啦」，
+        # 哪怕那条 LoRA 早已被底模校验拒绝、图里根本没生效。
+        _lora_reality = _lora_reality_hint(_draw_stats)
         if img_paths:
             if is_external:
                 # 外部插件调用：用 JSON 文本返回图片路径，由调用方负责发图与解析。
@@ -18094,6 +18150,7 @@ class ComfyUIDrawPlugin(Star):
                 f"（如「我去看看有哪些 LoRA 可用～」），然后直接调工具，不要说第二遍；"
                 f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
                 f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
+                + _lora_reality
                 + (_max_hint or "")
                 + (
                     f"（另有 {_nsfw_blocked_n} 张已生成但被 NSFW 内容策略拦截、未发出，"
@@ -19404,7 +19461,9 @@ class ComfyUIDrawPlugin(Star):
         启用多个 LoRA 时必须合并全部触发词再筛选）；没有冲突就不要传该参数，禁止传空字符串。
 
         Args:
-            base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。当用户指定了工作流/底模时，传入该底模只列出可用的 LoRA。
+            base_model(string): 可选。按底模过滤（如 anima / z-image-turbo / krea2 / illustrious）。
+                ★本工具会自动读取当前会话固定工作流（或正在使用的工作流）的生效底模并按它过滤，
+                通常无需传此参数；传了也以工作流底模为准。只会列出底模兼容的 LoRA，不会跨底模推荐。
             keyword(string): 可选。按名称子串匹配查找某个 LoRA（描述、触发词不参与查找；别名/关键字仅在「别名查询」开关开启时参与）。命中多条时按「精确名 → 不带数字后缀 → 数字后缀升序」排序，**默认取第一条**（如查「清宵」返回 清宵、清宵2…，第一条 清宵 就是原版）。
             category(string): 可选。按分类过滤（角色 / 风格 / 工具）。当用户提到"某某角色/人物"、"某某风格/画风"或"某某工具类效果（如加速、细节增强、图像质量增强）"时，可传入 角色 / 风格 / 工具 缩小范围。
         """
@@ -19414,7 +19473,28 @@ class ComfyUIDrawPlugin(Star):
         lib = plugin._lora_library()
         if not lib:
             return "当前未配置任何 LoRA。可在插件配置页的 LoRA 库中添加。"
-        wf_bm = (base_model or "").strip().lower()
+        # v8.14.6：把「当前会话实际会用的工作流」的生效底模自动纳入过滤。
+        # 此前本工具完全不读工作流——用户固定了工作流，查 LoRA 仍列全库，LLM 把
+        # 别的底模的 LoRA 当成「找到了」填进 loras，出图时又被底模校验静默丢弃，
+        # 于是出现「没用 LoRA 却说用了」。口径与出图入口 _do_draw 一致：
+        # apply_session_pin=True 让固定工作流优先于 LLM/会话临时指定的名字。
+        _bm_from = ""
+        try:
+            _umo = plugin._session_umo_of(event)
+            _wf_cur = plugin._resolve_workflow(
+                None,
+                fallback_on_missing=True,
+                apply_session_pin=True,
+                session_umo=_umo,
+                session_id=plugin._session_id_of(event),
+            )
+            if _wf_cur:
+                _bm_from = plugin._wf_base_model(_wf_cur).strip()
+                if _bm_from:
+                    base_model = _bm_from
+        except Exception as _be:
+            logger.debug(f"【LoRA】 读取当前工作流底模失败（按传入参数过滤）: {_be}")
+        wf_bm = plugin._bm_key(base_model)
         kw = (keyword or "").strip().lower()
         cat = (category or "").strip()
         nkw = workflow_builder._normalize_lora_name(kw) if kw else ""
@@ -19428,9 +19508,11 @@ class ComfyUIDrawPlugin(Star):
             name = (l.get("name") or "").strip()
             if not name:
                 return False
-            lora_bm = (l.get("base_model") or "").strip().lower()
-            if check_bm and wf_bm and lora_bm and lora_bm != wf_bm:
-                return False  # 底模不匹配的 LoRA 不列出
+            # v8.14.6：底模用 _bm_key 归一化比较（Z-Image Turbo ↔ z-image-turbo），
+            # 与出图硬校验同口径；未配置底模的条目在指定了底模时一并不列出。
+            lora_bm = plugin._bm_key(l.get("base_model"))
+            if check_bm and wf_bm and lora_bm != wf_bm:
+                return False  # 底模不匹配 / 未配置的 LoRA 不列出
             if cat and (l.get("category") or "").strip() != cat:
                 return False  # 分类不匹配的 LoRA 不列出
             if kw:
@@ -19507,14 +19589,33 @@ class ComfyUIDrawPlugin(Star):
         _hits = [l for l in lib if _match(l)]
         note = ""
         if not _hits and kw:
-            _hits = [l for l in lib if _relaxed_hit(l)]
+            # v8.14.6：近似匹配可以放宽「版本后缀」，但底模/分类约束不能放——
+            # 否则查「鲸鱼娘」会把别的底模同名 LoRA 列出来，LLM 当成可用的。
+            _hits = [
+                l for l in lib
+                if _relaxed_hit(l)
+                and (not wf_bm or plugin._bm_key(l.get("base_model")) == wf_bm)
+                and (not cat or (l.get("category") or "").strip() == cat)
+            ]
             if _hits:
-                note = f"（未精确匹配到「{keyword}」，以下为忽略版本后缀/底模/分类后的近似结果）"
-        if not _hits and wf_bm:
-            _hits = [l for l in lib if _match(l, check_bm=False)]
-            if _hits:
-                note = f"（没有底模为「{base_model}」的条目，以下列出全部供参考）"
+                note = f"（未精确匹配到「{keyword}」，以下为忽略版本后缀后的近似结果，已按底模/分类过滤）"
+        # v8.14.6：移除了「底模无命中就回退到全库」那一档——那会把其他底模
+        # 的同名 LoRA 当成可用、进而谎报「用了 LoRA」。不匹配时宁可明确告知没有。
         if not _hits:
+            # v8.14.6：查不到时必须明确「底模隔离」——不能让 LLM 以为换个词就能
+            # 从别的底模里翻到同名 LoRA 顶替（那正是「没用 LoRA 却说用了」的源头）。
+            if wf_bm:
+                _scope = f"当前工作流底模「{base_model}」"
+                if kw:
+                    return (
+                        f"{_scope}下没有找到匹配「{keyword}」的 LoRA。"
+                        f"可换更短关键词/角色英文名再查一次（本工具自动做去版本后缀近似匹配）；"
+                        f"★本工具不会跨底模查找，也不要在 loras 参数里填其他底模的同名 LoRA"
+                        f"——那样出图时会被拒绝注入、实际不会生效。"
+                    )
+                if cat:
+                    return f"{_scope}下分类「{category}」没有可用的 LoRA。"
+                return f"{_scope}下没有可用的 LoRA，请勿使用其他底模的 LoRA 顶替。"
             if kw:
                 return (
                     f"没有找到匹配「{keyword}」的 LoRA。注意：keyword 是名称"
@@ -20378,6 +20479,7 @@ class ComfyUIDrawPlugin(Star):
 
         # 本次被 NSFW 策略拦下的张数（图已生成成功，只是没发到群里）。
         _nsfw_blocked_n2 = int(_draw_stats2.get("nsfw_blocked", 0) or 0)
+        _lora_reality2 = _lora_reality_hint(_draw_stats2)
         if img_paths:
             if is_external:
                 # 外部插件调用：用 JSON 文本返回图片路径，由调用方负责发图与解析。
@@ -20424,6 +20526,7 @@ class ComfyUIDrawPlugin(Star):
                 f"（如「我去看看有哪些 LoRA 可用～」），然后直接调工具，不要说第二遍；"
                 f"不要调用 send_message_to_user / pc_send_current_media 把已发的图再发一次"
                 f"（那只会刷出重复图片），也不要用 astrobot_file_read_tool 去读取该图。"
+                + _lora_reality2
                 + (_max_hint2 or "")
                 + (
                     f"（另有 {_nsfw_blocked_n2} 张已生成但被 NSFW 内容策略拦截、未发出，"
