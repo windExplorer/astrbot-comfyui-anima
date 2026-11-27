@@ -1296,6 +1296,22 @@ class WebUIApi:
         if st is None:
             return error_response("会话管理未初始化")
         try:
+            # v8.14.5：会话页挂载后静默自动同步——5 分钟内不重复打 OneBot，
+            # 手动点「同步联系人」传 force=1 强制拉取。上次同步有错时不节流，
+            # 让进页面能自动重试（OneBot 临时掉线恢复后无需再手动点一次）。
+            try:
+                _body = await request.json(default={}) or {}
+            except Exception:
+                _body = {}
+            _force = str(_body.get("force") or "").strip().lower() in ("1", "true", "yes", "on")
+            _prev = st.get_meta("contacts", {}) or {}
+            if not _force and not _prev.get("error") and _prev.get("synced_at"):
+                try:
+                    _last = time.mktime(time.strptime(str(_prev["synced_at"]), "%Y-%m-%d %H:%M:%S"))
+                    if time.time() - _last < 300:
+                        return json_response({"ok": True, "skipped": True, **_prev})
+                except Exception:
+                    pass
             import asyncio as _aio
             ctx = getattr(self.plugin, "context", None)
             pm = getattr(ctx, "platform_manager", None)

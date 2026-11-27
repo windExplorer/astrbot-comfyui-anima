@@ -18531,6 +18531,34 @@ class ComfyUIDrawPlugin(Star):
             return
         yield event.plain_result(f"已对这条消息贴表情：emoji_id={eid} emoji_type={etype}")
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=26)
+    async def _session_remember_on_message(self, event: AstrMessageEvent):
+        """v8.14.5：任何消息都把当前会话登记进底表（新群 / 新好友即发即现）。
+
+        此前会话表只有「出图时登记」与「手动同步联系人」两条写入路径，新加的
+        群或好友只要还没出过图、也没点过同步按钮，就永远不会出现在会话页。
+        这里复用 `_session_remember_draw` 的 UMO 归一与命名口径，避免再制造
+        「人名假私聊 / 同群两条」历史脏行；同一会话 30 秒内只写一次库。
+        """
+        try:
+            # 机器人自己 / 系统消息没有 sender，不登记
+            if not getattr(event, "get_sender_id", lambda: "")():
+                return
+            sid = self._session_umo_of(event)
+            if not sid or getattr(self, "sessions", None) is None:
+                return
+            now = time.monotonic()
+            seen = getattr(self, "_session_seen_recent", None)
+            if seen is None:
+                seen = {}
+                self._session_seen_recent = seen
+            if now - seen.get(sid, 0) < 30:
+                return
+            seen[sid] = now
+            self._session_remember_draw(event)
+        except Exception as _e:
+            logger.debug(f"【会话】 消息入口登记会话失败（忽略）: {_e}")
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=25)
     async def _ack_command_received(self, event: AstrMessageEvent):
         try:

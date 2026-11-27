@@ -373,7 +373,10 @@ async function load() {
     loading.value = false;
   }
 }
-onMounted(load);
+onMounted(async () => {
+  await load();
+  await autoSyncContacts();
+});
 
 async function loadAvatars(force: boolean) {
   const byKind: Record<string, string[]> = { user: [], group: [] };
@@ -409,7 +412,8 @@ function avatarSrc(s: SessionItem): string { return avatars.value[s.avatar_id] |
 async function syncContacts() {
   syncing.value = true;
   try {
-    const r = await apiPost("sessions/sync", {});
+    // 手动点按钮 = 强制拉取，绕过 5 分钟节流
+    const r = await apiPost("sessions/sync", { force: 1 });
     if (r?.ok) message.success(`已同步 ${r.groups || 0} 个群、${r.friends || 0} 位好友`);
     else message.warning(r?.error || "同步失败（可能未连接 OneBot）");
     await load();
@@ -418,6 +422,16 @@ async function syncContacts() {
   } finally {
     syncing.value = false;
   }
+}
+
+// v8.14.5：进页面自动同步联系人（新加的群/好友不用再手动点按钮）。
+// 后端 5 分钟内会跳过重复拉取并回 skipped:true，此时不刷新列表；
+// 同步失败一律静默，不弹错误打扰用户（按钮仍可手动重试）。
+async function autoSyncContacts() {
+  try {
+    const r = await apiPost("sessions/sync", {});
+    if (r?.ok && !r?.skipped) await load();
+  } catch { /* 自动同步失败静默 */ }
 }
 
 function displayName(s: SessionItem): string {
