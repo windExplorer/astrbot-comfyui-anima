@@ -55,6 +55,7 @@
             <div class="card-actions">
               <n-button size="tiny" @click="openDetail(w)">详情</n-button>
               <n-button size="tiny" @click="openEdit(w)">编辑</n-button>
+              <n-button size="tiny" :loading="exportingId === w.id" @click="exportOne(w)">导出JSON</n-button>
               <n-button size="tiny" @click="openCover(w)">上传封面</n-button>
               <n-button size="tiny" :loading="reparsingId === w.id" @click="reparse(w)">重解析</n-button>
               <n-button size="tiny" type="error" @click="removeWf(w)">删除</n-button>
@@ -209,6 +210,7 @@ const saving = ref(false);
 const fetching = ref(false);
 const uploading = ref(false);
 const reparsingId = ref<number>(-1);
+const exportingId = ref<number>(-1);
 const items = ref<any[]>([]);
 
 function typeLabel(kind?: string) {
@@ -244,14 +246,38 @@ function tsString() {
   const p = (x: number) => String(x).padStart(2, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
-function downloadJson(data: any, filename: string) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+function downloadText(text: string, filename: string) {
+  const blob = new Blob([text], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+function downloadJson(data: any, filename: string) {
+  downloadText(JSON.stringify(data, null, 2), filename);
+}
+function exportFileName(name: any, fallback: string) {
+  let base = String(name || "").replace(/\.json$/i, "").replace(/[\\/:*?"<>|]/g, "_").trim();
+  if (!base) base = fallback;
+  return `${base.slice(0, 80)}.json`;
+}
+// v8.14.7：单条导出——直接下载库里存的工作流 JSON 文本（磁盘文件与 wf_json 同源），
+// 不重新序列化，保留入库时的原始排版；UI 格式上传件在入库时已转成 API 格式。
+async function exportOne(w: any) {
+  exportingId.value = w.id;
+  try {
+    const d = await apiGet("baseworkflows/json", { id: w.id });
+    const content = typeof d?.content === "string" ? d.content : "";
+    if (!content) throw new Error("该工作流没有可导出的 JSON 内容");
+    downloadText(content, exportFileName(w.name || d?.filename, `baseworkflow_${w.id}`));
+    message.success(`已导出「${w.name || d?.filename || w.id}」的 JSON`);
+  } catch (e: any) {
+    message.error(e?.message || "导出失败");
+  } finally {
+    exportingId.value = -1;
+  }
 }
 async function exportAll() {
   exporting.value = true;

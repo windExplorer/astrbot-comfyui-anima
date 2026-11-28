@@ -4,6 +4,19 @@
 （v7.9.9 → v7.10.0：按本仓库约定 Z 到 10 进位为 Y+1，不出现 v7.9.10。）
 （v7.10.10 → v7.11.0：同上进位规则，Z 到 10 进位为 Y+1。）
 
+## v8.14.7（基础工作流只能整库导出，想拿单张工作流的 JSON 没有入口）
+
+**现象**：基础工作流页只有顶部「导出 JSON」，一次把整个库打成一个备份包；想单独下载某张工作流的 JSON 文件，页面上没有入口。
+
+**根因**：后端其实早已有 `GET /baseworkflows/json?id=<id>`（`webui_api.py` 的 `baseworkflows_json`，内嵌 Page 与独立 WebUI 的映射都已注册），返回库里存的 JSON 文本；只是前端 `BaseWorkflowsView.vue` 从未调用它，卡片操作区也没有对应按钮。
+
+**修复**：
+- `webui-src/src/views/BaseWorkflowsView.vue`：卡片操作区新增「导出JSON」按钮，调用 `baseworkflows/json` 取 `content`，用页面已有的 blob + `<a download>` 落盘；文件名取工作流名称（清掉非法字符、去掉 `.json` 后再补回），空名称回退 `baseworkflow_<id>.json`。
+- 从 `downloadJson()` 抽出 `downloadText()`：单条导出直接下载原文本、不重新序列化，保留入库时的排版；整库导出仍走原路径、文件名不变。
+- 导出期间按钮显示 loading，失败只提示错误、不误报成功；后端与两条 WebUI 通道零改动。
+
+**口径**：导出的是入库的 API 格式 JSON（磁盘 `workflow_uploads/<名>_<sha16>.json` 与 `wf_json` 同源）；画布保存的 UI 格式上传件在入库时已转成 API 格式，不再保留原始 UI 字节。
+
 ## v8.14.6（固定了工作流，LoRA 却查全库；没用 LoRA 还谎报「用鲸鱼娘画好啦」）
 
 **现象**：会话里固定了工作流后让 bot 画图，bot 没有找这个工作流底模的 LoRA，而是把别的底模的 LoRA 也当成「找到了」；最终图里根本没挂 LoRA，回复却说「有鲸鱼娘的 LoRA，我来画一张。画好啦…」。
